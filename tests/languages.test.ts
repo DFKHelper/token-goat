@@ -193,6 +193,21 @@ public class Foo {
     expect(result.language).toBe('csharp')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
+
+  it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
+    const content = `class Foo {
+  private string bracket = "{";
+  public void Bar() {}
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: the string literal "{" contains a literal brace character. If it is counted
+    // toward braceDepth, Bar is never detected (wrong depth) and currentClass never pops after
+    // Foo's real closing brace, mis-parenting everything declared afterward.
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -313,6 +328,27 @@ function afterGlob() {}
     const result = await parseFile(file)
     expect(result.language).toBe('php')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  })
+
+  it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
+    const content = `<?php
+class Foo {
+    public $bracket = "{";
+    public function a() {}
+}
+function afterFoo() {}
+`
+    const { symbols } = extractPhp(content, 'Foo.php')
+    // Regression: the string literal "{" contains a literal brace character. If it is counted
+    // toward braceDepth, Foo's real closing brace never brings braceDepth back down to its
+    // start depth, so Foo's context is never popped and afterFoo is silently mis-parented as
+    // one of Foo's own methods instead of being a top-level function.
+    const a = symbols.find((s) => s.name === 'a')
+    expect(a?.kind).toBe('method')
+    expect(a?.docstring).toBe('Foo')
+    const afterFoo = symbols.find((s) => s.name === 'afterFoo')
+    expect(afterFoo?.kind).toBe('function')
+    expect(afterFoo?.docstring).toBe('')
   })
 })
 
@@ -523,6 +559,31 @@ fun afterFoo(): Int {
     const { symbols } = extractKotlin(content, 'Foo.kt')
     // Regression: a `{` inside a // comment must not be counted toward braceDepth - otherwise
     // the class never closes and every top-level declaration after it is misattributed as a member.
+    const afterFoo = symbols.find((s) => s.name === 'afterFoo')
+    expect(afterFoo?.kind).toBe('function')
+    expect(afterFoo?.docstring).toBe('')
+  })
+
+  it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
+    const content = `class Foo {
+  val bracket = "{"
+  fun bar(): Int {
+    return 1
+  }
+}
+
+fun afterFoo(): Int {
+  return 3
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    // Regression: the string literal "{" contains a literal brace character. If it is counted
+    // toward braceDepth, Foo's real closing brace never brings braceDepth back down to its
+    // start depth, so currentClass is never cleared and afterFoo is silently mis-parented as
+    // one of Foo's own methods instead of being a top-level function.
+    const bar = symbols.find((s) => s.name === 'bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
     expect(afterFoo?.docstring).toBe('')
@@ -1100,6 +1161,24 @@ function AfterComment {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Outer')
     expect(names).toContain('AfterComment')
+  })
+
+  it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
+    const content = `class Foo {
+  [string] $bracket = "{"
+
+  [void] Bar() {
+    Write-Host "in Bar"
+  }
+}
+`
+    const { symbols } = extractPowershell(content, 'string_brace.ps1')
+    // Regression: the string literal "{" contains a literal brace character. If it is counted
+    // toward braceDepth, depthInClass drifts and Bar is either missed or mis-parented, and
+    // currentClass may never pop after Foo's real closing brace.
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
   })
 })
 })

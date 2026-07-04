@@ -145,6 +145,60 @@ export function stripLineComment(line: string): string {
   return idx === -1 ? line : line.slice(0, idx)
 }
 
+/**
+ * Blanks out the contents of single-line string literals (single- or double-quoted, with
+ * backslash-escape awareness) so that brace/paren characters inside string content - e.g. the
+ * literal `"{"` in `private string bracket = "{";` - are never miscounted as real code structure
+ * by a brace-depth tracker. Quote delimiters themselves are left in place so column positions
+ * and any surrounding-context checks are unaffected; only the interior is replaced with spaces.
+ *
+ * This targets the common case that caused the reported bug: a single-line double- or
+ * single-quoted string containing an unbalanced brace. It is intentionally not a full string
+ * lexer for every language's syntax, and callers should be aware of these gaps:
+ *  - C# verbatim (`@"..."`) and interpolated (`$"..."`) strings are still blanked correctly in
+ *    the common case: an escaped `""` inside a verbatim string is read as "close quote,
+ *    immediately reopen", which blanks the same characters either way. The one edge case this
+ *    misreads is a literal backslash directly before the closing quote of a verbatim string
+ *    (e.g. `@"path\"`), which this function treats as an escaped quote and so does not close the
+ *    string where the verbatim-string rules actually would. Rare in practice.
+ *  - PHP heredoc/nowdoc, Kotlin triple-quoted raw strings (`"""..."""`), and PowerShell
+ *    here-strings (`@"..."@` / `@'...'@`) can all span multiple lines and are NOT tracked across
+ *    lines here - a brace inside one of those can still desync a caller's brace-depth counter.
+ *    Handling that would need dedicated multi-line state tracking, similar in spirit to
+ *    `stripBlockCommentSpan` above.
+ */
+export function stripStringLiterals(line: string): string {
+  let out = ''
+  let i = 0
+  while (i < line.length) {
+    const ch = line[i]
+    if (ch === '"' || ch === "'") {
+      const quote = ch
+      out += quote
+      i++
+      while (i < line.length) {
+        const c = line[i]
+        if (c === '\\' && i + 1 < line.length) {
+          out += '  '
+          i += 2
+          continue
+        }
+        if (c === quote) {
+          out += quote
+          i++
+          break
+        }
+        out += ' '
+        i++
+      }
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // Symbol emitter factory
 // ---------------------------------------------------------------------------

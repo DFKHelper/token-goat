@@ -6,7 +6,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan } from './common.js'
+import { stripBlockCommentSpan, stripStringLiterals } from './common.js'
 
 export interface CsharpImport {
   readonly kind: string
@@ -155,8 +155,11 @@ export function extractCsharp(
       }
     }
 
-    const openBraces = (line.match(/\{/g) ?? []).length
-    const closeBraces = (line.match(/\}/g) ?? []).length
+    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
+    // literal (e.g. `private string bracket = "{";`) is never counted as real nesting.
+    const braceLine = stripStringLiterals(line)
+    const openBraces = (braceLine.match(/\{/g) ?? []).length
+    const closeBraces = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openBraces - closeBraces
 
     if (
