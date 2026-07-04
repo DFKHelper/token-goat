@@ -450,7 +450,12 @@ const TWO_TOKEN_PREFIXES: Record<string, ReadonlySet<string>> = {
   python: new Set(['-m']),
   python3: new Set(['-m']),
   py: new Set(['-m']),
-  uv: new Set(['run', 'tool']),
+  // `tool` is deliberately absent: `uv tool install/upgrade/uninstall/update <bin>`
+  // produces uv's own package-management output (handled by UvFilter.matches()'s
+  // own `tool` branch on the unstripped argv) -- it must not be consumed here.
+  // `uv tool run <bin>` is the one `tool` subcommand that really does execute
+  // `<bin>` and stream its output; it gets a dedicated 3-token strip below.
+  uv: new Set(['run']),
   uvx: new Set(),
   poetry: new Set(['run']),
   rye: new Set(['run']),
@@ -460,8 +465,10 @@ const TWO_TOKEN_PREFIXES: Record<string, ReadonlySet<string>> = {
   pnpm: new Set(['exec', 'dlx']),
   yarn: new Set(['exec', 'dlx']),
   bundle: new Set(['exec']),
-  tox: new Set(['-e']),
   hatch: new Set(['run']),
+  // `tox` is deliberately absent: `tox -e py312`'s `-e py312` is an environment
+  // selector, not a launcher token, so argv[2] (`py312`) is never a real binary.
+  // ToxFilter matches on the unstripped `tox` stem directly (see misc.ts).
 }
 
 /** Return the final path segment (basename), normalising backslashes. */
@@ -509,6 +516,14 @@ export function stripPrefixes(argv: string[]): string[] {
     }
   }
   if (out.length === 0) return out
+  // `uv tool run <bin>` (the long form of `uvx <bin>`) really does execute
+  // <bin> and stream its output — the real binary sits one token further out
+  // than `uv run <bin>`, so it needs its own 3-token strip rather than the
+  // generic two-token launcher table below (which deliberately excludes
+  // `tool`; see TWO_TOKEN_PREFIXES).
+  if (pathStem(out[0]!).toLowerCase() === 'uv' && out[1] === 'tool' && out[2] === 'run' && out.length > 3) {
+    return out.slice(3)
+  }
   // Resolve two-token launchers (python -m pytest → pytest).
   const stem = pathStem(out[0]!).toLowerCase()
   const triggers = TWO_TOKEN_PREFIXES[stem]
