@@ -37,11 +37,11 @@ import { loadConfig } from './config.js'
  * Matches any MCP screenshot tool by name, e.g.
  * `mcp__chrome-devtools-mcp_chrome-devtools__take_screenshot` (chrome-devtools-mcp)
  * or `mcp__plugin_playwright_playwright__browser_take_screenshot` (Microsoft's
- * `@playwright/mcp`, which "browser_take_screenshot" already satisfies since it
- * also ends in "take_screenshot" — a single anchored pattern covers both real
- * tool-name shapes rather than two overlapping alternatives).
+ * `@playwright/mcp`), or `mcp__some-mcp-server_puppeteer__puppeteer_screenshot`
+ * (any tool ending in "screenshot"). Pattern matches any MCP tool ending in
+ * "screenshot" (case-insensitive) to catch all naming conventions.
  */
-const SCREENSHOT_TOOL_RE = /^mcp__.*take_screenshot$/i
+const SCREENSHOT_TOOL_RE = /^mcp__.*screenshot$/i
 
 /** Playwright's `browser_take_screenshot` tool (the actual `@playwright/mcp`
  * package) takes its destination under `filename`, not `filePath`/`file_path` —
