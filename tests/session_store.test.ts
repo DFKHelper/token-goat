@@ -119,6 +119,49 @@ describe('merge-on-save (concurrent writer not clobbered)', () => {
   })
 })
 
+describe('case-insensitive filesystem path matching (#48)', () => {
+  const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+  afterEach(() => {
+    if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+  })
+
+  // Regression: mergeSessionState keyed its byPath Map by the raw, case-preserved FileEntry.path.
+  // A file recorded under one literal casing on disk (from an earlier save) and the SAME physical
+  // file recorded under different casing in the fresh in-memory snapshot (case-insensitive
+  // filesystems -- Windows/macOS) were treated as two distinct entries, producing duplicate
+  // FileEntry rows for one physical file on every saveSessionState() call. Fold the merge key with
+  // foldPath(), matching the fix already applied in session.ts (#47) and compact.ts.
+  it('merges disk and in-memory entries for the same physical file recorded under different casing', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+
+    // Process 1 saves its view, recording the file under one casing.
+    importSessionState({ ...empty(), files: [file('C:/foo/Bar.ts', 10)] })
+    saveSessionState('sid-case-1')
+
+    // Process 2 starts cold, records the SAME physical file under different casing, and saves.
+    // readDiskState() at save time still sees process 1's entry under its original casing.
+    importSessionState({ ...empty(), files: [file('c:/foo/bar.ts', 20)] })
+    saveSessionState('sid-case-1')
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-case-1'), 'utf8')) as SerializedSession
+    expect(disk.files).toHaveLength(1)
+  })
+
+  it('control: case-sensitive FS keeps differently-cased paths for the same file as distinct entries', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+
+    importSessionState({ ...empty(), files: [file('C:/foo/Bar.ts', 10)] })
+    saveSessionState('sid-case-2')
+
+    importSessionState({ ...empty(), files: [file('c:/foo/bar.ts', 20)] })
+    saveSessionState('sid-case-2')
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-case-2'), 'utf8')) as SerializedSession
+    expect(disk.files).toHaveLength(2)
+  })
+})
+
 describe('pendingLargeFileHints merge (consumed hints stay consumed)', () => {
   it('does not resurrect a hint this process consumed, even though a fresh disk read at save time still has it (fail-on-buggy: a plain union-of-entries merge restores the deleted key)', () => {
     // Process A: a pre-read hook fires a pending hint for a large file and saves.

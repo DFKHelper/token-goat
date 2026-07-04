@@ -24,7 +24,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { atomicWriteText, withFileLock } from './util.js'
+import { atomicWriteText, foldPath, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
@@ -239,10 +239,11 @@ function mergePendingLargeFileHints(
 /** Merge the on-disk snapshot with the in-memory one (see module invariants). */
 function mergeSessionState(disk: SerializedSession, mem: SerializedSession): SerializedSession {
   const byPath = new Map<string, FileEntry>()
-  for (const e of disk.files) byPath.set(e.path, e)
+  for (const e of disk.files) byPath.set(foldPath(e.path), e)
   for (const e of mem.files) {
-    const prev = byPath.get(e.path)
-    byPath.set(e.path, prev ? mergeFileEntry(prev, e) : e)
+    const key = foldPath(e.path)
+    const prev = byPath.get(key)
+    byPath.set(key, prev ? mergeFileEntry(prev, e) : e)
   }
   return {
     files: Array.from(byPath.values()),
