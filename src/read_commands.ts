@@ -1044,16 +1044,21 @@ export function extractImports(text: string, ext: string): string[] {
   const lines = text.split(/\r?\n/)
 
   if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(e)) {
-    for (const line of lines) {
-      const from = /(?:import|export)\b[^'"]*?\bfrom\s*['"]([^'"]+)['"]/.exec(line)
-      if (from) { push(from[1]); continue }
-      const bare = /^\s*import\s*['"]([^'"]+)['"]/.exec(line)
-      if (bare) { push(bare[1]); continue }
-      const req = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(line)
-      if (req) { push(req[1]); continue }
-      const dyn = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(line)
-      if (dyn) push(dyn[1])
-    }
+    // Match against the whole file text (not per-line) so multi-line/Prettier-style
+    // import statements (import spanning several lines before `from '...'`) are still
+    // found -- mirrors extractExportNames's whole-text approach below.
+    const fromRe = /(?:import|export)\b[^'"]*?\bfrom\s*['"]([^'"]+)['"]/g
+    const bareRe = /^\s*import\s*['"]([^'"]+)['"]/gm
+    const reqRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+    const dynRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+    const matches: Array<{ index: number; value: string }> = []
+    let m: RegExpExecArray | null
+    while ((m = fromRe.exec(text)) !== null) matches.push({ index: m.index, value: m[1] ?? '' })
+    while ((m = bareRe.exec(text)) !== null) matches.push({ index: m.index, value: m[1] ?? '' })
+    while ((m = reqRe.exec(text)) !== null) matches.push({ index: m.index, value: m[1] ?? '' })
+    while ((m = dynRe.exec(text)) !== null) matches.push({ index: m.index, value: m[1] ?? '' })
+    matches.sort((a, b) => a.index - b.index)
+    for (const match of matches) push(match.value)
   } else if (e === '.py') {
     for (const line of lines) {
       const from = /^\s*from\s+([.\w]+)\s+import\b/.exec(line)
