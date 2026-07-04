@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  claimWorkerPidFile,
   drainOnce,
   getDirtyPathsFor,
   isWorkerRunning,
@@ -62,6 +63,35 @@ describe('stopWorker', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     expect(stopWorker(DIR)).toBe(false)
     expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
+  })
+})
+
+describe('claimWorkerPidFile (TOCTOU race regression)', () => {
+  it('claims an empty pid-file slot and writes the pid', () => {
+    expect(claimWorkerPidFile(DIR, 12345)).toBe(true)
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('12345')
+  })
+
+  it('refuses and does NOT overwrite the pid file when a concurrent claim already recorded a live pid', () => {
+    // Simulate the winning side of a race: a live process (this test process) claims the slot
+    // first, exactly as the first of two near-simultaneous `worker start` invocations would.
+    expect(claimWorkerPidFile(DIR, process.pid)).toBe(true)
+
+    // A second, near-simultaneous `worker start` attempt tries to claim with a different pid.
+    // Before this fix, startDetachedWorker wrote the pid file with a plain fs.writeFileSync
+    // (no exclusive-create flag), so this second write would have silently clobbered the first
+    // daemon's pid file -- orphaning it with no pid file left for a later `worker stop` to find.
+    expect(claimWorkerPidFile(DIR, 999999999)).toBe(false)
+
+    // The file must still name the FIRST (live) pid, not the second writer's -- this is the
+    // exact clobbering behavior the fix closes.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
+  })
+
+  it('reclaims a stale pid-file slot left by a dead process', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    expect(claimWorkerPidFile(DIR, process.pid)).toBe(true)
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
   })
 })
 
