@@ -1,5 +1,6 @@
 // PowerShell language adapter (.ps1, .psm1) using regex-based symbol extraction.
 import type { SymbolEntry } from '../parser_types.js'
+import { stripStringLiterals } from './common.js'
 
 const MAX_SYMBOLS = 500
 
@@ -91,7 +92,10 @@ export function extractPowershell(
       if (rawLine.includes('#>')) {
         inBlockComment = false
       }
-      braceDepth += (rawLine.match(/\{/g) ?? []).length - (rawLine.match(/\}/g) ?? []).length
+      // Brace-count on a string-stripped copy of the raw line so a literal brace inside a
+      // string literal appearing in the comment text is never counted as real nesting.
+      const braceLine = stripStringLiterals(rawLine)
+      braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
 
@@ -166,8 +170,11 @@ export function extractPowershell(
       }
     }
 
-    // Apply brace delta BEFORE scope pop check (critical ordering)
-    braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+    // Apply brace delta BEFORE scope pop check (critical ordering). Brace-count on a
+    // string-stripped copy of the line so a literal brace inside a string literal is never
+    // counted as real nesting.
+    const braceLine = stripStringLiterals(line)
+    braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
 
     if (currentClass !== null && braceDepth > classBraceDepth) {
       classBodyEntered = true

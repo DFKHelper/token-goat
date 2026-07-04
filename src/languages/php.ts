@@ -6,7 +6,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan } from './common.js'
+import { stripBlockCommentSpan, stripStringLiterals } from './common.js'
 
 export interface PhpImport {
   readonly kind: string
@@ -79,8 +79,11 @@ export function extractPhp(
     if (!stripped || stripped.startsWith('//') || stripped.startsWith('#')) continue
 
     // Track brace depth. Apply the net delta (opens minus closes) before the pop check so a class's closing brace pops its context on the same line; checking before subtracting closes would leave the stale class on the stack and mis-parent the next top-level declaration.
-    const openB = (line.match(/\{/g) ?? []).length
-    const closeB = (line.match(/\}/g) ?? []).length
+    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
+    // literal is never counted as real nesting.
+    const braceLine = stripStringLiterals(line)
+    const openB = (braceLine.match(/\{/g) ?? []).length
+    const closeB = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openB - closeB
 
     // Pop context when we close the class brace

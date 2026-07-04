@@ -7,7 +7,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan, stripLineComment } from './common.js'
+import { stripBlockCommentSpan, stripLineComment, stripStringLiterals } from './common.js'
 
 export interface KotlinImport {
   readonly kind: string
@@ -94,7 +94,9 @@ export function extractKotlin(
     const stripped = line.trim()
 
     if (!stripped) {
-      braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+      // Brace-count on a string-stripped copy of the line, matching the depth call site below.
+      const braceLine = stripStringLiterals(line)
+      braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
 
@@ -146,7 +148,10 @@ export function extractKotlin(
       }
     }
 
-    braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
+    // literal is never counted as real nesting.
+    const braceLine = stripStringLiterals(line)
+    braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
 
     if (currentClass !== null && braceDepth > classBraceDepth) {
       classBodyEntered = true
