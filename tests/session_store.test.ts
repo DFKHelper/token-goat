@@ -5,9 +5,11 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { normalizePath } from '../src/paths.js'
 import {
   exportSessionState,
   importSessionState,
+  recordFileRead,
   recordLargeFileHintPending,
   takePendingLargeFileHint,
   type FileEntry,
@@ -116,6 +118,37 @@ describe('merge-on-save (concurrent writer not clobbered)', () => {
     expect(a.readCount).toBe(3) // max of the two
     expect(a.lastReadAt).toBe(25) // newest
     expect(a.sizeBytes).toBe(999) // size from the newest read
+  })
+})
+
+describe('concurrent readCount increments are not lost on merge (task #110)', () => {
+  it('sums two processes genuine reads instead of collapsing them via Math.max', () => {
+    // Two processes both start from the same on-disk baseline (readCount 5 for the same
+    // file) and each independently records exactly one new, real read via recordFileRead --
+    // the actual production increment path, not a hand-built FileEntry -- simulating a
+    // realistic race where two hook invocations read the same file close together.
+    const filePath = path.join(tmpHome, 'shared.ts')
+    fs.writeFileSync(filePath, 'export const x = 1\n')
+    const normalized = normalizePath(filePath)
+    const baseline: SerializedSession = { ...empty(), files: [file(normalized, 100, { readCount: 5 })] }
+
+    // Process A: loads the shared baseline, records one genuine new read, saves first.
+    importSessionState(baseline)
+    recordFileRead(filePath)
+    saveSessionState('sid-race')
+
+    // Process B: independently loads the SAME baseline -- unaware of A's write -- records
+    // its own genuine new read, and saves after A.
+    importSessionState(baseline)
+    recordFileRead(filePath)
+    saveSessionState('sid-race')
+
+    // Two distinct real reads happened (one per process) on top of a shared baseline of 5,
+    // so the correct total is 7. Math.max(a.readCount, b.readCount) collapses this to 6,
+    // silently losing process B's read.
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-race'), 'utf8')) as SerializedSession
+    const entry = disk.files.find((f) => f.path === normalized)
+    expect(entry?.readCount).toBe(7)
   })
 })
 
