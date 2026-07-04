@@ -494,6 +494,22 @@ describe('read_commands', () => {
       expect(parsed).toHaveLength(1)
       expect(parsed[0]?.name).toBe('large')
     })
+
+    it('reports the true max lineEnd across all symbols, not the last-by-lineStart symbol (nested-symbol regression)', () => {
+      // querySymbols orders rows by (file_path, line_start), so the last element
+      // by array order is the symbol with the greatest lineStart, not the
+      // greatest lineEnd. Here the nested method starts after the class but
+      // ends well before it, so a naive `filtered.at(-1)?.lineEnd` undercounts.
+      const syms: MockSymbol[] = [
+        { name: 'Foo', kind: 'class', filePath: 'a.ts', lineStart: 5, lineEnd: 100, body: 'class Foo {}', docstring: '' },
+        { name: 'bar', kind: 'method', filePath: 'a.ts', lineStart: 50, lineEnd: 60, body: 'bar() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts' }) })
+      expect(stdout).toContain('2 symbols')
+      expect(stdout).toContain('100 lines')
+    })
   })
 
   // ---- runOutline ---------------------------------------------------------

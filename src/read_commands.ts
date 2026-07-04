@@ -477,7 +477,7 @@ export function runSkeleton(opts: SkeletonOptions): number {
     return 0
   }
 
-  const totalLines = filtered.at(-1)?.lineEnd ?? 0
+  const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
   emit(`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`)
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
