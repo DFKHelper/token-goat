@@ -116,6 +116,23 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('write-file --from exceeding size limit quotes the source path via the shared readFileBoundedRaw helper (regression: cmdWriteFile used to re-inline this check with drifted wording -- "--from source exceeds..." instead of quoting the actual path)', () => {
+    const srcFile = path.join(os.tmpdir(), `tg-wf-toolarge-${Date.now()}.bin`)
+    const destFile = path.join(os.tmpdir(), `tg-wf-toolarge-dest-${Date.now()}.bin`)
+    fs.writeFileSync(srcFile, Buffer.alloc(2 * 1024 * 1024, 0x41))
+    try {
+      const res = spawnSync(process.execPath, [BUNDLE, 'write-file', destFile, '--from', srcFile], {
+        env: { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: '1' },
+        encoding: 'utf8',
+      })
+      expect(res.status).not.toBe(0)
+      expect(res.stderr).toContain(`--from '${srcFile}' exceeds size limit`)
+    } finally {
+      try { fs.unlinkSync(srcFile) } catch { /* ok */ }
+      try { fs.unlinkSync(destFile) } catch { /* ok */ }
+    }
+  }, 30000)
+
   it('changed --help exits 0', () => {
     const r = runCli(['changed', '--help'])
     expect(r.status).toBe(0)
