@@ -230,9 +230,17 @@ function _lsExtSummary(entries: string[], topN = 4): string {
   return parts.join(' ')
 }
 
+// Windows `dir` banner lines ("Volume in drive C is ...", " Directory of C:\...")
+// and the trailing "N File(s)/Dir(s) ... bytes free" summary don't look like
+// Unix `ls` entries at all; recognize them so they aren't folded into the
+// entry list or dropped by truncation.
+const _DIR_EXE_BANNER_RE = /^\s*(?:Volume in drive \S+ (?:is|has no label)|Volume Serial Number is|Directory of)/i
+const _DIR_EXE_SUMMARY_RE = /^\s*\d[\d,]*\s+(?:File|Dir)\(s\)/i
+const _DIR_EXE_DIR_ENTRY_RE = /<DIR>/
+
 export class LsFilter extends ToolFilter {
   readonly name = 'ls'
-  override readonly binaries = new Set(['ls', 'eza', 'll', 'dir'])
+  override readonly binaries = new Set(['ls', 'll', 'dir'])
 
   protected override compressBody(
     stdout: string,
@@ -243,7 +251,50 @@ export class LsFilter extends ToolFilter {
     const merged = this.combineOutput(stdout, stderr)
     const lines = merged.split(/\r?\n/)
     if (lines.length <= _LS_PASSTHROUGH) return merged
+    if (LsFilter._isDirExeOutput(lines)) return this._compressDirExe(lines)
     return this._splitAndCompress(lines)
+  }
+
+  private static _isDirExeOutput(lines: string[]): boolean {
+    return lines.some(l => _DIR_EXE_BANNER_RE.test(l)) && lines.some(l => _DIR_EXE_SUMMARY_RE.test(l))
+  }
+
+  private _compressDirExe(lines: string[]): string {
+    const bannerIdx = new Set<number>()
+    const summaryIdx = new Set<number>()
+    const entryIdx: number[] = []
+    lines.forEach((l, i) => {
+      if (_DIR_EXE_BANNER_RE.test(l)) bannerIdx.add(i)
+      else if (_DIR_EXE_SUMMARY_RE.test(l)) summaryIdx.add(i)
+      else if (l.trim()) entryIdx.push(i)
+    })
+
+    if (entryIdx.length <= _LS_MAX_ENTRIES) return lines.join('\n')
+
+    const entrySet = new Set(entryIdx)
+    const keptEntryIdx = new Set(entryIdx.slice(0, _LS_MAX_ENTRIES))
+    const hiddenCount = entryIdx.length - keptEntryIdx.size
+    const fileEntries = entryIdx
+      .map(i => lines[i]!)
+      .filter(l => !_DIR_EXE_DIR_ENTRY_RE.test(l))
+    const extPart = _lsExtSummary(fileEntries)
+    const hiddenMarker = extPart
+      ? _LS_HIDDEN_MARKER_EXT.replace('{n}', String(hiddenCount)).replace('{ext_summary}', extPart)
+      : _LS_HIDDEN_MARKER.replace('{n}', String(hiddenCount))
+
+    const out: string[] = []
+    let hiddenMarkerEmitted = false
+    for (let i = 0; i < lines.length; i++) {
+      if (bannerIdx.has(i) || summaryIdx.has(i)) {
+        out.push(lines[i]!)
+      } else if (keptEntryIdx.has(i)) {
+        out.push(lines[i]!)
+      } else if (entrySet.has(i) && !hiddenMarkerEmitted) {
+        out.push(hiddenMarker)
+        hiddenMarkerEmitted = true
+      }
+    }
+    return out.join('\n')
   }
 
   private static _isSectionHeader(line: string): boolean {
@@ -833,6 +884,33 @@ function _isDiffRemove(line: string): boolean {
   return line.startsWith('-') && !line.startsWith('---')
 }
 
+// `diff -r`/`-ru` prints a `diff -ru <old> <new>` command-echo line immediately
+// before each file's `--- `/`+++ ` header pair. Both lines match
+// _DIFF_FILE_HEADER_RE, so a naive splitBlocks() call turns one real file into
+// two blocks (the lone echo line, then the actual `---`/`+++`/hunks content).
+// Merge a lone echo-only block into the block that follows it so each real
+// file is counted — and rendered — exactly once.
+function _mergeDiffEchoBlocks(rawBlocks: string[]): string[] {
+  const merged: string[] = []
+  let pendingEcho: string | null = null
+  for (const block of rawBlocks) {
+    const blockLines = block.split('\n')
+    const isLoneEcho = blockLines.length === 1 && /^diff\s/.test(blockLines[0] ?? '')
+    if (isLoneEcho) {
+      pendingEcho = block
+      continue
+    }
+    if (pendingEcho !== null) {
+      merged.push(`${pendingEcho}\n${block}`)
+      pendingEcho = null
+    } else {
+      merged.push(block)
+    }
+  }
+  if (pendingEcho !== null) merged.push(pendingEcho)
+  return merged
+}
+
 function _splitIntoHunks(block: string[]): string[][] {
   const hunks: string[][] = []
   let current: string[] = []
@@ -906,7 +984,7 @@ export class DiffFilter extends ToolFilter {
 
   private _compressUnified(lines: string[]): string {
     const text = lines.join('\n')
-    const rawBlocks = splitBlocks(text, _DIFF_FILE_HEADER_RE)
+    const rawBlocks = _mergeDiffEchoBlocks(splitBlocks(text, _DIFF_FILE_HEADER_RE))
     const realFiles = rawBlocks.filter(b => _DIFF_FILE_HEADER_RE.test(b.split('\n')[0] ?? ''))
 
     if (realFiles.length > _DIFF_MAX_FULL_FILES) {

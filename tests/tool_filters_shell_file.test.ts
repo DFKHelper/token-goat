@@ -155,6 +155,45 @@ describe('LsFilter compression', () => {
   })
 })
 
+describe('LsFilter dir.exe output', () => {
+  const f = new LsFilter()
+  const argv = ['dir']
+
+  it('recognizes dir.exe banner/summary and keeps directories out of the extension summary', () => {
+    const dirEntries = ['.', '..', 'node_modules', 'src', 'tests']
+      .map(name => `07/01/2026  09:30 AM    <DIR>          ${name}`)
+    const fileEntries = [
+      ...Array.from({ length: 5 }, (_, i) => `06/30/2026  08:00 AM             1,${100 + i} file${i}.json`),
+      ...Array.from({ length: 5 }, (_, i) => `06/30/2026  08:00 AM             2,${100 + i} file${5 + i}.md`),
+      ...Array.from({ length: 5 }, (_, i) => `06/30/2026  08:00 AM             3,${100 + i} file${10 + i}.ts`),
+    ]
+    const lines = [
+      ' Volume in drive C is Windows',
+      ' Volume Serial Number is 1234-ABCD',
+      '',
+      ' Directory of C:/Users/zelys/Projects/token-goat',
+      '',
+      ...dirEntries,
+      ...fileEntries,
+      '              15 File(s)         45,678 bytes',
+      '               5 Dir(s)  98,765,432 bytes free',
+    ]
+    const out = compress(f, lines.join('\n'), argv)
+
+    // Banner lines pass through untouched, not folded into the entry list
+    expect(out).toContain('Volume in drive C is Windows')
+    expect(out).toContain('Directory of C:/Users/zelys/Projects/token-goat')
+
+    // The trailing summary must survive truncation, not be silently dropped
+    expect(out).toContain('15 File(s)')
+    expect(out).toContain('5 Dir(s)')
+
+    // <DIR> rows must not pollute the extension-based hidden-entries summary
+    expect(out).not.toContain('other×')
+    expect(out).not.toContain('.×')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // EzaFilter
 // ---------------------------------------------------------------------------
@@ -586,6 +625,24 @@ describe('DiffFilter compression', () => {
     const out = compress(f, fileDiffs.join('\n'), argv)
     expect(out.split('\n').length).toBeLessThan(fileDiffs.length)
   })
+
+  it('does not double-count files for diff -ru with command-echo lines (recursive diff)', () => {
+    const fileCount = 25
+    const parts: string[] = []
+    for (let i = 0; i < fileCount; i++) {
+      parts.push(`diff -ru a/file${i}.ts b/file${i}.ts`)
+      parts.push(`--- a/file${i}.ts\t2024-01-01 00:00:00.000000000 +0000`)
+      parts.push(`+++ b/file${i}.ts\t2024-01-01 00:00:01.000000000 +0000`)
+      parts.push('@@ -1,3 +1,3 @@')
+      parts.push(' context line')
+      parts.push('-old line')
+      parts.push('+new line')
+    }
+    const out = compress(f, parts.join('\n'), ['diff', '-ru', 'a', 'b'])
+    // Each of the 25 files must be counted once, not twice (echo line + header both matching the file-header regex)
+    expect(out).toContain(`large diff (${fileCount} files)`)
+    expect(out).not.toContain(`large diff (${fileCount * 2} files)`)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -816,9 +873,9 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(selectFilter(['ls', '-la'])).toBeInstanceOf(LsFilter)
   })
 
-  // LsFilter includes 'eza' in its binary set and is registered before EzaFilter, so 'eza' dispatches to LsFilter. 'exa' is only claimed by EzaFilter.
-  it('selectFilter dispatches eza to LsFilter (LsFilter precedes EzaFilter and also claims eza)', () => {
-    expect(selectFilter(['eza', '--long'])).toBeInstanceOf(LsFilter)
+  // 'eza' is only claimed by EzaFilter (LsFilter no longer double-claims it), so a real `eza` invocation gets EzaFilter's tree/column-aware compression.
+  it('selectFilter dispatches eza to EzaFilter, not LsFilter', () => {
+    expect(selectFilter(['eza', '--long'])).toBeInstanceOf(EzaFilter)
   })
 
   it('selectFilter dispatches exa to EzaFilter (only EzaFilter claims exa)', () => {
