@@ -15,6 +15,12 @@ export interface KotlinImport {
   readonly line: number
 }
 
+interface ClassFrame {
+  name: string
+  braceDepth: number
+  bodyEntered: boolean
+}
+
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
 
 const FUN_RE = new RegExp(
@@ -68,14 +74,7 @@ export function extractKotlin(
   const imports: KotlinImport[] = []
   const lines = content.split(/\r?\n/)
 
-  let currentClass: string | null = null
-  let classBraceDepth = 0
-  // True once braceDepth has risen above classBraceDepth at least once, i.e. the class's own
-  // opening brace has actually been consumed. Guards the pop check below: for a class whose
-  // primary-constructor header spans multiple lines (`class Foo(\n  val x: Int\n) {`),
-  // braceDepth still equals classBraceDepth on the header line itself, so an ungated pop check
-  // fires immediately and discards the class context before its body is ever seen.
-  let classBodyEntered = false
+  const classStack: ClassFrame[] = []
   let braceDepth = 0
   let inComment = false
 
@@ -108,29 +107,34 @@ export function extractKotlin(
       imports.push({ kind: 'import', target: importM[1] ?? '', line: lineNum })
     }
 
-    // Class/interface/object declaration (must be at column 0)
-    const cm = isIndented ? null : CLASS_HEADER_RE.exec(line)
+    // Class/interface/object declaration. Recognized at column 0 (top-level), or indented while
+    // genuinely inside another class's body (classStack non-empty) - this captures a real
+    // nested/inner class (companion object member, sealed subclass, nested data class) without
+    // also matching arbitrarily indented top-level code that has no enclosing class.
+    // Match against the trimmed line: CLASS_HEADER_RE is column-0-anchored (`^`), so an
+    // indented nested class header would never match against the raw, still-indented line.
+    const cm = (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
     if (cm) {
       const cname = cm[1] ?? ''
-      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200)))
-      currentClass = cname
-      classBraceDepth = braceDepth
-      classBodyEntered = false
+      const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
+      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
+      classStack.push({ name: cname, braceDepth, bodyEntered: false })
     }
 
-    if (currentClass !== null) {
-      const depthInClass = braceDepth - classBraceDepth
+    const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
+    if (frame !== null) {
+      const depthInClass = braceDepth - frame.braceDepth
       if (depthInClass >= 1) {
         const fm = FUN_RE.exec(line)
         if (fm) {
           const fname = fm[1] ?? ''
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
-          symbols.push(makeSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), currentClass))
+          symbols.push(makeSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
         const constM = CONST_RE.exec(line)
         if (constM) {
-          symbols.push(makeSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), currentClass))
+          symbols.push(makeSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name))
         }
       }
     } else if (!isIndented) {
@@ -153,11 +157,21 @@ export function extractKotlin(
     const braceLine = stripStringLiterals(line)
     braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
 
-    if (currentClass !== null && braceDepth > classBraceDepth) {
-      classBodyEntered = true
+    if (frame !== null && braceDepth > frame.braceDepth) {
+      frame.bodyEntered = true
     }
-    if (currentClass !== null && classBodyEntered && braceDepth <= classBraceDepth) {
-      currentClass = null
+    // Pop finished class frames. A frame only pops once its own opening brace has actually been
+    // entered (bodyEntered) - this guards a class whose primary-constructor header spans
+    // multiple lines (`class Foo(\n  val x: Int\n) {`), where braceDepth still equals the
+    // frame's start depth on the header line itself, so an ungated pop would discard the class
+    // context before its body is ever seen.
+    while (classStack.length > 0) {
+      const top = classStack[classStack.length - 1]!
+      if (top.bodyEntered && braceDepth <= top.braceDepth) {
+        classStack.pop()
+      } else {
+        break
+      }
     }
   }
 

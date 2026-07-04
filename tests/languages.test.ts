@@ -208,6 +208,32 @@ public class Foo {
     expect(bar?.kind).toBe('method')
     expect(bar?.docstring).toBe('Foo')
   })
+
+  it('captures a nested class and parents its member to the nested class, not the outer class', () => {
+    const content = `public class Outer {
+    public class Inner {
+        public void InnerMethod() {
+        }
+    }
+    public void OuterMethod() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Outer.cs')
+    // Regression: nested class headers were already recorded as symbols, but currentClass was a
+    // single scalar that only ever latched onto the FIRST class seen - a nested class's own
+    // members were measured against the OUTER class's start depth (depthInClass 2, never
+    // matching the depthInClass === 1 gate), so they were silently dropped from the index.
+    const inner = symbols.find((s) => s.name === 'Inner')
+    expect(inner?.kind).toBe('class')
+    expect(inner?.docstring).toBe('Outer')
+    const innerMethod = symbols.find((s) => s.name === 'InnerMethod')
+    expect(innerMethod?.kind).toBe('method')
+    expect(innerMethod?.docstring).toBe('Inner')
+    const outerMethod = symbols.find((s) => s.name === 'OuterMethod')
+    expect(outerMethod?.kind).toBe('method')
+    expect(outerMethod?.docstring).toBe('Outer')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -587,6 +613,34 @@ fun afterFoo(): Int {
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
     expect(afterFoo?.docstring).toBe('')
+  })
+
+  it('captures a nested class inside another class, parented correctly, along with its own member', () => {
+    const content = `class Outer {
+  class Inner {
+    fun innerMethod(): Int {
+      return 1
+    }
+  }
+  fun outerMethod(): Int {
+    return 2
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Outer.kt')
+    // Regression: a nested class header was previously gated to column 0 only, so an indented
+    // nested/inner class (companion object member, sealed subclass, nested data class - all
+    // idiomatic Kotlin) was never emitted as a symbol, and none of its members were attributed
+    // to it either.
+    const inner = symbols.find((s) => s.name === 'Inner')
+    expect(inner?.kind).toBe('class')
+    expect(inner?.docstring).toBe('Outer')
+    const innerMethod = symbols.find((s) => s.name === 'innerMethod')
+    expect(innerMethod?.kind).toBe('method')
+    expect(innerMethod?.docstring).toBe('Inner')
+    const outerMethod = symbols.find((s) => s.name === 'outerMethod')
+    expect(outerMethod?.kind).toBe('method')
+    expect(outerMethod?.docstring).toBe('Outer')
   })
 })
 

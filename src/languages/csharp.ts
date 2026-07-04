@@ -14,6 +14,12 @@ export interface CsharpImport {
   readonly line: number
 }
 
+interface ClassFrame {
+  name: string
+  startDepth: number
+  bodyEntered: boolean
+}
+
 const USING_RE = /^using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*;/
 const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
 const DELEGATE_RE = new RegExp(
@@ -70,21 +76,14 @@ export function extractCsharp(
   const imports: CsharpImport[] = []
   const lines = content.split(/\r?\n/)
 
-  let currentClass: string | null = null
-  let classStartDepth = 0
-  // True once braceDepth has risen above classStartDepth at least once, i.e. the class's own
-  // opening brace has actually been consumed. Guards the pop check below: for Allman-style
-  // declarations (`class Foo` on one line, `{` on the next) braceDepth still equals
-  // classStartDepth on the header line itself, so an ungated pop check fires immediately and
-  // discards the class context before its body is ever seen.
-  let classBodyEntered = false
+  const classStack: ClassFrame[] = []
   let braceDepth = 0
   let inComment = false
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
-    let openedClassThisLine = false
+    let openedFrameThisLine = false
 
     // Strip /* */ block-comment spans (state carried across lines) so braces inside
     // commented-out code are not counted toward braceDepth. A `/*` inside an open quote is
@@ -114,42 +113,42 @@ export function extractCsharp(
       symbols.push(makeSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200)))
     }
 
-    // class/struct/interface/enum/record
+    // class/struct/interface/enum/record. Always pushes its own frame, even while already
+    // inside another class's body, so a nested class (and its own members) get tracked against
+    // their own start depth instead of being silently folded into the enclosing class.
     const cm = CLASS_HEADER_RE.exec(stripped)
     if (cm) {
       const cname = cm[1] ?? ''
-      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200)))
-      if (currentClass === null) {
-        currentClass = cname
-        classStartDepth = braceDepth
-        classBodyEntered = false
-        openedClassThisLine = true
-      }
+      const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
+      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
+      classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
+      openedFrameThisLine = true
     }
 
-    if (currentClass !== null) {
-      const depthInClass = braceDepth - classStartDepth
+    const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
+    if (frame !== null) {
+      const depthInClass = braceDepth - frame.startDepth
       if (depthInClass === 1) {
         // constructor
         const ctorM = CONSTRUCTOR_RE.exec(line)
-        if (ctorM && ctorM[1] === currentClass) {
+        if (ctorM && ctorM[1] === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-          symbols.push(makeSymbol(filePath, currentClass, 'method', lineNum, sig.slice(0, 200), currentClass))
+          symbols.push(makeSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
         // property
         const propM = PROPERTY_RE.exec(line)
         if (propM) {
-          symbols.push(makeSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), currentClass))
+          symbols.push(makeSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
         }
         // method
         const methM = METHOD_RE.exec(line)
         if (methM) {
           const mname = methM[1] ?? ''
-          if (mname && mname !== currentClass) {
+          if (mname && mname !== frame.name) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-            symbols.push(makeSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass))
+            symbols.push(makeSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name))
           }
         }
       }
@@ -163,22 +162,32 @@ export function extractCsharp(
     braceDepth += openBraces - closeBraces
 
     if (
-      openedClassThisLine &&
+      openedFrameThisLine &&
       ((openBraces > 0 && openBraces === closeBraces) ||
         (openBraces === 0 && closeBraces === 0 && stripped.endsWith(';')))
     ) {
       // Self-contained one-liner: a brace-less positional record ending in `;`, or a
       // class/struct/record body fully opened and closed on the declaration line itself
-      // (`class Foo { }`). Neither ever raises braceDepth above classStartDepth, so the
-      // classBodyEntered-gated pop below would never fire and currentClass would stay
-      // "stuck" on this type for the rest of the file. Clear it immediately instead.
-      currentClass = null
+      // (`class Foo { }`). Neither ever raises braceDepth above the frame's own start depth, so
+      // the bodyEntered-gated pop below would never fire and the frame would stay "stuck" for
+      // the rest of the file. Pop it immediately instead.
+      classStack.pop()
     } else {
-      if (currentClass !== null && braceDepth > classStartDepth) {
-        classBodyEntered = true
+      const top = classStack.length > 0 ? classStack[classStack.length - 1]! : null
+      if (top !== null && braceDepth > top.startDepth) {
+        top.bodyEntered = true
       }
-      if (currentClass !== null && classBodyEntered && braceDepth <= classStartDepth) {
-        currentClass = null
+      // Pop finished frames. A frame only pops once its own opening brace has actually been
+      // entered (bodyEntered) - this guards Allman-style declarations (`class Foo` on one line,
+      // `{` on the next), where braceDepth still equals the frame's start depth on the header
+      // line itself.
+      while (classStack.length > 0) {
+        const t = classStack[classStack.length - 1]!
+        if (t.bodyEntered && braceDepth <= t.startDepth) {
+          classStack.pop()
+        } else {
+          break
+        }
       }
     }
   }
