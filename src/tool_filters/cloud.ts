@@ -596,6 +596,13 @@ const _GCLOUD_API_ENABLE_RE =
 const _GCLOUD_CONTINUE_RE = /Do you want to continue/i
 const _GCLOUD_STRUCTURED_THRESHOLD = 20
 const _GCLOUD_STRUCTURED_CHARS = new Set(['{', ':', '[', ']', '-', '}'])
+// `gcloud ... list --format=yaml` prints one `---`-prefixed YAML document per
+// resource (real, documented gcloud printer behaviour), so 2+ separator lines
+// reliably means "multiple repeated resource blocks" -- the only shape this
+// filter should ever collapse. A single `describe`'s YAML document has none:
+// it's one coherent answer (status/zone/networkInterfaces/etc.), not noise.
+const _GCLOUD_DOC_SEPARATOR_RE = /^---\s*$/
+const _GCLOUD_MIN_REPEATED_BLOCKS = 2
 
 export class GcloudFilter extends ToolFilter {
   readonly name = 'gcloud'
@@ -641,6 +648,14 @@ export class GcloudFilter extends ToolFilter {
   private _maybeCollapseStructured(lines: string[]): string[] {
     const nonEmpty = lines.filter((ln) => ln.trim())
     if (nonEmpty.length <= _GCLOUD_STRUCTURED_THRESHOLD) return lines
+
+    // Never collapse a single coherent YAML document (e.g. one `describe`'s
+    // status/zone/networkInterfaces/etc. -- the actual answer the command was
+    // run to retrieve). Only collapse genuinely repeated resource blocks, as
+    // produced by `gcloud ... list --format=yaml` for multiple resources.
+    const separatorCount = lines.filter((ln) => _GCLOUD_DOC_SEPARATOR_RE.test(ln)).length
+    if (separatorCount < _GCLOUD_MIN_REPEATED_BLOCKS) return lines
+
     let structuredCount = 0
     for (const ln of nonEmpty) {
       if (
@@ -654,7 +669,7 @@ export class GcloudFilter extends ToolFilter {
     const ratio = nonEmpty.length > 0 ? structuredCount / nonEmpty.length : 0
     if (ratio >= 0.7) {
       return [
-        `[Resource description: ${nonEmpty.length} lines (use --format=json to see full output)]`,
+        `[Resource description: ${nonEmpty.length} lines across ${separatorCount} resources (use --format=json to see full output)]`,
       ]
     }
     return lines
