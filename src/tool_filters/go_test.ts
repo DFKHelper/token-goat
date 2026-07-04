@@ -14,7 +14,7 @@ const TEST_PASS_RE = /^\s*--- PASS:\s/
 const TEST_FAIL_RE = /^\s*--- FAIL:\s/
 const TEST_RPC_RE = /^=== (RUN|PAUSE|CONT)\s/
 const SKIP_RE = /^\s*--- SKIP:\s/
-const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current)\s/
+const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current|Write at|Read at)\s/
 const OK_PKG_RE = /^ok\s+\S+\s+\d/
 const FAIL_PKG_RE = /^FAIL\t\S+/
 // A panic or runtime fatal aborts the test binary before any `--- FAIL:` line, so the most recent `=== RUN/NAME` line is the only marker of which (sub)test was executing. Emit that buffered line ahead of the panic so it survives.
