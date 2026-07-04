@@ -919,81 +919,24 @@ function decodeBase64Buffer(payload: string, label: string): Buffer {
 }
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
-  if (!dest || !dest.trim()) {
-    throw new CliError('destination path cannot be empty')
-  }
-  if (dest.includes('\0')) {
-    throw new CliError('destination path contains a null byte')
-  }
-  if (isWindows()) {
-    const base = path.basename(dest)
-    const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
-    if (WIN_RESERVED.has(stem)) {
-      throw new CliError(`destination '${base}' is a reserved Windows device name`)
-    }
-    if (base.endsWith('.') || base.endsWith(' ')) {
-      throw new CliError(`destination filename '${base}' ends with '${base.slice(-1)}' — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
-    }
-  }
+  validateWritablePath(dest, 'destination')
   if (opts.from !== undefined && opts.b64 !== undefined) {
     throw new CliError('cannot use --from and --b64 together')
   }
   if (opts.from !== undefined) {
-    if (!opts.from.trim()) {
-      throw new CliError('--from path cannot be empty')
-    }
-    if (opts.from.includes('\0')) {
-      throw new CliError('--from path contains a null byte')
-    }
-    // On POSIX, /dev/stdin blocks forever when the process is attached to a TTY.
-    if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.from) && process.stdin.isTTY) {
-      throw new CliError('--from /dev/stdin requires piped input; use piped stdin mode or --b64 for interactive use')
-    }
+    const buf = readFileBoundedRaw(opts.from, '--from')
     try {
-      const st = fs.statSync(opts.from)
-      if (st.isFIFO() || st.isSocket()) {
-        throw new CliError(`--from '${opts.from}' is a special file (FIFO or socket) — only regular files are supported`)
-      }
-      const maxFromMB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
-      if (!Number.isFinite(maxFromMB) || maxFromMB <= 0) {
-        throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
-      }
-      const maxFromBytes = maxFromMB * 1024 * 1024
-      if (st.size > maxFromBytes) {
-        throw new CliError(`--from source exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
-      }
-      atomicWriteBuffer(dest, fs.readFileSync(opts.from))
+      atomicWriteBuffer(dest, buf)
     } catch (e) {
-      if (e instanceof CliError) throw e
       mapFsError(e, opts.from, dest)
     }
     enqueueDirtyPathSafe(dest)
     return
   }
   if (opts.b64 !== undefined) {
-    // Strip whitespace (newlines from openssl/base64 CLI output) before url-safe normalization
-    const normalized = opts.b64.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
-    if (opts.b64 !== '' && normalized === '') {
-      throw new CliError('--b64 payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file')
-    }
-    const maxB64MB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
-    if (!Number.isFinite(maxB64MB) || maxB64MB <= 0) {
-      throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
-    }
-    const maxB64Bytes = maxB64MB * 1024 * 1024
-    const decodedSize = Math.floor((normalized.replace(/=+$/, '').length * 3) / 4)
-    if (decodedSize > maxB64Bytes) {
-      throw new CliError(`--b64 payload would decode to ${Math.round(decodedSize / 1024 / 1024)} MB which exceeds size limit; set TOKEN_GOAT_MAX_STDIN_MB to override`)
-    }
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
-      throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
-    }
-    // A single trailing data character (length % 4 === 1 after stripping padding) is always invalid; Buffer.from silently drops it, producing a corrupt or empty file.
-    if (normalized.replace(/=+$/, '').length % 4 === 1) {
-      throw new CliError('--b64 payload length is invalid (trailing single base64 character cannot decode to any bytes — payload is likely truncated)')
-    }
+    const buf = decodeBase64Buffer(opts.b64, '--b64')
     try {
-      atomicWriteBuffer(dest, Buffer.from(normalized, 'base64'))
+      atomicWriteBuffer(dest, buf)
     } catch (e) {
       mapFsError(e, undefined, dest)
     }
