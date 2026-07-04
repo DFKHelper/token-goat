@@ -65,7 +65,7 @@ export function foldPath(p: string): string {
  * non-zero `exitCode` with the error message on `stderr` rather than throwing.
  */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
-  const fullArgs = ['-c', 'core.fsmonitor=', ...args]
+  const fullArgs = ['-c', 'core.fsmonitor=', '-c', 'core.quotepath=false', ...args]
   const result = spawnSync('git', fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     encoding: 'utf-8',

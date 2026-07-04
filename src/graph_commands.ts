@@ -18,7 +18,7 @@ import { resolveIndexPath } from './paths.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { ensureNewline } from './util.js'
+import { runGit, ensureNewline } from './util.js'
 import type { SymbolEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
@@ -776,7 +776,12 @@ export function runBlame(opts: BlameOptions): number {
 
   let raw: string
   try {
-    raw = execFileSync('git', ['blame', '-L', `${start},${end}`, '--', filePath], { cwd, encoding: 'utf8' })
+    const result = runGit(['blame', '-L', `${start},${end}`, '--', filePath], { cwd })
+    if (result.exitCode !== 0) {
+      emitErr(`git blame failed: ${result.stderr}`)
+      return 1
+    }
+    raw = result.stdout
   } catch (e) {
     emitErr(`git blame failed: ${e instanceof Error ? e.message : String(e)}`)
     return 1
