@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { extractErrorMessage } from './util.js';
+import { lowercaseDriveLetter } from './paths.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
@@ -85,10 +86,9 @@ export function canonicalize(inputPath: string | URL): string {
     normalized = normalizeShellDrivePrefix(normalized);
   }
 
-  // Lowercase drive letter on Windows (e.g., "C:/foo" → "c:/foo").
-  if (normalized.length >= 2 && normalized[1] === ':') {
-    normalized = normalized[0]!.toLowerCase() + normalized.slice(1);
-  }
+  // Lowercase drive letter on Windows (e.g., "C:/foo" → "c:/foo"). Shared with
+  // normalizePath (paths.ts) via lowercaseDriveLetter so the rule can't drift.
+  normalized = lowercaseDriveLetter(normalized);
 
   return normalized;
 }

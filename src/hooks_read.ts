@@ -19,7 +19,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
-import { isWindows } from './util.js'
+import { foldPath } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
 import { writeSessionManifest, readAllSessionManifests } from './compact.js'
@@ -65,9 +65,9 @@ const REREAD_DENY_BYTES = 50 * 1024
 /** First-read deny threshold: files this large are denied even on the first read (too expensive to load). */
 const LARGE_FILE_DENY_BYTES = 500 * 1024
 
-/** Check if a path is under node_modules/. Case-insensitive on Windows, case-sensitive elsewhere. */
+/** Check if a path is under node_modules/. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere. */
 function isNodeModulesPath(p: string): boolean {
-  const check = isWindows() ? p.toLowerCase() : p
+  const check = foldPath(p)
   // Match both forward slashes (normalized) and backslashes (Windows).
   return check.includes('/node_modules/') || check.includes('\\node_modules\\')
 }

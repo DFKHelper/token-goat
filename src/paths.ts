@@ -11,6 +11,24 @@ import * as path from 'node:path'
 const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 
 /**
+ * Lowercases a Windows drive-letter prefix (e.g. "C:" -> "c:") so path
+ * comparisons/cache keys agree regardless of input case. Only touches
+ * position 0 when it's an ASCII uppercase letter immediately followed by
+ * ':' — anything else (already-lowercase, digit, symbol, non-ASCII) is
+ * left untouched. Shared by normalizePath (paths.ts) and canonicalize
+ * (project.ts) so the rule can't drift between the two call sites again.
+ */
+export function lowercaseDriveLetter(s: string): string {
+  if (s.length >= 2 && s[1] === ':') {
+    const c = s[0] as string
+    if (/^[A-Z]$/.test(c)) {
+      return c.toLowerCase() + s.slice(1)
+    }
+  }
+  return s
+}
+
+/**
  * Normalize a file path to a canonical string form for cross-platform keys.
  *
  * Transformations, in order (matches util.py normalize_path):
@@ -46,12 +64,7 @@ export function normalizePath(p: string): string {
   }
 
   // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms. WSL processes emit Windows-format paths on Linux; both must produce the same cache key, so lowercasing is unconditional.
-  if (s.length >= 2 && s[1] === ':') {
-    const c = s[0] as string
-    if (/^[A-Z]$/.test(c)) {
-      s = c.toLowerCase() + s.slice(1)
-    }
-  }
+  s = lowercaseDriveLetter(s)
 
   return s
 }

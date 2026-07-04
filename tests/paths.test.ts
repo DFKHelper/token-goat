@@ -2,7 +2,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { normalizePath, resolveIndexPath, safeJoin } from '../src/paths.js'
+import { lowercaseDriveLetter, normalizePath, resolveIndexPath, safeJoin } from '../src/paths.js'
 
 describe('safeJoin', () => {
   it('joins normally when no part contains a colon', () => {
@@ -83,6 +83,38 @@ describe('normalizePath', () => {
       setPlatform('linux')
       expect(normalizePath('/c/foo')).toBe('/c/foo')
     })
+  })
+})
+
+// lowercaseDriveLetter is the helper extracted out of normalizePath's inline drive-letter step
+// (and now also used by project.ts's canonicalize, replacing that file's own drifted inline
+// copy) so the rule can only be defined once. normalizePath's own drive-letter behavior is
+// still covered by the 'lowercases an uppercase drive-letter prefix' / 'leaves an
+// already-lowercase forward-slash path unchanged' tests above; these test the extracted unit
+// directly, including the ASCII-only guard that the original paths.ts inline check had and the
+// unconditional project.ts inline check did not.
+describe('lowercaseDriveLetter', () => {
+  it('lowercases an uppercase ASCII drive-letter prefix', () => {
+    expect(lowercaseDriveLetter('C:/foo/bar')).toBe('c:/foo/bar')
+  })
+
+  it('leaves an already-lowercase drive-letter prefix unchanged', () => {
+    expect(lowercaseDriveLetter('c:/foo/bar')).toBe('c:/foo/bar')
+  })
+
+  it('leaves a string with no colon at index 1 unchanged', () => {
+    expect(lowercaseDriveLetter('foo/bar')).toBe('foo/bar')
+  })
+
+  it('leaves a digit immediately before a colon unchanged (no-op either way, since toLowerCase() on a digit is already a no-op)', () => {
+    expect(lowercaseDriveLetter('1:foo')).toBe('1:foo')
+  })
+
+  it('does not fold a non-ASCII uppercase letter before a colon (the guard this helper preserves from paths.ts\'s original inline check): a real Windows drive letter is always ASCII A-Z, so a non-ASCII character here is never a genuine drive letter, and folding it would invoke locale-sensitive String.prototype.toLowerCase() semantics for no real benefit', () => {
+    // U+03A9 GREEK CAPITAL LETTER OMEGA has a well-defined lowercase mapping (ω) that an
+    // unconditional `s[0].toLowerCase()` (project.ts's old inline check) would have applied;
+    // the ASCII-only /^[A-Z]$/ guard leaves it untouched instead.
+    expect(lowercaseDriveLetter('Ω:/foo')).toBe('Ω:/foo')
   })
 })
 
