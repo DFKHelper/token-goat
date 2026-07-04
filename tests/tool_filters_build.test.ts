@@ -357,6 +357,22 @@ describe('MSBuildFilter', () => {
     expect(result).not.toContain('  Copy\n  Copy')
     expect(result).toContain('collapsed')
   })
+
+  it('preserves the same warning code from distinct files', () => {
+    const out = [
+      'Foo.cs(10,5): warning CS0168: The variable \'x\' is declared but never used',
+      'Bar.cs(22,9): warning CS0168: The variable \'y\' is declared but never used',
+      'Baz.cs(3,1): warning CS0168: The variable \'z\' is declared but never used',
+      'Build succeeded.',
+    ].join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['msbuild'])
+    // All three distinct files' warnings must survive, even though they share a code
+    expect(result).toContain('Foo.cs(10,5)')
+    expect(result).toContain('Bar.cs(22,9)')
+    expect(result).toContain('Baz.cs(3,1)')
+    const warningMatches = result.match(/warning CS0168/g) ?? []
+    expect(warningMatches.length).toBe(3)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -718,6 +734,21 @@ describe('BUILD_FILTERS registry', () => {
   it('selectFilter resolves gradle', () => {
     const f = selectFilter(['./gradlew', 'build'])
     expect(f?.name).toBe('gradle')
+  })
+
+  it('selectFilter dispatches bare gradle to GradleFilter, not MakeFilter', () => {
+    const f = selectFilter(['gradle', 'build'])
+    expect(f?.name).toBe('gradle')
+  })
+
+  it('selectFilter dispatches bare mvn to MavenFilter, not MakeFilter', () => {
+    const f = selectFilter(['mvn', 'test'])
+    expect(f?.name).toBe('maven')
+  })
+
+  it('selectFilter dispatches bare bazel to BazelFilter, not MakeFilter', () => {
+    const f = selectFilter(['bazel', 'build', '//...'])
+    expect(f?.name).toBe('bazel')
   })
 
   it('selectFilter resolves cargo', () => {
