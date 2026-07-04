@@ -15,6 +15,7 @@ import { FILTERS } from './filters.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
+import { foldPath } from './util.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -228,8 +229,11 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // Route through canonicalize (project.ts) so a WSL/MSYS-style frame path (e.g.
   // /mnt/c/Projects/token-goat/...) is recognized as the same file as its native
   // Windows drive-letter form, instead of being compared as a raw resolved string.
-  const normalCwd = canonicalize(cwd)
-  const normalAbs = canonicalize(framePath, cwd)
+  // canonicalize only lowercases the drive letter, not the rest of the path, so fold both
+  // sides through foldPath (util.ts) to restore case-insensitive comparison on Windows/macOS
+  // (matching the platform-gated convention used elsewhere, e.g. isUnderBlockedRoot).
+  const normalCwd = foldPath(canonicalize(cwd))
+  const normalAbs = foldPath(canonicalize(framePath, cwd))
   if (normalAbs.startsWith(normalCwd)) return true
   if (framePath.includes('site-packages') || framePath.includes('lib/python')) return false
   if (/^<.+>$/.test(framePath)) return false

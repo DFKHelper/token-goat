@@ -236,6 +236,29 @@ describe('trace command', () => {
       expect(frames[0]?.file).toBe(wslFrame)
     },
   )
+
+  it(
+    'recognizes a project frame whose path casing differs from cwd beyond the drive letter, on a case-insensitive filesystem (regression: isProjectFrame\'s WSL/MSYS fix (ff6e226c) switched from a full lowercase compare to canonicalize(), which only lowercases the drive letter via lowercaseDriveLetter, so a same-file frame differing in case elsewhere in the path was silently dropped)',
+    () => {
+      const upperFrame = `${tmpDir.toUpperCase().replace(/\\/g, '/')}/WORKER.PY`
+      const traceback = [
+        'Traceback (most recent call last):',
+        `  File "${upperFrame}", line 7, in run_worker`,
+        '    do_work()',
+        'RuntimeError: boom',
+      ].join('\n')
+      const r = run(['trace', '--json'], {
+        input: traceback,
+        cwd: tmpDir,
+        env: { ...process.env, TOKEN_GOAT_CASE_INSENSITIVE_FS: '1' },
+      })
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }> }> }
+      const frames = parsed.tracebacks[0]?.frames ?? []
+      expect(frames.length).toBe(1)
+      expect(frames[0]?.file).toBe(upperFrame)
+    },
+  )
 })
 
 // ── logfold ─────────────────────────────────────────────────────────────────
