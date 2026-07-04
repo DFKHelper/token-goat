@@ -9,9 +9,11 @@
  */
 
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { execFileSync, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
@@ -845,26 +847,55 @@ export function runAsk(opts: AskOptions): number {
   const context = hits.map((h, i) => `[${i + 1}] ${h.filePath}\n${h.body ?? ''}`).join('\n\n')
   const prompt = `Answer the QUESTION using only the CODE SNIPPETS below.\nQUESTION: ${opts.question}\n\nSNIPPETS:\n${context}\n\nANSWER:`
 
+  const isCodex = backendLabel === 'codex'
+  let codexOutPath: string | null = null
   try {
     // A resolved backend on Windows is frequently an npm .cmd/.bat wrapper (there is no separate
     // .exe for a Node-based CLI) -- spawnSync cannot exec .cmd/.bat directly without shell:true
     // and throws EINVAL otherwise, which the catch below swallowed into a silent degrade.
-    const askArgs = ['--print', '--bare', '--no-session-persistence']
+    let askArgs: string[]
+    if (isCodex) {
+      // Codex has no --print/--bare/--no-session-persistence flags -- those are Claude-Code-CLI-
+      // specific. Codex's non-interactive entry point is the `exec` subcommand, and --ephemeral
+      // is its equivalent of --no-session-persistence. Codex's stdout is very noisy (reasoning
+      // summaries, hook logs, a token-usage block), so the answer is read back from
+      // --output-last-message instead of result.stdout.
+      codexOutPath = path.join(os.tmpdir(), `tg-ask-${process.pid}-${randomUUID()}.txt`)
+      askArgs = ['exec', '--ephemeral', '--output-last-message', codexOutPath]
+    } else {
+      askArgs = ['--print', '--bare', '--no-session-persistence']
+    }
     const needsShell = isWin && /\.(cmd|bat)$/i.test(backendPath)
     // shell:true plus a separate args array is a deprecated (DEP0190) combination on Windows;
-    // fold the (static, non-user-controlled) args into a single quoted command string instead.
+    // fold the args into a single quoted command string instead. Quote any arg containing
+    // whitespace too -- only the backend path itself was previously guaranteed space-free, and
+    // the codex output-file path (under the OS temp dir) is not.
+    const quoteIfNeeded = (a: string): string => (/\s/.test(a) ? `"${a}"` : a)
     const result = needsShell
-      ? spawnSync([`"${backendPath}"`, ...askArgs].join(' '), { input: prompt, encoding: 'utf8', timeout: 30000, shell: true })
+      ? spawnSync([`"${backendPath}"`, ...askArgs.map(quoteIfNeeded)].join(' '), { input: prompt, encoding: 'utf8', timeout: 30000, shell: true })
       : spawnSync(backendPath, askArgs, { input: prompt, encoding: 'utf8', timeout: 30000 })
-    if (result.status === 0 && result.stdout?.trim()) {
-      if (opts.json === true) {
-        emit(JSON.stringify({ answer: result.stdout.trim(), context: entries }, null, 2))
+    let answer = ''
+    if (result.status === 0) {
+      if (codexOutPath) {
+        try { answer = fs.readFileSync(codexOutPath, 'utf8').trim() } catch { /* leave answer empty, fall through to degraded */ }
       } else {
-        emit(result.stdout.trim())
+        answer = result.stdout?.trim() ?? ''
+      }
+    }
+    if (answer) {
+      if (opts.json === true) {
+        emit(JSON.stringify({ answer, context: entries }, null, 2))
+      } else {
+        emit(answer)
       }
       return 0
     }
-  } catch { /* fall through to degraded */ }
+  } catch { /* fall through to degraded */
+  } finally {
+    if (codexOutPath) {
+      try { fs.unlinkSync(codexOutPath) } catch { /* best-effort cleanup */ }
+    }
+  }
 
   return degrade()
 }
