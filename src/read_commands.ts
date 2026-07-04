@@ -633,11 +633,21 @@ export function parseDiffHunks(diffText: string): Map<string, Array<{ start: num
 /** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
 export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
-  const projectRoot = opts.projectRoot ?? process.cwd()
+  const cwd = opts.projectRoot ?? process.cwd()
+  // `git diff --name-only` always reports paths relative to the repo top-level, regardless
+  // of which directory git was invoked from. Resolving those paths against `cwd` (which may
+  // be a subdirectory when this command is invoked from e.g. `src/`) doubles the subdirectory
+  // segment and never matches the index. Resolve the actual top-level via `rev-parse` and use
+  // that as the base for `resolveIndexPath` below; `cwd` is still fine to pass to `runGit`
+  // since git resolves the repo from any subdirectory on its own. If `rev-parse` fails (not a
+  // git repo, or git unavailable), fall back to `cwd` — the subsequent `git diff` call below
+  // will fail the same way it always did and surface the existing error.
+  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd })
+  const projectRoot = toplevel.exitCode === 0 ? toplevel.stdout.trim() : cwd
 
   let changedFiles: string[]
   try {
-    const result = runGit(['diff', ref, '--name-only'], { cwd: projectRoot })
+    const result = runGit(['diff', ref, '--name-only'], { cwd })
     if (result.exitCode !== 0) {
       emitErr(`git diff failed: ${result.stderr}`)
       return 1
@@ -659,7 +669,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     // shouldn't report the whole file as "changed" at symbol granularity.
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     try {
-      const diffResult = runGit(['diff', ref, '--unified=0'], { cwd: projectRoot })
+      const diffResult = runGit(['diff', ref, '--unified=0'], { cwd })
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
       }

@@ -899,6 +899,7 @@ describe('read_commands', () => {
     })
 
     it('scopes symbolMode to symbols overlapping the changed diff hunks, not every symbol in the file (item2)', () => {
+      const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
       const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
       const unifiedDiff = {
         exitCode: 0,
@@ -913,6 +914,8 @@ describe('read_commands', () => {
         stderr: '',
       }
       mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(toplevel as any)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -929,9 +932,12 @@ describe('read_commands', () => {
     })
 
     it('falls back to every symbol in the file when the hunk-diff git call fails (item2)', () => {
+      const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
       const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
       const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
       mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(toplevel as any)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(nameOnly as any)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -943,6 +949,38 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
       expect(stdout).toContain('anyFn')
+    })
+
+    it('resolves changed-file paths against the real git repo top-level (rev-parse), not the invoking cwd, so running from a subdirectory does not double the subdirectory segment (regression, item2)', () => {
+      // Simulate the command having been invoked from a subdirectory: `projectRoot` here
+      // stands in for that subdirectory, while the mocked `rev-parse --show-toplevel`
+      // reports the real repo root one level up — exactly the mismatch that occurs when
+      // `token-goat changed --symbol` is run from e.g. `src/`.
+      const repoRoot = path.join(process.cwd(), 'fixture-repo')
+      const subdir = path.join(repoRoot, 'subdir')
+      const toplevel = { exitCode: 0, stdout: `${repoRoot}\n`, stderr: '' }
+      // git always reports diff paths relative to the repo top-level, regardless of cwd.
+      const nameOnly = { exitCode: 0, stdout: 'subdir/touched.ts\n', stderr: '' }
+      const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
+      mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(toplevel as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(nameOnly as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(diffFail as any)
+      mockQuerySymbols.mockReturnValue([])
+
+      runChanged({ symbolMode: true, projectRoot: subdir })
+
+      expect(mockQuerySymbols).toHaveBeenCalledWith(
+        expect.objectContaining({ filePath: resolveIndexPath('subdir/touched.ts', repoRoot) }),
+      )
+      const arg = mockQuerySymbols.mock.calls[0]?.[0] as { filePath?: string }
+      // The bug resolved the git-relative path against the subdirectory cwd instead of the
+      // repo root, doubling the "subdir" segment (subdir/subdir/touched.ts).
+      expect(arg.filePath).not.toBe(resolveIndexPath('subdir/touched.ts', subdir))
+      expect(arg.filePath).not.toContain(path.join('subdir', 'subdir'))
     })
   })
 })
