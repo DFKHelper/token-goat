@@ -3,15 +3,14 @@ import { preBashHandler } from '../src/hooks_bash.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { invalidateConfigCache, loadConfig } from '../src/config.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 function makeBashEvent(command: string): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'test-session',
-    raw: {},
-  }
+  })
 }
 
 describe('preBashHandler — shell quote hint', () => {

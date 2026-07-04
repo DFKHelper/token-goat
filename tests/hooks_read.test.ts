@@ -12,6 +12,7 @@ import { recordFileRead, wasFileReadThisSession, getSessionId } from '../src/ses
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
 
@@ -36,13 +37,11 @@ function _makeTmpMdFile(content = 'data'): string {
 }
 
 function readEvent(filePath: string | undefined): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 // A Read call with offset/limit — the real Read tool schema's line-window params.
@@ -50,13 +49,11 @@ function readEventWithRange(filePath: string, offset?: number, limit?: number): 
   const toolInput: Record<string, unknown> = { file_path: filePath }
   if (offset !== undefined) toolInput['offset'] = offset
   if (limit !== undefined) toolInput['limit'] = limit
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Read',
     toolInput,
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 // A file made of many short lines totaling roughly `totalBytes` — realistic multi-line
@@ -86,24 +83,20 @@ function makeTmpMultilineFileWithExt(totalBytes: number, ext: string): string {
 }
 
 function grepEvent(filePath: string | undefined): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Grep',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 // The real Grep tool schema uses `path` (not `file_path`) for the search target.
 function grepPathEvent(searchPath: string | undefined): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Grep',
     toolInput: searchPath === undefined ? {} : { path: searchPath },
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 beforeEach(() => {

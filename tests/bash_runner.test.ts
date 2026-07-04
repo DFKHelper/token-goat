@@ -19,13 +19,10 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+import { BUNDLE } from './helpers/bundle.js'
 
 const DATA_DIR_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-data-'))
 const _savedLocal = process.env['LOCALAPPDATA']
@@ -110,6 +107,7 @@ describe('bash_runner.run (in-process)', () => {
     expect(runRaw('exit 4')).toBe(4)
   })
 })
+
 // ---------------------------------------------------------------------------
 // Config-driven bash_compress.max_lines / max_bytes. Before this fix,
 // wrapAndCompress never passed maxLines/maxBytes to compressOutput at all, so
@@ -158,7 +156,6 @@ describe('bash_runner.run — config-driven compress limits (bash_compress.max_l
     expect(Buffer.byteLength(out, 'utf-8')).toBeLessThan(2000)
   })
 })
-
 
 describe('compress command (built-bundle e2e)', () => {
   let dataBase: string

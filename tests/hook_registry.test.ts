@@ -4,21 +4,10 @@ import {
   registerHook,
   runHook,
   serializeOutput,
-  type HookEvent,
 } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { HOOK_EVENTS, type HookOutput } from '../src/types.js'
-
-function makeEvent(overrides: Partial<HookEvent> = {}): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
-    toolName: 'Read',
-    toolInput: { file_path: '/x.ts' },
-    sessionId: 's1',
-    raw: {},
-    ...overrides,
-  }
-}
+import { makeHookEvent as makeEvent } from './helpers/hook-event.js'
 
 describe('hook registry', () => {
   beforeEach(() => {

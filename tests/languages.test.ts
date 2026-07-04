@@ -191,7 +191,7 @@ public class Foo {
     const file = tmp('Foo.cs', 'public class Foo {}')
     const result = await parseFile(file)
     expect(result.language).toBe('csharp')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -312,7 +312,7 @@ function afterGlob() {}
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
     expect(result.language).toBe('php')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -363,7 +363,7 @@ describe('html adapter', () => {
     const file = tmp('page.html', '<h1>Hello</h1>')
     const result = await parseFile(file)
     expect(result.language).toBe('html')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -404,7 +404,7 @@ describe('liquid adapter', () => {
     const file = tmp('test.liquid', '{% include "foo" %}')
     const result = await parseFile(file)
     expect(result.language).toBe('liquid')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -463,7 +463,7 @@ class Config {
     const file = tmp('Foo.kt', 'fun main() {}')
     const result = await parseFile(file)
     expect(result.language).toBe('kotlin')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
   it('captures methods from a class whose primary-constructor header spans multiple lines', () => {
@@ -584,7 +584,7 @@ type Query { users: [User] }
     const file = tmp('schema.graphql', 'type Query { hello: String }')
     const result = await parseFile(file)
     expect(result.language).toBe('graphql')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -645,7 +645,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     const file = tmp('schema.sql', 'CREATE TABLE foo (id INT);')
     const result = await parseFile(file)
     expect(result.language).toBe('sql')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -702,7 +702,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     const file = tmp('config.ini', '[section]\nkey=value\n')
     const result = await parseFile(file)
     expect(result.language).toBe('ini')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -781,7 +781,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     fs.writeFileSync(file, 'KEY=value\n')
     const result = await parseFile(file)
     expect(result.language).toBe('env_file')
-    fs.rmSync(dir, { recursive: true })
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -881,7 +881,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     fs.writeFileSync(file, 'all:\n\techo hi\n')
     const result = await parseFile(file)
     expect(result.language).toBe('makefile')
-    fs.rmSync(dir, { recursive: true })
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -933,7 +933,7 @@ service UserService {
     const file = tmp('user.proto', 'message Foo {}')
     const result = await parseFile(file)
     expect(result.language).toBe('proto')
-    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 
 describe('PowerShell adapter', () => {
@@ -1047,12 +1047,12 @@ function MyFunction {
     const ps1File = tmp('script.ps1', 'function Get-Test { }')
     const result1 = await parseFile(ps1File)
     expect(result1.language).toBe('powershell')
-    fs.rmSync(path.dirname(ps1File), { recursive: true })
+    fs.rmSync(path.dirname(ps1File), { recursive: true, force: true })
     
     const psm1File = tmp('module.psm1', 'function Get-Test { }')
     const result2 = await parseFile(psm1File)
     expect(result2.language).toBe('powershell')
-    fs.rmSync(path.dirname(psm1File), { recursive: true })
+    fs.rmSync(path.dirname(psm1File), { recursive: true, force: true })
   })
 
   it('indexes a function whose declaration line also carries a same-line inline block comment', () => {

@@ -23,7 +23,7 @@ describe('doc_compact', () => {
 
   afterEach(() => {
     if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true })
+      fs.rmSync(tempDir, { recursive: true, force: true })
     }
   })
 

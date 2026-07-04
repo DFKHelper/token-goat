@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
-import { getBashOutputId, recordFileRead } from '../src/session.js'
-import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
-import { clearModuleCaches } from '../src/reset.js'
-import { resolveIndexPath } from '../src/paths.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,10 +18,16 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
 
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
+import { getBashOutputId, recordFileRead } from '../src/session.js'
+import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
+import { clearModuleCaches } from '../src/reset.js'
+import { resolveIndexPath } from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
-  return {
+  return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Bash',
     toolInput: { command },
@@ -37,7 +38,7 @@ function makePostBashEvent(command: string, output: string, cwd?: string): HookE
       tool_response: output,
       ...(cwd !== undefined ? { cwd } : {}),
     },
-  }
+  })
 }
 
 describe('postBashHandler', () => {
@@ -243,13 +244,12 @@ describe('pipe/redirect-insensitive cache keying', () => {
 })
 
 function makeBashEvent(command: string, cwd?: string): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'test-session',
     raw: cwd !== undefined ? { cwd } : {},
-  }
+  })
 }
 
 describe('preBashHandler — unbalanced shell quoting false positives (detectUnbalancedShellSyntax)', () => {

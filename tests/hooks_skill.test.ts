@@ -12,6 +12,7 @@ import {
   hasSessionOutput,
   storeOutput,
 } from '../src/skill_cache.js';
+import { makeHookEvent } from './helpers/hook-event.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.resolve(__dirname, '.temp-hooks-skill-cache');
@@ -19,7 +20,7 @@ const sourceDir = path.resolve(__dirname, '.temp-hooks-skill-source');
 
 async function freshDir(dir: string): Promise<void> {
   try {
-    await fs.rm(dir, { recursive: true });
+    await fs.rm(dir, { recursive: true, force: true });
   } catch {
     // not present yet
   }
@@ -39,13 +40,13 @@ afterEach(() => {
 });
 
 function skillPostEvent(skill: string, body: string, sessionId = 'sess-1'): HookEvent {
-  return {
+  return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Skill',
     toolInput: { skill },
     sessionId,
     raw: { tool_response: body },
-  };
+  });
 }
 
 describe('postSkillHandler — caches the loaded body under the real skill name', () => {
@@ -112,13 +113,11 @@ describe('postSkillHandler — caches the loaded body under the real skill name'
 });
 
 function skillPreEvent(skill: string, sessionId = 'sess-1'): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Skill',
     toolInput: { skill },
     sessionId,
-    raw: {},
-  };
+  });
 }
 
 describe('hasSessionOutput — same-session skill-load detection', () => {

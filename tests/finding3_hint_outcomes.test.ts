@@ -8,6 +8,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, takePendingLargeFileHint, recordLargeFileHintPending } from '../src/session.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
 
@@ -24,13 +25,11 @@ function makeTmpFile(content = 'data', sizeBytes?: number): string {
 }
 
 function readEvent(filePath: string | undefined): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
     sessionId: 'test-finding3',
-    raw: {},
-  }
+  })
 }
 
 beforeEach(() => {

@@ -30,7 +30,7 @@ Some content here
       ])
       expect(result.symbols[0]?.kind).toBe('heading')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -57,7 +57,7 @@ Some content here
       expect(names).toContain('name')
       expect(names).toContain('version')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('extracts keys from single-line and brace-sharing json, top-level only', async () => {
@@ -79,7 +79,7 @@ Some content here
       expect(nestedNames).toContain('c')
       expect(nestedNames).not.toContain('b')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('computes lineEnd/body spanning the full value when a string value contains an embedded literal newline', async () => {
@@ -109,7 +109,7 @@ Some content here
       expect(key2?.lineStart).toBe(4)
       expect(key2?.lineEnd).toBe(4)
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('counts newlines skipped between the colon and the value opening quote when computing lineEnd', async () => {
@@ -141,7 +141,7 @@ Some content here
       expect(key2?.lineStart).toBe(4)
       expect(key2?.lineEnd).toBe(4)
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -166,7 +166,7 @@ config:
       expect(names).toContain('name')
       expect(names).toContain('version')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('extracts kebab-case keys and ignores list-item lines', async () => {
@@ -190,7 +190,7 @@ steps:
       expect(names).not.toContain('uses')
       expect(names).not.toContain('-')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -215,7 +215,7 @@ testpaths = ["tests"]
       const names = result.symbols.map((s) => s.name)
       expect(names).toContain('project')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('extracts kebab-case bare keys', async () => {
@@ -234,7 +234,7 @@ max-bytes = 1024
       expect(names).toContain('serve-diff-on-reread')
       expect(names).toContain('max-bytes')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('extracts array-of-tables section names without the leading bracket', async () => {
@@ -259,7 +259,7 @@ value = 1
       expect(names).toContain('tool.metadata.x')
       expect(names).not.toContain('[bin')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -288,7 +288,7 @@ value = 1
       expect(names).toContain('.button')
       expect(names).toContain('#header')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -313,7 +313,7 @@ CMD ["node", "server.js"]
       const kinds = result.symbols.map((s) => s.kind)
       expect(kinds.every((k) => k === 'directive')).toBe(true)
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -327,7 +327,7 @@ CMD ["node", "server.js"]
 
       expect(result.language).toBe('ruby')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('detects java files', async () => {
@@ -339,7 +339,7 @@ CMD ["node", "server.js"]
 
       expect(result.language).toBe('java')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('detects css files', async () => {
@@ -351,7 +351,7 @@ CMD ["node", "server.js"]
 
       expect(result.language).toBe('css')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('detects Dockerfile by name', async () => {
@@ -363,7 +363,7 @@ CMD ["node", "server.js"]
 
       expect(result.language).toBe('dockerfile')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('detects scss as css', async () => {
@@ -375,7 +375,7 @@ CMD ["node", "server.js"]
 
       expect(result.language).toBe('css')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
@@ -390,7 +390,7 @@ CMD ["node", "server.js"]
       expect(result.language).toBe('markdown')
       expect(result.symbols).toHaveLength(0)
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('handles malformed json', async () => {
@@ -403,7 +403,7 @@ CMD ["node", "server.js"]
       expect(result.language).toBe('json')
       expect(result.symbols).toHaveLength(0)
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it('handles markdown with mixed heading styles', async () => {
@@ -422,7 +422,7 @@ Text content
       expect(result.symbols[0]?.kind).toBe('heading')
       expect(result.symbols[1]?.kind).toBe('heading')
 
-      fs.rmSync(tmpDir, { recursive: true })
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 })

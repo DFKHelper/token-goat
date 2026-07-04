@@ -24,15 +24,15 @@ const { compactPathFor, isCompactFresh, writeCompact, buildExtractiveCompact } =
   '../src/doc_compact.js'
 )
 const session = await import('../src/session.js')
+const { makeHookEvent } = await import('./helpers/hook-event.js')
 
 function editEvent(filePath: string | undefined, toolName = 'Edit'): HookEvent {
-  return {
+  return makeHookEvent({
     eventName: 'post_tool_use',
     toolName,
     toolInput: filePath === undefined ? {} : { file_path: filePath },
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 beforeEach(() => {

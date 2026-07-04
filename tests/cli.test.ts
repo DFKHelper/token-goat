@@ -2,32 +2,10 @@ import { execSync, spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
-
-interface RunResult {
-  readonly status: number | null
-  readonly stdout: string
-  readonly stderr: string
-}
-
-function runCli(args: string[], input = ''): RunResult {
-  // Spawn the prebuilt bundle directly with node - no per-call tsx transpile (much faster than --import tsx across dozens of spawns) and it exercises the real shipping artifact. No shell, so no .cmd-shim or quoting issues on Windows.
-  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
-    input,
-    encoding: 'utf8',
-  })
-  return {
-    status: res.status,
-    stdout: res.stdout ?? '',
-    stderr: res.stderr ?? '',
-  }
-}
+import { BUNDLE, runCli, type RunResult } from './helpers/bundle.js'
 
 describe('token-goat CLI', () => {
   it('version exits 0 and prints a semver-ish string', () => {
