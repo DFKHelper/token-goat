@@ -329,6 +329,12 @@ function scanCrossSessionManifests(
 ): boolean {
   try {
     const relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/')
+    // Case-insensitive filesystems (Windows, macOS): rel_path is stored case-preserved by
+    // writeSessionManifest/readAllSessionManifests, so a sibling session that read the same
+    // physical file under a different literal casing (e.g. "Worker.ts" vs "worker.ts") must
+    // still fold-match here -- foldPath (util.ts) is already used elsewhere in this file (see
+    // isNodeModulesPath above).
+    const foldedRelPath = foldPath(relPath)
     const manifests = readAllSessionManifests(projectHash, ttlSecs)
 
     for (const data of manifests) {
@@ -336,12 +342,14 @@ function scanCrossSessionManifests(
       if (!Array.isArray(files)) continue
 
       for (const entry of files) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const entryRelPath = (entry as Record<string, unknown>)['rel_path']
+        const entryHitCount = (entry as Record<string, unknown>)['hit_count']
         if (
-          typeof entry === 'object' &&
-          entry !== null &&
-          (entry as Record<string, unknown>)['rel_path'] === relPath &&
-          typeof (entry as Record<string, unknown>)['hit_count'] === 'number' &&
-          ((entry as Record<string, unknown>)['hit_count'] as number) > 0
+          typeof entryRelPath === 'string' &&
+          foldPath(entryRelPath) === foldedRelPath &&
+          typeof entryHitCount === 'number' &&
+          entryHitCount > 0
         ) {
           return true
         }

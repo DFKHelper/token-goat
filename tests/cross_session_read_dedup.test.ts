@@ -292,4 +292,68 @@ describe('Cross-session read dedup', () => {
     const written = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(written).toEqual({ files: [{ rel_path: 'a.txt', hit_count: 2 }] })
   })
+
+  describe('cross-session case-fold (case-insensitive FS)', () => {
+    const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    afterEach(() => {
+      if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+    })
+
+    // Regression: scanCrossSessionManifests (hooks_read.ts) compared rel_path with raw ===
+    // instead of foldPath(). rel_path is stored case-preserved by writeSessionManifest, so a
+    // sibling session that read the same physical file under a different literal casing (e.g.
+    // "Shared.TXT" vs "shared.txt") on a case-insensitive filesystem never matched, and the
+    // cross-session-read-dedup hint silently failed to fire.
+    it('emits a context hint when a sibling session read the same file under different letter-casing', () => {
+      process.env.TOKEN_GOAT_CROSS_SESSION_READ_DEDUP = '1'
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+
+      const repoDir = makeRepo()
+      const filePath = path.join(repoDir, 'shared.txt')
+      fs.writeFileSync(filePath, 'shared content')
+
+      const project = makeProjectAt(repoDir)
+      writeSessionManifest(project.hash, 'sibling-session-id', {
+        files: [{ rel_path: 'Shared.TXT', hit_count: 1 }],
+      })
+
+      const event: HookEvent = {
+        eventName: 'pre_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: filePath },
+        sessionId: getSessionId(),
+        raw: { cwd: repoDir },
+      }
+
+      const result = preReadHandler(event)
+      expect(result.hookType).toBe('context')
+      expect(String(result.context ?? '')).toMatch(/already been read by another agent/)
+    })
+
+    it('control: case-sensitive FS mode does not match a case-only rel_path variant', () => {
+      process.env.TOKEN_GOAT_CROSS_SESSION_READ_DEDUP = '1'
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+
+      const repoDir = makeRepo()
+      const filePath = path.join(repoDir, 'shared.txt')
+      fs.writeFileSync(filePath, 'shared content')
+
+      const project = makeProjectAt(repoDir)
+      writeSessionManifest(project.hash, 'sibling-session-id', {
+        files: [{ rel_path: 'Shared.TXT', hit_count: 1 }],
+      })
+
+      const event: HookEvent = {
+        eventName: 'pre_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: filePath },
+        sessionId: getSessionId(),
+        raw: { cwd: repoDir },
+      }
+
+      const result = preReadHandler(event)
+      expect(result.hookType).toBe('pass')
+    })
+  })
 })
