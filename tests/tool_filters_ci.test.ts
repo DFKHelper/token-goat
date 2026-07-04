@@ -256,10 +256,10 @@ describe('GhRunLogFilter step-name TAB prefix stripping', () => {
   const f = new GhRunLogFilter()
   const argv = ['gh', 'run', 'view', '1', '--log']
 
-  it('strips step-name TAB prefix and timestamp', () => {
+  it('strips job-name TAB step-name TAB prefix and timestamp (realistic two-tab-field format)', () => {
     const out = f.compress(
-      'build (ubuntu-latest)\t2024-01-15T12:34:56.1234567Z Hello from step\n' +
-        'test (ubuntu-latest)\t2024-01-15T12:34:57.0000000Z Test line\n',
+      'build (ubuntu-latest)\tRun tests\t2024-01-15T12:34:56.1234567Z Hello from step\n' +
+        'test (ubuntu-latest)\tRun tests\t2024-01-15T12:34:57.0000000Z Test line\n',
       '',
       0,
       argv,
@@ -268,6 +268,24 @@ describe('GhRunLogFilter step-name TAB prefix stripping', () => {
     expect(out).not.toContain('2024-01-15T')
     expect(out).toContain('Hello from step')
     expect(out).toContain('Test line')
+  })
+
+  it('does not sweep genuine content into the setup-action bucket when the step name itself matches (regression: only the job-name field was stripped, leaving the step-name field to collide with _GH_LOG_SETUP_ACTION_RE)', () => {
+    // Real gh CLI job step names for a `uses: actions/checkout@v3` step are
+    // literally "Run actions/checkout@v3" — if only the job-name field gets
+    // stripped, that step name becomes the leftover line prefix and falsely
+    // matches the "Run <owner>/<repo>@<ref>" setup-action pattern, sweeping
+    // the step's genuine log content away with it.
+    const out = f.compress(
+      'build (ubuntu-latest)\tRun actions/checkout@v3\t2024-01-15T12:34:56.1234567Z Syncing repository: myorg/myrepo\n' +
+        'build (ubuntu-latest)\tRun actions/checkout@v3\t2024-01-15T12:34:57.0000000Z Checking out ref refs/heads/main\n',
+      '',
+      0,
+      argv,
+    )
+    expect(out).toContain('Syncing repository: myorg/myrepo')
+    expect(out).toContain('Checking out ref refs/heads/main')
+    expect(out).not.toContain('action(s) collapsed')
   })
 })
 
