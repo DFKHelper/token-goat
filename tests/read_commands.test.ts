@@ -683,6 +683,25 @@ describe('read_commands', () => {
       expect(stdout.trim()).toBe('special')
     })
 
+    it('does not resolve a bare key to a value found only inside a named section', () => {
+      // Regression guard (task #109): a bare (non-dotted) key lookup must only match a
+      // genuinely top-level key -- one appearing before any [section] header -- not a
+      // same-named key nested inside an unrelated section. Before the fix, the section
+      // check was skipped entirely whenever no section was requested, so this incorrectly
+      // resolved to the section-scoped value.
+      const f = path.join(tempDir, 'bare-key-section.toml')
+      fs.writeFileSync(f, '[some_section]\nsome_key = "wrong"\n')
+      const code = runConfigGet({ file: f, key: 'some_key' })
+      expect(code).toBe(1)
+    })
+
+    it('resolves a bare key that is genuinely top-level, ahead of any [section] header', () => {
+      const f = path.join(tempDir, 'bare-key-toplevel.toml')
+      fs.writeFileSync(f, 'some_key = "right"\n[some_section]\nsome_key = "wrong"\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'some_key' }) })
+      expect(stdout.trim()).toBe('right')
+    })
+
     it('reads a flat top-level key from a YAML file', () => {
       const f = path.join(tempDir, 'c.yaml')
       fs.writeFileSync(f, '# comment\nname: myapp\nother: x\n')
