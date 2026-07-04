@@ -165,6 +165,21 @@ describe('parseFile', () => {
     expect(method?.kind).toBe('method')
   })
 
+  it('includes the decorator line(s) in a decorated function\'s line range and body', async () => {
+    const file = write('decorated.py', "@app.route('/x')\ndef foo():\n    pass\n")
+    const result = await parseFile(file)
+    expect(result.language).toBe('python')
+    const foo = result.symbols.find((s) => s.name === 'foo')
+    // Regression: decorated_definition has no PY_KIND_BY_TYPE entry, so the symbol was built
+    // from the inner function_definition node alone — whose tree-sitter position starts at
+    // `def`, not the `@decorator` line above it. `read "file::foo"` then returned a body
+    // missing the decorator entirely.
+    expect(foo?.kind).toBe('function')
+    expect(foo?.lineStart).toBe(1)
+    expect(foo?.lineEnd).toBe(3)
+    expect(foo?.body.startsWith("@app.route('/x')")).toBe(true)
+  })
+
   it('labels a method defined inside a control-flow block in a class as a method', async () => {
     const file = write(
       'c.py',

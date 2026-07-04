@@ -62,6 +62,7 @@ interface TsNode {
   readonly startPosition: TsPoint
   readonly endPosition: TsPoint
   readonly namedChildren: TsNode[]
+  readonly parent: TsNode | null
   childForFieldName(field: string): TsNode | null
 }
 interface TsTree {
@@ -305,8 +306,15 @@ function extractPythonSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       const name = nodeName(node)
       if (name !== null && name !== '') {
         const kind = node.type === 'function_definition' && insideClass ? 'method' : baseKind
+        // A decorated def's tree-sitter node starts at `def`/`class`, not its `@decorator`
+        // line(s) above — decorated_definition has no PY_KIND_BY_TYPE entry, so it's never
+        // the node a symbol is built from. Widen to the enclosing decorated_definition's own
+        // range (decorators through end of the def) when present, so `read`/`skeleton`
+        // include the decorator lines; name/kind/docstring still come from the inner def
+        // node so method-vs-function and class-scope detection are unaffected.
+        const rangeNode = node.parent?.type === 'decorated_definition' ? node.parent : node
         out.push({
-          ...makeSymbol(filePath, name, kind, node),
+          ...makeSymbol(filePath, name, kind, rangeNode),
           docstring: pythonDocstring(node),
         })
       }
