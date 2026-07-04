@@ -149,6 +149,13 @@ const NPM_ERR_RE = /^npm (?:ERR!|error)/i
 // dep-list
 const DEP_LIST_THRESHOLD = 30
 
+// Subcommands whose output belongs to DepListFilter's 30-line cap, not to the
+// generic install/run compression paths below. NodePackageFilter, PnpmFilter,
+// and YarnFilter each match their binary unconditionally (no subcommand gate),
+// so without this exclusion they intercept `npm list`/`pnpm list`/`yarn list`
+// before DepListFilter (registered last in PACKAGE_MANAGER_FILTERS) ever sees them.
+const DEP_LIST_OWNED_SUBCOMMANDS = new Set(['list', 'ls'])
+
 // ---------------------------------------------------------------------------
 // NpmInstallFilter
 // ---------------------------------------------------------------------------
@@ -282,6 +289,13 @@ class PnpmFilter extends ToolFilter {
   readonly name = 'pnpm'
   override readonly binaries = new Set(['pnpm'])
 
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    // `pnpm list`/`pnpm ls` belongs to DepListFilter's 30-line cap, not here.
+    const subcmd = positionalArgs(argv.slice(1))[0] ?? ''
+    return !DEP_LIST_OWNED_SUBCOMMANDS.has(subcmd)
+  }
+
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const pos = positionalArgs(argv.slice(1))
     const subcmd = pos[0] ?? ''
@@ -335,6 +349,13 @@ class PnpmFilter extends ToolFilter {
 class YarnFilter extends ToolFilter {
   readonly name = 'yarn'
   override readonly binaries = new Set(['yarn'])
+
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    // `yarn list`/`yarn ls` belongs to DepListFilter's 30-line cap, not here.
+    const subcmd = positionalArgs(argv.slice(1))[0] ?? ''
+    return !DEP_LIST_OWNED_SUBCOMMANDS.has(subcmd)
+  }
 
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const merged = this.combineOutput(stdout, stderr)
@@ -411,6 +432,8 @@ class PipFilter extends ToolFilter {
 
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const merged = this.combineOutput(stdout, stderr)
+    const pos = positionalArgs(argv.slice(1))
+    if (pos[0] === 'list' || pos[0] === 'freeze') return this._compressFreezeList(merged)
     const lines = merged.split('\n')
     const verbose =
       argv.includes('-v') ||
@@ -465,6 +488,21 @@ class PipFilter extends ToolFilter {
     maybeNote(notes, verboseDropped, `dropped ${verboseDropped} verbose debug/trace lines`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
+  }
+
+  // `pip list`/`pip freeze` output has no install noise to strip (just one
+  // package per line) but can still run to hundreds of lines; cap it the same
+  // way UvFilter._compressFreezeList caps `uv pip list`/`uv pip freeze`.
+  private _compressFreezeList(text: string): string {
+    const lines = text.split('\n').filter((l) => l.trim())
+    const errorLines = lines.filter((l) => ERROR_SIGNAL_RE.test(l))
+    const pkgLines = lines.filter((l) => !ERROR_SIGNAL_RE.test(l))
+    if (pkgLines.length <= UV_FREEZE_THRESHOLD) return text.trimEnd()
+    const shown = pkgLines.slice(0, UV_FREEZE_SHOW)
+    const tail = pkgLines.slice(UV_FREEZE_SHOW)
+    const collapsed = [`[token-goat: collapsed ${tail.length} package lines]`]
+    const result = [...shown, ...collapsed, ...errorLines]
+    return result.join('\n')
   }
 }
 
@@ -962,6 +1000,14 @@ class NodePackageFilter extends ToolFilter {
   readonly name = 'npm'
   override readonly binaries = new Set(['npm', 'pnpm', 'yarn', 'bun'])
 
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    // `npm list`/`npm ls` (and the pnpm/yarn equivalents that fall through to
+    // this generic catch-all) belong to DepListFilter's 30-line cap, not here.
+    const subcmd = positionalArgs(argv.slice(1))[0] ?? ''
+    return !DEP_LIST_OWNED_SUBCOMMANDS.has(subcmd)
+  }
+
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const merged = this.combineOutput(stdout, stderr)
     const pos = positionalArgs(argv.slice(1))
@@ -1104,7 +1150,13 @@ function compressNpmAuditHuman(text: string): string {
  * output at 30 lines. Faithful port of Python DepListFilter.
  * Note: binaries npm/pnpm/yarn/cargo are NOT in the ToolFilter.binaries set
  * (would conflict with their dedicated filters); they are handled via a custom
- * matches() override.
+ * matches() override that only fires on list/freeze/show/ls/tree subcommands.
+ * `cargo` needs no further help (CargoFilter, in build.ts, owns all of its
+ * own subcommands directly); `npm`/`pnpm`/`yarn` only reach this override
+ * because NodePackageFilter/PnpmFilter/YarnFilter (registered earlier below)
+ * explicitly decline `list`/`ls` via DEP_LIST_OWNED_SUBCOMMANDS -- without
+ * that carve-out those unconditional-match filters intercept `npm list` /
+ * `pnpm list` / `yarn list` first and this override never runs for them.
  */
 class DepListFilter extends ToolFilter {
   readonly name = 'dep-list'
@@ -1155,7 +1207,11 @@ class DepListFilter extends ToolFilter {
  * general NodePackageFilter that handles `npm audit` and other subcommands.
  * DepListFilter comes last within the batch because it matches a subset of
  * binaries that other filters already claim — it only fires on listing
- * subcommands (list/freeze/tree/show/ls).
+ * subcommands (list/freeze/tree/show/ls). For that to actually happen,
+ * NodePackageFilter/PnpmFilter/YarnFilter each explicitly decline the
+ * `list`/`ls` subcommand (DEP_LIST_OWNED_SUBCOMMANDS) so `npm list` /
+ * `pnpm list` / `yarn list` fall through instead of being caught by one of
+ * these three, which otherwise match their binary unconditionally.
  */
 export const PACKAGE_MANAGER_FILTERS: readonly ToolFilter[] = [
   new NpmInstallFilter(),
