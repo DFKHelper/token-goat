@@ -812,6 +812,11 @@ export interface ConfigGetOptions {
   key: string
 }
 
+// Escapes regex metacharacters so a user-supplied key can be safely embedded in a RegExp.
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * Resolve a scalar value at a dotted path in a YAML document, line-based (no YAML
  * library). Handles flat keys, indentation-nested keys at any consistent indent
@@ -916,8 +921,11 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       }
     }
 
-    // Look for the leaf key in a key=value line
-    if (trimmed.startsWith(`${leafKey} =`) || trimmed.startsWith(`${leafKey}=`)) {
+    // Look for the leaf key in a key=value line. Allow any amount of whitespace
+    // (spaces or tabs) between the key and '=' to support aligned-key formatting
+    // (e.g. tox.ini/setup.cfg). leafKey is user-supplied, so escape it before
+    // embedding in a RegExp. `\s*` (not `\s+`) preserves the zero-space case.
+    if (new RegExp(`^${escapeRegExp(leafKey)}\\s*=`).test(trimmed)) {
       const eqIdx = trimmed.indexOf('=')
       emit(trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, ''))
       return 0
