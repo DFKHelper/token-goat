@@ -69,8 +69,14 @@ export function buildManifest(): string {
   if (webFetches.length > 0) {
     lines.push('')
     lines.push('### Web URLs fetched')
-    for (const [url, cacheId] of webFetches.slice(0, MAX_ROWS)) {
-      lines.push(`- ${url} (cacheId: ${cacheId})`)
+    // The map key is the url+'\x00'+prompt composite (see recordWebFetch in session.ts),
+    // so split it back apart for display instead of treating the whole key as the url.
+    for (const [key, cacheId] of webFetches.slice(0, MAX_ROWS)) {
+      const sep = key.indexOf('\x00')
+      const url = sep === -1 ? key : key.slice(0, sep)
+      const prompt = sep === -1 ? '' : key.slice(sep + 1)
+      const promptSuffix = prompt ? `, prompt: ${JSON.stringify(prompt)}` : ''
+      lines.push(`- ${url} (cacheId: ${cacheId}${promptSuffix})`)
     }
     if (webFetches.length > MAX_ROWS) {
       lines.push(`- ...and ${webFetches.length - MAX_ROWS} more`)

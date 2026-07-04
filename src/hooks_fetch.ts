@@ -104,7 +104,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // session" listing.
     const prompt = typeof toolInput['prompt'] === 'string' ? (toolInput['prompt'] as string) : '';
     const cacheId = storeWebOutput(url, body, `${url}\x00${prompt}`);
-    recordWebFetch(url, cacheId);
+    recordWebFetch(url, prompt, cacheId);
 
     return passOutput();
   } catch {

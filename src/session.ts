@@ -266,14 +266,18 @@ export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
   return _pendingLargeFileHintsAtLoad
 }
 
-/** Index a web-fetch result: `url` -> `cacheId`. */
-export function recordWebFetch(url: string, cacheId: string): void {
-  _webFetches.set(url, cacheId)
+/** Index a web-fetch result: (`url`, `prompt`) -> `cacheId`. Keyed on the same
+ * url+'\x00'+prompt composite already used for the on-disk cache id (see
+ * preFetchHandler/postFetchHandler in hooks_fetch.ts), so two WebFetch calls to the
+ * same url with different prompts are tracked as separate entries instead of
+ * clobbering each other. */
+export function recordWebFetch(url: string, prompt: string, cacheId: string): void {
+  _webFetches.set(`${url}\x00${prompt}`, cacheId)
 }
 
-/** Return the cache id previously recorded for `url`, or null. */
-export function getWebFetchCacheId(url: string): string | null {
-  return _webFetches.get(url) ?? null
+/** Return the cache id previously recorded for the (`url`, `prompt`) pair, or null. */
+export function getWebFetchCacheId(url: string, prompt = ''): string | null {
+  return _webFetches.get(`${url}\x00${prompt}`) ?? null
 }
 
 /** Return every web-fetch this session as a `url -> cacheId` map (insertion order). */
