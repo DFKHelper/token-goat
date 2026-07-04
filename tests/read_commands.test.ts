@@ -847,6 +847,23 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts a multi-line Prettier-style import block (regression for #102)', () => {
+      const src = [
+        "import { spawnSync } from 'node:child_process'",
+        '',
+        "import { loadConfig } from './config.js'",
+        'import {',
+        '  type CompressedOutput,',
+        '  type ToolFilter,',
+        '  capTokens,',
+        '  compressOutput,',
+        "} from './tool_filters/index.js'",
+      ].join('\n')
+      expect(extractImports(src, '.ts')).toEqual([
+        'node:child_process', './config.js', './tool_filters/index.js',
+      ])
+    })
+
     it('extracts Python imports', () => {
       const src = 'import os, sys\nfrom collections import OrderedDict\nimport json as j'
       expect(extractImports(src, '.py')).toEqual(['os', 'sys', 'collections', 'json'])
