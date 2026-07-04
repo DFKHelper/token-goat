@@ -491,6 +491,30 @@ describe('preReadHandler', () => {
     expect(r4.hookType).not.toBe('deny')
   })
 
+  it('does not hard-deny a Grep call against a file at/above the large-file deny threshold (500KB) — Grep\'s cost depends on its search pattern, not the file\'s total size, same rationale as the count-based re-read exemption above (fail-on-buggy: the whole-file large-size gate had no Grep exemption, so estimateRequestedSlice()\'s unbounded result for Grep gated it on the full file size and hard-denied it with a nonsensical "edit it anyway" message)', () => {
+    const p = makeTmpFile('x'.repeat(600 * 1024))
+    const event: HookEvent = {
+      eventName: 'pre_tool_use',
+      toolName: 'Grep',
+      toolInput: { path: p, pattern: 'needle' },
+      sessionId: 'test',
+      raw: {},
+    }
+
+    const result = preReadHandler(event)
+    expect(result.hookType).not.toBe('deny')
+  })
+
+  it('still hard-denies a whole-file Read against a file at/above the large-file deny threshold — the Grep size-gate exemption does not leak to Read', () => {
+    const p = makeTmpFile('x'.repeat(600 * 1024))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+    }
+  })
+
   it('still hard-denies the 3rd+ Read call on the same path — the Grep exemption does not leak to Read', () => {
     const dir = '/project/src/components'
     const r1 = preReadHandler(readEvent(dir))
