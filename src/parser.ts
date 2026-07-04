@@ -1322,16 +1322,22 @@ export async function indexFile(filePath: string, dbPath: string = globalDbPath(
  * The worker drain loop runs synchronously — it clears the dirty queue only
  * after the batch has been written — so it needs a sync entry point rather than
  * the Promise-returning {@link indexFile}. Reads with `readFileSync`, runs the
- * same `parseContent` extractor, and shares {@link writeParseResult}. An
- * unreadable file is skipped (never throws).
+ * same `parseContent` extractor, and shares {@link writeParseResult}. A file
+ * genuinely gone (ENOENT — deleted in the race window between being
+ * fingerprinted and this read) is skipped silently, never throws. Any other
+ * read failure (EBUSY/EPERM/EACCES from an AV or editor file lock, EIO, ...)
+ * is rethrown, so it reaches {@link makeIndexer}'s catch in worker.ts, which
+ * logs it and returns the `INDEX_FAILED` sentinel instead of letting
+ * `processDirtyBatch` silently count this file as indexed.
  */
 export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
   const language = detectLanguage(filePath)
   let content: string
   try {
     content = fs.readFileSync(filePath, 'utf8')
-  } catch {
-    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
   }
   const { symbols, refs } = parseContent(content, filePath, language)
   writeParseResult(filePath, content, { symbols, refs, language, duration: 0 }, dbPath)
