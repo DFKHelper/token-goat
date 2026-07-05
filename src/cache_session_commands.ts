@@ -10,9 +10,14 @@ import { SESSIONS_SUBDIR } from './session_store.js'
 import { pruneSkillOutputs, SKILLS_OUTPUT_SUBDIR } from './skill_cache.js'
 import { isInstalled } from './install.js'
 import { buildResumePacket } from './resume.js'
-import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
+import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { ensureNewline } from './util.js'
+
+function emitErr(text: string): void {
+  process.stderr.write(ensureNewline(text))
+}
 
 // Confirmed storage subdirs operated on by clean-cache and prune-cache.
 const CACHE_SUBDIRS = [BASH_OUTPUT_SUBDIR, WEB_OUTPUT_SUBDIR, SESSIONS_SUBDIR, SKILLS_OUTPUT_SUBDIR] as const
@@ -37,7 +42,15 @@ function pad(s: string, n: number): string {
 // ── bash-history ─────────────────────────────────────────────────────────────
 
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
-  const limit = opts.limit !== undefined ? Math.max(1, Number.parseInt(opts.limit, 10)) : 30
+  let limit = 30
+  if (opts.limit !== undefined) {
+    const n = Number.parseInt(opts.limit, 10)
+    if (!Number.isFinite(n)) {
+      emitErr(`bash-history: --limit must be a number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`)
+    }
+    limit = Math.max(1, n)
+  }
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
   const items = blobs
     .map(({ id, mtime, value }) => {
@@ -73,7 +86,15 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
 
 // Web blobs are stored as { url, content } — no status or storedAt field; mtime used for ordering.
 export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
-  const limit = opts.limit !== undefined ? Math.max(1, Number.parseInt(opts.limit, 10)) : 30
+  let limit = 30
+  if (opts.limit !== undefined) {
+    const n = Number.parseInt(opts.limit, 10)
+    if (!Number.isFinite(n)) {
+      emitErr(`web-history: --limit must be a number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`)
+    }
+    limit = Math.max(1, n)
+  }
   const blobs = listBlobs(WEB_OUTPUT_SUBDIR)
   const items = blobs
     .map(({ id, mtime, value }) => {
@@ -231,7 +252,8 @@ export function cmdResume(opts: { sessionId: string; json?: boolean }): void {
 /** Show compact manifest info and context pressure. Reuses compact.ts primitives; never rebuilds the manifest. */
 export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; json?: boolean }): void {
   const sessionId = opts.sessionId ?? findLatestSessionId()
-  const pressure = getContextPressure()
+  const cache = sessionId !== null ? loadSessionCache(sessionId) : null
+  const pressure = getContextPressure(cache ?? undefined)
   const [manifest, eventCount] = sessionId !== null ? buildManifestWithCount(sessionId) : (['', 0] as [string, number])
   const manifestTokens = estimateTokens(manifest)
   const pct = (pressure.fillFraction * 100).toFixed(1)
