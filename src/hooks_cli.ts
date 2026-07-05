@@ -65,6 +65,12 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   replace: 'Edit',
   glob: 'Glob',
   grep_search: 'Grep',
+  // 'search_file_content' was GREP_TOOL_NAME's value before gemini-cli
+  // renamed it to 'grep_search' (confirmed against gemini-cli's current
+  // base-declarations.ts, which now defines GREP_TOOL_NAME = 'grep_search';
+  // some of gemini-cli's own docs pages still lag the rename). Kept as a
+  // backward-compat entry for older installed gemini-cli versions that still
+  // emit the pre-rename name -- not dead/hallucinated, just legacy.
   search_file_content: 'Grep',
   // Gemini's real web-search tool is registered as 'google_web_search'
   // (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is
