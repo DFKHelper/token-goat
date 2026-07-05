@@ -1752,19 +1752,21 @@ export function buildProgram(): Command {
     )
 
   program
-    .command('grep <pattern> [path]')
+    .command('grep <pattern> [paths...]')
     .description('regex search over files, caching nothing (session-aware grep)')
     .option('-j, --json', 'output as JSON')
     .option('--max-lines <n>', 'max matching lines to print')
     .option('--no-recursive', 'do not descend into subdirectories')
-    .action((pattern: string, pathArg: string | undefined, opts: { json?: boolean; maxLines?: string; recursive?: boolean }) =>
+    .option('-C, --context <n>', 'lines of context to show before and after each match')
+    .action((pattern: string, paths: string[] | undefined, opts: { json?: boolean; maxLines?: string; recursive?: boolean; context?: string }) =>
       runExit(() =>
         runGrep({
           pattern,
-          ...(pathArg !== undefined ? { path: pathArg } : {}),
+          ...(paths !== undefined && paths.length > 0 ? { path: paths } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.maxLines !== undefined ? { maxLines: requirePositiveInt('--max-lines', opts.maxLines) } : {}),
           ...(opts.recursive === false ? { recursive: false } : {}),
+          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
         }),
       ),
     )

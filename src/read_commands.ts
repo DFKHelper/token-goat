@@ -717,16 +717,25 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
 export interface GrepOptions {
   pattern: string
-  path?: string
+  path?: string | string[]
   maxLines?: number
   json?: boolean
   recursive?: boolean
+  context?: number
+}
+
+interface GrepHit {
+  file: string
+  line: number
+  text: string
+  context?: Array<{ line: number; text: string }>
 }
 
 /** Handle ``token-goat grep <pattern>``. */
 export function runGrep(opts: GrepOptions): number {
-  const searchPath = opts.path ?? process.cwd()
+  const searchPaths = opts.path === undefined ? [process.cwd()] : Array.isArray(opts.path) ? opts.path : [opts.path]
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
+  const contextLines = opts.context ?? 0
 
   let regex: RegExp
   try {
@@ -736,7 +745,7 @@ export function runGrep(opts: GrepOptions): number {
     return 1
   }
 
-  const hits: Array<{ file: string; line: number; text: string }> = []
+  const hits: GrepHit[] = []
 
   function searchFile(filePath: string): void {
     try {
@@ -744,7 +753,16 @@ export function runGrep(opts: GrepOptions): number {
       const lines = text.split(/\r?\n/)
       lines.forEach((lineText, idx) => {
         if (regex.test(lineText)) {
-          hits.push({ file: filePath, line: idx + 1, text: lineText })
+          const hit: GrepHit = { file: filePath, line: idx + 1, text: lineText }
+          if (contextLines > 0) {
+            const start = Math.max(0, idx - contextLines)
+            const end = Math.min(lines.length - 1, idx + contextLines)
+            hit.context = []
+            for (let i = start; i <= end; i++) {
+              hit.context.push({ line: i + 1, text: lines[i] ?? '' })
+            }
+          }
+          hits.push(hit)
         }
       })
     } catch {
@@ -770,16 +788,18 @@ export function runGrep(opts: GrepOptions): number {
     }
   }
 
-  if (!fileExists(searchPath)) {
-    emitErr(`Path not found: ${searchPath}`)
-    return 1
-  }
+  for (const searchPath of searchPaths) {
+    if (!fileExists(searchPath)) {
+      emitErr(`Path not found: ${searchPath}`)
+      return 1
+    }
 
-  const stat = fs.statSync(searchPath)
-  if (stat.isDirectory()) {
-    searchDir(searchPath)
-  } else {
-    searchFile(searchPath)
+    const stat = fs.statSync(searchPath)
+    if (stat.isDirectory()) {
+      searchDir(searchPath)
+    } else {
+      searchFile(searchPath)
+    }
   }
 
   if (hits.length === 0) {
@@ -795,7 +815,17 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   for (const hit of truncated) {
-    emit(`${hit.file}:${hit.line}: ${hit.text}`)
+    if (hit.context !== undefined) {
+      for (const ctxLine of hit.context) {
+        if (ctxLine.line === hit.line) {
+          emit(`${hit.file}:${ctxLine.line}: ${ctxLine.text}`)
+        } else {
+          emit(`${hit.file}-${ctxLine.line}- ${ctxLine.text}`)
+        }
+      }
+    } else {
+      emit(`${hit.file}:${hit.line}: ${hit.text}`)
+    }
   }
 
   if (hits.length > maxLines) {
