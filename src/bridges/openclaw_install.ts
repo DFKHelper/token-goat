@@ -32,7 +32,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync, extractErrorMessage } from '../util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
 
 interface OpenclawPluginEntry {
@@ -131,7 +131,7 @@ export function installOpenclaw(): OpenclawInstallResult {
   const entries = { ...(plugins.entries ?? {}) }
 
   let configChanged = false
-  if (!loadPaths.includes(pluginPath)) {
+  if (!loadPaths.some((p) => foldPath(p) === foldPath(pluginPath))) {
     loadPaths.push(pluginPath)
     configChanged = true
   }
@@ -180,8 +180,8 @@ export function uninstallOpenclaw(): boolean {
 
     let configChanged = false
 
-    if (loadPaths !== undefined && loadPaths.includes(pluginPath)) {
-      const kept = loadPaths.filter((p) => p !== pluginPath)
+    if (loadPaths !== undefined && loadPaths.some((p) => foldPath(p) === foldPath(pluginPath))) {
+      const kept = loadPaths.filter((p) => foldPath(p) !== foldPath(pluginPath))
       if (kept.length > 0) {
         plugins.load = { ...plugins.load, paths: kept }
       } else if (plugins.load !== undefined) {
@@ -219,7 +219,8 @@ export function isOpenclawInstalled(): boolean {
   const settings = readOpenclawConfig(openclawConfigPath())
   const plugins = settings.plugins
   if (plugins === undefined) return false
-  const hasPath = plugins.load?.paths?.includes(openclawPluginPath()) === true
+  const targetFolded = foldPath(openclawPluginPath())
+  const hasPath = (plugins.load?.paths ?? []).some((p) => foldPath(p) === targetFolded)
   const hasEntry = plugins.entries?.[OPENCLAW_PLUGIN_ID] !== undefined
   return hasPath && hasEntry
 }
