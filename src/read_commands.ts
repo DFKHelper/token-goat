@@ -883,12 +883,45 @@ function lookupYaml(lines: readonly string[], key: string): string | null {
   return null
 }
 
+// Extracts the lines strictly between a YAML frontmatter fence pair (a `---` line as the
+// literal first line, followed later by a matching closing `---` line), so callers can run
+// a plain YAML key lookup against just that block regardless of the file's extension. Fence
+// detection mirrors doc_compact.ts's buildExtractiveCompact: if no closing fence is found,
+// return null (treat as "no frontmatter") instead of guessing -- the same choice
+// buildExtractiveCompact makes, where an unclosed fence leaves the whole document to be
+// processed as normal content rather than silently discarding it as malformed/truncated
+// frontmatter.
+function extractFrontmatter(lines: readonly string[]): string[] | null {
+  if (lines[0]?.trim() !== '---') return null
+  let j = 1
+  while (j < lines.length && lines[j]?.trim() !== '---') {
+    j++
+  }
+  if (j >= lines.length) return null
+  return lines.slice(1, j)
+}
+
 /** Handle ``token-goat config-get file key``. */
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
+  }
+
+  // YAML frontmatter takes priority over extension-based dispatch: a `.md` file with a
+  // `---`-delimited frontmatter block should resolve keys from that block even though its
+  // extension would otherwise route to the TOML/INI fallback below. A `.md` file with no
+  // frontmatter falls through unchanged to the existing extension-based dispatch.
+  const frontmatterLines = extractFrontmatter(text.split(/\r?\n/))
+  if (frontmatterLines !== null) {
+    const value = lookupYaml(frontmatterLines, opts.key)
+    if (value === null) {
+      emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+      return 1
+    }
+    emit(value)
+    return 0
   }
 
   const ext = path.extname(opts.file).toLowerCase()

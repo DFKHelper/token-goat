@@ -800,6 +800,40 @@ describe('read_commands', () => {
       const code = runConfigGet({ file: f, key: 'database.missing' })
       expect(code).toBe(1)
     })
+
+    it('reads a key from YAML frontmatter in a Markdown file, regardless of extension', () => {
+      const f = path.join(tempDir, 'SKILL.md')
+      fs.writeFileSync(f, '---\ntitle: My Skill\nversion: 2.3.1\n---\n# Heading\nbody text\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'version' }) })
+      expect(stdout.trim()).toBe('2.3.1')
+    })
+
+    it('reads a nested key from YAML frontmatter (2-space indentation)', () => {
+      const f = path.join(tempDir, 'nested.md')
+      fs.writeFileSync(f, '---\ndatabase:\n  host: localhost\n  port: 5432\n---\n# Doc\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'database.host' }) })
+      expect(stdout.trim()).toBe('localhost')
+    })
+
+    it('falls back to TOML/INI-style lookup for a Markdown file with no frontmatter', () => {
+      // Regression guard: a .md file that never opens a frontmatter fence must keep
+      // resolving through the pre-existing TOML/INI fallback, unaffected by the new
+      // frontmatter branch.
+      const f = path.join(tempDir, 'notes.md')
+      fs.writeFileSync(f, '[project]\nversion = "9.9.9"\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'project.version' }) })
+      expect(stdout.trim()).toBe('9.9.9')
+    })
+
+    it('does not crash on an unclosed frontmatter fence and falls through to extension-based dispatch', () => {
+      // No closing '---' -- consistent with doc_compact.ts, this is not treated as
+      // frontmatter. It falls through to the TOML/INI fallback, which finds no
+      // 'title =' line either, so the lookup reports not-found rather than throwing.
+      const f = path.join(tempDir, 'unclosed.md')
+      fs.writeFileSync(f, '---\ntitle: Draft\nno closing fence here\n')
+      const code = runConfigGet({ file: f, key: 'title' })
+      expect(code).toBe(1)
+    })
   })
 
   // ---- runListSections ----------------------------------------------------
