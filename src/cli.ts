@@ -34,6 +34,7 @@ import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
+import { installPi, uninstallPi } from './bridges/pi_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -262,7 +263,7 @@ async function cmdHook(event: string): Promise<void> {
   await relay(event)
 }
 
-async function cmdInstall(opts: { project?: boolean; codex?: boolean }): Promise<void> {
+async function cmdInstall(opts: { project?: boolean; codex?: boolean; pi?: boolean; local?: boolean }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
@@ -273,6 +274,20 @@ async function cmdInstall(opts: { project?: boolean; codex?: boolean }): Promise
       out(`Codex CLI integration already installed → ${codexResult.configPath}`)
     } else {
       out(`Installed token-goat Codex CLI integration → ${codexResult.configPath}, ${codexResult.agentsPath}`)
+    }
+  }
+
+  // --pi is additive on both install and uninstall, exactly like --codex.
+  // --local only has meaning combined with --pi; passed alone it is silently
+  // ignored (no dedicated validation), matching this CLI's existing
+  // convention of independently-parsed boolean flags (e.g. -p/--project has
+  // no combination guard with anything else either).
+  if (opts.pi === true) {
+    const piResult = installPi({ local: opts.local === true })
+    if (piResult.alreadyInstalled) {
+      out(`pi extension already installed → ${piResult.extensionPath}`)
+    } else {
+      out(`Installed token-goat pi extension → ${piResult.extensionPath}`)
     }
   }
 
@@ -312,7 +327,7 @@ async function cmdInstall(opts: { project?: boolean; codex?: boolean }): Promise
   }
 }
 
-function cmdUninstall(opts: { project?: boolean; codex?: boolean }): void {
+function cmdUninstall(opts: { project?: boolean; codex?: boolean; pi?: boolean; local?: boolean }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const removed = uninstallHooks(scope)
   out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
@@ -327,6 +342,12 @@ function cmdUninstall(opts: { project?: boolean; codex?: boolean }): void {
         ? 'Removed token-goat Codex CLI integration.'
         : 'No token-goat Codex CLI integration to remove.',
     )
+  }
+
+  // --pi is additive, exactly like --codex above.
+  if (opts.pi === true) {
+    const piRemoved = uninstallPi({ local: opts.local === true })
+    out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
   }
 }
 
@@ -1491,6 +1512,8 @@ export function buildProgram(): Command {
     .description('install hooks into Claude Code settings')
     .option('-p, --project', 'install into project scope instead of user scope')
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
+    .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
   program
@@ -1498,6 +1521,8 @@ export function buildProgram(): Command {
     .description('remove token-goat hooks from Claude Code settings')
     .option('-p, --project', 'uninstall from project scope instead of user scope')
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--pi', 'also remove the pi (pi-coding-agent) extension')
+    .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
   const worker = program.command('worker').description('background indexer lifecycle')

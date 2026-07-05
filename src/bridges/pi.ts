@@ -1,4 +1,33 @@
-// token-goat bridge extension for pi (pi-coding-agent)
+/**
+ * pi (pi-coding-agent) extension bridge.
+ *
+ * This file's content is the canonical source for the pi extension token-goat
+ * installs at `~/.pi/agent/extensions/token-goat.ts` (global) or
+ * `<project>/.pi/extensions/token-goat.ts` (`--local` -- README's "pi users"
+ * section and "What gets installed?" table both agree on this project-local
+ * path -- no `agent/` segment, unlike the global path). {@link installPi} in
+ * `./pi_install.js` writes {@link PI_EXTENSION_SCRIPT} to disk verbatim; there is
+ * no per-entry merge like Codex's TOML hooks block, since pi loads one whole
+ * file as a normal extension module.
+ *
+ * Origin: this was first authored directly at the repo-root path
+ * `.pi/extensions/token-goat.ts` (commit 9a85f780, "feat(pi): add pi-coding-agent
+ * extension bridge") as a real, working, hand-verified extension -- but it was
+ * never wired to `token-goat install`, so it sat unreferenced. Its content is
+ * copied verbatim below (do not paraphrase or "improve" it independently of
+ * that file) and is now this module's single source of truth; the original
+ * repo-root copy was deleted in the same change that added this file, so the
+ * two never drift out of sync.
+ *
+ * pi's extension API: a default-exported factory `(pi: ExtensionAPI) => void`
+ * that subscribes to `session_start`, `tool_call`, `tool_result`,
+ * `session_before_compact`, and `session_compact`, bridging each into
+ * token-goat's `token-goat hook <event>` subprocess protocol (see README's "pi
+ * users" section for the full behavior list: bash compression, re-read denial,
+ * image shrinking, surgical-read redirects, post-edit indexing, output
+ * caching, and the compaction manifest).
+ */
+export const PI_EXTENSION_SCRIPT = `// token-goat bridge extension for pi (pi-coding-agent)
 // Bridges pi's extension events to token-goat's subprocess hook protocol.
 // https://github.com/DFKHelper/token-goat
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -74,7 +103,7 @@ export default function (pi: ExtensionAPI) {
   // Stable per-session id derived from pi's session file (filesystem-safe), or
   // a process-scoped fallback for ephemeral sessions. Recomputed on every
   // session_start (new / resume / fork all re-fire it).
-  let sessionId = `pi-${process.pid}`;
+  let sessionId = \`pi-\${process.pid}\`;
   let cwd = process.cwd();
   // Manifest captured at session_before_compact, injected after compaction.
   let pendingManifest: string | undefined;
@@ -82,7 +111,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     cwd = ctx.cwd ?? process.cwd();
     const file = ctx.sessionManager?.getSessionFile?.();
-    sessionId = file ? `pi-${file.replace(/[^A-Za-z0-9._-]/g, "_")}` : `pi-${process.pid}`;
+    sessionId = file ? \`pi-\${file.replace(/[^A-Za-z0-9._-]/g, "_")}\` : \`pi-\${process.pid}\`;
     callHook("session-start", { session_id: sessionId, cwd });
   });
 
@@ -154,3 +183,4 @@ export default function (pi: ExtensionAPI) {
     }
   });
 }
+`
