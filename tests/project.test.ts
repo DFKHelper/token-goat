@@ -294,6 +294,29 @@ describe('project', () => {
       expect(project).toBeNull();
     });
 
+    it('does not misclassify a submodule-based monorepo as a repo container (3+ .git FILES, not directories)', () => {
+      // A git submodule root has a `.git` FILE (a one-line `gitdir: ...` pointer into the
+      // superproject's .git/modules), not a `.git` directory. Before the fix, isRepoContainer
+      // counted ANY `.git` entry -- file or directory -- toward REPO_CONTAINER_THRESHOLD, so a
+      // monorepo with 3+ submodules at its root was misclassified as a container of unrelated
+      // repos and findProject walked past the real project root. Contrast with the adjacent
+      // "does not mistake a repo-container..." test above, which uses 3 real .git DIRECTORIES
+      // and correctly still triggers container classification.
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      for (const name of ['sub1', 'sub2', 'sub3']) {
+        const subRepoDir = path.join(tmpDir, name);
+        fs.mkdirSync(subRepoDir, { recursive: true });
+        fs.writeFileSync(path.join(subRepoDir, '.git'), `gitdir: ../../.git/modules/${name}\n`);
+      }
+      const subdir = path.join(tmpDir, 'src');
+      fs.mkdirSync(subdir);
+
+      const project = findProject(subdir);
+      expect(project).not.toBeNull();
+      expect(project?.root).toBe(canonicalize(tmpDir));
+      expect(project?.marker).toBe('.git');
+    });
+
     describe('temp-boundary guard casing (case-insensitive FS)', () => {
       const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS;
       const prevTMPDIR = process.env.TMPDIR;

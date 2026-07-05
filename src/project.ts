@@ -160,9 +160,24 @@ function isRepoContainer(pathStr: string): boolean {
         // disables repo-container detection via the catch below.
         const gitPath = path.join(pathStr, entry.name, '.git');
         if (fs.existsSync(gitPath)) {
-          nestedRepos++;
-          if (nestedRepos >= REPO_CONTAINER_THRESHOLD) {
-            return true;
+          // A git-submodule (or worktree) root has a `.git` FILE -- a one-line `gitdir: ...`
+          // pointer into the superproject's `.git/modules` -- not a real independent repo.
+          // Only a `.git` DIRECTORY is a genuinely separate repo root and should count toward
+          // the container threshold; otherwise a monorepo with 3+ submodules at its root gets
+          // misclassified as a container of unrelated repos, and findProject walks past the
+          // actual project root.
+          let isGitDir = false;
+          try {
+            isGitDir = fs.statSync(gitPath).isDirectory();
+          } catch {
+            // Race between existsSync and statSync (deleted, permissions): treat as not a
+            // nested repo rather than aborting the whole directory scan.
+          }
+          if (isGitDir) {
+            nestedRepos++;
+            if (nestedRepos >= REPO_CONTAINER_THRESHOLD) {
+              return true;
+            }
           }
         }
       }
