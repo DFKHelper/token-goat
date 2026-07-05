@@ -1,13 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
-import { HOOK_EVENTS } from '../../src/types.js'
+import { HOOK_EVENTS, type HookEventName } from '../../src/types.js'
 
 const tempDirs: string[] = []
 
@@ -42,9 +42,11 @@ function extractQuotedList(source: string, label: string): string[] {
 /**
  * Runs a bridge shim's embedded script exactly as the external harness (Claude Code / Codex)
  * would: as a standalone Node process invoked with the event name as argv[2] and the hook
- * payload on stdin. Returns what it printed on stdout.
+ * payload on stdin. Returns what it printed on stdout. An optional `env` lets a test swap out
+ * what the shim's own internal `token-goat hook <event>` call resolves to (see
+ * `withFakeTokenGoat` below), instead of hitting the real installed binary.
  */
-function runShim(script: string, eventName: string, cwd: string): string {
+function runShim(script: string, eventName: string, cwd: string, env?: NodeJS.ProcessEnv): string {
   const scriptPath = join(cwd, 'shim.js')
   writeFileSync(scriptPath, script, 'utf8')
   const res = spawnSync(process.execPath, [scriptPath, eventName], {
@@ -52,8 +54,28 @@ function runShim(script: string, eventName: string, cwd: string): string {
     input: '{}',
     encoding: 'utf8',
     timeout: 15000,
+    env: env ?? process.env,
   })
   return res.stdout ?? ''
+}
+
+/**
+ * Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env pointing
+ * at it, so a shim's internal `spawnSync('token-goat hook ' + eventName, { shell: true })`
+ * resolves to `jsonStdout` instead of the real installed binary. Windows/Linux both resolve
+ * `shell: true` commands via PATH rather than the child's cwd (verified empirically -- a
+ * same-named file placed only in cwd is NOT picked up), so PATH must be prepended, not just
+ * the fake binary dropped next to the shim script.
+ */
+function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
+  if (process.platform === 'win32') {
+    writeFileSync(join(cwd, 'token-goat.cmd'), `@echo off\r\necho ${jsonStdout}\r\n`, 'utf8')
+  } else {
+    const scriptPath = join(cwd, 'token-goat')
+    writeFileSync(scriptPath, `#!/bin/sh\necho '${jsonStdout}'\n`, 'utf8')
+    chmodSync(scriptPath, 0o755)
+  }
+  return { ...process.env, PATH: cwd + delimiter + (process.env['PATH'] ?? '') }
 }
 
 describe('bridge hook shims', () => {
@@ -91,5 +113,40 @@ describe('bridge hook shims', () => {
       const stdout = runShim(script, 'pre_tool_use_extra', cwd)
       expect(stdout.trim()).toBe('{}')
     })
+  })
+})
+
+describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previously injected the raw snake_case argv event name -- e.g. "pre_tool_use" -- into hookSpecificOutput.hookEventName when the child token-goat process omitted it, instead of the PascalCase spelling ("PreToolUse") that CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts actually emits on the live/wired token-goat hook <event> path)', () => {
+  const EXPECTED_PASCAL_CASE: Record<HookEventName, string> = {
+    pre_tool_use: 'PreToolUse',
+    post_tool_use: 'PostToolUse',
+    notification: 'Notification',
+    stop: 'Stop',
+    pre_compact: 'PreCompact',
+    session_start: 'SessionStart',
+    user_prompt_submit: 'UserPromptSubmit',
+    subagent_stop: 'SubagentStop',
+  }
+
+  it('maps every HOOK_EVENTS entry to its PascalCase spelling when the child process omits hookEventName', () => {
+    for (const eventName of HOOK_EVENTS) {
+      const cwd = mkIsolated()
+      const env = withFakeTokenGoat(cwd, '{"hookSpecificOutput":{"additionalContext":"x"}}')
+      const stdout = runShim(CODEX_HOOK_SCRIPT, eventName, cwd, env)
+      const parsed = JSON.parse(stdout)
+      expect(parsed.hookSpecificOutput.hookEventName).toBe(EXPECTED_PASCAL_CASE[eventName])
+      expect(parsed.hookSpecificOutput.hookEventName).not.toBe(eventName)
+    }
+  })
+
+  it('does not override hookEventName when the child process already set one', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      '{"hookSpecificOutput":{"hookEventName":"AlreadySetByHandler","additionalContext":"x"}}',
+    )
+    const stdout = runShim(CODEX_HOOK_SCRIPT, 'pre_tool_use', cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('AlreadySetByHandler')
   })
 })

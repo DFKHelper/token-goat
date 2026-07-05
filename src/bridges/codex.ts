@@ -8,8 +8,10 @@
  * it: it drops internal `_tg_*` keys (which would trip `additionalProperties`)
  * and injects `hookEventName` into `hookSpecificOutput` when absent.
  *
- * Wire-format references: Codex 0.137.0+ uses camelCase throughout
- * `hookSpecificOutput` (no snake_case translation needed).
+ * Wire-format references: Codex 0.137.0+ expects `hookSpecificOutput.hookEventName`
+ * in Claude Code's PascalCase spelling (e.g. `PreToolUse`, not the raw `pre_tool_use`
+ * argv event name) -- matching CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts, the
+ * convention the live/wired `token-goat hook <event>` path already emits.
  */
 
 
@@ -21,7 +23,9 @@
  * fixups applied to the child's JSON output:
  * 1. strip top-level and nested `_tg_*` keys (additionalProperties: false), and
  * 2. ensure `hookSpecificOutput.hookEventName` is set, defaulting to the
- *    event name passed in argv when the handler omitted it.
+ *    PascalCase-mapped event name (HOOK_EVENT_NAME_MAP below, kept in sync with
+ *    CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts) when the handler omitted it --
+ *    never the raw snake_case argv event name.
  *
  * `eventName` is concatenated into a shell command string below (`shell: true` is required
  * on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against
@@ -48,6 +52,21 @@ const VALID_HOOK_EVENTS = new Set([
   'user_prompt_submit',
   'subagent_stop',
 ])
+
+// Keep in sync with CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts -- the
+// live/wired 'token-goat hook <event>' path (src/relay.ts) always emits this
+// PascalCase spelling for hookSpecificOutput.hookEventName, never the raw
+// snake_case event name.
+const HOOK_EVENT_NAME_MAP = {
+  pre_tool_use: 'PreToolUse',
+  post_tool_use: 'PostToolUse',
+  notification: 'Notification',
+  stop: 'Stop',
+  pre_compact: 'PreCompact',
+  session_start: 'SessionStart',
+  user_prompt_submit: 'UserPromptSubmit',
+  subagent_stop: 'SubagentStop',
+}
 
 function stripTg(value) {
   if (Array.isArray(value)) return value.map(stripTg)
@@ -94,7 +113,7 @@ function main() {
   parsed = stripTg(parsed)
   const hso = parsed && parsed.hookSpecificOutput
   if (hso && typeof hso === 'object' && !hso.hookEventName) {
-    hso.hookEventName = eventName
+    hso.hookEventName = HOOK_EVENT_NAME_MAP[eventName] || eventName
   }
   process.stdout.write(JSON.stringify(parsed))
 }
