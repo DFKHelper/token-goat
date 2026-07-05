@@ -158,26 +158,30 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
  * Map the env-detected harness ({@link detectHarness}) onto {@link Harness}, the
  * narrower harness identifier {@link normalizePayload} understands.
  *
- * Only Codex needs tool-name remapping today. Gemini's tool-name maps still live
- * in hooks_cli.ts, but this build has no installed Gemini bridge (no env signal
- * detects it, no bridge script forwards its payloads here), so there is nothing
- * live to wire it into; 'claudecode' / 'opencode' / 'generic' payloads already
- * use canonical tool names and pass through unchanged. Uses detectHarness()
- * (uncached) rather than getHarnessName(): each hook invocation is a fresh,
- * short-lived process, so there is no benefit to memoizing and no stale-cache
- * risk to worry about.
+ * Codex and Gemini both need tool-name remapping (their harness-native
+ * snake_case names never match the canonical names registerHook(...,
+ * { toolName }) filters on); 'claudecode' / 'opencode' / 'generic' payloads
+ * already use canonical tool names and pass through unchanged. Uses
+ * detectHarness() (uncached) rather than getHarnessName(): each hook
+ * invocation is a fresh, short-lived process, so there is no benefit to
+ * memoizing and no stale-cache risk to worry about.
  */
 function harnessForNormalization(): Harness {
-  // detectHarness() (bridges/registry.ts) can now return 'gemini' (or
-  // 'hermes' / 'openclaw') via env-var detection -- it is the single
-  // canonical implementation, unioned with the harness set compact.ts used
-  // to detect separately. This function still only ever distinguishes
-  // 'codex' from everything else: there is no live Gemini/hermes/openclaw
-  // bridge or payload-writer, so normalizePayload()'s 'gemini' branch in
-  // hooks_cli.ts stays unreachable via this path regardless of what gets
-  // detected. It remains directly testable/callable and will become
-  // reachable again if a Gemini bridge is restored (see module docstring).
-  return detectHarness() === 'codex' ? 'codex' : 'claude'
+  // detectHarness() (bridges/registry.ts) can return 'gemini' (or 'hermes' /
+  // 'openclaw') via env-var detection -- it is the single canonical
+  // implementation, unioned with the harness set compact.ts used to detect
+  // separately. installGemini() (bridges/gemini_install.ts) wires
+  // `token-goat hook <event>` directly into ~/.gemini/settings.json (no shim
+  // process like Codex's, so no other layer sets a harness flag) -- the child
+  // process inherits Gemini CLI's own environment (GEMINI_API_KEY /
+  // GOOGLE_API_KEY), so detectHarness() resolving to 'gemini' here is what
+  // makes normalizePayload()'s 'gemini' branch in hooks_cli.ts reachable for
+  // a real Gemini CLI install. hermes/openclaw still have no bridge/
+  // payload-writer, so they fall through to 'claude' unchanged for now.
+  const detected = detectHarness()
+  if (detected === 'codex') return 'codex'
+  if (detected === 'gemini') return 'gemini'
+  return 'claude'
 }
 
 /**

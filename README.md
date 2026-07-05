@@ -278,7 +278,7 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 ### Gemini CLI users
 
 ```
-token-goat install --target gemini
+token-goat install --gemini
 ```
 
 This writes hook entries into `~/.gemini/settings.json` using Gemini CLI's `BeforeTool` / `AfterTool` / `SessionStart` / `PreCompress` event names. Token-goat translates between Gemini's snake_case tool names (`run_shell_command`, `read_file`, `grep_search`, etc.) and its internal format automatically. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. To remove: `token-goat uninstall --gemini`.

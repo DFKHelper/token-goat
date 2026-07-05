@@ -263,4 +263,31 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
 
     expect(observedToolName).toBe('Bash')
   })
+
+  it('normalizes a raw Gemini tool_name through the real relay() path so a toolName-filtered handler actually matches (installGemini restores the bridge harnessForNormalization() previously had no live route to)', async () => {
+    process.env['GEMINI_API_KEY'] = 'gemini-test-key'
+
+    let observedToolName: string | undefined
+    registerHook(
+      'pre_tool_use',
+      (event) => {
+        observedToolName = event.toolName
+        return { hookType: 'pass' }
+      },
+      { toolName: 'Bash' },
+    )
+
+    // Gemini CLI's raw hook payload carries its own snake_case tool name
+    // ('run_shell_command'), not token-goat's canonical 'Bash'. Before this
+    // fix, harnessForNormalization() collapsed every detected 'gemini' harness
+    // down to 'claude', so normalizePayload() never ran its 'gemini' branch
+    // and a handler registered via registerHook(..., { toolName: 'Bash' })
+    // never matched a real Gemini CLI invocation.
+    io.emit(
+      JSON.stringify({ tool_name: 'run_shell_command', tool_input: { command: 'echo hi' }, session_id: 's' }),
+    )
+    await relay('pre_tool_use')
+
+    expect(observedToolName).toBe('Bash')
+  })
 })
