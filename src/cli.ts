@@ -36,6 +36,7 @@ import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
 import { installPi, uninstallPi } from './bridges/pi_install.js'
+import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -269,6 +270,7 @@ async function cmdInstall(opts: {
   codex?: boolean
   gemini?: boolean
   pi?: boolean
+  opencode?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -305,6 +307,16 @@ async function cmdInstall(opts: {
       out(`pi extension already installed → ${piResult.extensionPath}`)
     } else {
       out(`Installed token-goat pi extension → ${piResult.extensionPath}`)
+    }
+  }
+
+  // --opencode is additive, exactly like --pi above.
+  if (opts.opencode === true) {
+    const opencodeResult = installOpencode()
+    if (opencodeResult.alreadyInstalled) {
+      out(`opencode plugin already installed → ${opencodeResult.pluginPath}`)
+    } else {
+      out(`Installed token-goat opencode plugin → ${opencodeResult.pluginPath}`)
     }
   }
 
@@ -349,6 +361,7 @@ function cmdUninstall(opts: {
   codex?: boolean
   gemini?: boolean
   pi?: boolean
+  opencode?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -381,6 +394,16 @@ function cmdUninstall(opts: {
   if (opts.pi === true) {
     const piRemoved = uninstallPi({ local: opts.local === true })
     out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
+  }
+
+  // --opencode is additive, exactly like --pi above.
+  if (opts.opencode === true) {
+    const opencodeRemoved = uninstallOpencode()
+    out(
+      opencodeRemoved
+        ? 'Removed token-goat opencode plugin.'
+        : 'No token-goat opencode plugin to remove.',
+    )
   }
 }
 
@@ -1547,6 +1570,7 @@ export function buildProgram(): Command {
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
+    .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -1557,6 +1581,7 @@ export function buildProgram(): Command {
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
+    .option('--opencode', 'also remove the opencode plugin')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
