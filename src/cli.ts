@@ -608,7 +608,12 @@ function _applyFiltersAndPrint(
   const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
 
   let result = lines
-  if (opts.head === undefined && opts.tail === undefined && opts.grep === undefined) {
+  if (opts.head === undefined && opts.tail === undefined) {
+    // Covers both "no filters at all" and "--grep alone" -- the latter is the
+    // single most common recall pattern this CLI's own hint text pushes users
+    // toward (bash-output/web-output --grep with no --head/--tail), and left
+    // unbounded here it could return an arbitrarily large number of matching
+    // lines with no truncation at all.
     result = applyElision(lines, headN, tailN)
   } else if (opts.head !== undefined && opts.tail !== undefined) {
     result = applyElision(lines, headN, tailN)
