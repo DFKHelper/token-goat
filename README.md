@@ -359,12 +359,12 @@ To upgrade cleanly:
 | Command | What it does |
 |---------|-------------|
 | `token-goat symbol <name>` | Jump to a symbol definition. |
-| `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups (`read "file.py::Class.method"`) and line ranges: `read "file.py@10-40"` for lines 10 to 40 inclusive, or `read "file.py@42"` for one line. Line ranges read straight from disk, so they work on any file, including paths outside an indexed project. |
+| `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups (`read "file.py::Class.method"`) and line ranges: `read "file.py@10-40"` for lines 10 to 40 inclusive, or `read "file.py@42"` for one line. Line ranges read straight from disk, so they work on any file, including paths outside an indexed project. `--force-refresh` reparses the file from disk and updates the index before querying — for files touched by git operations, external tools, or direct filesystem writes that bypass the normal post-edit indexing hook. |
 | `token-goat replace <file>` | Replace one string in a file using `--old-from`/`--new-from` or `--old-b64`/`--new-b64`; `--all` replaces every match. |
 | `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. A miss that is an unambiguous prefix of exactly one heading auto-redirects with a `(redirected from: …)` marker (and a `redirectedFrom` field under `--json`). Disambiguate duplicates with `"doc.md::Heading#2"`. |
 | `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
-| `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. |
-| `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. |
+| `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. `--force-refresh` reparses from disk first, bypassing a stale index. |
+| `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. `--force-refresh` reparses from disk first, bypassing a stale index. |
 | `token-goat scope "file:line"` | Show symbols in scope at a given line — avoids reading the whole file to understand locals. |
 | `token-goat exports "file"` | List public (exported) symbols with types and docstring hints. |
 | `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. Pass a comma-separated spec (`a,b,c` or `file::a,b`) to merge several symbols' references into one call, each group headed by its symbol name. |
@@ -383,7 +383,7 @@ To upgrade cleanly:
 | `token-goat dead` | Surface functions, methods, and classes with no recorded callers in the project index. Private names and common entry points (`main`, `app`, etc.) are excluded by default. `--include-private` lifts the underscore filter; `--kind` narrows to specific symbol types; `--top N` caps output; `--json` for structured output. Results are a heuristic lead — dynamic dispatch and external callers are invisible to static indexing. |
 | `token-goat coverage-gaps` | Find callables in non-test source files that never appear in a test file's reference records. Useful for spotting untested surface area before a refactor or release. `--top N` caps output; `--json` for structured output. |
 | `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
-| `token-goat grep "<pattern>"` | Built-in fallback regex search over files (no `rg` shell-out, no caching) — session-aware dedup for raw `rg`/`grep` Bash calls is a separate hook, not this command. |
+| `token-goat grep "<pattern>" [paths...]` | Built-in fallback regex search over files (no `rg` shell-out, no caching) — session-aware dedup for raw `rg`/`grep` Bash calls is a separate hook, not this command. Accepts zero or more paths: omit to walk cwd, or pass several to search them together with hits merged in argument order under one `--max-lines` cap. `-C, --context <n>` shows `n` lines before and after each match. |
 | `token-goat semantic "<query>"` | Find code by meaning, not by filename: embedding-vector similarity search over indexed file chunks, falling back to full-text search (BM25) over symbol names/bodies if no vector index exists yet (e.g. optional embedding deps unavailable, or `indexing.embeddings_enabled` is off). `--limit <n>` caps result count. |
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a fixed 2000-token budget. |
 | `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
@@ -409,6 +409,7 @@ To upgrade cleanly:
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session. Add `--trigger auto` to preview the pressure-aware budget the live PreCompact hook would use. |
 | `token-goat resume <session_id>` | Emit a single post-compact recovery packet — top skills, last two Bash outputs, top edited-file diffs, and `git diff --stat`, capped at ~2000 tokens. Replaces 5-10 round-trips. |
 | `token-goat config list / get / set / validate` | Inspect or edit `config.toml` from the CLI. `validate` reports unknown keys with did-you-mean suggestions. |
+| `token-goat config-get <file> <key>` | Look up one key from a config-shaped file (TOML/INI `key = value`, or YAML) without reading the whole thing. On a `.md` file, a leading `---`-fenced YAML frontmatter block (Jekyll/Hugo/SKILL.md style) is checked first and takes precedence over the TOML/INI fallback; a `.md` file with no frontmatter, or an unclosed fence, falls through to the normal lookup unchanged. |
 | `token-goat clean-cache` | Prune on-disk caches to their configured floor without waiting for the worker. |
 | `token-goat prune-cache` | Manually trigger LRU eviction across all cache directories (images, bash, web, skills). |
 | `token-goat session-summary` | Compact one-liner about current session state — designed for orchestrators and multi-agent loops. |
