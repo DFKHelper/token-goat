@@ -264,8 +264,20 @@ function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
 /** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
 const DIFFABLE_SOURCE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|swift|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml)$/i
 
-/** Extensions with a tree-sitter language adapter -- i.e. where `token-goat skeleton`/`outline` actually produce structure. */
-const SOURCE_EXT_RE = /\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|c|h)$/i
+/**
+ * Extensions with a tree-sitter language adapter AND where `token-goat skeleton`/`outline`
+ * are the intended re-read tool (markdown, json, yaml, etc. also have adapters but keep
+ * their own dedicated read path -- e.g. `token-goat section` -- so they're deliberately
+ * excluded here even though EXTENSION_LANGUAGE recognizes them). Previously omitted several
+ * real language extensions (.cs, .mjs/.cjs/.mts/.cts, .cc/.cxx/.hpp/.hxx, .kts, .pyi) and
+ * wrongly included `.swift`, which has no adapter at all.
+ */
+const SOURCE_EXT_RE =
+  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb|php|kt|kts|cpp|cc|cxx|hpp|hxx|c|h|cs)$/i
+
+function isSourceExtension(basename: string): boolean {
+  return SOURCE_EXT_RE.test(basename)
+}
 
 /** Generate extension-aware surgical-read hint for a file. */
 function surgicalHint(filePath: string, basename: string): string {
@@ -792,7 +804,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
 
     // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-    const isSourceExt = SOURCE_EXT_RE.test(basename)
+    const isSourceExt = isSourceExtension(basename)
     if (isSourceExt && reads >= 2) {
       recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
       return denyOutput(
@@ -987,7 +999,7 @@ export function postReadHandler(event: HookEvent): HookOutput {
   // post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of
   // a future full re-read. Only fires for extensions with a tree-sitter language adapter
   // (SOURCE_EXT_RE), where skeleton/outline actually produce structure.
-  if (SOURCE_EXT_RE.test(postBasename)) {
+  if (isSourceExtension(postBasename)) {
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
