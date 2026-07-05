@@ -14,30 +14,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // indexFileSync's own read) must stay silent -- that is expected and harmless, not a failure
 // worth logging.
 //
-// The guarded fs mock distinguishes by the `options` argument, mirroring the real difference
-// between fingerprintFile's own read (fs.readFileSync(path), Buffer, no options) and
-// indexFileSync's read (fs.readFileSync(path, 'utf8')). Targeting only the 'utf8' call
-// reproduces the exact race window this fix protects -- fingerprintFile already succeeded (the
-// file existed then); the read moments later, inside indexFileSync itself, hits the injected
-// error -- without faking fingerprintFile's own read. vi.spyOn cannot patch node:fs (its
-// namespace exports are non-configurable), so a module mock with hoisted flags is the portable
-// way to inject this, matching the pattern already used in parser_sha_race.test.ts.
-const mockState = vi.hoisted(() => ({ target: '', errorCode: '' }))
+// indexFileSync and fingerprintFile now both read via a bare fs.readFileSync(path) (no options
+// argument, raw Buffer -- see the parser.ts fix that made indexFileSync hash the same raw bytes
+// fingerprintFile hashes, task #208), so the `options` argument can no longer distinguish "this
+// is indexFileSync's own read" from "this is fingerprintFile's earlier gate read" the way it
+// could when indexFileSync used to pass 'utf8'. Instead, the mock counts matching calls and
+// injects the error starting from the `skipCalls`'th one: tests that call indexFileSync directly
+// (no preceding fingerprintFile gate) want the very first call to fail (skipCalls = 0); the
+// drainOnce/processDirtyBatch test wants fingerprintFile's gate-read to succeed and only
+// indexFileSync's own subsequent read to fail (skipCalls = 1) -- reproducing the exact race
+// window this fix protects, where fingerprintFile already succeeded (the file existed then) and
+// the read moments later, inside indexFileSync itself, hits the injected error. vi.spyOn cannot
+// patch node:fs (its namespace exports are non-configurable), so a module mock with hoisted
+// flags is the portable way to inject this, matching the pattern already used in
+// parser_sha_race.test.ts.
+const mockState = vi.hoisted(() => ({ target: '', errorCode: '', skipCalls: 0, callCount: 0 }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedReadFileSync = (
     target: fs.PathOrFileDescriptor,
     options?: { encoding?: BufferEncoding | null; flag?: string } | BufferEncoding | null,
   ): string | Buffer => {
-    if (
-      typeof target === 'string' &&
-      target === mockState.target &&
-      options === 'utf8' &&
-      mockState.errorCode
-    ) {
-      throw Object.assign(new Error(`simulated ${mockState.errorCode} failure`), {
-        code: mockState.errorCode,
-      })
+    if (typeof target === 'string' && target === mockState.target && mockState.errorCode) {
+      const shouldThrow = mockState.callCount >= mockState.skipCalls
+      mockState.callCount++
+      if (shouldThrow) {
+        throw Object.assign(new Error(`simulated ${mockState.errorCode} failure`), {
+          code: mockState.errorCode,
+        })
+      }
     }
     return actual.readFileSync(target, options as never)
   }
@@ -68,11 +73,15 @@ describe('indexFileSync read-failure handling (regression)', () => {
     dbPath = path.join(TMP, 'index.db')
     mockState.target = ''
     mockState.errorCode = ''
+    mockState.skipCalls = 0
+    mockState.callCount = 0
   })
 
   afterEach(() => {
     mockState.target = ''
     mockState.errorCode = ''
+    mockState.skipCalls = 0
+    mockState.callCount = 0
     closeAllDbs()
     fs.rmSync(TMP, { recursive: true, force: true })
   })
@@ -119,6 +128,10 @@ describe('indexFileSync read-failure handling (regression)', () => {
 
     mockState.target = bad
     mockState.errorCode = 'EBUSY'
+    // processDirtyBatch's own fingerprintFile(bad) gate-read must succeed (call #1) so the sha
+    // comparison proceeds normally; only indexFileSync's own subsequent read (call #2) should hit
+    // the injected failure.
+    mockState.skipCalls = 1
 
     const projectDb = path.join(TMP, 'global.db')
     const count = drainOnce(TMP)
@@ -152,11 +165,15 @@ describe('cmdIndex per-file failure handling (regression)', () => {
     dbPath = path.join(TMP, 'index.db')
     mockState.target = ''
     mockState.errorCode = ''
+    mockState.skipCalls = 0
+    mockState.callCount = 0
   })
 
   afterEach(() => {
     mockState.target = ''
     mockState.errorCode = ''
+    mockState.skipCalls = 0
+    mockState.callCount = 0
     closeAllDbs()
     fs.rmSync(TMP, { recursive: true, force: true })
   })

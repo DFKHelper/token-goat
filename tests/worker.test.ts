@@ -357,6 +357,40 @@ describe('drainOnce', () => {
     }
   })
 
+  // Regression: indexFileSync stored the SHA of the utf8-DECODED content string
+  // (invalid byte sequences replaced with U+FFFD, then re-encoded), while
+  // processDirtyBatch's gate SHA (fingerprintFile) hashes the RAW file bytes
+  // directly. For a file containing an invalid-UTF-8 byte, those two hashes
+  // could never match, so the sha gate above never engaged and the file was
+  // fully reparsed on every single drain even when byte-for-byte unchanged.
+  it('sha gate still skips an unchanged file whose raw bytes are not valid UTF-8', () => {
+    const src = path.join(DIR, 'invalid-utf8.ts')
+    const content = Buffer.concat([
+      Buffer.from('// bad byte follows: ', 'ascii'),
+      Buffer.from([0xff]),
+      Buffer.from('\nexport function shaGatedInvalidUtf8(): number {\n  return 7\n}\n', 'ascii'),
+    ])
+    fs.writeFileSync(src, content)
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(
+        querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+
+      getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
+      expect(querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length).toBe(0)
+
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(0)
+      expect(querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length).toBe(0)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
   describe('drainOnce atomic rename-to-claim (lost-update regression)', () => {
     it('does not drop paths appended during a drain', () => {
       // Regression: drainOnce must not delete the entire queue without first claiming it atomically. A path appended by a concurrent appendDirtyPath during processDirtyBatch would be deleted without being indexed. The atomic rename-to-claim pattern fixes this.
