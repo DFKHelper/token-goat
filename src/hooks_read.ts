@@ -41,6 +41,8 @@ import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 import { isImagePath } from './image_shrink.js'
 import { compactPathFor, isCompactFresh, readCompactBody } from './doc_compact.js'
+import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
+import { dataDir } from './constants.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -474,6 +476,37 @@ export function preReadHandler(event: HookEvent): HookOutput {
           'To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
         )
       }
+    }
+  }
+
+  // Notebook output stripping: .ipynb reads get code-cell `outputs` and
+  // `execution_count` fields stripped before the content reaches the model
+  // (cell source and metadata are preserved). Restores the original
+  // Python-era behavior, which was never config-gated, unlike the
+  // doc-compact block above, which always applies for eligible files.
+  // Falls through unchanged for malformed/non-notebook JSON, binary files,
+  // or when stripping wouldn't save enough to be worth denying the
+  // original Read over.
+  const isNotebook = /\.ipynb$/i.test(basename)
+  if (isNotebook) {
+    try {
+      const rawBytes = fs.readFileSync(normalized)
+      const [sidecarPath] = getOrCreateSidecar(rawBytes, dataDir())
+      const sidecarContent = fs.readFileSync(sidecarPath, 'utf-8')
+      const savedBytes = rawBytes.length - sidecarContent.length
+      if (savedBytes >= NB_STRIP_MIN_SAVINGS) {
+        recordFileRead(normalized)
+        recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+        return denyOutput(
+          'Serving the output-stripped notebook in place of the full file ' +
+          '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
+          sidecarContent +
+          '\n\nTo edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        )
+      }
+    } catch {
+      // Malformed JSON, non-notebook JSON shape, or a binary file with an
+      // .ipynb extension: fall through to the normal read path unchanged.
     }
   }
 
