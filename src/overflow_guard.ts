@@ -85,7 +85,10 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   for (const ln of lines) {
     const stripped = stripAnsiCodes(ln)
-    const cost = stripped.length + 1
+    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains
+    // the raw (un-stripped) line, so accounting must match what is actually emitted. Charging
+    // the stripped length would let ANSI-heavy lines discount bytes that are never removed.
+    const cost = ln.length + 1
     if (kept.length === 0 && cost > charBudget) {
       // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and eliminates dangling escape sequences from a mid-code cut.
       // Use safeSlice to avoid splitting UTF-16 surrogate pairs.
