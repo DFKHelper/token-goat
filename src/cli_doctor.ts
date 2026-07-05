@@ -42,10 +42,32 @@ export function checkDbExists(dataDir: string): DoctorResult {
       message: `global.db not found at ${dbPath}`,
     }
   }
+  const sizeBytes = fs.statSync(dbPath).size
+  const SQLITE_HEADER = 'SQLite format 3\0'
+  let header = ''
+  try {
+    const fd = fs.openSync(dbPath, 'r')
+    try {
+      const buf = Buffer.alloc(SQLITE_HEADER.length)
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0)
+      header = buf.toString('latin1', 0, bytesRead)
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    // treat an unreadable file as invalid below
+  }
+  if (header !== SQLITE_HEADER) {
+    return {
+      name: 'Database',
+      status: 'fail',
+      message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt`,
+    }
+  }
   return {
     name: 'Database',
     status: 'ok',
-    message: `global.db exists (${Math.round(fs.statSync(dbPath).size / 1024)} KB)`,
+    message: `global.db exists (${Math.round(sizeBytes / 1024)} KB)`,
   }
 }
 

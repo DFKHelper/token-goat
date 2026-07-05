@@ -20,7 +20,7 @@ describe('cli_doctor', () => {
   describe('checkDbExists', () => {
     it('returns ok when database exists', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      fs.writeFileSync(dbPath, 'mock db content')
+      fs.writeFileSync(dbPath, 'SQLite format 3\0mock db content')
 
       const result = checkDbExists(tempDir)
       expect(result.status).toBe('ok')
@@ -35,10 +35,34 @@ describe('cli_doctor', () => {
 
     it('includes file size in message', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      fs.writeFileSync(dbPath, 'x'.repeat(2048))
+      fs.writeFileSync(dbPath, 'SQLite format 3\0' + 'x'.repeat(2048))
 
       const result = checkDbExists(tempDir)
       expect(result.message).toMatch(/\d+ KB/)
+    })
+
+    // Regression (task #172): checkDbExists only checked fs.existsSync + reported size,
+    // so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'.
+    // It now validates the SQLite magic header ("SQLite format 3\0") the same way
+    // checkConfigValid parses TOML content instead of just checking file presence.
+    it('returns fail (not ok) for a 0-byte global.db', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      fs.writeFileSync(dbPath, '')
+
+      const result = checkDbExists(tempDir)
+      expect(result.status).not.toBe('ok')
+      expect(result.status).toBe('fail')
+      expect(result.message).toContain('not a valid SQLite file')
+    })
+
+    it('returns fail (not ok) for a truncated global.db missing the SQLite header', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      fs.writeFileSync(dbPath, 'SQLite fo')
+
+      const result = checkDbExists(tempDir)
+      expect(result.status).not.toBe('ok')
+      expect(result.status).toBe('fail')
+      expect(result.message).toContain('not a valid SQLite file')
     })
   })
 
