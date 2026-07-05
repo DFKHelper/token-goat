@@ -27,6 +27,7 @@ import {
   uninstallOpenclaw,
 } from '../src/bridges/openclaw_install.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from '../src/bridges/openclaw.js'
+import { HOOK_EVENTS } from '../src/types.js'
 
 interface OpenclawSettingsShape {
   plugins?: {
@@ -236,5 +237,21 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('openclaw.json.bak.'))
     expect(backups.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
+  it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
+    const calls = [...OPENCLAW_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const eventName of calls) {
+      expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
+    }
+  })
+
+  it('excludes Glob from PRE_HOOK_TOOLS, since no pre_tool_use handler exists for it', () => {
+    const match = /const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    expect(match).not.toBeNull()
+    expect(match?.[1]).not.toMatch(/"Glob"/)
   })
 })

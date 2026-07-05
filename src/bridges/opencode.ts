@@ -84,8 +84,9 @@ const TOOL_TO_TG = {
 
 // Tools with a real pre_tool_use handler registered server-side (hooks_read.ts,
 // image_shrink.ts, hooks_bash.ts, hooks_fetch.ts). Edit/Write have no pre-hook
-// in token-goat at all, so skip the subprocess call for them entirely.
-const PRE_HOOK_TOOLS = new Set(["read", "bash", "grep", "glob", "webfetch"])
+// in token-goat at all, so skip the subprocess call for them entirely. Glob
+// has none either, so it's excluded too rather than spawning a no-op call.
+const PRE_HOOK_TOOLS = new Set(["read", "bash", "grep", "webfetch"])
 
 // opencode tool args (camelCase) -> token-goat snake_case tool_input keys.
 const ARGS_TO_TG = {

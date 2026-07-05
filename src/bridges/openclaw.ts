@@ -79,8 +79,9 @@ const TOOL_TO_TG = {
 };
 
 // Tools with a registered pre_tool_use handler in token-goat (Edit/Write have
-// none -- see pi.ts/opencode.ts's identical PRE_HOOK_TOOLS note).
-const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
+// none; Glob has none either -- see pi.ts/opencode.ts's identical
+// PRE_HOOK_TOOLS note -- so it's excluded to avoid a wasted no-op spawn).
+const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
 function callHook(event, payload) {
   try {
@@ -114,10 +115,11 @@ export default definePluginEntry({
       callHook("session_start", { session_id: sessionId, cwd: process.cwd() });
     });
 
-    api.on("session_end", (event, ctx) => {
-      const sid = (ctx && (ctx.sessionId || ctx.sessionKey)) || sessionId;
-      callHook("session_end", { session_id: sid, cwd: process.cwd() });
-    });
+    // No api.on("session_end", ...) here: token-goat's own HOOK_EVENTS
+    // (src/types.ts) has no session_end member, so calling it would be the
+    // same invented-event-name no-op already found and fixed once for pi's
+    // bridge (commit 2f0a15e4). OpenClaw's session_end is a real lifecycle
+    // event, but token-goat has no corresponding hook to bridge it to.
 
     api.on("before_tool_call", async (event, ctx) => {
       const tg = TOOL_TO_TG[event.toolName];
