@@ -17,6 +17,14 @@ vi.mock('../src/section_reader.js', () => ({
   extractSection: vi.fn(() => null),
 }))
 
+vi.mock('../src/parser.js', () => ({
+  indexFileSync: vi.fn(),
+}))
+
+vi.mock('../src/constants.js', () => ({
+  globalDbPath: vi.fn(() => ':memory:'),
+}))
+
 // Partial-mock util so runGit is controllable while ensureNewline (used by emit) keeps its real behavior.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
@@ -52,12 +60,14 @@ import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
+import { indexFileSync } from '../src/parser.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockQueryRefs = vi.mocked(queryRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
 const mockListAllSections = vi.mocked(listAllSections)
+const mockIndexFileSync = vi.mocked(indexFileSync)
 const mockLoadConfig = vi.mocked(loadConfig)
 
 /** Capture stdout/stderr for a function call. */
@@ -370,6 +380,42 @@ describe('read_commands', () => {
         const { stdout } = capture(() => { runRead({ spec: `${f}@1-200` }) })
         expect(stdout).toContain('output capped at ~50 tokens')
         expect(stdout).toContain("Request a smaller line range, e.g. 'file.py::100-150'.")
+      })
+
+      it('uses stale index by default when file is modified externally', () => {
+        const oldContent = 'export function oldSymbol() {\n  return 1\n}'
+        const f = path.join(tempDir, 'stale.ts')
+        fs.writeFileSync(f, oldContent)
+        mockQuerySymbols.mockReturnValue([
+          {
+            name: 'oldSymbol',
+            filePath: f,
+            lineStart: 1,
+            lineEnd: 3,
+            body: oldContent,
+          } as never,
+        ])
+        const newContent = 'export function newSymbol() {\n  return 2\n}'
+        fs.writeFileSync(f, newContent)
+        const { stdout } = capture(() => { runRead({ spec: `${f}::oldSymbol` }) })
+        expect(stdout).toContain('oldSymbol')
+      })
+
+      it('refreshes stale index when --force-refresh is set', () => {
+        const f = path.join(tempDir, 'refresh.ts')
+        const oldContent = 'export function oldSymbol() {\n  return 1\n}'
+        fs.writeFileSync(f, oldContent)
+        mockQuerySymbols.mockReturnValue([
+          {
+            name: 'newSymbol',
+            filePath: f,
+            lineStart: 1,
+            lineEnd: 3,
+            body: 'export function newSymbol() {\n  return 2\n}',
+          } as never,
+        ])
+        capture(() => { runRead({ spec: `${f}::newSymbol`, forceRefresh: true }) })
+        expect(mockIndexFileSync).toHaveBeenCalled()
       })
     })
   })
