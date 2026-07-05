@@ -199,7 +199,7 @@ export async function relay(eventName: string): Promise<void> {
       return
     }
     const rawPayload = await readStdinJson()
-    // Codex (and, if a Gemini bridge is ever restored, Gemini) sends harness-native
+    // Codex and Gemini send harness-native
     // tool names (e.g. `bash`, `read_file`) that never match the canonical names
     // (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }).
     // Normalization is scoped to the two tool-scoped events: normalizePayload()
