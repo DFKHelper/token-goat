@@ -608,6 +608,63 @@ describe('read_commands', () => {
       expect(stdout).toContain('real.ts')
       expect(stdout).not.toContain('node_modules')
     })
+
+    it('merges hits from multiple explicit paths in argument order', () => {
+      const f1 = path.join(tempDir, 'a.txt')
+      const f2 = path.join(tempDir, 'b.txt')
+      fs.writeFileSync(f1, 'alpha match one\nnothing here')
+      fs.writeFileSync(f2, 'beta match two\nnothing here either')
+      const { stdout } = capture(() => { runGrep({ pattern: 'match', path: [f1, f2] }) })
+      const lines = stdout.trim().split('\n')
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toContain('a.txt')
+      expect(lines[0]).toContain('match one')
+      expect(lines[1]).toContain('b.txt')
+      expect(lines[1]).toContain('match two')
+    })
+
+    it('applies the max-lines cap once across the combined hits from multiple paths, not per file', () => {
+      const f1 = path.join(tempDir, 'multi1.txt')
+      const f2 = path.join(tempDir, 'multi2.txt')
+      fs.writeFileSync(f1, 'needle\nneedle\nneedle')
+      fs.writeFileSync(f2, 'needle\nneedle\nneedle')
+      const { stdout, stderr } = capture(() => { runGrep({ pattern: 'needle', path: [f1, f2], maxLines: 4 }) })
+      const lines = stdout.trim().split('\n')
+      expect(lines).toHaveLength(4)
+      expect(stderr).toContain('2 more lines omitted')
+    })
+
+    it('includes -C context lines around a match, clamped at the top of the file', () => {
+      const f = path.join(tempDir, 'context.txt')
+      fs.writeFileSync(f, 'match line\nline2\nline3\nline4\nline5')
+      const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, context: 2, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<{ file: string; line: number; text: string; context?: Array<{ line: number; text: string }> }>
+      expect(parsed).toHaveLength(1)
+      const hit = parsed[0]
+      // Match is on line 1 -- there are no lines above it, so context is clamped to
+      // start at line 1 instead of extending to a nonexistent line -1.
+      expect(hit?.context?.map((c) => c.line)).toEqual([1, 2, 3])
+      expect(hit?.context?.[2]?.text).toBe('line3')
+    })
+
+    it('renders -C context lines in plain-text output using grep-style : and - separators', () => {
+      const f = path.join(tempDir, 'context-plain.txt')
+      fs.writeFileSync(f, 'line1\nline2\nmatchhere\nline4\nline5')
+      const { stdout } = capture(() => { runGrep({ pattern: 'matchhere', path: f, context: 1 }) })
+      const lines = stdout.trim().split('\n')
+      expect(lines).toHaveLength(3)
+      expect(lines[0]).toContain('-2- line2')
+      expect(lines[1]).toContain(':3: matchhere')
+      expect(lines[2]).toContain('-4- line4')
+    })
+
+    it('omits the context field entirely when -C is not given (no regression in JSON shape)', () => {
+      const f = path.join(tempDir, 'nocontext.txt')
+      fs.writeFileSync(f, 'plain match line')
+      const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>
+      expect(parsed[0]).not.toHaveProperty('context')
+    })
   })
 
   // ---- runConfigGet -------------------------------------------------------
