@@ -125,6 +125,31 @@ describe('overflow_guard', () => {
       // Must contain exactly charBudget visible characters.
       expect(firstLine).toBe('y'.repeat(charBudget))
     })
+
+    it('charges each kept line by its RAW length, not its ANSI-stripped length, when accounting against the budget', () => {
+      // Regression: trimToBudget measured each line's cost via stripAnsiCodes(ln).length but
+      // kept.push(ln) retained the RAW (un-stripped) line. For ANSI-heavy lines this let the
+      // accounting discount bytes that were never actually removed from the emitted output, so
+      // the real total length of the kept lines could silently exceed the computed char budget.
+      const budgetTokens = 1000
+      const charBudget = (budgetTokens - 64) * 3 // 2808
+
+      // Each line is short once ANSI is stripped (5 visible chars) but nearly 3x longer once
+      // the ANSI open/close codes are counted (14 raw chars) -- a wide raw/stripped gap.
+      const ansiLine = '\x1b[31m' + 'x'.repeat(5) + '\x1b[0m'
+      const text = Array(1000).fill(ansiLine).join('\n')
+
+      const result = trimToBudget(text, budgetTokens)
+
+      const markerIdx = result.indexOf('[token-goat: output capped')
+      expect(markerIdx).toBeGreaterThan(-1)
+      const body = result.slice(0, markerIdx - 1) // drop the '\n' just before the marker
+
+      // The real (raw) length of what is actually kept and emitted must not exceed the char
+      // budget the function computed for itself -- this is the accounting invariant the bug
+      // violated (real raw output ran to roughly 2.5x the budget in this shape pre-fix).
+      expect(body.length).toBeLessThanOrEqual(charBudget)
+    })
   })
 
   it('does not split UTF-16 surrogate pairs when trimming to budget', () => {
