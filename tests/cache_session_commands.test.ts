@@ -146,6 +146,17 @@ describe('cmdBashHistory', () => {
     const dataLines = out.split('\n').filter((l) => l.includes('cmd')).length
     expect(dataLines).toBe(2)
   })
+
+  // Regression: a non-numeric --limit used to silently coerce to NaN
+  // (Number.parseInt('abc', 10) is NaN, and Math.max(1, NaN) is NaN, which
+  // .slice(0, NaN) treats as 0), so bash-history printed "No bash output
+  // entries cached." even when the cache held real entries, instead of
+  // failing loudly on the malformed flag.
+  it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
+    const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
+    storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
+    expect(() => cmdBashHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+  })
 })
 
 // ── web-history ───────────────────────────────────────────────────────────────
@@ -181,6 +192,14 @@ describe('cmdWebHistory', () => {
     const out = capturedOutput()
     const rows = out.split('\n').filter((l) => l.includes('https://')).length
     expect(rows).toBe(2)
+  })
+
+  // Regression: same NaN-coercion bug as cmdBashHistory's --limit (see above) —
+  // a non-numeric --limit used to silently report an empty cache instead of
+  // failing loudly.
+  it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
+    storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
+    expect(() => cmdWebHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
   })
 })
 
@@ -446,6 +465,24 @@ describe('cmdCompactHint', () => {
   it('includes autocompact budget line when --trigger auto is set', () => {
     cmdCompactHint({ trigger: 'auto' })
     expect(capturedOutput()).toContain('Auto-compact')
+  })
+
+  // Regression: cmdCompactHint used to call getContextPressure() with no
+  // argument, which always short-circuits to a hardcoded { fillFraction: 0,
+  // tier: 'cool' } regardless of real session activity. Seed enough recorded
+  // bash/web activity to push the real session past the 'warm' threshold
+  // (0.5) and confirm the reported tier reflects it instead of always 'cool'.
+  it('reflects the real session tier instead of a hardcoded "cool"', () => {
+    const webFetches: Array<[string, string]> = Array.from({ length: 200 }, (_, i) => [`https://example.com/${i}`, `w${i}`])
+    const bashOutputs: Array<[string, string]> = Array.from({ length: 300 }, (_, i) => [`hash${i}`, `out${i}`])
+    const session = { files: [], hintsShown: [], webFetches, bashOutputs, curlDownloads: [] }
+    storeBlob(SESSIONS_SUBDIR, 'compact-hint-real-activity', session)
+
+    cmdCompactHint({ sessionId: 'compact-hint-real-activity', json: true })
+    const parsed = JSON.parse(capturedOutput()) as { tier: string; fillFraction: number; eventCount: number }
+    expect(parsed.tier).not.toBe('cool')
+    expect(parsed.fillFraction).toBeGreaterThan(0.5)
+    expect(parsed.eventCount).toBe(500)
   })
 })
 
