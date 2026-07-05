@@ -10,13 +10,21 @@ import * as path from 'node:path'
 // Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully.
 const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 
+// Matches a UNC path's host+share segment once backslashes have already been converted to
+// forward slashes (e.g. `\\FileServer\Dev\...` -> `//FileServer/Dev/...`). Host and share names
+// are case-insensitive on Windows, exactly like a drive letter, so two differently-cased
+// references to the same network share must normalize to the same string. Only the host/share
+// segment is captured; everything beyond it is left untouched, matching how the drive-letter
+// fold below only lowercases the drive letter itself.
+const UNC_HOST_SHARE_RE = /^\/\/([^/]+)\/([^/]+)/
+
 /**
- * Lowercases a Windows drive-letter prefix (e.g. "C:" -> "c:") so path
- * comparisons/cache keys agree regardless of input case. Only touches
- * position 0 when it's an ASCII uppercase letter immediately followed by
- * ':' — anything else (already-lowercase, digit, symbol, non-ASCII) is
- * left untouched. Shared by normalizePath (paths.ts) and canonicalize
- * (project.ts) so the rule can't drift between the two call sites again.
+ * Lowercases a Windows drive-letter prefix (e.g. "C:" -> "c:") or a UNC path's host+share
+ * segment (e.g. "//FileServer/Dev/..." -> "//fileserver/dev/...") so path comparisons/cache
+ * keys agree regardless of input case. For a drive letter, only touches position 0 when it's
+ * an ASCII uppercase letter immediately followed by ':' — anything else (already-lowercase,
+ * digit, symbol, non-ASCII) is left untouched. Shared by normalizePath (paths.ts) and
+ * canonicalize (project.ts) so the rule can't drift between the two call sites again.
  */
 export function lowercaseDriveLetter(s: string): string {
   if (s.length >= 2 && s[1] === ':') {
@@ -24,6 +32,13 @@ export function lowercaseDriveLetter(s: string): string {
     if (/^[A-Z]$/.test(c)) {
       return c.toLowerCase() + s.slice(1)
     }
+  }
+  const uncMatch = UNC_HOST_SHARE_RE.exec(s)
+  if (uncMatch) {
+    const full = uncMatch[0] as string
+    const host = uncMatch[1] as string
+    const share = uncMatch[2] as string
+    return `//${host.toLowerCase()}/${share.toLowerCase()}${s.slice(full.length)}`
   }
   return s
 }
