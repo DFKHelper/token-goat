@@ -9,7 +9,7 @@
  * spawn patterns outside this file and fails if any are found.
  */
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
@@ -233,6 +233,45 @@ export function backupFile(p: string): void {
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
 
+// Heartbeat run in a separate OS process while the lock is held. fn() is synchronous and may
+// block the holder's own thread for its entire duration (slow sync disk I/O, a GC pause, a
+// long-running synchronous computation, ...) -- a setInterval/setTimeout in the holder's own
+// process cannot fire while fn() has the thread pinned in a blocking synchronous call, so it
+// can't refresh the lock file's mtime from there (verified empirically: a busy-spin inside the
+// holder starves its own timers completely). A separate process has its own event loop and
+// keeps ticking regardless of what the holder's thread is doing, so staleness detection then
+// reflects genuine liveness instead of a fixed timeout: a live holder's heartbeat keeps the file
+// newer than staleMs indefinitely, while a crashed holder (no clean shutdown, e.g. kill -9)
+// takes the heartbeat down with it, so the file goes quiet and a later caller still reclaims it
+// once staleMs has elapsed since the last tick.
+const HEARTBEAT_SCRIPT = `
+const fs = require('fs')
+const [, lockPath, token, ms] = process.argv
+function tick() {
+  try {
+    // Only ever refresh the token already on disk; never (re)create the file. This preserves
+    // the ownership check in withFileLock's finally block unchanged -- the heartbeat never
+    // changes what makes a lock file "belong" to a holder, only how fresh its mtime looks.
+    if (fs.readFileSync(lockPath, 'utf8') === token) fs.writeFileSync(lockPath, token)
+  } catch {}
+}
+setInterval(tick, Number(ms))
+`
+
+function startHeartbeat(lockPath: string, token: string, staleMs: number): ChildProcess | undefined {
+  // A few ticks within staleMs so one missed/delayed tick can't let the file go stale; scales
+  // with staleMs (not a fixed constant) so tests overriding staleMs keep the same margin.
+  const intervalMs = Math.max(20, Math.floor(staleMs / 3))
+  try {
+    return spawn(process.execPath, ['-e', HEARTBEAT_SCRIPT, lockPath, token, String(intervalMs)], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch {
+    return undefined // best-effort: no heartbeat just means staleness falls back to the fixed timeout, as before
+  }
+}
+
 /**
  * Runs `fn` while holding an exclusive lock at `lockPath`, so the same critical section
  * never runs concurrently across separate OS processes. The mutex primitive is an atomic
@@ -243,7 +282,9 @@ const LOCK_STALE_MS = 5000
  * atomicWriteCore's rename retry) for up to `waitMs` before giving up. A lock file whose
  * mtime is older than `staleMs` is treated as abandoned by a holder that crashed without
  * releasing it and is stolen, so one crashed process can never permanently wedge every
- * future caller of this critical section.
+ * future caller of this critical section. While the lock is held, a heartbeat (see
+ * startHeartbeat above) keeps the lock file's mtime fresh so a live holder -- even one whose
+ * fn() blocks the thread for longer than staleMs -- is never mistaken for a crashed one.
  *
  * Returns `undefined` -- without ever calling `fn` -- if the lock could not be acquired in
  * time. Callers whose own persistence must never block forever should treat that as
@@ -290,9 +331,17 @@ export function withFileLock<T>(
     if (Date.now() >= deadline) return undefined
     sleepSync(Math.min(20 * ++attempt, 200))
   }
+  const heartbeat = startHeartbeat(lockPath, token, staleMs)
   try {
     return fn()
   } finally {
+    // Stop refreshing the lock's mtime before deciding whether to release it, so a heartbeat
+    // tick can't refresh/recreate the file after ownership has already been decided below.
+    try {
+      heartbeat?.kill()
+    } catch {
+      // best-effort: a heartbeat that already exited on its own is not an error
+    }
     // Only remove the lock if it still carries our own token: if a stall let a waiter decide
     // this lock was abandoned and steal it, that waiter's lock is now the live one and must
     // not be deleted out from under it.

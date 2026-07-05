@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -33,6 +35,14 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 
 import { atomicWriteBytes, atomicWriteText, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
+import { ROOT } from './helpers/bundle.js'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const LOCK_HOLDER = path.join(HERE, 'fixtures', 'lock_holder.ts')
+// Spawn tsx's own CLI entry via `node`, not the node_modules/.bin/tsx(.cmd) shim -- the shim
+// is a shell script / batch file on POSIX/Windows respectively, and Node's spawn() cannot
+// exec those directly without shell:true (same rationale as tests/session_store_race.test.ts).
+const TSX_CLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -204,6 +214,76 @@ describe('withFileLock', () => {
     expect(existsSync(lockPath)).toBe(false) // released after the steal + run
     expect(elapsed).toBeLessThan(1000) // stealing is immediate, not bounded by the full waitMs
   })
+
+  it(
+    'never steals the lock while its real holder is still actively running, thanks to the heartbeat (regression)',
+    async () => {
+      const lockPath = path.join(dir, 'e.lock')
+
+      // A real child process holds the lock and busy-spins *synchronously* for holdMs (well past
+      // staleMs) inside fn() -- this is the one scenario a heartbeat living in the holder's own
+      // process cannot detect, because a setInterval there can never fire while fn() has that
+      // process's single thread pinned in a non-yielding synchronous loop (verified empirically:
+      // a busy-spin starves the holder's own timers completely). Only a heartbeat running in a
+      // separate OS process -- which withFileLock now spawns internally -- keeps ticking
+      // regardless of what the holder's thread is doing.
+      const holdMs = 8000
+      const staleMs = 4000
+      const holderExit = new Promise<string>((resolve, reject) => {
+        const child = spawn(process.execPath, [TSX_CLI, LOCK_HOLDER, lockPath, String(holdMs), String(staleMs)], {
+          cwd: ROOT,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
+        child.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
+        child.on('error', reject)
+        child.on('exit', (code) => {
+          if (code === 0) resolve(stdout)
+          else reject(new Error(`lock_holder exited with code ${code}: ${stderr}`))
+        })
+      })
+
+      // Wait for the holder to actually acquire the lock (poll instead of a fixed sleep: tsx's
+      // own transpile/startup cost is itself a source of scheduling jitter this fix has to
+      // tolerate, and a fixed short wait flaked under that jitter).
+      const acquireDeadline = Date.now() + 4000
+      while (!existsSync(lockPath) && Date.now() < acquireDeadline) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      expect(existsSync(lockPath)).toBe(true)
+      // Let the heartbeat tick several times before trying to steal. staleMs is generous here
+      // (2000ms, well above production's 5000ms default only in that it's smaller -- the ratio
+      // to the heartbeat interval, staleMs/3, is unchanged) specifically so this assertion isn't
+      // flaky under real OS scheduling jitter from spawning several node processes in the same
+      // test run: a single heartbeat tick landing 100-200ms late must not read as "stale".
+      await new Promise((r) => setTimeout(r, 1500))
+
+      const start = Date.now()
+      const stolen = withFileLock(lockPath, () => 'stealer-ran', { staleMs, waitMs: 4000 })
+      const elapsed = Date.now() - start
+
+      // The holder is still busy-spinning here (holdMs=8000, comfortably longer than the wait
+      // above plus waitMs), so this caller must give up -- never steal. Pre-fix (no heartbeat),
+      // this same setup steals the lock from the still-running holder well before waitMs
+      // elapses (confirmed via git stash: pre-fix code returns 'stealer-ran' here, well under
+      // waitMs). staleMs/waitMs are generous here (matching production's real margins) so a
+      // single heartbeat tick landing late under a heavily loaded parallel full-suite run still
+      // can't false-trigger staleness.
+      expect(stolen).toBeUndefined()
+      expect(elapsed).toBeGreaterThanOrEqual(3500) // it genuinely waited out waitMs, not an instant steal
+
+      const holderStdout = await holderExit
+      expect(JSON.parse(holderStdout)).toEqual({ result: 'holder-done' }) // holder ran fn() to completion, unmolested
+
+      // Once the holder has actually released the lock, a fresh acquire must still succeed
+      // normally -- the heartbeat must not leave the lock wedged forever either.
+      const after = withFileLock(lockPath, () => 'post-release', { staleMs, waitMs: 1000 })
+      expect(after).toBe('post-release')
+    },
+    20_000,
+  )
 })
 
 describe('noWindowCreationFlags', () => {
