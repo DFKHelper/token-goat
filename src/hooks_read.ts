@@ -247,6 +247,9 @@ function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
 /** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
 const DIFFABLE_SOURCE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|swift|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml)$/i
 
+/** Extensions with a tree-sitter language adapter -- i.e. where `token-goat skeleton`/`outline` actually produce structure. */
+const SOURCE_EXT_RE = /\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|c|h)$/i
+
 /** Generate extension-aware surgical-read hint for a file. */
 function surgicalHint(filePath: string, basename: string): string {
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
@@ -772,7 +775,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
 
     // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-    const isSourceExt = /\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|c|h)$/i.test(basename)
+    const isSourceExt = SOURCE_EXT_RE.test(basename)
     if (isSourceExt && reads >= 2) {
       recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
       return denyOutput(
@@ -901,6 +904,16 @@ function extractReadOutput(raw: Record<string, unknown>): string {
  * next pre_tool_use for the same file returns an immediate deny with a
  * surgical-read hint instead of allowing another full (and expensive) read.
  */
+/** Count text lines the way `wc -l` does: newline count, plus one for a final non-empty
+ *  line with no trailing newline. Empty content has zero lines. Used to gate the
+ *  post-read structural-navigation hint against `post_read_code_compress.min_lines`. */
+function countTextLines(content: string): number {
+  if (content.length === 0) return 0
+  const parts = content.split(/\r\n|\r|\n/)
+  if (parts[parts.length - 1] === '') parts.pop()
+  return parts.length
+}
+
 export function postReadHandler(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
@@ -950,6 +963,28 @@ export function postReadHandler(event: HookEvent): HookOutput {
       writeSessionManifest(project.hash, getSessionId(), { files: mappedFiles })
     } catch {
       // Fail-soft: ignore any errors in manifest writing
+    }
+  }
+
+  // Post-read structural-navigation hint: once a just-read source file crosses
+  // post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of
+  // a future full re-read. Only fires for extensions with a tree-sitter language adapter
+  // (SOURCE_EXT_RE), where skeleton/outline actually produce structure.
+  if (SOURCE_EXT_RE.test(postBasename)) {
+    try {
+      const sz = statSize(normalized)
+      if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+        const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
+        const minLines = loadConfig().post_read_code_compress.min_lines
+        if (lineCount >= minLines) {
+          recordStat('session_hint', sz, Math.round(sz / 4))
+          return contextOutput(
+            normalized + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + normalized + '"` or `token-goat outline "' + normalized + '"` for structural navigation instead of a future full re-read.',
+          )
+        }
+      }
+    } catch {
+      // best-effort; never block the hook
     }
   }
 
