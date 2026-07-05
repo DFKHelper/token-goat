@@ -182,4 +182,14 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   it('reads rewriteInput\'s updatedInput from the real hookSpecificOutput-nested location', () => {
     expect(PI_EXTENSION_SCRIPT).toMatch(/hso\["updatedInput"\]/)
   })
+
+  it('sets TOKEN_GOAT_HARNESS_OVERRIDE=pi so detectHarness() resolves correctly, since pi has no ambient env-var signal of its own', () => {
+    expect(PI_EXTENSION_SCRIPT).toMatch(/TOKEN_GOAT_HARNESS_OVERRIDE:\s*"pi"/)
+  })
+
+  it('excludes Glob from PRE_HOOK_TOOLS, since no pre_tool_use handler exists for it', () => {
+    const match = /const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)/.exec(PI_EXTENSION_SCRIPT)
+    expect(match).not.toBeNull()
+    expect(match?.[1]).not.toMatch(/"Glob"/)
+  })
 })

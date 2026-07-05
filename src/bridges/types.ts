@@ -22,6 +22,7 @@ export type HarnessName =
   | 'gemini'
   | 'hermes'
   | 'openclaw'
+  | 'pi'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */
