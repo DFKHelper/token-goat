@@ -268,6 +268,23 @@ describe('embeddings module', () => {
       expect(chunks[1].endLine).toBe(23)
       expect(chunks[2].kind).toBe('symbol')
     })
+
+    it('merges consecutive short boundaries too small on their own to clear MIN_CHUNK_CHARS, instead of dropping every one of them (regression: a barrel/const-module file previously indexed to zero chunks)', () => {
+      const contentLines = ['const A = 1', 'const B = 2', 'const C = 3', 'const D = 4', 'const E = 5']
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = contentLines.map((_, i) => ({
+        start: i + 1,
+        end: i + 1,
+        kind: 'const',
+      }))
+
+      const chunks = embeddings.chunkFile('barrel.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
+      expect(chunks.map((c) => c.text).join('\n')).toContain('const E = 5')
+    })
   })
 
   describe('mergeNearbyHits()', () => {

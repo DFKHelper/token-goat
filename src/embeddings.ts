@@ -494,6 +494,33 @@ export function chunkFile(
     }
   }
 
+  // A boundary range itself (not just an inter-boundary gap) can still be
+  // shorter than MIN_CHUNK_CHARS on its own -- a short-symbol-dominated file
+  // (barrel/index re-exports, enum/const modules) would otherwise have every
+  // one of its boundary chunks silently dropped by splitRangeIntoChunks's own
+  // floor below, one at a time, leaving the file entirely absent from the
+  // semantic index. Fold any such range into a neighbor first, same as the
+  // gap-folding above: prefer the previous range (already finalized), falling
+  // back to merging forward only for a too-short first range.
+  let i = 0
+  while (i < ranges.length) {
+    const r = ranges[i]!
+    if (gapLength(r.start, r.end) >= MIN_CHUNK_CHARS) {
+      i++
+      continue
+    }
+    if (i > 0) {
+      ranges[i - 1]!.end = r.end
+      ranges.splice(i, 1)
+      i--
+    } else if (ranges.length > 1) {
+      ranges[i + 1]!.start = r.start
+      ranges.splice(i, 1)
+    } else {
+      i++
+    }
+  }
+
   const chunks: Chunk[] = []
   for (const r of ranges) {
     chunks.push(...splitRangeIntoChunks(filePath, lines, r.start, r.end, chunkSize, overlap, r.kind))
