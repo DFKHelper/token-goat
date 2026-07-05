@@ -31,7 +31,7 @@ import { resolveIndexPath } from './paths.js'
 import { appendDirtyPath } from './hooks_index.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
-import { installHooks, uninstallHooks } from './install.js'
+import { installHooks, isInstalled, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
@@ -271,6 +271,7 @@ async function cmdInstall(opts: {
   gemini?: boolean
   pi?: boolean
   opencode?: boolean
+  hermes?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -320,6 +321,19 @@ async function cmdInstall(opts: {
     }
   }
 
+  // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`,
+  // which loads the same Claude Code settings.json installHooks() just
+  // wrote. There is no separate Hermes config file to patch, so this is a
+  // verification-only flag -- run the same isInstalled() check `doctor`
+  // uses and report whether the hooks Hermes will inherit are really there.
+  if (opts.hermes === true) {
+    out(
+      isInstalled(scope)
+        ? `Hermes integration verified: token-goat hooks are present in ${result.settingsPath}.`
+        : `Hermes integration NOT verified: token-goat hooks are missing from ${result.settingsPath}.`,
+    )
+  }
+
   // Pre-generate compacts for all installed skills.
   try {
     const skillDir = path.join(homedir(), '.claude', 'skills')
@@ -362,6 +376,7 @@ function cmdUninstall(opts: {
   gemini?: boolean
   pi?: boolean
   opencode?: boolean
+  hermes?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -404,6 +419,14 @@ function cmdUninstall(opts: {
         ? 'Removed token-goat opencode plugin.'
         : 'No token-goat opencode plugin to remove.',
     )
+  }
+
+  // --hermes removes no files: Hermes shares the Claude Code hook entries
+  // uninstallHooks() above already stripped, so this only exists for CLI
+  // symmetry with the other harness flags (README's uninstall table lists
+  // --hermes alongside the rest).
+  if (opts.hermes === true) {
+    out('No separate Hermes integration to remove (it shares the Claude Code hook entries).')
   }
 }
 
@@ -1571,6 +1594,7 @@ export function buildProgram(): Command {
     .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
     .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
+    .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -1582,6 +1606,7 @@ export function buildProgram(): Command {
     .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
     .option('--opencode', 'also remove the opencode plugin')
+    .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
