@@ -162,6 +162,112 @@ describe('embeddings module', () => {
       expect(chunks.length).toBe(1)
       expect(chunks[0].endLine).toBe(5) // correct both pre- and post-fix
     })
+
+    it('emits one chunk per boundary, tagged with the boundary kind and its exact line range', () => {
+      const contentLines = [
+        'function a() {', // 1
+        '  return "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa";', // 2
+        '}', // 3
+        'function b() {', // 4
+        '  return "bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb";', // 5
+        '}', // 6
+        'function c() {', // 7
+        '  return "cccc cccc cccc cccc cccc cccc cccc cccc";', // 8
+        '}', // 9
+      ]
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 1, end: 3, kind: 'symbol' },
+        { start: 4, end: 6, kind: 'symbol' },
+        { start: 7, end: 9, kind: 'symbol' },
+      ]
+
+      const chunks = embeddings.chunkFile('multi.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      expect(chunks.length).toBe(3)
+      expect(chunks.map((c) => c.kind)).toEqual(['symbol', 'symbol', 'symbol'])
+      expect(chunks.map((c) => [c.startLine, c.endLine])).toEqual([
+        [1, 3],
+        [4, 6],
+        [7, 9],
+      ])
+    })
+
+    it('sub-splits an oversized boundary with the window logic, keeping the boundary kind and staying under the size cap', () => {
+      const bodyLines = Array(50)
+        .fill(0)
+        .map((_, i) => `  line ${i} of the big function body padding text`)
+      const contentLines = ['function big() {', ...bodyLines, '}']
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [{ start: 1, end: contentLines.length, kind: 'symbol' }]
+
+      const chunkSize = 300
+      const chunks = embeddings.chunkFile('big.ts', content, chunkSize, 50, boundaries)
+
+      expect(chunks.length).toBeGreaterThan(1)
+      for (const chunk of chunks) {
+        expect(chunk.kind).toBe('symbol')
+        expect(chunk.text.length).toBeLessThanOrEqual(chunkSize)
+      }
+      // The sub-split pieces still cover (at least) the original boundary's range.
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
+    })
+
+    it('folds a small gap between two boundaries into the preceding chunk instead of emitting a standalone fragment', () => {
+      const contentLines = [
+        'function a() {', // 1
+        '  return "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa";', // 2
+        '}', // 3
+        '', // 4 - small gap, well under MIN_CHUNK_CHARS
+        'function b() {', // 5
+        '  return "bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb";', // 6
+        '}', // 7
+      ]
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 1, end: 3, kind: 'symbol' },
+        { start: 5, end: 7, kind: 'symbol' },
+      ]
+
+      const chunks = embeddings.chunkFile('gap.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      expect(chunks.length).toBe(2)
+      expect(chunks[0].kind).toBe('symbol')
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[0].endLine).toBe(4) // gap line 4 absorbed into the preceding boundary chunk
+      expect(chunks[1].startLine).toBe(5)
+      expect(chunks[1].endLine).toBe(7)
+    })
+
+    it('keeps a gap large enough to clear MIN_CHUNK_CHARS as its own standalone window chunk', () => {
+      const fillerLines = Array(20)
+        .fill(0)
+        .map((_, i) => `// filler comment line ${i} padding text to be long enough`)
+      const contentLines = [
+        'function a() {', // 1
+        '  return "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa";', // 2
+        '}', // 3
+        ...fillerLines, // 4..23
+        'function b() {', // 24
+        '  return "bbbb bbbb bbbb bbbb bbbb bbbb bbbb bbbb";', // 25
+        '}', // 26
+      ]
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 1, end: 3, kind: 'symbol' },
+        { start: 24, end: 26, kind: 'symbol' },
+      ]
+
+      const chunks = embeddings.chunkFile('biggap.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      expect(chunks.length).toBe(3)
+      expect(chunks[0].kind).toBe('symbol')
+      expect(chunks[1].kind).toBe('window')
+      expect(chunks[1].startLine).toBe(4)
+      expect(chunks[1].endLine).toBe(23)
+      expect(chunks[2].kind).toBe('symbol')
+    })
   })
 
   describe('mergeNearbyHits()', () => {

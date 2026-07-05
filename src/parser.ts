@@ -22,11 +22,14 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
 import { indexFile as embedIndexFile } from './embeddings.js'
+import type { ChunkBoundary } from './embeddings.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
+import { querySymbols } from './index_reader.js'
+import { extractMarkdownHeadings } from './hints/markdown_hints.js'
 import { extractCsharp } from './languages/csharp.js'
 import { extractPhp } from './languages/php.js'
 import { extractHtml } from './languages/html.js'
@@ -1361,6 +1364,35 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
  * drain, which must return instantly per indexFileSync's own contract) should fire it and
  * forget instead of awaiting it.
  */
+/**
+ * Structural cut points for this file's embedding chunks, derived from the same
+ * indexing pass rather than re-parsed from scratch: markdown/doc files get one
+ * 'section' boundary per heading (extractMarkdownHeadings - cheap here since the
+ * caller already holds the full content in memory); every other language gets one
+ * 'symbol' boundary per row already committed to the `symbols` table moments earlier
+ * by indexFileSync in the same cli.ts/worker.ts call sequence. Empty when the file
+ * has no symbols/headings (unparsed language, plain text, or a file with genuinely
+ * nothing extractable) - chunkFile's own `boundaries.length === 0` check falls back
+ * to its plain sliding window in that case, so this never needs to signal "no boundaries"
+ * any differently than an empty array.
+ */
+function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: string): ChunkBoundary[] {
+  if (detectLanguage(filePath) === 'markdown') {
+    const headings = extractMarkdownHeadings(content)
+    return headings.map((h, i) => ({
+      start: h.lineNumber,
+      // Runs to just before the next heading, or to end-of-file for the last one.
+      // chunkFile clips end values to the file's actual line count, so this sentinel
+      // is safe without re-deriving the file's line count here.
+      end: headings[i + 1] !== undefined ? headings[i + 1]!.lineNumber - 1 : Number.MAX_SAFE_INTEGER,
+      kind: 'section' as const,
+    }))
+  }
+
+  const symbols = querySymbols({ filePath, limit: 10000 }, dbPath)
+  return symbols.map((s) => ({ start: s.lineStart, end: s.lineEnd, kind: 'symbol' as const }))
+}
+
 export async function indexFileEmbeddings(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) return
   let content: string
@@ -1371,7 +1403,8 @@ export async function indexFileEmbeddings(filePath: string, dbPath: string = glo
   }
   try {
     const db = getDb(dbPath)
-    await embedIndexFile(db, filePath, content)
+    const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
+    await embedIndexFile(db, filePath, content, boundaries)
   } catch {
     // Best-effort: never fail the overall index over an embeddings-only error.
   }
