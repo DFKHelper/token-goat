@@ -26,6 +26,7 @@ import {
   uninstallPi,
 } from '../src/bridges/pi_install.js'
 import { PI_EXTENSION_SCRIPT } from '../src/bridges/pi.js'
+import { HOOK_EVENTS } from '../src/types.js'
 
 let TMP: string
 let origCwd: string
@@ -148,5 +149,37 @@ describe('isPiInstalled / uninstallPi', () => {
     installPi()
     uninstallPi()
     expect(fs.existsSync(localResult.extensionPath)).toBe(true)
+  })
+})
+
+// PI_EXTENSION_SCRIPT's file-writing/idempotency tests above (unlike this
+// block) never exercised whether the embedded template actually speaks
+// token-goat's real hook protocol. It once didn't: every callHook() call in
+// the shipped template used invented per-tool-type event names ("pre-read",
+// "post-bash", "session-start", "pre-compact") that don't exist in the real
+// HOOK_EVENTS vocabulary, so relay() (src/relay.ts) silently no-op'd (`{}`)
+// on every single one -- bash compression, re-read denial, image shrinking,
+// post-edit indexing, and the compaction manifest were all completely inert
+// once installed, despite every test in this file passing. This directly
+// mirrors this project's own documented "injected-seam trap": the file gets
+// written and byte-compared correctly, but nothing checks the content it
+// ships actually reaches a real handler. See HOOK_EVENTS/isHookEventName's
+// contract in src/types.ts / src/relay.ts.
+describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
+  it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
+    const calls = [...PI_EXTENSION_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const eventName of calls) {
+      expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
+    }
+  })
+
+  it('parses the deny response from the real {decision:"block"} shape, not a Claude-Code-only hookSpecificOutput.permissionDecision shape', () => {
+    expect(PI_EXTENSION_SCRIPT).toMatch(/resp\["decision"\]\s*===\s*"block"/)
+    expect(PI_EXTENSION_SCRIPT).not.toMatch(/hso\["permissionDecision"\]\s*===\s*"deny"/)
+  })
+
+  it('reads rewriteInput\'s updatedInput from the real hookSpecificOutput-nested location', () => {
+    expect(PI_EXTENSION_SCRIPT).toMatch(/hso\["updatedInput"\]/)
   })
 })
