@@ -824,6 +824,51 @@ Some content that makes the file large enough`
     expect(r3.hookType).toBe('pass')
   })
 
+  it('recognizes .cs as a source extension for the count-based re-read deny (regression: SOURCE_EXT_RE used to hand-maintain a duplicate of parser_types.ts\'s extension list and omitted .cs, .mjs/.cjs/.mts/.cts, .cc/.cxx/.hpp/.hxx, .kts, and .pyi despite each having a real tree-sitter adapter)', () => {
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.cs`,
+    )
+    fs.writeFileSync(p, 'class Foo {}')
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('context')
+
+    // The source-ext count-based deny fires here (not the generic fallback), producing its
+    // own distinct message pointing at token-goat read/skeleton/outline.
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).toBe('deny')
+    if (r3.hookType === 'deny') {
+      expect(r3.message).toContain('Read this file 2 times already')
+      expect(r3.message).toContain('token-goat skeleton')
+    }
+  })
+
+  it('does not recognize .swift as a source extension for the count-based re-read deny (regression: .swift was hardcoded into SOURCE_EXT_RE despite parser_types.ts having no adapter for it, so a 3rd read produced the skeleton/outline-pointing deny message even though those commands would return nothing for a .swift file)', () => {
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.swift`,
+    )
+    fs.writeFileSync(p, 'struct Foo {}')
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('context')
+
+    // Falls through to the generic re-read-dedup deny instead of the source-ext-specific one.
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).toBe('deny')
+    if (r3.hookType === 'deny') {
+      expect(r3.message).not.toContain('token-goat skeleton')
+      expect(r3.message).toContain('already read this session')
+    }
+  })
+
   // Count-based deny: 3rd+ read of source files (Item 1 — nestpilot mining)
   it('passes first read of a .ts source file', () => {
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
