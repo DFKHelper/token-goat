@@ -23,6 +23,7 @@ import { buildResumePacket, MAX_RESUME_CHARS } from '../src/resume.js'
 
 let tmpHome: string
 let prevHome: string | undefined
+let prevHarnessOverride: string | undefined
 let stdoutLines: string[]
 let writeSpy: ReturnType<typeof vi.spyOn>
 
@@ -30,6 +31,11 @@ beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-cache-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
+  // Pin harness detection so getContextPressure's fillFraction (scaled by the
+  // per-harness auto-trigger multiplier) doesn't depend on the ambient
+  // environment this suite happens to run in.
+  prevHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
   stdoutLines = []
   writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
     stdoutLines.push(String(chunk))
@@ -41,6 +47,8 @@ afterEach(() => {
   writeSpy.mockRestore()
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
+  if (prevHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prevHarnessOverride
   try { fs.rmSync(tmpHome, { recursive: true, force: true }) } catch {
     // best-effort cleanup
   }
