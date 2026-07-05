@@ -44,6 +44,7 @@ import * as path from 'node:path'
 import { parse, stringify } from 'smol-toml'
 
 import { atomicWriteText, ensureDirSync, extractErrorMessage } from '../util.js'
+import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
@@ -140,8 +141,11 @@ function readCodexConfig(p: string, opts: { strict?: boolean } = {}): CodexConfi
 }
 
 /** True when `command` is a token-goat-authored Codex hook invocation. */
+const CODEX_MARKER_PATTERN = anchoredMarkerPattern(CODEX_COMMAND_MARKER)
+
+/** True when `command` invokes token-goat's Codex shim -- anchored so a marker embedded as a substring inside an unrelated command (e.g. a longer path) can't false-positive. */
 function isCodexTokenGoatCommand(command: string): boolean {
-  return typeof command === 'string' && command.includes(CODEX_COMMAND_MARKER)
+  return typeof command === 'string' && CODEX_MARKER_PATTERN.test(command)
 }
 
 /** True when `groups` already has a token-goat hook entry under the exact `matcher` value. */

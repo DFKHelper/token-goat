@@ -52,6 +52,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
+import { anchoredMarkerPattern } from '../install.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage } from '../util.js'
 
 /** Marker substring identifying a token-goat-authored Gemini hook command. */
@@ -160,8 +161,11 @@ function readGeminiSettings(p: string, opts: { strict?: boolean } = {}): GeminiS
 }
 
 /** True when `command` is a token-goat-authored Gemini hook invocation. */
+const GEMINI_MARKER_PATTERN = anchoredMarkerPattern(GEMINI_COMMAND_MARKER)
+
+/** True when `command` invokes token-goat's Gemini hook -- anchored so a marker embedded as a substring inside an unrelated command can't false-positive. */
 function isGeminiTokenGoatCommand(command: string): boolean {
-  return typeof command === 'string' && command.includes(GEMINI_COMMAND_MARKER)
+  return typeof command === 'string' && GEMINI_MARKER_PATTERN.test(command)
 }
 
 /** True when `groups` already has a token-goat hook entry under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */

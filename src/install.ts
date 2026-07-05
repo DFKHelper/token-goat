@@ -66,7 +66,7 @@ const LEGACY_COMMAND_MARKERS = ['tokenwise', 'token_goat', 'tg-hook', 'token-goa
  * substring check can't false-positive on a marker embedded inside a longer
  * identifier (e.g. a user hook literally named `my-token-goat-hook-config`).
  */
-function anchoredMarkerPattern(marker: string): RegExp {
+export function anchoredMarkerPattern(marker: string): RegExp {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`(?<![a-zA-Z0-9_-])${escaped}(?![a-zA-Z0-9_-])`)
 }
