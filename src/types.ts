@@ -14,7 +14,6 @@
  *
  * - `deny`    — block the tool call and surface `message` to the agent.
  * - `context` — let the call proceed but inject `context` as extra context.
- * - `update`  — replace the tool result body with `content`.
  * - `rewriteInput` — let the call proceed but replace the tool input wholesale
  *   with `updatedInput` (a `PreToolUse` rewrite). Used by the bash-compression
  *   hook to transparently wrap a command in `token-goat compress`; the object
@@ -24,7 +23,6 @@
 export type HookOutput =
   | { readonly hookType: 'deny'; readonly message: string }
   | { readonly hookType: 'context'; readonly context: string }
-  | { readonly hookType: 'update'; readonly content: string }
   | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
   | { readonly hookType: 'pass' }
 

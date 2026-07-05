@@ -165,8 +165,6 @@ export function serializeOutput(output: HookOutput, eventName: HookEventName): s
           additionalContext: output.context,
         },
       })
-    case 'update':
-      return JSON.stringify({ updatedInput: { content: output.content } })
     case 'rewriteInput':
       return JSON.stringify({
         hookSpecificOutput: {

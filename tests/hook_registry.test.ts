@@ -78,14 +78,14 @@ describe('hook registry', () => {
       })
       registerHook('pre_tool_use', () => {
         calls.push('b')
-        return { hookType: 'update', content: 'new' }
+        return { hookType: 'context', context: 'new' }
       })
       registerHook('pre_tool_use', () => {
         calls.push('c')
         return { hookType: 'pass' }
       })
       const result = await runHook(makeEvent())
-      expect(result).toEqual({ hookType: 'update', content: 'new' })
+      expect(result).toEqual({ hookType: 'context', context: 'new' })
       expect(calls).toEqual(['a', 'b'])
     })
 
@@ -153,12 +153,6 @@ describe('hook registry', () => {
         expect(result).toHaveProperty('hookSpecificOutput.additionalContext', 'hint')
         expect(result).not.toHaveProperty('systemMessage')
       }
-    })
-
-    it('serializes update with a nested content object', () => {
-      expect(serializeOutput({ hookType: 'update', content: 'body' }, 'pre_tool_use')).toBe(
-        JSON.stringify({ updatedInput: { content: 'body' } }),
-      )
     })
 
     it('serializes pass to an empty object', () => {
