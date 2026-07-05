@@ -320,7 +320,11 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     pre_skill_advisory: true,
     context_threshold_advisory: true,
     diff_hint_min_tokens_saved: 1000,
-    large_read_redirect_bytes: 45_000,
+    // Base for the pressure-scaled first-read deny gate in hooks_read.ts (large file, never read
+    // before). Matches that gate's long-tuned 500KB threshold at 'cool' context pressure; warm/hot/
+    // critical scale it down from there so the same read gets redirected to a surgical read sooner
+    // once the context window is nearly full.
+    large_read_redirect_bytes: 512_000,
     reread_deny: true,
     reread_deny_min_bytes: 2048,
     baseline_budget_tokens: 0,

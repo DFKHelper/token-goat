@@ -22,7 +22,7 @@ import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
-import { writeSessionManifest, readAllSessionManifests } from './compact.js'
+import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
@@ -64,8 +64,25 @@ const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 /** Re-read deny threshold: files above this size that have already been read are denied rather than just hinted. */
 const REREAD_DENY_BYTES = 50 * 1024
 
-/** First-read deny threshold: files this large are denied even on the first read (too expensive to load). */
-const LARGE_FILE_DENY_BYTES = 500 * 1024
+/**
+ * Multiplies `hints.large_read_redirect_bytes` down as context pressure rises, so a first read
+ * that's fine when the session is cool gets redirected to a surgical read sooner once the window
+ * is nearly full. Mirrors the pre-TS-port pressure-scaling design (commit 66a25e88): cool keeps the
+ * configured base, critical tightens to ~18% of it.
+ */
+const DENY_THRESHOLD_TIER_MULTIPLIERS: Record<'cool' | 'warm' | 'hot' | 'critical', number> = {
+  cool: 1.0,
+  warm: 0.67,
+  hot: 0.33,
+  critical: 0.18,
+}
+
+/** First-read deny threshold: files this large are denied even on the first read (too expensive to load), tightened by the current session's context pressure. */
+function largeFileDenyBytes(): number {
+  const base = loadConfig().hints.large_read_redirect_bytes
+  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined).tier
+  return Math.round(base * DENY_THRESHOLD_TIER_MULTIPLIERS[tier])
+}
 
 /** Check if a path is under node_modules/. Case-insensitive on case-insensitive filesystems (Windows, macOS by default), case-sensitive elsewhere. */
 function isNodeModulesPath(p: string): boolean {
@@ -548,7 +565,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
-        const tooLargeForFirstRead = markdownSize !== null && markdownSize >= LARGE_FILE_DENY_BYTES
+        const tooLargeForFirstRead = markdownSize !== null && markdownSize >= largeFileDenyBytes()
         if (alreadyRead || tooLargeForFirstRead) {
           message += ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
           return denyOutput(message)
@@ -823,7 +840,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
     recordStat('session_hint', size, Math.round(size / 4))
-    if (gateSize >= LARGE_FILE_DENY_BYTES) {
+    if (gateSize >= largeFileDenyBytes()) {
       // The read is blocked outright, so it never actually happened — don't record it
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
       // offset/limit params from a plain re-read) hits "already read this session"

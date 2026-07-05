@@ -8,7 +8,8 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, getSessionId } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
+import { saveSessionState } from '../src/session_store.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
@@ -169,6 +170,46 @@ describe('preReadHandler', () => {
       expect(result.message).toContain('token-goat skeleton')
       expect(result.message).toContain('To edit it anyway')
       expect(result.message).toContain('token-goat replace')
+    }
+  })
+
+  // Regression coverage for the pressure-scaled deny threshold (hints.large_read_redirect_bytes):
+  // the same 150KB read that gets only a soft context hint at 'cool' pressure (see the sibling
+  // 100KB-500KB test above) must hard-deny once the session is under 'critical' context pressure,
+  // since that tier scales the 512KB base threshold down to ~92KB.
+  it('tightens the deny threshold to a hard deny under critical context pressure', () => {
+    // Pin harness detection so this doesn't depend on the ambient environment the test
+    // runner happens to execute in (getContextPressure's effective window is
+    // CONTEXT_AUTOCOMPACT_TOKENS * getAutoTriggerMultiplier() -- 'generic''s multiplier is
+    // 1.0, matching the 561,000-token 'critical' floor computed below unscaled).
+    const savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
+    try {
+      const sessionId = getSessionId()
+      // bashOutputs are never capped like files are (MAX_FILES) -- 2000 synthetic entries at
+      // 500 tokens each comfortably clears the 561,000-token 'critical' floor (0.85 * 660,000).
+      const bashOutputs: Array<[string, string]> = Array.from({ length: 2000 }, (_, i) => [
+        `cmd${i}`,
+        `output${i}`,
+      ])
+      importSessionState({
+        files: [],
+        hintsShown: [],
+        webFetches: [],
+        bashOutputs,
+        curlDownloads: [],
+      })
+      saveSessionState(sessionId)
+
+      const p = makeTmpFile('x'.repeat(150 * 1024))
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('is very large')
+      }
+    } finally {
+      if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
     }
   })
 
@@ -623,7 +664,8 @@ How to use this
 ### Examples
 Examples here`
 
-    // 500KB deny threshold (LARGE_FILE_DENY_BYTES in hooks_read.ts) — pad well past it.
+    // 500KB deny threshold at 'cool' pressure (largeFileDenyBytes() in hooks_read.ts, no session
+    // cache here so getContextPressure() defaults to 'cool') — pad well past it.
     const p = _makeTmpMdFile(mdContent + 'x'.repeat(520 * 1024))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
