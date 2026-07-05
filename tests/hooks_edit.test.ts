@@ -82,6 +82,24 @@ describe('postEditHandler', () => {
     expect(getDirtyPaths()).toEqual([normalizePath('/a/w.ts'), normalizePath('/a/e.ts')])
   })
 
+  it('fires for NotebookEdit and records the edit via notebook_path', () => {
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'NotebookEdit',
+      toolInput: { notebook_path: '/a/notebook.ipynb' },
+      sessionId: 'test',
+    })
+
+    const result = postEditHandler(event)
+
+    expect(result.hookType).toBe('pass')
+    const normalized = normalizePath('/a/notebook.ipynb')
+    const entry = session.getSessionFiles().get(normalized)
+    expect(entry).toBeDefined()
+    expect(entry?.wasEdited).toBe(true)
+    expect(getDirtyPaths()).toEqual([normalized])
+  })
+
   it('returns contextOutput with markdown hint when editing .md files', () => {
     const result = postEditHandler(editEvent('/project/README.md'))
     expect(result.hookType).toBe('context')

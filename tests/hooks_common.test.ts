@@ -44,6 +44,24 @@ describe('hooks_common', () => {
     it('getFilePath returns undefined for a non-string value', () => {
       expect(getFilePath(makeEvent({ toolInput: { file_path: 42 } }))).toBeUndefined()
     })
+
+    it('getFilePath falls back to notebook_path when file_path is absent (NotebookEdit)', () => {
+      expect(
+        getFilePath(makeEvent({ toolName: 'NotebookEdit', toolInput: { notebook_path: '/a/nb.ipynb' } })),
+      ).toBe('/a/nb.ipynb')
+    })
+
+    it('getFilePath prefers file_path over notebook_path when both are present', () => {
+      expect(
+        getFilePath(
+          makeEvent({ toolInput: { file_path: '/a/b.ts', notebook_path: '/a/nb.ipynb' } }),
+        ),
+      ).toBe('/a/b.ts')
+    })
+
+    it('getFilePath returns undefined when notebook_path is an empty string', () => {
+      expect(getFilePath(makeEvent({ toolInput: { notebook_path: '' } }))).toBeUndefined()
+    })
   })
 
   describe('tool classifiers', () => {
