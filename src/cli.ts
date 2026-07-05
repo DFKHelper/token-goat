@@ -33,6 +33,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
+import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -261,10 +262,19 @@ async function cmdHook(event: string): Promise<void> {
   await relay(event)
 }
 
-async function cmdInstall(opts: { project?: boolean }): Promise<void> {
+async function cmdInstall(opts: { project?: boolean; codex?: boolean }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
+
+  if (opts.codex === true) {
+    const codexResult = installCodex()
+    if (codexResult.alreadyInstalled) {
+      out(`Codex CLI integration already installed → ${codexResult.configPath}`)
+    } else {
+      out(`Installed token-goat Codex CLI integration → ${codexResult.configPath}, ${codexResult.agentsPath}`)
+    }
+  }
 
   // Pre-generate compacts for all installed skills.
   try {
@@ -302,10 +312,22 @@ async function cmdInstall(opts: { project?: boolean }): Promise<void> {
   }
 }
 
-function cmdUninstall(opts: { project?: boolean }): void {
+function cmdUninstall(opts: { project?: boolean; codex?: boolean }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const removed = uninstallHooks(scope)
   out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
+
+  // --codex is additive on both install and uninstall (README: "Add --codex ...
+  // to also strip those integrations"), so it runs on top of the base uninstall
+  // above rather than replacing it.
+  if (opts.codex === true) {
+    const codexRemoved = uninstallCodex()
+    out(
+      codexRemoved
+        ? 'Removed token-goat Codex CLI integration.'
+        : 'No token-goat Codex CLI integration to remove.',
+    )
+  }
 }
 
 function cmdWorkerStart(): void {
@@ -1468,12 +1490,14 @@ export function buildProgram(): Command {
     .command('install')
     .description('install hooks into Claude Code settings')
     .option('-p, --project', 'install into project scope instead of user scope')
+    .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .action(guard(cmdInstall))
 
   program
     .command('uninstall')
     .description('remove token-goat hooks from Claude Code settings')
     .option('-p, --project', 'uninstall from project scope instead of user scope')
+    .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .action(guard(cmdUninstall))
 
   const worker = program.command('worker').description('background indexer lifecycle')
