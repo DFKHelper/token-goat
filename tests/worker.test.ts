@@ -10,6 +10,7 @@ import {
   getDirtyPathsFor,
   isWorkerRunning,
   processDirtyBatch,
+  runWorkerLoop,
   stopWorker,
   workerPidPath,
 } from '../src/worker.js'
@@ -18,6 +19,7 @@ import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { loadConfig } from '../src/config.js'
+import { store } from '../src/snapshots.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -525,5 +527,33 @@ describe('makeIndexer failure handling (regression)', () => {
     } finally {
       closeDb(projectDb)
     }
+  })
+})
+
+// Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called
+// them -- session_snapshots/<sessionId>/ directories accumulated forever. runWorkerLoop now
+// sweeps stale session snapshots on the same periodic loop as the dirty-queue drain. This drives
+// the real default path (no injected cleanup callback, the shipping path) end-to-end: write a
+// snapshot, backdate its mtime past cleanup_stale's 24h staleness window, run one real loop
+// cycle, and assert the stale snapshot was actually removed from disk.
+describe('runWorkerLoop stale-snapshot sweep (regression)', () => {
+  it('sweeps a stale session snapshot via the default periodic loop', async () => {
+    const result = store('worker-loop-stale-sweep', 'file.ts', Buffer.from('code'))
+    expect(result).not.toBeNull()
+    if (!result) return
+
+    const staleTime = new Date(Date.now() - 25 * 3600 * 1000)
+    fs.utimesSync(result.path, staleTime, staleTime)
+    expect(fs.existsSync(result.path)).toBe(true)
+
+    // Stop after the loop body (drain + sweep) has run exactly once, before it sleeps.
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    expect(fs.existsSync(result.path)).toBe(false)
   })
 })
