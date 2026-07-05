@@ -162,6 +162,60 @@ describe('RuffFilter', () => {
     expect(result.text).toMatch(/collapsed.*reformatted/i)
     expect(result.text).not.toContain('reformatted src/a.py')
   })
+
+  it('parses the real default "full" format and compresses repeated violations while keeping representative detail', () => {
+    const lines = [
+      'file1.py:12:5: F401 [*] `os` imported but unused',
+      '   |',
+      '12 | import os',
+      '   |     ^^',
+      '   = help: Remove unused import: `os`',
+      '',
+      'file1.py:20:5: F401 [*] `sys` imported but unused',
+      '   |',
+      '20 | import sys',
+      '   |     ^^^',
+      '   = help: Remove unused import: `sys`',
+      '',
+      'file2.py:5:5: F401 [*] `json` imported but unused',
+      '   |',
+      '5 | import json',
+      '   |     ^^^^',
+      '   = help: Remove unused import: `json`',
+      '',
+      'file2.py:9:5: F401 [*] `re` imported but unused',
+      '   |',
+      '9 | import re',
+      '   |     ^^',
+      '   = help: Remove unused import: `re`',
+      '',
+      'file3.py:20:1: E501 Line too long (92 > 88)',
+      '   |',
+      '20 | some_very_long_line_of_code_that_exceeds_the_limit_by_a_meaningful_margin_here',
+      '   |',
+      '   = help: Consider breaking this line up',
+      '',
+      'Found 5 errors.',
+    ].join('\n')
+    const result = ruffFilter.apply(lines, '', 1, ['ruff', 'check', '.'])
+
+    // Collapsed code: one summary line with the real count, context dropped
+    // for every occurrence — not just the header, and not left as noise.
+    expect(result.text).toMatch(/F401: 4 occurrences in 2 files/)
+    expect(result.text).not.toContain('import sys')
+    expect(result.text).not.toContain('import json')
+    expect(result.text).not.toContain('import re')
+    expect(result.text).not.toContain('12 | import os')
+
+    // Under-threshold violation keeps its full context/help block intact
+    expect(result.text).toContain('E501 Line too long')
+    expect(result.text).toContain(
+      'some_very_long_line_of_code_that_exceeds_the_limit_by_a_meaningful_margin_here',
+    )
+    expect(result.text).toContain('help: ')
+
+    expect(result.text).toContain('Found 5 errors.')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -335,6 +389,16 @@ describe('PylintFilter', () => {
     expect(result.text).toContain('Module foo')
     expect(result.text).not.toContain('Module bar')
   })
+
+  it('reports the real elided count instead of a literal "+?"', () => {
+    const lines = Array.from(
+      { length: 6 },
+      (_, i) => `src/foo.py:${i + 1}:0: C0114 (C0114): Missing module docstring`,
+    )
+    const result = pylintFilter.apply(lines.join('\n'), '', 4, ['pylint', 'src/'])
+    expect(result.text).toContain('+3 more C0114')
+    expect(result.text).not.toContain('+? more')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -373,6 +437,18 @@ describe('OxlintFilter', () => {
     const result = oxlintFilter.apply(input, '', 1, ['oxlint'])
     // location line follows a suppressed issue, must be dropped
     expect(result.text).not.toContain('╭─[src/foo.ts:4:1]')
+  })
+
+  it('reports the real elided count instead of a literal "+?"', () => {
+    const fileHeader = '  src/foo.ts'
+    const issues = Array.from(
+      { length: 6 },
+      (_, i) => `    × unused variable 'x${i}' (no-unused-vars)`,
+    )
+    const input = [fileHeader, ...issues].join('\n')
+    const result = oxlintFilter.apply(input, '', 1, ['oxlint'])
+    expect(result.text).toContain('+3 more')
+    expect(result.text).not.toContain('+? more')
   })
 })
 
@@ -546,6 +622,20 @@ describe('PhpStanFilter', () => {
     expect(result.text).not.toContain('Analyzing files')
     expect(result.text).toContain('UndefinedVariable')
   })
+
+  it('preserves a file path containing a space in the duplicate-count message', () => {
+    const header = ' Line  src/my project/foo.php'
+    const rows = Array.from(
+      { length: 5 },
+      (_, i) => `  ${i + 1}  Undefined variable: $foo`,
+    )
+    const summary = ' [ERROR] Found 5 errors'
+    const input = [header, ...rows, summary].join('\n')
+    const result = phpstanFilter.apply(input, '', 1, ['phpstan', 'analyse'])
+    // A naive split(' ', 2) on the header would truncate the path at the
+    // first space, reporting "src/my" instead of the full path.
+    expect(result.text).toContain('duplicate error(s) in src/my project/foo.php')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -708,6 +798,26 @@ describe('KtlintFilter', () => {
     expect(result.text).not.toContain('<?xml')
     expect(result.text).not.toContain('<checkstyle')
     expect(result.text).toContain('standard:no-semi')
+  })
+
+  it('plain-text format: reports the real elided count instead of a literal "+?"', () => {
+    const lines = Array.from(
+      { length: 6 },
+      (_, i) => `src/Foo.kt:${i + 1}:1: warning: Exceeded max line length (standard:max-line-length)`,
+    )
+    const result = ktlintFilter.apply(lines.join('\n'), '', 1, ['ktlint'])
+    expect(result.text).toContain('+3 more standard:max-line-length warnings')
+    expect(result.text).not.toContain('+? more')
+  })
+
+  it('checkstyle format: reports the real elided count instead of a literal "+?"', () => {
+    const lines = Array.from(
+      { length: 6 },
+      (_, i) => `  <error line="${i + 1}" column="1" severity="warning" message="test" source="standard:no-semi"/>`,
+    )
+    const result = ktlintFilter.apply(lines.join('\n'), '', 1, ['ktlint'])
+    expect(result.text).toContain('+3 more standard:no-semi violations')
+    expect(result.text).not.toContain('+? more')
   })
 })
 
