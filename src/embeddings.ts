@@ -181,6 +181,19 @@ export interface Chunk {
   kind: string // function|class|method|section|window|symbol
 }
 
+/**
+ * A structural cut point chunkFile can snap to instead of slicing blindly through a
+ * fixed-size sliding window. Sourced from the same indexing pass's already-committed
+ * symbol rows (kind: 'symbol') for source files, or from markdown heading extraction
+ * (kind: 'section') for doc files - see `indexFileEmbeddings` in parser.ts. `start`/`end`
+ * are 1-based, inclusive line numbers.
+ */
+export interface ChunkBoundary {
+  start: number
+  end: number
+  kind: 'symbol' | 'section'
+}
+
 /** Result of a semantic search query. */
 export interface SearchHit {
   filePath: string
@@ -297,33 +310,34 @@ export function packVec(vec: number[]): Buffer {
 }
 
 /**
- * Chunk file content into semantically meaningful segments.
+ * Split one line range into size-capped chunks via a sliding window.
  *
- * Splits on newlines, respecting requested chunk size and overlap.
- * For now, implements a simple sliding-window approach.
- *
- * @param filePath - Relative path to the file.
- * @param content - File content.
- * @param chunkSize - Target chunk size in chars (default: MAX_CHUNK_CHARS).
- * @param overlap - Overlap in chars between consecutive chunks (default: 200).
- * @returns Array of Chunk objects.
+ * Shared core for the no-boundary fallback (the whole file is one range, tagged
+ * 'window') and for emitting/sub-splitting a single structural boundary passed in
+ * from chunkFile: a boundary whose body fits under `chunkSize` comes back as exactly
+ * one chunk, because the accumulation loop below never trips its overflow branch;
+ * an oversized boundary is sub-split the same way the old whole-file window logic
+ * always worked, still tagged with the boundary's own `kind`. Overlap is clamped to
+ * `rangeStart` so a sub-split never bleeds backward into a preceding, differently
+ * tagged range.
  */
-export function chunkFile(
+function splitRangeIntoChunks(
   filePath: string,
-  content: string,
-  chunkSize: number = MAX_CHUNK_CHARS,
-  overlap: number = 200,
+  lines: string[],
+  rangeStart: number,
+  rangeEnd: number,
+  chunkSize: number,
+  overlap: number,
+  kind: string,
 ): Chunk[] {
-  const lines = content.split(/\r?\n/)
-  // splitlines() parity: a trailing newline must not introduce a phantom empty final line (it would inflate endLine by one and append a stray blank line).
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const chunks: Chunk[] = []
 
   let currentChunk = ''
-  let startLine = 1
-  let currentLine = 1
+  let startLine = rangeStart
+  let currentLine = rangeStart
 
-  for (const line of lines) {
+  for (let lineNo = rangeStart; lineNo <= rangeEnd; lineNo++) {
+    const line = lines[lineNo - 1] ?? ''
     const lineWithNewline = line + '\n'
     if (currentChunk.length + lineWithNewline.length > chunkSize && currentChunk.length > 0) {
       // Flush current chunk if adding the next line would exceed size.
@@ -333,13 +347,13 @@ export function chunkFile(
           startLine,
           endLine: currentLine - 1,
           text: currentChunk.trim(),
-          kind: 'window',
+          kind,
         })
       }
 
-      // Start new chunk with overlap.
+      // Start new chunk with overlap, never reaching before this range's own start.
       const overlapLines = Math.ceil(overlap / 40) // Rough estimate: ~40 chars per line.
-      const overlapStart = Math.max(1, currentLine - overlapLines)
+      const overlapStart = Math.max(rangeStart, currentLine - overlapLines)
       const overlapText = lines
         .slice(overlapStart - 1, currentLine - 1)
         .join('\n')
@@ -356,12 +370,134 @@ export function chunkFile(
     chunks.push({
       filePath,
       startLine,
-      endLine: lines.length,
+      endLine: rangeEnd,
       text: currentChunk.trim(),
-      kind: 'window',
+      kind,
     })
   }
 
+  return chunks
+}
+
+/**
+ * Chunk file content into semantically meaningful segments.
+ *
+ * With no boundaries (the default), splits on newlines using a fixed-size sliding
+ * window, respecting requested chunk size and overlap - the original behavior,
+ * unchanged, and the fallback for any file with zero parsed symbols/headings.
+ *
+ * With `boundaries` supplied (symbol rows for source files, markdown headings for doc
+ * files - see `indexFileEmbeddings` in parser.ts), chunk cuts snap to structure
+ * instead of slicing blindly: one chunk per boundary, tagged with its `kind`. An
+ * oversized boundary is sub-split with the same sliding-window logic the fallback
+ * path uses. Small gaps between boundaries - or before the first one - are folded
+ * into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap
+ * large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone
+ * 'window' chunk. Overlapping/nested boundaries (a class symbol row and its own
+ * methods' rows both cover the same lines) collapse to the outermost one so the same
+ * lines are never embedded twice under two different chunks.
+ *
+ * @param filePath - Relative path to the file.
+ * @param content - File content.
+ * @param chunkSize - Target chunk size in chars (default: MAX_CHUNK_CHARS).
+ * @param overlap - Overlap in chars between consecutive chunks (default: 200).
+ * @param boundaries - Optional structural cut points (symbol or section ranges).
+ * @returns Array of Chunk objects.
+ */
+export function chunkFile(
+  filePath: string,
+  content: string,
+  chunkSize: number = MAX_CHUNK_CHARS,
+  overlap: number = 200,
+  boundaries: ChunkBoundary[] = [],
+): Chunk[] {
+  const lines = content.split(/\r?\n/)
+  // splitlines() parity: a trailing newline must not introduce a phantom empty final line (it would inflate endLine by one and append a stray blank line).
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const totalLines = lines.length
+
+  if (boundaries.length === 0) {
+    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
+  }
+
+  // Clip to the file's actual line range and drop anything inverted, then sort by
+  // start (ties broken longest-first) so the flattening pass below always meets an
+  // outer boundary before any boundary nested inside it.
+  const clipped = boundaries
+    .map((b) => ({
+      start: Math.max(1, Math.min(b.start, totalLines)),
+      end: Math.max(1, Math.min(b.end, totalLines)),
+      kind: b.kind as string,
+    }))
+    .filter((b) => b.end >= b.start)
+    .sort((a, b) => a.start - b.start || b.end - a.end)
+
+  if (clipped.length === 0) {
+    return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
+  }
+
+  // Flatten nested/overlapping boundaries (a class row fully contains its own method
+  // rows) down to the outermost one - each line belongs to exactly one chunk, never
+  // embedded once as part of a member and again as part of its container.
+  const flattened: { start: number; end: number; kind: string }[] = []
+  let openEnd = 0
+  for (const b of clipped) {
+    if (b.start <= openEnd) continue
+    flattened.push(b)
+    openEnd = b.end
+  }
+
+  const gapLength = (start: number, end: number): number => {
+    let len = 0
+    for (let lineNo = start; lineNo <= end; lineNo++) len += (lines[lineNo - 1]?.length ?? 0) + 1
+    return len
+  }
+
+  interface Range {
+    start: number
+    end: number
+    kind: string
+  }
+  const ranges: Range[] = []
+  let cursor = 1
+
+  for (const b of flattened) {
+    let boundaryStart = b.start
+    const gapStart = cursor
+    const gapEnd = b.start - 1
+    if (gapEnd >= gapStart) {
+      if (gapLength(gapStart, gapEnd) < MIN_CHUNK_CHARS) {
+        // Fold the small gap into whichever chunk is adjacent: the previous boundary
+        // if one has already been emitted, otherwise forward into this boundary (the
+        // "content before the first heading/symbol" case has no previous to join).
+        const prev = ranges[ranges.length - 1]
+        if (prev !== undefined) {
+          prev.end = gapEnd
+        } else {
+          boundaryStart = gapStart
+        }
+      } else {
+        ranges.push({ start: gapStart, end: gapEnd, kind: 'window' })
+      }
+    }
+    ranges.push({ start: boundaryStart, end: b.end, kind: b.kind })
+    cursor = b.end + 1
+  }
+
+  if (cursor <= totalLines) {
+    const gapStart = cursor
+    const gapEnd = totalLines
+    if (gapLength(gapStart, gapEnd) < MIN_CHUNK_CHARS) {
+      ranges[ranges.length - 1]!.end = gapEnd
+    } else {
+      ranges.push({ start: gapStart, end: gapEnd, kind: 'window' })
+    }
+  }
+
+  const chunks: Chunk[] = []
+  for (const r of ranges) {
+    chunks.push(...splitRangeIntoChunks(filePath, lines, r.start, r.end, chunkSize, overlap, r.kind))
+  }
   return chunks
 }
 
@@ -672,14 +808,17 @@ export function mergeNearbyHits(
  * @param db - SQLite database connection.
  * @param filePath - Relative path to the file.
  * @param content - File content.
+ * @param boundaries - Optional structural cut points (symbol or section ranges) to
+ *   snap chunking to instead of the plain sliding window - see chunkFile.
  * @returns Number of chunks created and indexed.
  */
 export async function indexFile(
   db: BetterSqlite3Database,
   filePath: string,
   content: string,
+  boundaries: ChunkBoundary[] = [],
 ): Promise<number> {
-  const chunks = chunkFile(filePath, content)
+  const chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
   if (chunks.length > 0) {
     // upsertChunks deletes the file's prior chunks/vectors as part of the same
