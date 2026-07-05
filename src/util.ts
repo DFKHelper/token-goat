@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -214,6 +214,17 @@ export function atomicWriteText(filePath: string, content: string): void {
  */
 export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array): void {
   atomicWriteCore(filePath, content)
+}
+
+/**
+ * Copy `p` to a timestamped `<p>.bak.<ISO-with-dashes>` sibling before an in-place
+ * overwrite, so a bad merge or corrupt rewrite has a recovery copy. No-op if `p`
+ * doesn't exist yet (nothing to back up).
+ */
+export function backupFile(p: string): void {
+  if (!existsSync(p)) return
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  copyFileSync(p, `${p}.bak.${stamp}`)
 }
 
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs
