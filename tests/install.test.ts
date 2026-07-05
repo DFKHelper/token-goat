@@ -48,6 +48,17 @@ describe('installHooks', () => {
     expect(settings.hooks['PreCompact']?.[0]?.hooks[0]?.command).toBe('token-goat hook pre_compact')
   })
 
+  it('wires UserPromptSubmit and SubagentStop (regression: HOOK_EVENT_MAP omitted both, so the branch-context and hallucination-detection features were fully implemented but never invoked by Claude Code)', () => {
+    const result = installHooks('project')
+    const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8')) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string }> }>>
+    }
+    expect(settings.hooks['UserPromptSubmit']?.[0]?.hooks[0]?.command).toBe(
+      'token-goat hook user_prompt_submit',
+    )
+    expect(settings.hooks['SubagentStop']?.[0]?.hooks[0]?.command).toBe('token-goat hook subagent_stop')
+  })
+
   it('is idempotent (second call reports alreadyInstalled and does not duplicate)', () => {
     installHooks('project')
     const second = installHooks('project')
