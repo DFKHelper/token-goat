@@ -26,6 +26,7 @@ import {
   uninstallOpencode,
 } from '../src/bridges/opencode_install.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../src/bridges/opencode.js'
+import { HOOK_EVENTS } from '../src/types.js'
 
 const setPlatform = (p: string): void => {
   Object.defineProperty(process, 'platform', { value: p, configurable: true })
@@ -139,5 +140,21 @@ describe('isOpencodeInstalled / uninstallOpencode', () => {
 
   it('uninstallOpencode returns false when nothing is installed', () => {
     expect(uninstallOpencode()).toBe(false)
+  })
+})
+
+describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
+  it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
+    const calls = [...OPENCODE_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
+    expect(calls.length).toBeGreaterThan(0)
+    for (const eventName of calls) {
+      expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
+    }
+  })
+
+  it('excludes glob from PRE_HOOK_TOOLS, since no pre_tool_use handler exists for it', () => {
+    const match = /const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)/.exec(OPENCODE_PLUGIN_SCRIPT)
+    expect(match).not.toBeNull()
+    expect(match?.[1]).not.toMatch(/"glob"/)
   })
 })
