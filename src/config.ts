@@ -473,6 +473,11 @@ const ENV_KEYS = [
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS',
   'TOKEN_GOAT_MCP_DEDUP_TTL_SECS',
   'TOKEN_GOAT_EMBEDDINGS_ENABLED',
+  'TOKEN_GOAT_BASH_DEDUP_MIN_BYTES',
+  'TOKEN_GOAT_WEB_DEDUP_MIN_BYTES',
+  'TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES',
+  'TOKEN_GOAT_WEB_CACHE_MAX_FILES',
+  'TOKEN_GOAT_WEB_CACHE_MAX_BYTES',
 ]
 
 export function configEnvFingerprint(): string {
@@ -706,8 +711,11 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.verbose_until_seen_count = validatedInt(hi_raw['verbose_until_seen_count'], hi.verbose_until_seen_count, 0, 10000)
   hi.min_file_lines_for_hint = validatedInt(hi_raw['min_file_lines_for_hint'], hi.min_file_lines_for_hint, 0, 1_000_000)
   hi.bash_dedup_min_bytes = validatedInt(hi_raw['bash_dedup_min_bytes'], hi.bash_dedup_min_bytes, 0, 100_000)
+  hi.bash_dedup_min_bytes = envInt('TOKEN_GOAT_BASH_DEDUP_MIN_BYTES', hi.bash_dedup_min_bytes, 0, 100_000)
   hi.web_dedup_min_bytes = validatedInt(hi_raw['web_dedup_min_bytes'], hi.web_dedup_min_bytes, 0, 100_000)
+  hi.web_dedup_min_bytes = envInt('TOKEN_GOAT_WEB_DEDUP_MIN_BYTES', hi.web_dedup_min_bytes, 0, 100_000)
   hi.grep_dedup_min_matches = validatedInt(hi_raw['grep_dedup_min_matches'], hi.grep_dedup_min_matches, 0, 100_000)
+  hi.grep_dedup_min_matches = envInt('TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES', hi.grep_dedup_min_matches, 0, 100_000)
   hi.serve_diff_on_reread = validatedBool(hi_raw['serve_diff_on_reread'], hi.serve_diff_on_reread)
   hi.backoff_thresholds = validatedIntList(hi_raw['backoff_thresholds'], hi.backoff_thresholds)
   hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, 0, 10000)
@@ -759,7 +767,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   wf.allow = validatedStrList(wf_raw['allow'], wf.allow)
   wf.deny = validatedStrList(wf_raw['deny'], wf.deny)
   wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, 0, 10_000_000)
+  wf.max_file_count = envInt('TOKEN_GOAT_WEB_CACHE_MAX_FILES', wf.max_file_count, 0, 10_000_000)
   wf.max_bytes = validatedInt(wf_raw['max_bytes'], wf.max_bytes, 0, 100 * 1024 * 1024 * 1024)
+  wf.max_bytes = envInt('TOKEN_GOAT_WEB_CACHE_MAX_BYTES', wf.max_bytes, 0, 100 * 1024 * 1024 * 1024)
   wf.compress_bodies = validatedBool(wf_raw['compress_bodies'], wf.compress_bodies)
   wf.compress_min_bytes = validatedInt(wf_raw['compress_min_bytes'], wf.compress_min_bytes, 1024, 10 * 1024 * 1024)
   wf.compress_bodies = envBool('TOKEN_GOAT_WEB_COMPRESS', wf.compress_bodies)
@@ -851,6 +861,9 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
   'overflow_guard.max_tokens': ['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'],
   'hints.json_sidecar': ['TOKEN_GOAT_HINT_JSON_SIDECAR'],
+  'hints.bash_dedup_min_bytes': ['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'],
+  'hints.web_dedup_min_bytes': ['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'],
+  'hints.grep_dedup_min_matches': ['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
   'hints.baseline_budget_tokens': ['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
@@ -861,6 +874,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.mcp_dedup_ttl_secs': ['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'],
   'hints.min_session_hint_savings_bytes': ['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'],
   'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
+  'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
+  'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
   'worker.watchdog_enabled': ['TOKEN_GOAT_WORKER_WATCHDOG'],
   'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],

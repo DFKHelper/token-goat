@@ -21,6 +21,7 @@ import {
   loadConfig,
   saveConfig,
 } from '../src/config.js'
+import { ENV_KEYS } from '../src/constants.js'
 
 // ---------------------------------------------------------------------------
 // Cleanup
@@ -407,5 +408,161 @@ describe('cross-field config clamping', () => {
     const cfg = loadConfig()
     expect(cfg.indexing.large_file_symbol_only_kb).toBe(500)
     expect(cfg.indexing.large_file_skip_kb).toBe(500)
+  })
+
+  it('applies env var override for TOKEN_GOAT_BASH_DEDUP_MIN_BYTES', () => {
+    const orig = process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+    try {
+      process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.hints.bash_dedup_min_bytes).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_BASH_DEDUP_MIN_BYTES to the documented max (0-100_000)', () => {
+    const orig = process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+    try {
+      process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = '999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.bash_dedup_min_bytes).toBe(100_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_WEB_DEDUP_MIN_BYTES', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES']
+    try {
+      process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.hints.web_dedup_min_bytes).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WEB_DEDUP_MIN_BYTES to the documented max (0-100_000)', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES']
+    try {
+      process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = '999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.web_dedup_min_bytes).toBe(100_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES', () => {
+    const orig = process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES']
+    try {
+      process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.hints.grep_dedup_min_matches).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES']
+      } else {
+        process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES to the documented max (0-100_000)', () => {
+    const orig = process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES']
+    try {
+      process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'] = '999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.grep_dedup_min_matches).toBe(100_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES']
+      } else {
+        process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_WEB_CACHE_MAX_FILES', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES']
+    try {
+      process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.webfetch.max_file_count).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WEB_CACHE_MAX_FILES to the documented max (0-10_000_000)', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES']
+    try {
+      process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES'] = '999999999999'
+      const cfg = loadConfig()
+      expect(cfg.webfetch.max_file_count).toBe(10_000_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_CACHE_MAX_FILES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_WEB_CACHE_MAX_BYTES', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES']
+    try {
+      process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.webfetch.max_bytes).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WEB_CACHE_MAX_BYTES to the documented max (0-100 * 1024 * 1024 * 1024)', () => {
+    const orig = process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES']
+    try {
+      process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'] = '999999999999999'
+      const cfg = loadConfig()
+      expect(cfg.webfetch.max_bytes).toBe(100 * 1024 * 1024 * 1024)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'] = orig
+      }
+    }
+  })
+})
+
+describe('ENV_KEYS registry (constants.ts)', () => {
+  it('does not export a dead PREFER_AVIF entry (no feature ever reads it; removed from the canonical env-var registry)', () => {
+    expect('PREFER_AVIF' in ENV_KEYS).toBe(false)
   })
 })
