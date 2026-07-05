@@ -135,3 +135,31 @@ describe('cleanup_session', () => {
     expect(removed).toBe(0)
   })
 })
+
+// Regression: sessionDir()/cleanup_stale() used to hardcode
+// path.join(os.homedir(), '.token-goat', 'session_snapshots'), ignoring the TOKEN_GOAT_HOME
+// override that every sibling module (session_store.ts, disk_cache.ts) already respects. That
+// broke both a user's ability to relocate token-goat's data dir AND this very test file's
+// isolation (tests/setup/isolate-home.ts sets TOKEN_GOAT_HOME specifically so tests never touch
+// the developer's real home directory). This asserts store() actually resolves under the
+// TOKEN_GOAT_HOME override, not the old hardcoded os.homedir() base.
+describe('sessionDir / store honor TOKEN_GOAT_HOME override', () => {
+  it('writes the snapshot under TOKEN_GOAT_HOME, not the old hardcoded os.homedir() base', () => {
+    const prevHome = process.env.TOKEN_GOAT_HOME
+    process.env.TOKEN_GOAT_HOME = TMP
+    try {
+      const result = store('sess-home-override', 'file.ts', Buffer.from('code'))
+      expect(result).not.toBeNull()
+      if (result) {
+        const newBase = path.join(TMP, 'session_snapshots')
+        const oldStyleBase = path.join(os.homedir(), '.token-goat', 'session_snapshots')
+        expect(result.path.startsWith(newBase)).toBe(true)
+        expect(result.path.startsWith(oldStyleBase)).toBe(false)
+        expect(fs.existsSync(result.path)).toBe(true)
+      }
+    } finally {
+      if (prevHome === undefined) delete process.env.TOKEN_GOAT_HOME
+      else process.env.TOKEN_GOAT_HOME = prevHome
+    }
+  })
+})
