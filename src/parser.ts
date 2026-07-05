@@ -1272,18 +1272,22 @@ export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): 
 
 function writeParseResult(
   filePath: string,
-  content: string | null,
+  content: Buffer | null,
   result: ParseResult,
   dbPath: string,
 ): void {
   const db = getDb(dbPath)
 
-  // Hash the SAME content buffer that was actually parsed, not a fresh disk re-read: if the
-  // file changes between the parse read and this write, a re-read here would record a SHA
-  // that does not match the symbols/refs actually written below, and the worker's SHA-gated
-  // incremental drain would skip reindexing a file whose stored SHA happens to match a later
-  // version, leaving it permanently stuck with stale symbols. content is null only when the
-  // file could not be read at all, in which case there is nothing to fingerprint from memory.
+  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file
+  // changes between the parse read and this write, a re-read here would record a SHA that does
+  // not match the symbols/refs actually written below, and the worker's SHA-gated incremental
+  // drain would skip reindexing a file whose stored SHA happens to match a later version,
+  // leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded
+  // string used for parsing) so this SHA is computed over the same bytes worker.ts's gate
+  // hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8
+  // content would otherwise produce a different digest than hashing the raw bytes directly,
+  // permanently defeating the gate for any such file. content is null only when the file could
+  // not be read at all, in which case there is nothing to fingerprint from memory.
   const sha = content === null ? safeSha(filePath) : fingerprintContent(content)
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
@@ -1332,15 +1336,16 @@ function writeParseResult(
  */
 export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
   const language = detectLanguage(filePath)
-  let content: string
+  let raw: Buffer
   try {
-    content = fs.readFileSync(filePath, 'utf8')
+    raw = fs.readFileSync(filePath)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw err
   }
+  const content = raw.toString('utf8')
   const { symbols, refs } = parseContent(content, filePath, language)
-  writeParseResult(filePath, content, { symbols, refs, language, duration: 0 }, dbPath)
+  writeParseResult(filePath, raw, { symbols, refs, language, duration: 0 }, dbPath)
 }
 
 /**
