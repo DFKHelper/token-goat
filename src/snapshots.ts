@@ -3,9 +3,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
-import * as os from 'node:os'
 
 import { foldPath, normalizePath } from './util.js'
+import { tokenGoatHome } from './disk_cache.js'
 
 export const MAX_SNAPSHOTS_PER_SESSION = 150
 export const MAX_SNAPSHOT_BYTES = 256 * 1024
@@ -26,7 +26,7 @@ const SESSION_DIR_RE = /[^a-zA-Z0-9_-]/g
 function sessionDir(sessionId: string): string | null {
   if (!sessionId) return null
   const safe = sessionId.replace(SESSION_DIR_RE, '_').slice(0, 64) || 'anon'
-  const base = path.join(os.homedir(), '.token-goat', 'session_snapshots')
+  const base = path.join(tokenGoatHome(), 'session_snapshots')
   const candidate = path.join(base, safe)
 
   try {
@@ -257,7 +257,7 @@ export function cleanup_session(sessionId: string): number {
 }
 
 export function cleanup_stale(maxAgeHours: number = 24.0): number {
-  const base = path.join(os.homedir(), '.token-goat', 'session_snapshots')
+  const base = path.join(tokenGoatHome(), 'session_snapshots')
   if (!fs.existsSync(base)) return 0
 
   const cutoff = Date.now() - maxAgeHours * 3600 * 1000
