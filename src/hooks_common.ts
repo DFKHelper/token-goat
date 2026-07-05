@@ -34,15 +34,19 @@ export function getToolInput(event: HookEvent): Record<string, unknown> {
 }
 
 /**
- * Extract `file_path` from the tool input.
+ * Extract the edited/read file path from the tool input.
  *
- * Returns the string value when present and non-empty, otherwise `undefined`.
- * A non-string `file_path` (malformed payload) is treated as absent rather
- * than coerced.
+ * Checks `file_path` first (Read/Edit/Write and most other tools), then
+ * falls back to `notebook_path` (NotebookEdit's actual tool-input key) when
+ * `file_path` is absent. Returns the string value when present and
+ * non-empty, otherwise `undefined`. A non-string value (malformed payload)
+ * is treated as absent rather than coerced.
  */
 export function getFilePath(event: HookEvent): string | undefined {
   const value = event.toolInput['file_path']
-  return typeof value === 'string' && value !== '' ? value : undefined
+  if (typeof value === 'string' && value !== '') return value
+  const notebookValue = event.toolInput['notebook_path']
+  return typeof notebookValue === 'string' && notebookValue !== '' ? notebookValue : undefined
 }
 
 /** True when `toolName` is a read-family tool (Read). */

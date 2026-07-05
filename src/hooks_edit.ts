@@ -1,10 +1,11 @@
 /**
- * post_tool_use edit hooks (Write / Edit).
+ * post_tool_use edit hooks (Write / Edit / NotebookEdit).
  *
- * Ports `hooks_edit.py::post_edit`: after a successful Write/Edit, record the
- * file in the session cache and append it to the dirty queue so the background
- * indexer (Layer 7) reindexes only what changed. Never blocks an edit — returns
- * `context` for markdown files (with a section hint) or `pass` for others.
+ * Ports `hooks_edit.py::post_edit`: after a successful Write/Edit/NotebookEdit,
+ * record the file in the session cache and append it to the dirty queue so the
+ * background indexer (Layer 7) reindexes only what changed. Never blocks an
+ * edit — returns `context` for markdown files (with a section hint) or `pass`
+ * for others.
  *
  * The dirty-queue path and write logic live in `hooks_index.ts`
  * ({@link appendDirtyPath}) so this writer and the queue drainer share one
@@ -26,12 +27,13 @@ import { compactPathFor, markCompactStale } from './doc_compact.js'
 import type { HookOutput } from './types.js'
 
 /**
- * post_tool_use handler for Write/Edit.
+ * post_tool_use handler for Write/Edit/NotebookEdit.
  *
  * Records the edit in the session cache and enqueues the normalized path for
- * reindexing. A missing `file_path` (malformed payload) is tolerated — the
- * call passes through without touching the queue. Returns a context hint for
- * markdown/rst files suggesting the token-goat section command for re-reading.
+ * reindexing. A missing path (malformed payload — `file_path` for Write/Edit,
+ * `notebook_path` for NotebookEdit) is tolerated — the call passes through
+ * without touching the queue. Returns a context hint for markdown/rst files
+ * suggesting the token-goat section command for re-reading.
  */
 export function postEditHandler(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
@@ -73,3 +75,4 @@ export function postEditHandler(event: HookEvent): HookOutput {
 
 registerHook('post_tool_use', postEditHandler, { toolName: 'Write' })
 registerHook('post_tool_use', postEditHandler, { toolName: 'Edit' })
+registerHook('post_tool_use', postEditHandler, { toolName: 'NotebookEdit' })
