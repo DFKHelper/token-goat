@@ -9,8 +9,6 @@
  */
 
 import * as fs from 'node:fs'
-import * as https from 'node:https'
-import * as http from 'node:http'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -25,6 +23,7 @@ import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync } from './util.js'
 import { configPath } from './constants.js'
+import { performHttpFetch } from './webfetch.js'
 
 function emit(text: string): void {
   process.stdout.write(ensureNewline(text))
@@ -464,31 +463,32 @@ export function cmdCompactDoc(opts: {
 // ── fetch-image ───────────────────────────────────────────────────────────────
 
 const MAX_FETCH_REDIRECTS = 5
+const FETCH_IMAGE_TIMEOUT_SEC = 30
+const FETCH_IMAGE_MAX_SIZE_BYTES = 50 * 1024 * 1024
 
-function fetchBuffer(url: string, redirectsLeft = MAX_FETCH_REDIRECTS): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https://') ? https : http
-    const req = mod.get(url, (res) => {
-      if (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        if (redirectsLeft <= 0) {
-          reject(new Error(`Too many redirects fetching ${url}`))
-          return
-        }
-        fetchBuffer(res.headers.location, redirectsLeft - 1).then(resolve, reject)
-        return
-      }
-      if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {
-        reject(new Error(`HTTP ${res.statusCode ?? 'unknown'} for ${url}`))
-        return
-      }
-      const chunks: Buffer[] = []
-      res.on('data', (chunk: Buffer) => chunks.push(chunk))
-      res.on('end', () => resolve(Buffer.concat(chunks)))
-      res.on('error', reject)
-    })
-    req.on('error', reject)
-    req.setTimeout(30000, () => { req.destroy(new Error('fetch timeout')) })
+/**
+ * Fetch a URL's raw bytes for `fetch-image`.
+ *
+ * Reuses webfetch.ts's hardened fetch primitive instead of duplicating its
+ * SSRF/size/timeout handling: performHttpFetch resolves and pins DNS through
+ * ssrfPinnedLookup (blocking private/loopback/link-local targets, including
+ * on every redirect hop, not just the initial request), caps the response
+ * body at FETCH_IMAGE_MAX_SIZE_BYTES while it's still streaming in rather
+ * than after buffering it whole, and bounds the whole request — redirects
+ * included — by FETCH_IMAGE_TIMEOUT_SEC.
+ */
+async function fetchBuffer(url: string): Promise<Buffer> {
+  const result = await performHttpFetch(url, {
+    deadlineAt: Date.now() + FETCH_IMAGE_TIMEOUT_SEC * 1000,
+    timeoutSec: FETCH_IMAGE_TIMEOUT_SEC,
+    maxSizeBytes: FETCH_IMAGE_MAX_SIZE_BYTES,
+    requestHeaders: {},
+    redirectsLeft: MAX_FETCH_REDIRECTS,
   })
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`HTTP ${result.status} for ${url}`)
+  }
+  return result.body
 }
 
 export async function cmdFetchImage(opts: { url: string; out?: string; json?: boolean }): Promise<void> {

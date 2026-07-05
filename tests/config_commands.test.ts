@@ -9,12 +9,11 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { EventEmitter } from 'node:events'
-import type * as HttpModule from 'node:http'
+import type * as WebfetchModule from '../src/webfetch.js'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const httpGetMock = vi.hoisted(() => vi.fn())
+const performHttpFetchMock = vi.hoisted(() => vi.fn())
 
 // vi.mock is hoisted — redirect configPath() for config tests.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -25,12 +24,17 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-// vi.mock is hoisted — stub node:http's `get` so the fetch-image redirect-cap test controls
-// the response chain without opening a real socket. Tests that don't configure an
-// implementation never invoke it.
-vi.mock('node:http', async (importOriginal) => {
-  const actual = await importOriginal<typeof HttpModule>()
-  return { ...actual, get: httpGetMock }
+// vi.mock is hoisted — stub webfetch.js's performHttpFetch so fetch-image tests can control
+// the response without opening a real socket. Mirrors tests/webfetch.test.ts's dnsLookupMock
+// convention: by default this delegates straight through to the real implementation, so any
+// test that doesn't layer a mockImplementationOnce on top -- including the SSRF-rejection
+// test below, which needs the real ssrfPinnedLookup to run -- gets real behavior for free.
+vi.mock('../src/webfetch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof WebfetchModule>()
+  performHttpFetchMock.mockImplementation(
+    (url: string, opts: Parameters<typeof actual.performHttpFetch>[1]) => actual.performHttpFetch(url, opts),
+  )
+  return { ...actual, performHttpFetch: performHttpFetchMock }
 })
 
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
@@ -72,7 +76,6 @@ beforeEach(() => {
 afterEach(() => {
   writeSpy.mockRestore()
   errSpy.mockRestore()
-  httpGetMock.mockReset()
   invalidateConfigCache()
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
@@ -577,39 +580,49 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
 
 // ── fetch-image (fetchBuffer redirect cap) ────────────────────────────────────
 
-describe('cmdFetchImage redirect handling', () => {
-  it('caps a redirect chain instead of following it indefinitely', async () => {
-    let calls = 0
-    // Server-side safety valve: after 20 hops, stop redirecting and answer 200 with an empty
-    // body. A capped fetchBuffer rejects with "Too many redirects" long before this triggers
-    // (calls stays <= 6); an uncapped fetchBuffer would otherwise recurse without bound —
-    // this valve turns that into a fast, clean assertion failure instead of an unbounded
-    // memory-eating loop that OOM-crashes the test worker.
-    const SAFETY_VALVE_HOPS = 20
-    httpGetMock.mockImplementation((url: string, callback: (res: unknown) => void) => {
-      calls++
-      const fakeReq = new EventEmitter() as unknown as { on: typeof EventEmitter.prototype.on; setTimeout: (...a: unknown[]) => unknown; destroy: (...a: unknown[]) => unknown }
-      fakeReq.setTimeout = vi.fn()
-      fakeReq.destroy = vi.fn()
-      queueMicrotask(() => {
-        const fakeRes = new EventEmitter() as unknown as { statusCode: number; headers: Record<string, string>; on: typeof EventEmitter.prototype.on }
-        if (calls > SAFETY_VALVE_HOPS) {
-          fakeRes.statusCode = 200
-          fakeRes.headers = {}
-          callback(fakeRes)
-          queueMicrotask(() => fakeRes.emit('end'))
-          return
-        }
-        fakeRes.statusCode = 302
-        // Always redirects to the same URL — an uncapped follower would loop forever.
-        fakeRes.headers = { location: 'http://redirect-loop.example.test/next' }
-        callback(fakeRes)
-      })
-      return fakeReq
+describe('cmdFetchImage security hardening (regression: fetchBuffer now routes through webfetch.ts\'s SSRF/size/redirect-capped performHttpFetch instead of a bare, unguarded http.get)', () => {
+  it('rejects a loopback/private-IP URL with a clear SSRF error, using the real (unmocked) SSRF check', async () => {
+    const out = path.join(tmpHome, 'ssrf-blocked.bin')
+    await expect(cmdFetchImage({ url: 'http://127.0.0.1:1/image.png', out })).rejects.toThrow()
+    expect(capturedErr()).toMatch(/blocked by ssrf safety check/i)
+    expect(fs.existsSync(out)).toBe(false)
+  })
+
+  it('still fetches a normal public URL (network mocked) and writes the returned bytes to disk', async () => {
+    const fakeBytes = Buffer.from('fake-image-bytes')
+    performHttpFetchMock.mockImplementationOnce(
+      async (url: string, opts: { maxSizeBytes: number; timeoutSec: number; redirectsLeft: number }) => {
+        expect(url).toBe('http://example.test/image.png')
+        expect(opts.maxSizeBytes).toBeGreaterThan(0)
+        expect(opts.timeoutSec).toBeGreaterThan(0)
+        expect(opts.redirectsLeft).toBe(5)
+        return { status: 200, statusText: 'OK', headers: {}, body: fakeBytes }
+      },
+    )
+    const out = path.join(tmpHome, 'happy-path.bin')
+    await cmdFetchImage({ url: 'http://example.test/image.png', out })
+    expect(fs.readFileSync(out)).toEqual(fakeBytes)
+  })
+
+  it('rejects with the HTTP status when performHttpFetch resolves a non-2xx response', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 404,
+      statusText: 'Not Found',
+      headers: {},
+      body: Buffer.alloc(0),
+    }))
+    const out = path.join(tmpHome, 'not-found.bin')
+    await expect(cmdFetchImage({ url: 'http://example.test/missing.png', out })).rejects.toThrow()
+    expect(capturedErr()).toMatch(/HTTP 404/)
+  })
+
+  it('propagates a too-many-redirects rejection from performHttpFetch instead of swallowing it', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => {
+      throw new Error('Too many redirects fetching http://redirect-loop.example.test/start')
     })
     const out = path.join(tmpHome, 'redirect-loop.bin')
-    await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow(/redirect/i)
-    expect(calls).toBeLessThanOrEqual(6)
+    await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow()
+    expect(capturedErr()).toMatch(/too many redirects/i)
   })
 })
 
