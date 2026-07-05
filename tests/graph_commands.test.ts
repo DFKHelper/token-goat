@@ -7,6 +7,7 @@
 import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
 import { join, resolve, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -321,6 +322,45 @@ describe('runTypes integration', () => {
     const code = runTypes({ file: 'src/__nonexistent_xyzzy__.ts', json: true })
     expect(code).toBe(1)
   })
+
+  it('sorts a realistic mixed-case file-path set in the expected en-locale order (regression: comparator must not silently drop its locale pin)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-types-locale-'))
+    try {
+      const fileA = join(dir, 'Banana.ts')
+      const fileB = join(dir, 'apple.ts')
+      writeFileSync(fileA, 'export interface BananaLocaleFixture { x: number }\n')
+      writeFileSync(fileB, 'export interface AppleLocaleFixture { y: number }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ json: true, limit: 5000 })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      const idxApple = parsed.findIndex((r) => r.name === 'AppleLocaleFixture')
+      const idxBanana = parsed.findIndex((r) => r.name === 'BananaLocaleFixture')
+      expect(idxApple).toBeGreaterThanOrEqual(0)
+      expect(idxBanana).toBeGreaterThanOrEqual(0)
+      // Under 'en'-locale comparison, "apple.ts" sorts before "Banana.ts"
+      // despite the case difference -- pins the exact expected order so a
+      // future regression in the comparator (wrong operand order, dropped
+      // locale argument, etc.) is still caught even though the locale
+      // -instability the fix addresses isn't independently observable from
+      // a single-environment/single-ICU-build test run.
+      expect(idxApple).toBeLessThan(idxBanana)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
@@ -433,6 +473,34 @@ describe('runDeps integration', () => {
     expect(typeof parsed.file).toBe('string')
     expect(Array.isArray(parsed.internal)).toBe(true)
     expect(Array.isArray(parsed.external)).toBe(true)
+  })
+
+  it('classifies Python relative imports ("from . import foo", "from ..pkg import bar") as internal, not external', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-py-'))
+    try {
+      const file = join(dir, 'mod.py')
+      writeFileSync(file, ['from . import foo', 'from ..pkg import bar', 'import os', ''].join('\n'))
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
+      expect(parsed.internal).toContain('.')
+      expect(parsed.internal).toContain('..pkg')
+      expect(parsed.external).toContain('os')
+      expect(parsed.external).not.toContain('.')
+      expect(parsed.external).not.toContain('..pkg')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -781,6 +849,66 @@ describe('runArch', () => {
     }
     expect(code).toBe(0)
     expect(captured).toMatch(/hubs/)
+  })
+
+  it('resolves an import spec that differs only in case from the tracked file on a case-insensitive filesystem (regression: 7th case-fold instance)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fold-'))
+    const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    try {
+      writeFileSync(join(repo, 'Foo.ts'), 'export const foo = 1\n')
+      writeFileSync(join(repo, 'bar.ts'), "import { foo } from './foo'\nexport const bar = foo\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 5, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as { hubs: Array<{ file: string; importedBy: number }> }
+      const fooHub = parsed.hubs.find((h) => h.file.toLowerCase().endsWith('foo.ts'))
+      expect(fooHub?.importedBy).toBe(1)
+    } finally {
+      if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('does not resolve the case-mismatched import when the filesystem is treated as case-sensitive (control)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fold-ctrl-'))
+    const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    try {
+      writeFileSync(join(repo, 'Foo.ts'), 'export const foo = 1\n')
+      writeFileSync(join(repo, 'bar.ts'), "import { foo } from './foo'\nexport const bar = foo\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 5, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as { hubs: Array<{ file: string; importedBy: number }> }
+      const fooHub = parsed.hubs.find((h) => h.file.toLowerCase().endsWith('foo.ts'))
+      expect(fooHub).toBeUndefined()
+    } finally {
+      if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 })
 
