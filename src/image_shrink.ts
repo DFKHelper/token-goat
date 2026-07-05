@@ -65,14 +65,17 @@ export interface ShrinkResult {
  * narrowed without `any`.
  */
 interface SharpInstance {
-  metadata(): Promise<{ width?: number; height?: number; format?: string }>
+  metadata(): Promise<{ width?: number; height?: number; format?: string; pages?: number }>
   resize(opts: { width: number; height: number; fit: 'inside'; withoutEnlargement: boolean }): SharpInstance
   rotate(): SharpInstance
   jpeg(opts: { quality: number; mozjpeg: boolean }): SharpInstance
   webp(opts: { quality: number }): SharpInstance
   toBuffer(): Promise<Buffer>
 }
-type SharpFactory = (input: Buffer, options?: { limitInputPixels?: number | false }) => SharpInstance
+type SharpFactory = (
+  input: Buffer,
+  options?: { limitInputPixels?: number | false; animated?: boolean },
+) => SharpInstance
 
 /**
  * Cached lazy import of `sharp`.
@@ -141,21 +144,39 @@ export async function shrinkImage(
   if (sharp === null) return null
 
   try {
-    // Encode both candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output.
-    const jpegBuf = await sharp(input, { limitInputPixels })
-      .rotate()
-      .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality, mozjpeg: true })
-      .toBuffer()
-    const webpBuf = await sharp(input, { limitInputPixels })
+    // Multi-frame formats (animated GIF/WEBP, multi-page TIFF) decode only page 0
+    // by default — sharp's `animated: true` decodes every frame instead, stacked
+    // into one "toilet roll" image that resize()/encode calls handle per-frame.
+    // `pages` is populated by a cheap header-only metadata read regardless of the
+    // animated option, so this detects multi-frame input before either full
+    // decode below without paying for a second full decode.
+    const inputMeta = await sharp(input, { limitInputPixels }).metadata()
+    const isAnimated = (inputMeta.pages ?? 1) > 1
+
+    // Encode candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output.
+    // JPEG has no multi-frame container: encoding an animated decode to JPEG would
+    // either silently drop every frame but the first, or — once decoded with every
+    // frame via animated:true — emit a corrupted vertical stack of all of them. So
+    // an animated input only ever gets the WEBP candidate, which does preserve it.
+    const webpBuf = await sharp(input, { limitInputPixels, animated: isAnimated })
       .rotate()
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
       .webp({ quality })
       .toBuffer()
+    let data = webpBuf
+    let format = 'webp'
 
-    const useWebp = webpBuf.length < jpegBuf.length
-    const data = useWebp ? webpBuf : jpegBuf
-    const format = useWebp ? 'webp' : 'jpeg'
+    if (!isAnimated) {
+      const jpegBuf = await sharp(input, { limitInputPixels })
+        .rotate()
+        .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer()
+      if (jpegBuf.length < webpBuf.length) {
+        data = jpegBuf
+        format = 'jpeg'
+      }
+    }
 
     // Never enlarge: if neither re-encode beat the original, leave it alone.
     if (data.length >= originalBytes) return null
