@@ -20,7 +20,7 @@ import { resolveIndexPath } from './paths.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath } from './util.js'
 import type { SymbolEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
@@ -368,6 +368,12 @@ export function runDeps(opts: DepsOptions): number {
         }
       }
       internal.push(resolved)
+    } else if (/^\.+/.test(imp)) {
+      // Python relative import ("from . import foo", "from ..pkg import bar")
+      // -- a leading-dot module name can only resolve within the current
+      // package, so it's always internal even though it never matches an
+      // external package name and has no "./"/"../" path prefix to key off.
+      internal.push(imp)
     } else {
       external.push(imp)
     }
@@ -420,7 +426,10 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   results.sort(
-    (a, b) => a.filePath.localeCompare(b.filePath) || a.lineStart - b.lineStart,
+    // Pin the locale: an unlocaled localeCompare() sorts differently across
+    // Node's small-icu vs full-icu builds and different system default
+    // locales, making output nondeterministic across machines/CI runners.
+    (a, b) => a.filePath.localeCompare(b.filePath, 'en') || a.lineStart - b.lineStart,
   )
 
   if (results.length === 0) {
@@ -688,6 +697,15 @@ export function runArch(opts: ArchOptions): number {
   const cwd = opts.cwd ?? process.cwd()
   const top = opts.top ?? 10
   const files = getTrackedFiles(cwd)
+  // Case-insensitive filesystems (Windows/macOS) treat Foo.ts and foo.ts as the
+  // same file; an import spec's casing need not match the tracked path's, so
+  // membership must be checked through foldPath() rather than raw string
+  // equality (matches the convention already applied to session.ts,
+  // session_store.ts, hooks_read.ts, walk_index.ts, compact.ts, worker.ts,
+  // text_commands.ts, read_commands.ts, snapshots.ts, project.ts,
+  // index_prune.ts, and memory_prune.ts).
+  const filesByFoldedPath = new Map<string, string>()
+  for (const f of files) filesByFoldedPath.set(foldPath(f), f)
 
   const graph = new Map<string, string[]>()
   const importedBy = new Map<string, Set<string>>()
@@ -700,12 +718,14 @@ export function runArch(opts: ArchOptions): number {
     const base = path.resolve(dir, strippedSpec)
     for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.py']) {
       const candidate = base + ext
-      if (files.includes(candidate)) return candidate
+      const match = filesByFoldedPath.get(foldPath(candidate))
+      if (match !== undefined) return match
     }
     const idx = path.join(base, 'index')
     for (const ext of ['.ts', '.js', '.tsx', '.jsx']) {
       const candidate = idx + ext
-      if (files.includes(candidate)) return candidate
+      const match = filesByFoldedPath.get(foldPath(candidate))
+      if (match !== undefined) return match
     }
     return null
   }
