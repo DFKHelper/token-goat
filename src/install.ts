@@ -78,6 +78,14 @@ function isTokenGoatHookCommand(command: string): boolean {
   return HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(command))
 }
 
+/** Pattern matching only the current-format `token-goat hook <event>` command, never a legacy alias. */
+const CURRENT_MARKER_PATTERN = anchoredMarkerPattern(COMMAND_MARKER)
+
+/** True when `command` is a current-format (non-legacy) token-goat hook invocation. */
+function isCurrentTokenGoatHookCommand(command: string): boolean {
+  return CURRENT_MARKER_PATTERN.test(command)
+}
+
 /** Build the hook command string for an internal event arg. */
 function hookCommand(eventArg: string): string {
   return `token-goat hook ${eventArg}`
@@ -157,12 +165,15 @@ function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
   return {}
 }
 
-/** True when `group` already contains a token-goat hook for `eventArg`. */
-function groupHasTokenGoat(groups: HookMatcherGroup[] | undefined): boolean {
+/** True when `groups` contains a hook command matching `predicate`. */
+function groupHasTokenGoat(
+  groups: HookMatcherGroup[] | undefined,
+  predicate: (command: string) => boolean,
+): boolean {
   if (groups === undefined) return false
   for (const group of groups) {
     for (const h of group.hooks ?? []) {
-      if (isTokenGoatHookCommand(h.command)) return true
+      if (predicate(h.command)) return true
     }
   }
   return false
@@ -172,8 +183,13 @@ function groupHasTokenGoat(groups: HookMatcherGroup[] | undefined): boolean {
  * Install token-goat hooks into the `scope` settings file.
  *
  * Reads the existing settings (creating an empty doc when absent), adds any
- * missing token-goat hook entries under each mapped event key, and writes the
- * result atomically. `alreadyInstalled` is true when nothing had to change.
+ * missing current-format token-goat hook entries under each mapped event key,
+ * and writes the result atomically. A legacy-only entry for an event key
+ * (see {@link LEGACY_COMMAND_MARKERS}) does not count as already installed --
+ * it is stripped and replaced with the current command, so an upgrade from a
+ * tokenwise/token_goat-era install ends up with exactly one, working, entry
+ * per event key rather than a dead leftover sitting next to a new one.
+ * `alreadyInstalled` is true when nothing had to change.
  */
 export function installHooks(scope: HookScope = 'user'): InstallResult {
   const p = settingsPath(scope)
@@ -185,8 +201,22 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
 
   let changed = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    const groups = hooks[eventKey] ?? []
-    if (groupHasTokenGoat(groups)) continue
+    const existingGroups = hooks[eventKey] ?? []
+    if (groupHasTokenGoat(existingGroups, isCurrentTokenGoatHookCommand)) continue
+
+    // Strip any legacy-marked token-goat entries before adding the current
+    // command -- a legacy command is dead on this build, so leaving it in
+    // place would just be a second, non-functional entry.
+    const groups: HookMatcherGroup[] = []
+    for (const group of existingGroups) {
+      const keptHooks = (group.hooks ?? []).filter((h) => !isTokenGoatHookCommand(h.command))
+      if (keptHooks.length > 0) {
+        groups.push({ ...group, hooks: keptHooks })
+      } else if ((group.hooks ?? []).length === 0) {
+        // A group that had no hooks to begin with is user data; preserve it.
+        groups.push(group)
+      }
+    }
     groups.push({ matcher: '', hooks: [{ type: 'command', command: hookCommand(eventArg) }] })
     hooks[eventKey] = groups
     changed = true
@@ -257,16 +287,18 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
 /**
  * Are token-goat hooks installed in `scope`?
  *
- * True only when every mapped event key carries a token-goat hook command —
- * a partial install (some events wired, some not) reads as not installed so
- * {@link installHooks} will top up the missing entries.
+ * True only when every mapped event key carries a *current-format*
+ * token-goat hook command — a legacy-only entry does not count, since it is
+ * dead on this build, and a partial install (some events wired, some not)
+ * reads as not installed so {@link installHooks} will top up the missing
+ * entries.
  */
 export function isInstalled(scope: HookScope = 'user'): boolean {
   const settings = readSettings(settingsPath(scope))
   const hooks = settings.hooks
   if (hooks === undefined) return false
   for (const [eventKey] of HOOK_EVENT_MAP) {
-    if (!groupHasTokenGoat(hooks[eventKey])) return false
+    if (!groupHasTokenGoat(hooks[eventKey], isCurrentTokenGoatHookCommand)) return false
   }
   return true
 }
