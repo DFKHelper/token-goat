@@ -131,6 +131,72 @@ describe('PythonFilter compress: traceback compaction', () => {
   })
 })
 
+describe('PythonFilter compress: traceback frame integrity (regression)', () => {
+  it('never tears a frame apart across the truncation boundary and reports the elided FRAME count, not a raw line count', () => {
+    // 11 real frames: 9 plain 2-line frames, then a frame with a PEP 657
+    // caret-annotation block (3 lines), then a final plain 2-line frame. The
+    // caret frame sits right where a raw-LINE cut would land mid-frame, so
+    // truncation (keep-all <=10 frames, else keep first 2 + last 3 frames)
+    // must operate on whole frames for it to survive intact.
+    const plainFrames = Array.from({ length: 9 }, (_, i) => [
+      `    File "module${i}.py", line ${i + 1}, in fn${i}`,
+      `      return fn${i + 1}()`,
+    ])
+    const caretFrame = [
+      '    File "app.py", line 42, in divide',
+      '      return numerator / denominator',
+      '             ~~~~~~~~~^~~~~~~~~~~~~~~',
+    ]
+    const lastFrame = [
+      '    File "main.py", line 100, in main',
+      '      divide(10, 0)',
+    ]
+    const stdout = [
+      'Traceback (most recent call last):',
+      ...plainFrames.flat(),
+      ...caretFrame,
+      ...lastFrame,
+      'ZeroDivisionError: division by zero',
+    ].join('\n')
+
+    const out = compress(pythonFilter, stdout, ['python', 'main.py'])
+
+    const expected = [
+      'Traceback (most recent call last):',
+      '    File "module0.py", line 1, in fn0',
+      '      return fn1()',
+      '    File "module1.py", line 2, in fn1',
+      '      return fn2()',
+      '    ... [6 more frames elided by token-goat]',
+      '    File "module8.py", line 9, in fn8',
+      '      return fn9()',
+      '    File "app.py", line 42, in divide',
+      '      return numerator / denominator',
+      '             ~~~~~~~~~^~~~~~~~~~~~~~~',
+      '    File "main.py", line 100, in main',
+      '      divide(10, 0)',
+      'ZeroDivisionError: division by zero',
+    ].join('\n')
+
+    expect(out).toBe(expected)
+
+    // 11 total frames - 5 kept (first 2 + last 3) = 6 elided FRAMES. The old
+    // line-counting bug reported the raw remaining LINE count instead: 23
+    // raw lines - 5 kept lines = 18, a materially different (wrong) number.
+    expect(out).toContain('6 more frames elided by token-goat')
+    expect(out).not.toContain('18 more frames elided by token-goat')
+
+    // The caret-annotation line must never appear detached from its own
+    // frame's header/source line — the frame travels together as a unit,
+    // never split at the truncation boundary.
+    const outLines = out.split('\n')
+    const caretIdx = outLines.indexOf('             ~~~~~~~~~^~~~~~~~~~~~~~~')
+    expect(caretIdx).toBeGreaterThan(1)
+    expect(outLines[caretIdx - 1]).toBe('      return numerator / denominator')
+    expect(outLines[caretIdx - 2]).toBe('    File "app.py", line 42, in divide')
+  })
+})
+
 describe('PythonFilter compress: repeated-line dedup', () => {
   it('deduplicates 5+ identical lines', () => {
     const line = 'some output line'
