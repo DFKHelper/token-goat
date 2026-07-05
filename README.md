@@ -293,7 +293,15 @@ The `--opencode` flag patches Claude Code and drops a TypeScript bridge plugin i
 
 ### openclaw users
 
-Not yet implemented. `--openclaw` isn't a real flag today — there's no install writer, and `token-goat install --openclaw` does nothing. OpenClaw's plugin SDK uses a different hook-event vocabulary than the `before_tool_call`/`after_tool_call` shape token-goat's other bridges target: its real events are `llm_input`, `llm_output`, `before_model_resolve`, `before_agent_reply`, `before_agent_run`, `before_agent_finalize`, and `agent_end`. Writing a bridge against the wrong events would silently register a no-op plugin in a real `~/.openclaw/openclaw.json`, so this needs verification against a live OpenClaw instance (or its plugin SDK source) before it ships.
+```
+token-goat install --openclaw
+```
+
+The `--openclaw` flag patches Claude Code and registers a TypeScript bridge plugin with OpenClaw's gateway: it drops `~/.openclaw/plugins/token-goat.ts` and adds it to `~/.openclaw/openclaw.json`'s `plugins.load.paths` / `plugins.entries` (existing config is merged, never overwritten). OpenClaw's plugin SDK does support `before_tool_call`/`after_tool_call` hooks with the block/rewrite shape token-goat needs; unlike the other bridges, no argument-key remapping is needed at all, since OpenClaw's tool-call params are already snake_case (`file_path`, `command`, etc.) — the same keys token-goat's own `tool_input` uses.
+
+What works: **bash output compression**, **re-read denial** and **surgical-read redirects for oversized first reads**, **image shrinking**, and **post-edit indexing** (all via `before_tool_call`/`after_tool_call`). What doesn't: **session hints** — OpenClaw's tool-call hooks have no context-injection channel, only param rewriting — and the **compaction manifest** — OpenClaw's `before_compaction`/`after_compaction` are observation-only, with no return-value mechanism to inject a manifest into the next turn the way pi's compaction hooks do.
+
+This bridge has not been validated against a live OpenClaw instance — it's built from OpenClaw's documented plugin SDK and hook event types, not dogfooded against a real running gateway. If tool calls aren't being intercepted, the built-in tool name list in `openclaw.ts`'s `TOOL_TO_TG` map is the first thing to check. To remove: `token-goat uninstall --openclaw`.
 
 ### pi users
 
@@ -488,6 +496,12 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 | `~/.codex/AGENTS.md` | A delimited block (`<!-- token-goat-codex-begin -->` … `<!-- token-goat-codex-end -->`) with the same routing guidance, adapted for Codex tool names. |
 | `~/.codex/hooks/token-goat-shim.js` | The hook script `config.toml`'s hook commands invoke (`node "<path>" <event>`). Strips internal `_tg_*` keys and injects `hookSpecificOutput.hookEventName` to satisfy Codex's strict schemas. Regenerated on every `install --codex` run. |
 
+**With `--gemini`** (Gemini CLI integration)
+
+| Path | What |
+|------|------|
+| `~/.gemini/settings.json` | Hook entries under Gemini's `BeforeTool`, `AfterTool`, `SessionStart`, and `PreCompress` events, using Gemini's own snake_case tool-name matchers (`run_shell_command`, `read_file`, `grep_search`, etc.). Existing hooks preserved; a timestamped `.bak` is written before any change. |
+
 **With `--opencode`** (opencode plugin)
 
 | Path | What |
@@ -505,6 +519,13 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 | Path | What |
 |------|------|
 | `~/.claude/settings.json` | No new entries beyond the base Claude Code install. Hermes delegates tasks to Claude Code via `claude -p '<task>'`, which loads hooks from this file normally. `token-goat install --hermes` verifies the hooks are present and reports the result. To remove the Hermes detection: `token-goat uninstall --hermes` (removes no files — Hermes shares the Claude Code hook entries). |
+
+**With `--openclaw`** (OpenClaw plugin)
+
+| Path | What |
+|------|------|
+| `~/.openclaw/plugins/token-goat.ts` | TypeScript bridge plugin (`definePluginEntry` registration). Subscribes to `session_start`, `session_end`, `before_tool_call`, `after_tool_call`, and `before_compaction`. Covers bash compression, re-read denial, pressure-scaled surgical-read redirects for oversized first reads, image shrinking, and post-edit indexing. Not validated against a live OpenClaw instance — see README's "openclaw users" section. |
+| `~/.openclaw/openclaw.json` | Adds the plugin path to `plugins.load.paths` and an entry to `plugins.entries.token-goat`. Existing config preserved; a timestamped `.bak` is written before any change. |
 
 ## Zero maintenance
 
@@ -746,7 +767,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, or `--hermes` to also strip those integrations (`--openclaw` isn't implemented yet). Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 

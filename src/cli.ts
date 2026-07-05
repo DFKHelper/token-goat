@@ -45,6 +45,7 @@ import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
 import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
+import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -280,6 +281,7 @@ async function cmdInstall(opts: {
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
+  openclaw?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -333,6 +335,16 @@ async function cmdInstall(opts: {
       out(`pi extension already installed → ${piResult.extensionPath}`)
     } else {
       out(`Installed token-goat pi extension → ${piResult.extensionPath}`)
+    }
+  }
+
+  // --openclaw is additive, exactly like --codex above.
+  if (opts.openclaw === true) {
+    const openclawResult = installOpenclaw()
+    if (openclawResult.alreadyInstalled) {
+      out(`OpenClaw integration already installed → ${openclawResult.configPath}`)
+    } else {
+      out(`Installed token-goat OpenClaw integration → ${openclawResult.configPath}, ${openclawResult.pluginPath}`)
     }
   }
 
@@ -402,6 +414,7 @@ function cmdUninstall(opts: {
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
+  openclaw?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -442,6 +455,16 @@ function cmdUninstall(opts: {
   if (opts.pi === true) {
     const piRemoved = uninstallPi({ local: opts.local === true })
     out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
+  }
+
+  // --openclaw is additive, exactly like --codex above.
+  if (opts.openclaw === true) {
+    const openclawRemoved = uninstallOpenclaw()
+    out(
+      openclawRemoved
+        ? 'Removed token-goat OpenClaw integration.'
+        : 'No token-goat OpenClaw integration to remove.',
+    )
   }
 
   // --opencode is additive, exactly like --pi above.
@@ -1628,6 +1651,7 @@ export function buildProgram(): Command {
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
     .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
+    .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -1640,6 +1664,7 @@ export function buildProgram(): Command {
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
     .option('--opencode', 'also remove the opencode plugin')
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
+    .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
