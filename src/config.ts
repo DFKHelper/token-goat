@@ -48,6 +48,14 @@ export interface SeverityLogConfig {
   score_threshold: number
 }
 
+/**
+ * Gates the post-read structural-navigation hint in `postReadHandler` (hooks_read.ts):
+ * once a just-read source file has at least `min_lines` lines, the hook nudges toward
+ * `token-goat skeleton`/`outline` for bodies-elided navigation instead of a future full
+ * re-read. Historically gated an actual regex-based code compressor (removed as dead code
+ * -- see code_compress.ts in git history); the config key is kept unchanged to avoid a
+ * config-schema break for existing users.
+ */
 export interface CodeCompressConfig {
   min_lines: number
 }

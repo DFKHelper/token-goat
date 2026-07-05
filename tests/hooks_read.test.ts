@@ -1390,6 +1390,63 @@ Some content that makes the file large enough`
     })
   })
 
+  // Post-read structural-navigation hint (post_read_code_compress.min_lines): once a
+  // just-read source file crosses the line-count threshold (default 200), postReadHandler
+  // should nudge toward token-goat skeleton/outline instead of a future full re-read.
+  function makeLineCountedSource(lineCount: number): string {
+    return Array.from({ length: lineCount }, (_, i) => `const x${i} = ${i}`).join('\n') + '\n'
+  }
+
+  it('postReadHandler emits a skeleton/outline hint when a read source file is >= post_read_code_compress.min_lines', () => {
+    const content = makeLineCountedSource(200)
+    const p = tmpFileExt(content, '.ts')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+
+    const result = postReadHandler(postEvent)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat skeleton')
+      expect(result.context).toContain('token-goat outline')
+      expect(result.context).toContain(normalizePath(p))
+    }
+  })
+
+  it('postReadHandler does not emit the skeleton/outline hint below post_read_code_compress.min_lines', () => {
+    const content = makeLineCountedSource(199)
+    const p = tmpFileExt(content, '.ts')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+
+    const result = postReadHandler(postEvent)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('postReadHandler does not emit the skeleton/outline hint for a non-source file, even well past the line threshold', () => {
+    const content = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n') + '\n'
+    const p = tmpFileExt(content, '.md')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+
+    const result = postReadHandler(postEvent)
+    expect(result.hookType).toBe('pass')
+  })
+
 })
 
 describe('preReadHandler — session artifact re-read dedup', () => {
