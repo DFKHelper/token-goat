@@ -92,8 +92,15 @@ export interface SessionCacheObject {
   loadedSkillTotalTokens?: number
   observedToolTokens?: number
   pressureBaselineTokens?: number
-  bashHistory?: Record<string, unknown>
-  webHistory?: Record<string, unknown>
+  /**
+   * Matches the real on-disk shape session_store.ts::SerializedSession
+   * actually produces — an array of `[key, id]` pairs (see session.ts's
+   * `_webFetches`/`_bashOutputs` maps and their `recordWebFetch`/
+   * `recordBashOutput` writers), not a `bashHistory`/`webHistory` dict shape
+   * no writer ever populated.
+   */
+  webFetches?: Array<[string, string]>
+  bashOutputs?: Array<[string, string]>
   /**
    * Matches the real on-disk shape session_store.ts::saveSessionState writes
    * (`SerializedSession.files: FileEntry[]`) — a flat array, not a path-keyed
@@ -167,10 +174,8 @@ function pressureRawTotal(cache: SessionCacheObject): number {
   if (observed > 0) {
     return skillTokens + CATALOG_TOKENS + observed
   }
-  const bashHistory = cache.bashHistory ?? {}
-  const bashCount = Object.keys(bashHistory).length
-  const webHistory = cache.webHistory ?? {}
-  const webCount = Object.keys(webHistory).length
+  const bashCount = (cache.bashOutputs ?? []).length
+  const webCount = (cache.webFetches ?? []).length
   const files = cache.files ?? []
   const readCount = files.length
   return (
@@ -421,15 +426,15 @@ export function findLatestSessionId(): string | null {
 export function eventCount(cache: SessionCacheObject): number {
   const files = cache.files ?? []
   const editedCount = files.filter((f) => f.wasEdited).length
-  const bashHistory = cache.bashHistory ?? {}
-  const webHistory = cache.webHistory ?? {}
+  const bashCount = (cache.bashOutputs ?? []).length
+  const webCount = (cache.webFetches ?? []).length
   const skillHistory = cache.skillHistory ?? {}
 
   return (
     files.length +
     editedCount +
-    Object.keys(bashHistory).length +
-    Object.keys(webHistory).length +
+    bashCount +
+    webCount +
     Object.keys(skillHistory).length
   )
 }
@@ -620,7 +625,7 @@ function _computeActivityMultiplier(ageSecs: number, editedCount: number): numbe
 // Load session cache from disk
 // ---------------------------------------------------------------------------
 
-function _loadSessionCache(sessionId: string): SessionCacheObject | null {
+export function loadSessionCache(sessionId: string): SessionCacheObject | null {
   // Reuse session_store.ts's own read/coercion (readSessionStateFile) instead
   // of re-parsing the JSON here: it already normalizes both the current
   // FileEntry[] array format and the legacy Python path-keyed dict format,
@@ -630,7 +635,7 @@ function _loadSessionCache(sessionId: string): SessionCacheObject | null {
   if (!disk) {
     return null
   }
-  return { files: disk.files }
+  return { files: disk.files, webFetches: disk.webFetches, bashOutputs: disk.bashOutputs }
 }
 
 // ---------------------------------------------------------------------------
@@ -645,8 +650,8 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
   const files = cache.files ?? []
   const editedFiles = files.filter((f) => f.wasEdited)
   const readFiles = files.filter((f) => !f.wasEdited)
-  const bashHistory = cache.bashHistory ?? {}
-  const webHistory = cache.webHistory ?? {}
+  const bashOutputs = cache.bashOutputs ?? []
+  const webFetches = cache.webFetches ?? []
 
   const usedTokens = estimateTokens(lines.join('\n'))
   const budgetRemaining = maxTokens - usedTokens
@@ -681,16 +686,19 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     lines.push('')
   }
 
-  if (Object.keys(bashHistory).length > 0) {
+  if (bashOutputs.length > 0) {
     lines.push('## Recent bash')
     lines.push('(bash history recorded)')
     lines.push('')
   }
 
-  if (Object.keys(webHistory).length > 0) {
+  if (webFetches.length > 0) {
     lines.push('## Web fetches')
     let sectionTokens = estimateTokens('## Web fetches\n')
-    for (const url of Object.keys(webHistory).slice(0, 10)) {
+    // webFetches entries are `[url\x00prompt, cacheId]` pairs (see session.ts's
+    // recordWebFetch) — surface the distinct URLs, dropping the prompt suffix.
+    const urls = Array.from(new Set(webFetches.map(([key]) => key.split('\x00')[0] ?? key)))
+    for (const url of urls.slice(0, 10)) {
       if (sectionTokens > budgetRemaining * 0.2) break
       lines.push(`- ${url}`)
       sectionTokens += estimateTokens(`- ${url}\n`)
@@ -736,12 +744,10 @@ export function computeAdaptiveBudget(
   }).length
   const symbolsBonus = Math.min(150, symbolFiles * 30)
 
-  const bashHistory = cache.bashHistory ?? {}
-  const bashCount = Object.keys(bashHistory).length
+  const bashCount = (cache.bashOutputs ?? []).length
   const bashBonus = bashCount > 0 ? Math.min(100, Math.max(20, bashCount * 5)) : 0
 
-  const webHistory = cache.webHistory ?? {}
-  const webBonus = Object.keys(webHistory).length > 0 ? 15 : 0
+  const webBonus = (cache.webFetches ?? []).length > 0 ? 15 : 0
 
   const diffBonus = opts?.hasPendingDiff ? 50 : 0
   const uncommittedBonus = opts?.hasUncommittedChanges ? 10 : 0
@@ -772,7 +778,7 @@ export function computeAdaptiveBudget(
  */
 export function buildManifest(sessionId: string, opts?: { maxTokens?: number }): string {
   const maxTokens = opts?.maxTokens ?? 400
-  const cache = _loadSessionCache(sessionId)
+  const cache = loadSessionCache(sessionId)
   if (!cache) {
     return ''
   }
@@ -784,7 +790,7 @@ export function buildManifest(sessionId: string, opts?: { maxTokens?: number }):
  * Build manifest with adaptively-computed budget.
  */
 export function buildManifestAdaptive(sessionId: string): string {
-  const cache = _loadSessionCache(sessionId)
+  const cache = loadSessionCache(sessionId)
   if (!cache) {
     return ''
   }
@@ -806,7 +812,7 @@ export function buildManifestWithCount(
   sessionId: string,
   opts?: { maxTokens?: number }
 ): [string, number] {
-  const cache = _loadSessionCache(sessionId)
+  const cache = loadSessionCache(sessionId)
   if (!cache) {
     return ['', 0]
   }
@@ -814,8 +820,8 @@ export function buildManifestWithCount(
   const files = cache.files ?? []
   const editedCount = files.filter((f) => f.wasEdited).length
   const readCount = files.length
-  const bashCount = Object.keys(cache.bashHistory ?? {}).length
-  const webCount = Object.keys(cache.webHistory ?? {}).length
+  const bashCount = (cache.bashOutputs ?? []).length
+  const webCount = (cache.webFetches ?? []).length
   const skillCount = Object.keys(cache.skillHistory ?? {}).length
 
   const eventCount = editedCount + readCount + bashCount + webCount + skillCount

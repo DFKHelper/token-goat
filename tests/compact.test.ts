@@ -23,6 +23,7 @@ import {
   getAutoTriggerMultiplier,
   getContextPressure,
   isNoisePath,
+  loadSessionCache,
   mergeSessionManifests,
   normalizeForCache,
   tierForFraction,
@@ -30,7 +31,7 @@ import {
 } from '../src/compact.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
-import { importSessionState, recordFileEdit, recordFileRead, type FileEntry } from '../src/session.js'
+import { importSessionState, recordBashOutput, recordFileEdit, recordFileRead, recordWebFetch, type FileEntry } from '../src/session.js'
 
 /** Build a minimal {@link FileEntry} for SessionCacheObject.files fixtures. */
 function fileEntry(p: string, overrides: Partial<FileEntry> = {}): FileEntry {
@@ -116,14 +117,49 @@ describe('compact', () => {
         loadedSkillTotalTokens: 0,
         observedToolTokens: 0,
         pressureBaselineTokens: 0,
-        bashHistory: { cmd1: {}, cmd2: {} },
-        webHistory: { url1: {} },
+        bashOutputs: [['cmd1', 'out1'], ['cmd2', 'out2']],
+        webFetches: [['url1', 'out1']],
         files: [fileEntry('a.ts'), fileEntry('b.ts'), fileEntry('c.ts')],
       }
       const pressure = getContextPressure(cache)
       const expected =
         (CATALOG_TOKENS + 2 * 500 + 1 * 1_000 + 3 * 200) / CONTEXT_AUTOCOMPACT_TOKENS
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
+    })
+
+    // Regression: SessionCacheObject.bashHistory/webHistory used to be a placeholder
+    // Record<string, unknown> shape no writer ever populated. The real on-disk shape
+    // (session_store.ts::SerializedSession.webFetches/bashOutputs, and the
+    // _webFetches/_bashOutputs maps in session.ts) is an array of [key, id] pairs.
+    // This drives the real save -> load -> getContextPressure pipeline end to end so
+    // it fails against a reader that still expects the old bashHistory/webHistory
+    // dict shape and passes once loadSessionCache forwards the real fields.
+    it('reflects real recorded bash/web activity loaded from disk (not just a hand-built cache object)', () => {
+      const prevHome = process.env['TOKEN_GOAT_HOME']
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-pressure-'))
+      process.env['TOKEN_GOAT_HOME'] = tmpHome
+      resetSessionState()
+      try {
+        recordBashOutput('hash1', 'out1', 10)
+        recordBashOutput('hash2', 'out2', 10)
+        recordWebFetch('https://example.com', 'prompt', 'wout1')
+        saveSessionState('pressure-real-session')
+
+        const cache = loadSessionCache('pressure-real-session')
+        expect(cache).not.toBeNull()
+        const pressure = getContextPressure(cache ?? undefined)
+        const expected = (CATALOG_TOKENS + 2 * 500 + 1 * 1_000) / CONTEXT_AUTOCOMPACT_TOKENS
+        expect(pressure.fillFraction).toBeCloseTo(expected, 5)
+      } finally {
+        resetSessionState()
+        if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+        else process.env['TOKEN_GOAT_HOME'] = prevHome
+        try {
+          fs.rmSync(tmpHome, { recursive: true, force: true })
+        } catch {
+          // best-effort cleanup
+        }
+      }
     })
   })
 
@@ -466,11 +502,11 @@ describe('compact', () => {
   })
 
   describe('eventCount', () => {
-    it('includes webHistory in the total (fail-on-buggy: webHistory omitted from the sum, unlike buildManifestWithCount)', () => {
+    it('includes webFetches in the total (fail-on-buggy: webFetches omitted from the sum, unlike buildManifestWithCount)', () => {
       const cache: SessionCacheObject = {
         files: [fileEntry('a.ts'), fileEntry('b.ts', { wasEdited: true })],
-        bashHistory: { cmd1: {} },
-        webHistory: { 'https://example.com': {}, 'https://example.org': {} },
+        bashOutputs: [['cmd1', 'out1']],
+        webFetches: [['https://example.com', 'w1'], ['https://example.org', 'w2']],
         skillHistory: { skillA: {} },
       }
       // files.length(2: a.ts + b.ts) + editedCount(1: b.ts) + bash(1) + web(2) + skill(1) = 7
@@ -479,6 +515,37 @@ describe('compact', () => {
 
     it('returns 0 for an empty cache', () => {
       expect(eventCount({})).toBe(0)
+    })
+
+    // Regression: eventCount used to read cache.bashHistory/cache.webHistory, field
+    // names loadSessionCache never populated (it only ever set `files`), so real
+    // recorded bash/web activity was silently excluded from every event count.
+    it('counts real recorded bash/web activity loaded via loadSessionCache', () => {
+      const prevHome = process.env['TOKEN_GOAT_HOME']
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-eventcount-'))
+      process.env['TOKEN_GOAT_HOME'] = tmpHome
+      resetSessionState()
+      try {
+        recordFileRead('C:/proj/src/one.ts')
+        recordBashOutput('hash1', 'out1', 10)
+        recordWebFetch('https://example.com', 'prompt', 'wout1')
+        recordWebFetch('https://example.org', 'prompt2', 'wout2')
+        saveSessionState('eventcount-real-session')
+
+        const cache = loadSessionCache('eventcount-real-session')
+        expect(cache).not.toBeNull()
+        // files.length(1) + editedCount(0) + bash(1) + web(2) + skill(0) = 4
+        expect(eventCount(cache ?? {})).toBe(4)
+      } finally {
+        resetSessionState()
+        if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+        else process.env['TOKEN_GOAT_HOME'] = prevHome
+        try {
+          fs.rmSync(tmpHome, { recursive: true, force: true })
+        } catch {
+          // best-effort cleanup
+        }
+      }
     })
   })
 
@@ -573,6 +640,21 @@ describe('compact', () => {
       expect(editedSection).not.toContain('readonly.ts')
       expect(readSection).toContain('readonly.ts')
       expect(readSection).not.toContain('edited.ts')
+    })
+
+    // Regression: loadSessionCache used to return only `{ files: disk.files }`,
+    // dropping disk.webFetches/disk.bashOutputs entirely, so the manifest's
+    // "## Recent bash" / "## Web fetches" sections never rendered no matter how
+    // much real bash/web activity a session recorded.
+    it('buildManifest renders Recent bash / Web fetches sections from real recorded activity', () => {
+      recordBashOutput('hash1', 'out1', 10)
+      recordWebFetch('https://example.com/page', 'prompt', 'wout1')
+      saveSessionState('real-bash-web-session')
+
+      const manifest = buildManifest('real-bash-web-session')
+      expect(manifest).toContain('## Recent bash')
+      expect(manifest).toContain('## Web fetches')
+      expect(manifest).toContain('https://example.com/page')
     })
   })
 })
