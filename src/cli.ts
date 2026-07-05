@@ -1560,8 +1560,9 @@ export function buildProgram(): Command {
     .command('read <spec>')
     .description("read one symbol's full body (spec: file::symbol)")
     .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { json?: boolean }) =>
-      runExit(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
+    .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean }) =>
+      runExit(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}), ...(opts.forceRefresh === true ? { forceRefresh: true } : {}) })),
     )
 
   program
@@ -1588,12 +1589,14 @@ export function buildProgram(): Command {
     .description('list all symbols in a file without bodies')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
-    .action((file: string, opts: { json?: boolean; minLines?: string }) =>
+    .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
+    .action((file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean }) =>
       runExit(() =>
         runSkeleton({
           file,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
         }),
       ),
     )
@@ -1603,12 +1606,14 @@ export function buildProgram(): Command {
     .description('list symbols with line ranges and docstrings')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
-    .action((file: string, opts: { json?: boolean; minLines?: string }) =>
+    .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
+    .action((file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean }) =>
       runExit(() =>
         runOutline({
           file,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
         }),
       ),
     )

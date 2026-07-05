@@ -12,6 +12,8 @@ import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
 import { querySymbols, queryRefs } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
+import { indexFileSync } from './parser.js'
+import { globalDbPath } from './constants.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -153,6 +155,7 @@ export interface ReadOptions {
   spec: string
   json?: boolean
   contextLines?: number
+  forceRefresh?: boolean
 }
 
 function parseReadSpec(spec: string): { file: string; symbol?: string } {
@@ -234,6 +237,9 @@ export function runRead(opts: ReadOptions): number {
   // When a method name is given (e.g. "Session.refresh"), query for the method name directly. Querying for symBase (the class name) and then searching for methodName among those results always fails because all returned symbols have name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
   const resolved = resolveIndexPath(file)
+  if (opts.forceRefresh === true) {
+    indexFileSync(resolved, globalDbPath())
+  }
   let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
   if (candidates.length === 0) {
     // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by
@@ -445,11 +451,16 @@ export interface SkeletonOptions {
   file: string
   json?: boolean
   minLines?: number
+  forceRefresh?: boolean
 }
 
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): number {
-  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
+  const resolved = resolveIndexPath(opts.file)
+  if (opts.forceRefresh === true) {
+    indexFileSync(resolved, globalDbPath())
+  }
+  const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
     emitErr(`No indexed symbols found in '${opts.file}'`)
@@ -492,11 +503,16 @@ export interface OutlineOptions {
   file: string
   json?: boolean
   minLines?: number
+  forceRefresh?: boolean
 }
 
 /** Handle ``token-goat outline file``. */
 export function runOutline(opts: OutlineOptions): number {
-  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
+  const resolved = resolveIndexPath(opts.file)
+  if (opts.forceRefresh === true) {
+    indexFileSync(resolved, globalDbPath())
+  }
+  const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
     emitErr(`No indexed symbols found in '${opts.file}'`)
