@@ -53,7 +53,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { atomicWriteText, ensureDirSync, extractErrorMessage } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from '../util.js'
 
 /** Marker substring identifying a token-goat-authored Gemini hook command. */
 const GEMINI_COMMAND_MARKER = 'token-goat hook'
@@ -180,12 +180,6 @@ function groupHasTokenGoat(groups: GeminiMatcherGroup[] | undefined, matcher: st
   return false
 }
 
-/** Write a timestamped `.bak` copy of `p` if it currently exists. Windows-safe (no `:` in the name). */
-function backupFile(p: string): void {
-  if (!fs.existsSync(p)) return
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  fs.copyFileSync(p, `${p}.bak.${stamp}`)
-}
 
 /** Build the shell command Gemini should run for one hook entry. */
 function geminiHookCommand(eventArg: string): string {

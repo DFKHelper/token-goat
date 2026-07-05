@@ -212,6 +212,34 @@ describe('isInstalled / uninstallHooks', () => {
     expect(uninstallHooks('project')).toBe(false)
   })
 
+  it('writes a timestamped .bak of settings.json before installHooks edits it', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ theme: 'dark' }))
+
+    installHooks('project')
+
+    const dir = fs.readdirSync(path.dirname(p))
+    const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
+    expect(backups.length).toBeGreaterThanOrEqual(1)
+    const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
+    expect(JSON.parse(backupContent)).toEqual({ theme: 'dark' })
+  })
+
+  it('writes a timestamped .bak of settings.json before uninstallHooks removes entries', () => {
+    installHooks('project')
+
+    const p = settingsPath('project')
+    const before = fs.readFileSync(p, 'utf8')
+    uninstallHooks('project')
+
+    const dir = fs.readdirSync(path.dirname(p))
+    const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
+    expect(backups.length).toBeGreaterThanOrEqual(1)
+    const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
+    expect(backupContent).toBe(before)
+  })
+
   it('uninstall leaves unrelated user hooks intact', () => {
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })

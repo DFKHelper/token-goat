@@ -43,7 +43,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, ensureDirSync, extractErrorMessage } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -160,12 +160,6 @@ function groupHasTokenGoat(groups: CodexMatcherGroup[] | undefined, matcher: str
   return false
 }
 
-/** Write a timestamped `.bak` copy of `p` if it currently exists. Windows-safe (no `:` in the name). */
-function backupFile(p: string): void {
-  if (!fs.existsSync(p)) return
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  fs.copyFileSync(p, `${p}.bak.${stamp}`)
-}
 
 /** Build the shell command Codex should run for one hook entry. */
 function hookCommandFor(scriptPath: string, eventArg: string): string {

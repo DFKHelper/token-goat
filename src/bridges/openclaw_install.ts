@@ -32,7 +32,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
 
 interface OpenclawPluginEntry {
@@ -97,11 +97,6 @@ function readOpenclawConfig(p: string, opts: { strict?: boolean } = {}): Opencla
   return {}
 }
 
-function backupFile(p: string): void {
-  if (!fs.existsSync(p)) return
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  fs.copyFileSync(p, `${p}.bak.${stamp}`)
-}
 
 export interface OpenclawInstallResult {
   readonly configPath: string

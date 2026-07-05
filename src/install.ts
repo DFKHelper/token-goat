@@ -17,7 +17,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -228,6 +228,7 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
 
   settings.hooks = hooks
   ensureDirSync(path.dirname(p))
+  backupFile(p)
   atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
   return { scope, settingsPath: p, alreadyInstalled: false }
 }
@@ -280,6 +281,7 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
   }
 
   ensureDirSync(path.dirname(p))
+  backupFile(p)
   atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
   return true
 }
