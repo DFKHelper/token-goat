@@ -302,3 +302,184 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   }
   return true
 }
+
+// --- CLAUDE.md delimited-block writer ---
+//
+// README documents this as part of the BASE Claude Code install (unconditional,
+// not gated behind any --<harness> flag): a delimited block in the user's own
+// ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over
+// Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same
+// idempotent merge-or-append pattern, same "preserve everything outside the
+// markers" guarantee for a file the user edits directly.
+
+const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
+const CLAUDE_MD_END = '<!-- token-goat-end -->'
+
+/** Absolute path to `~/.claude/CLAUDE.md`. */
+export function claudeMdPath(): string {
+  return path.join(os.homedir(), '.claude', 'CLAUDE.md')
+}
+
+function buildClaudeMdBlock(): string {
+  return [
+    CLAUDE_MD_BEGIN,
+    '## token-goat',
+    '',
+    'Prefer token-goat commands over reading whole files:',
+    '- `token-goat symbol NAME` -- find a function/class/type',
+    '- `token-goat read "file::symbol"` -- one function/method body',
+    '- `token-goat section "file::Heading"` -- one doc or config section',
+    '- `token-goat semantic "description"` -- find code by meaning',
+    '- `token-goat outline file` / `token-goat skeleton file` -- signatures without bodies',
+    '',
+    'Use this before a full-file `Read` or wide `Grep`, and before opening a large image',
+    '(token-goat hooks shrink oversized images automatically). token-goat commands return',
+    'narrow slices, typically 85-97% smaller than the full file.',
+    CLAUDE_MD_END,
+  ].join('\n')
+}
+
+function writeClaudeMdBlock(p: string): boolean {
+  const block = buildClaudeMdBlock()
+  let existing: string
+  try {
+    existing = fs.readFileSync(p, 'utf8')
+  } catch {
+    existing = ''
+  }
+
+  const beginIdx = existing.indexOf(CLAUDE_MD_BEGIN)
+  const endIdx = existing.indexOf(CLAUDE_MD_END)
+
+  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+    const before = existing.slice(0, beginIdx)
+    const after = existing.slice(endIdx + CLAUDE_MD_END.length)
+    const current = existing.slice(beginIdx, endIdx + CLAUDE_MD_END.length)
+    if (current === block) return false
+    ensureDirSync(path.dirname(p))
+    atomicWriteText(p, `${before}${block}${after}`)
+    return true
+  }
+
+  const trimmed = existing.replace(/\s+$/, '')
+  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
+  ensureDirSync(path.dirname(p))
+  atomicWriteText(p, next)
+  return true
+}
+
+function stripClaudeMdBlock(p: string): boolean {
+  let existing: string
+  try {
+    existing = fs.readFileSync(p, 'utf8')
+  } catch {
+    return false
+  }
+
+  const beginIdx = existing.indexOf(CLAUDE_MD_BEGIN)
+  const endIdx = existing.indexOf(CLAUDE_MD_END)
+  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return false
+
+  const before = existing.slice(0, beginIdx).replace(/\s+$/, '')
+  const after = existing.slice(endIdx + CLAUDE_MD_END.length).replace(/^\s+/, '')
+
+  let next: string
+  if (before.length > 0 && after.length > 0) {
+    next = `${before}\n\n${after}`
+  } else if (before.length > 0) {
+    next = `${before}\n`
+  } else {
+    next = after
+  }
+
+  atomicWriteText(p, next)
+  return true
+}
+
+/** Outcome of an {@link installClaudeMd} call. */
+export interface ClaudeMdInstallResult {
+  readonly path: string
+  /** True when the block was already present and up to date (no write needed). */
+  readonly alreadyInstalled: boolean
+}
+
+/** Add or refresh the token-goat block in `~/.claude/CLAUDE.md`, preserving any existing content. */
+export function installClaudeMd(): ClaudeMdInstallResult {
+  const p = claudeMdPath()
+  const changed = writeClaudeMdBlock(p)
+  return { path: p, alreadyInstalled: !changed }
+}
+
+/** Remove the token-goat block from `~/.claude/CLAUDE.md`, leaving the rest of the file intact. */
+export function uninstallClaudeMd(): boolean {
+  return stripClaudeMdBlock(claudeMdPath())
+}
+
+// --- token-goat skill writer ---
+//
+// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base
+// install too -- "the same routing guidance in skill form". Unlike CLAUDE.md,
+// this directory belongs entirely to token-goat (nothing else writes into
+// it), so install/uninstall can write/remove the whole file rather than
+// patching a delimited region.
+
+const SKILL_MD_CONTENT = `---
+name: token-goat
+description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton) return narrow slices of code and docs at a fraction of the token cost.
+---
+
+# token-goat
+
+Prefer token-goat commands over reading whole files:
+- \`token-goat symbol NAME\` -- find a function/class/type
+- \`token-goat read "file::symbol"\` -- one function/method body
+- \`token-goat section "file::Heading"\` -- one doc or config section
+- \`token-goat semantic "description"\` -- find code by meaning
+- \`token-goat outline file\` / \`token-goat skeleton file\` -- signatures without bodies
+
+Read is the right call when the file is under about 200 lines, was never indexed (new or
+untracked), or is an image (token-goat's hooks shrink oversized images automatically).
+
+Image shrinking and repeat-read hints run on their own via hooks -- you do not call those
+directly.
+`
+
+/** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`. */
+export function skillDir(): string {
+  return path.join(os.homedir(), '.claude', 'skills', 'token-goat')
+}
+
+/** Absolute path to `~/.claude/skills/token-goat/SKILL.md`. */
+export function skillPath(): string {
+  return path.join(skillDir(), 'SKILL.md')
+}
+
+/** Outcome of an {@link installSkill} call. */
+export interface SkillInstallResult {
+  readonly path: string
+  /** True when the file was already present and up to date (no write needed). */
+  readonly alreadyInstalled: boolean
+}
+
+/** Write (or refresh) the token-goat skill at `~/.claude/skills/token-goat/SKILL.md`. */
+export function installSkill(): SkillInstallResult {
+  const p = skillPath()
+  let existing: string | null = null
+  try {
+    existing = fs.readFileSync(p, 'utf8')
+  } catch {
+    // Absent; falls through to the write below.
+  }
+  if (existing === SKILL_MD_CONTENT) return { path: p, alreadyInstalled: true }
+  ensureDirSync(skillDir())
+  atomicWriteText(p, SKILL_MD_CONTENT)
+  return { path: p, alreadyInstalled: false }
+}
+
+/** Remove the token-goat skill directory entirely. */
+export function uninstallSkill(): boolean {
+  const dir = skillDir()
+  if (!fs.existsSync(dir)) return false
+  fs.rmSync(dir, { recursive: true, force: true })
+  return true
+}
