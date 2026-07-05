@@ -34,6 +34,7 @@ import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
+import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
 import { installPi, uninstallPi } from './bridges/pi_install.js'
 import {
   isWorkerRunning,
@@ -263,7 +264,13 @@ async function cmdHook(event: string): Promise<void> {
   await relay(event)
 }
 
-async function cmdInstall(opts: { project?: boolean; codex?: boolean; pi?: boolean; local?: boolean }): Promise<void> {
+async function cmdInstall(opts: {
+  project?: boolean
+  codex?: boolean
+  gemini?: boolean
+  pi?: boolean
+  local?: boolean
+}): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
@@ -274,6 +281,16 @@ async function cmdInstall(opts: { project?: boolean; codex?: boolean; pi?: boole
       out(`Codex CLI integration already installed → ${codexResult.configPath}`)
     } else {
       out(`Installed token-goat Codex CLI integration → ${codexResult.configPath}, ${codexResult.agentsPath}`)
+    }
+  }
+
+  // --gemini is additive, exactly like --codex above.
+  if (opts.gemini === true) {
+    const geminiResult = installGemini()
+    if (geminiResult.alreadyInstalled) {
+      out(`Gemini CLI integration already installed → ${geminiResult.settingsPath}`)
+    } else {
+      out(`Installed token-goat Gemini CLI integration → ${geminiResult.settingsPath}`)
     }
   }
 
@@ -327,7 +344,13 @@ async function cmdInstall(opts: { project?: boolean; codex?: boolean; pi?: boole
   }
 }
 
-function cmdUninstall(opts: { project?: boolean; codex?: boolean; pi?: boolean; local?: boolean }): void {
+function cmdUninstall(opts: {
+  project?: boolean
+  codex?: boolean
+  gemini?: boolean
+  pi?: boolean
+  local?: boolean
+}): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const removed = uninstallHooks(scope)
   out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
@@ -341,6 +364,16 @@ function cmdUninstall(opts: { project?: boolean; codex?: boolean; pi?: boolean; 
       codexRemoved
         ? 'Removed token-goat Codex CLI integration.'
         : 'No token-goat Codex CLI integration to remove.',
+    )
+  }
+
+  // --gemini is additive, exactly like --codex above.
+  if (opts.gemini === true) {
+    const geminiRemoved = uninstallGemini()
+    out(
+      geminiRemoved
+        ? 'Removed token-goat Gemini CLI integration.'
+        : 'No token-goat Gemini CLI integration to remove.',
     )
   }
 
@@ -1512,6 +1545,7 @@ export function buildProgram(): Command {
     .description('install hooks into Claude Code settings')
     .option('-p, --project', 'install into project scope instead of user scope')
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
@@ -1521,6 +1555,7 @@ export function buildProgram(): Command {
     .description('remove token-goat hooks from Claude Code settings')
     .option('-p, --project', 'uninstall from project scope instead of user scope')
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
+    .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))

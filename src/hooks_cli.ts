@@ -56,7 +56,7 @@ const CODEX_TOOL_NAME_MAP: Record<string, string> = {
  * Gemini tool name → internal PascalCase tool name.
  * Gemini uses snake_case; token-goat uses PascalCase.
  */
-const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
+export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   run_shell_command: 'Bash',
   read_file: 'Read',
   read_many_files: 'Read',
@@ -66,7 +66,11 @@ const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   glob: 'Glob',
   grep_search: 'Grep',
   search_file_content: 'Grep',
-  web_search: 'WebFetch',
+  // Gemini's real web-search tool is registered as 'google_web_search'
+  // (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is
+  // not a tool name Gemini CLI ever emits, so the old entry here silently
+  // never matched a real invocation.
+  google_web_search: 'WebFetch',
   web_fetch: 'WebFetch',
 }
 
@@ -75,10 +79,20 @@ const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
  * Only keys that differ between Gemini and token-goat need to appear here.
  */
 const GEMINI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  Read: { file_path: 'path' },
-  Write: { file_path: 'path' },
-  Edit: { file_path: 'path', old_string: 'old_str', new_string: 'new_str' },
-  Grep: { pattern: 'query' },
+  // Gemini's real read_file/write_file/replace tool schemas already use
+  // 'file_path' (and replace's 'old_string'/'new_string') verbatim --
+  // identical to token-goat's own canonical keys (see getFilePath() in
+  // hooks_common.ts, which reads event.toolInput['file_path']) -- confirmed
+  // against gemini-cli's own ReadFileToolParams/EditToolParams/
+  // WriteFileToolParams interfaces. No remap is needed for Read/Write/Edit;
+  // the previous entries here actively renamed a key that was already
+  // correct (file_path -> path), which would have silently corrupted the
+  // path argument on every real Gemini Read/Write/Edit call.
+  //
+  // Grep's real tool (grep_search) calls its target-directory argument
+  // 'dir_path', which preReadHandler's Grep fallback
+  // (event.toolInput['path']) doesn't recognize, so that one remains remapped.
+  Grep: { dir_path: 'path' },
 }
 
 /**
