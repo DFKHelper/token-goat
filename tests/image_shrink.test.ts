@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
@@ -32,6 +33,7 @@ function makeEvent(filePath: string | undefined): HookEvent {
   })
 }
 
+const here = path.dirname(fileURLToPath(import.meta.url))
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-img-'))
 
 // A tiny PNG, comfortably under the 512KB threshold.
@@ -40,6 +42,13 @@ let smallPng: Buffer
 let largeJpeg: Buffer
 let largePngPath: string
 let smallPngPath: string
+// A real 3-frame animated GIF (48x48, random noise per frame so the WEBP
+// recompression below reliably shrinks it). sharp has no API to compose a
+// multi-frame image from scratch (no `join` input option in this version), so
+// this is a small committed binary fixture rather than one generated at test
+// time. Regenerate via: magick -size 48x48 xc: +noise random -size 48x48 xc:
+// +noise random -size 48x48 xc: +noise random -delay 10 -loop 0 tests/fixtures/animated.gif
+const animatedGif = fs.readFileSync(path.join(here, 'fixtures', 'animated.gif'))
 
 beforeAll(async () => {
   smallPng = await sharp({
@@ -145,6 +154,25 @@ describe('shrinkImage', () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nmax_image_pixels = 1000000\n', 'utf8')
     invalidateConfigCache()
     expect(await shrinkImage(largeJpeg)).toBeNull()
+  })
+
+  it('preserves every frame of an animated GIF instead of collapsing to a single frame', async () => {
+    // Confirm the fixture really is multi-frame before trusting the assertions below.
+    const inputMeta = await sharp(animatedGif).metadata()
+    expect(inputMeta.pages).toBe(3)
+
+    // animatedGif is only ~11KB (well under the 512KB threshold), so force it
+    // through the shrink path — this test is about frame preservation, not the
+    // size-threshold gate (already covered by the tests above).
+    const result = await shrinkImage(animatedGif, { sizeThresholdBytes: 1 })
+    expect(result).not.toBeNull()
+    if (result === null) return
+    expect(result.shrunkBytes).toBeLessThan(result.originalBytes)
+    // JPEG has no multi-frame container, so an animated input must never pick it.
+    expect(result.format).toBe('webp')
+
+    const outputMeta = await sharp(result.data, { animated: true }).metadata()
+    expect(outputMeta.pages).toBeGreaterThan(1)
   })
 })
 
