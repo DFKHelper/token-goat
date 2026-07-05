@@ -99,21 +99,26 @@ export class PythonFilter extends ToolFilter {
   private _compressTraceback(lines: string[]): string[] {
     const out: string[] = []
     let inTraceback = false
-    let frames: string[] = []
+    // Each element is one whole frame: a `File "...", line N, in func` header
+    // line plus every trailing context line (source line, and — on Python
+    // 3.11+ — a PEP 657 caret-annotation block) up to the next header. Grouping
+    // by frame (not raw line) lets us truncate without tearing a frame's
+    // header away from its context, or vice versa.
+    let frameGroups: string[][] = []
     let headerLine = ''
 
     const flushFrames = () => {
       if (!inTraceback) return
       inTraceback = false
       if (headerLine) out.push(headerLine)
-      if (frames.length <= 10) {
-        out.push(...frames)
+      if (frameGroups.length <= 10) {
+        for (const group of frameGroups) out.push(...group)
       } else {
-        out.push(...frames.slice(0, 2))
-        out.push(`    ... [${frames.length - 5} more frames elided by token-goat]`)
-        out.push(...frames.slice(frames.length - 3))
+        for (const group of frameGroups.slice(0, 2)) out.push(...group)
+        out.push(`    ... [${frameGroups.length - 5} more frames elided by token-goat]`)
+        for (const group of frameGroups.slice(frameGroups.length - 3)) out.push(...group)
       }
-      frames = []
+      frameGroups = []
       headerLine = ''
     }
 
@@ -125,8 +130,17 @@ export class PythonFilter extends ToolFilter {
         continue
       }
       if (inTraceback) {
-        if (PYTHON_FRAME_RE.test(line) || line.startsWith('    ')) {
-          frames.push(line)
+        if (PYTHON_FRAME_RE.test(line)) {
+          frameGroups.push([line])
+          continue
+        }
+        if (line.startsWith('    ')) {
+          const lastGroup = frameGroups[frameGroups.length - 1]
+          if (lastGroup) {
+            lastGroup.push(line)
+          } else {
+            frameGroups.push([line])
+          }
           continue
         }
         flushFrames()
