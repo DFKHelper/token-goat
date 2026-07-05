@@ -25,6 +25,10 @@ const COV_TOTAL_RE = /^TOTAL\s+\d/
 const WARN_DOCS_RE = /^\s*--\s+Docs:\s+https?:\/\//
 // A warning message line inside the warnings summary section.
 const WARN_MSG_RE = /^\s+\S.*:\d+:\s+\S.*Warning\b/
+// A bare node-id header line preceding a warning message, e.g. `tests/test_foo.py::test_bar`
+// (no leading whitespace, contains the pytest node-id `::` separator). Deferred until we know
+// whether the message under it survives dedup, so a fully-deduped group never orphans its header.
+const WARN_NODEID_RE = /^\S+::\S+/
 // Slow-test duration line: `0.12s call tests/test_foo.py::test_bar`.
 const SLOW_DURATION_RE = /^\d+\.\d+s\s+(?:call|setup|teardown)\s+\S/
 // Status-first result line: `FAILED tests/test_x.py::test_one`.
@@ -58,6 +62,9 @@ export class PytestFilter extends ToolFilter {
     let covTableRowsDropped = 0
     const warnMsgSeen = new Map<string, number>()
     let warningsDropped = 0
+    // A deferred warnings-summary node-id header line, held until we know whether the warning
+    // message under it is kept or deduped away (see WARN_NODEID_RE below).
+    let pendingWarnHeader: string | null = null
 
     for (let line of lines) {
       // Strip the pytest-xdist worker prefix so downstream logic sees clean lines.
@@ -72,6 +79,12 @@ export class PytestFilter extends ToolFilter {
 
       // Section transitions: re-evaluate which block we're in.
       if (HEADER_RE.test(line)) {
+        // A still-pending node-id header with nothing recognizable following it: flush it
+        // before the section state moves on, rather than silently dropping it.
+        if (pendingWarnHeader !== null) {
+          kept.push(pendingWarnHeader)
+          pendingWarnHeader = null
+        }
         inFailures = line.includes('FAILURES')
         inErrors = line.includes('ERRORS') || line.includes('short test summary')
         inSlowSection = line.includes('slowest') && line.includes('durations')
@@ -85,6 +98,24 @@ export class PytestFilter extends ToolFilter {
 
       // --- pytest-cov coverage table ---
       if (line.startsWith('Name') && line.includes('Stmts') && line.includes('Miss')) {
+        // The coverage table can interject directly after the slowest-durations section or the
+        // warnings summary with no blank line or `===` header in between (this check runs before
+        // both of those sections' own blocks below), so close either one out explicitly here —
+        // otherwise its state (and the slow section's MAX_SLOW_KEPT dedup) leaks into later output.
+        if (inSlowSection) {
+          if (slowDropped) {
+            kept.push(`[token-goat: collapsed ${slowDropped} slow-test duration lines]`)
+            slowDropped = 0
+          }
+          inSlowSection = false
+        }
+        if (inWarningsSection) {
+          if (pendingWarnHeader !== null) {
+            kept.push(pendingWarnHeader)
+            pendingWarnHeader = null
+          }
+          inWarningsSection = false
+        }
         inCovTable = true
         kept.push(line)
         continue
@@ -126,8 +157,22 @@ export class PytestFilter extends ToolFilter {
           const normKey = line.replace(/^\s*\S.*?:\d+:\s*/, '').trim() || line.trim()
           const count = warnMsgSeen.get(normKey) ?? 0
           warnMsgSeen.set(normKey, count + 1)
-          if (count === 0) kept.push(line)
-          else warningsDropped += 1
+          if (count === 0) {
+            // Only surface the pending node-id header once we know its message is actually kept —
+            // an orphaned header for a fully-deduped message group should never reach output.
+            if (pendingWarnHeader !== null) kept.push(pendingWarnHeader)
+            kept.push(line)
+          } else {
+            warningsDropped += 1
+          }
+          pendingWarnHeader = null
+          continue
+        }
+        // Bare node-id header line preceding a warning message, e.g. `tests/test_foo.py::test_bar`.
+        // Defer it until the following message line tells us whether it's kept or deduped away.
+        if (WARN_NODEID_RE.test(line)) {
+          if (pendingWarnHeader !== null) kept.push(pendingWarnHeader)
+          pendingWarnHeader = line
           continue
         }
         // Everything else in the warnings section is kept verbatim (low-volume context that helps locate the issue) by falling through.
@@ -189,6 +234,12 @@ export class PytestFilter extends ToolFilter {
           continue
         }
       }
+      // Any unrecognized line inside the warnings section (e.g. an indented code-context line)
+      // falls through to here: flush a still-pending node-id header before it, don't drop it.
+      if (pendingWarnHeader !== null) {
+        kept.push(pendingWarnHeader)
+        pendingWarnHeader = null
+      }
       kept.push(line)
     }
 
@@ -197,6 +248,8 @@ export class PytestFilter extends ToolFilter {
     // Flush any trailing coverage table counter.
     if (covTableRowsDropped)
       kept.push(`[token-goat: collapsed ${covTableRowsDropped} coverage table rows]`)
+    // Flush a still-pending warnings-section node-id header (message never arrived, e.g. EOF).
+    if (pendingWarnHeader !== null) kept.push(pendingWarnHeader)
     // Trim collected-files spam to first three.
     kept = trimRepeatedPrefix(kept, COLLECT_RE, 3)
     if (passedCount) kept.push(`[token-goat: collapsed ${passedCount} PASSED lines]`)
