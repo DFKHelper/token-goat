@@ -96,6 +96,30 @@ describe('pytest filter', () => {
     expect(result.text).toContain('0 failed, 20 passed')
   })
 
+  it('closes the slow-durations section when a coverage table interjects with no blank line, so later matching content is not swallowed by stale state', () => {
+    const slowHeader = '= slowest 5 durations =\n'
+    const durations =
+      '5.00s call tests/test_a.py::test_one\n' +
+      '4.00s call tests/test_b.py::test_two\n' +
+      '3.00s call tests/test_c.py::test_three\n' +
+      '2.00s call tests/test_d.py::test_four\n' +
+      '1.00s call tests/test_e.py::test_five\n'
+    const covSep = '---------- coverage: platform linux, python 3.12.0-final-0 -----------\n'
+    const covHeader = 'Name                    Stmts   Miss  Cover\n'
+    const covRows =
+      'src/module_a.py            100      0   100%\n' + 'src/module_b.py             50      0   100%\n'
+    const covTotal = 'TOTAL                       150      0   100%\n'
+    const failuresBody =
+      '_________________________________ test_something _________________________________\n' +
+      'captured stdout call:\n' +
+      '1.50s call something\n' +
+      'E   AssertionError: boom\n'
+    const tally = '= 1 failed, 5 passed in 12.3s =\n'
+    const text = slowHeader + durations + covSep + covHeader + covRows + covTotal + failuresBody + tally
+    const result = pytestFilter.apply(text, '', 1, ['pytest', '--durations=5', '--cov'])
+    expect(result.text).toContain('1.50s call something')
+  })
+
   it('strips preamble lines (collecting / bringing up / cacheprovider)', () => {
     const text =
       'collecting ... collecting [100%]\n' +
@@ -146,6 +170,31 @@ describe('pytest filter', () => {
     const result = pytestFilter.apply(text, '', 0, ['pytest'])
     expect(result.text).toContain('UserWarning: This is a Warning')
     expect(result.text).toContain('DeprecationWarning: This is a Warning')
+  })
+
+  it('drops the second group\'s node-id header when its warning message is a duplicate', () => {
+    const text =
+      '= warnings summary =\n' +
+      'tests/test_a.py::test_one\n' +
+      '  /pkg/mod.py:10: UserWarning: same message\n' +
+      'tests/test_b.py::test_two\n' +
+      '  /pkg/mod.py:10: UserWarning: same message\n' +
+      '= 2 passed in 0.5s =\n'
+    const result = pytestFilter.apply(text, '', 0, ['pytest'])
+    expect(result.text).toContain('tests/test_a.py::test_one')
+    expect(result.text).toContain('same message')
+    expect(result.text).not.toContain('tests/test_b.py::test_two')
+  })
+
+  it('keeps the node-id header when its warning message is not a duplicate', () => {
+    const text =
+      '= warnings summary =\n' +
+      'tests/test_a.py::test_one\n' +
+      '  /pkg/mod.py:10: UserWarning: a unique message\n' +
+      '= 1 passed in 0.5s =\n'
+    const result = pytestFilter.apply(text, '', 0, ['pytest'])
+    expect(result.text).toContain('tests/test_a.py::test_one')
+    expect(result.text).toContain('a unique message')
   })
 
   it('drops the constant "test session starts" header but keeps collected + tally', () => {
