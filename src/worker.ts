@@ -31,6 +31,7 @@ import { foldPath, isUnderBlockedRoot } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { removeFileFromIndex } from './index_prune.js'
+import { cleanup_stale } from './snapshots.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -51,6 +52,12 @@ export interface WorkerHandle {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
+
+// Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see
+// runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness
+// window doesn't need finer-grained sweeping than hourly, and a full directory scan on every
+// 2s poll tick would be wasteful.
+const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 
 /**
  * Tracks '.draining' files whose content was already folded into a batch by
@@ -635,11 +642,26 @@ export async function runWorkerLoop(
   pollIntervalMs: number,
   shouldStop: () => boolean = () => false,
 ): Promise<void> {
+  // Local to this loop invocation (not module-level) so each call starts its own fresh
+  // throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across
+  // tests in the same process).
+  let lastSnapshotCleanupMs = 0
   while (!shouldStop()) {
     try {
       drainOnce(dir)
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
+    }
+    // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue
+    // drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a
+    // schedule instead of growing unbounded for the life of the daemon.
+    if (Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
+      try {
+        cleanup_stale()
+      } catch {
+        // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
+      }
+      lastSnapshotCleanupMs = Date.now()
     }
     if (shouldStop()) break
     await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))
