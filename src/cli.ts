@@ -31,7 +31,15 @@ import { resolveIndexPath } from './paths.js'
 import { appendDirtyPath } from './hooks_index.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
-import { installHooks, isInstalled, uninstallHooks } from './install.js'
+import {
+  installHooks,
+  isInstalled,
+  uninstallHooks,
+  installClaudeMd,
+  uninstallClaudeMd,
+  installSkill,
+  uninstallSkill,
+} from './install.js'
 import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
@@ -278,6 +286,23 @@ async function cmdInstall(opts: {
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
 
+  // Base install (unconditional, not gated behind any --<harness> flag): the
+  // CLAUDE.md routing block and the token-goat skill, per README's "What
+  // gets installed?" table.
+  const claudeMdResult = installClaudeMd()
+  out(
+    claudeMdResult.alreadyInstalled
+      ? `CLAUDE.md block already up to date → ${claudeMdResult.path}`
+      : `Updated CLAUDE.md → ${claudeMdResult.path}`,
+  )
+
+  const skillResult = installSkill()
+  out(
+    skillResult.alreadyInstalled
+      ? `token-goat skill already up to date → ${skillResult.path}`
+      : `Installed token-goat skill → ${skillResult.path}`,
+  )
+
   if (opts.codex === true) {
     const codexResult = installCodex()
     if (codexResult.alreadyInstalled) {
@@ -382,6 +407,14 @@ function cmdUninstall(opts: {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const removed = uninstallHooks(scope)
   out(removed ? `Removed token-goat hooks (${scope}).` : `No token-goat hooks to remove (${scope}).`)
+
+  // Base uninstall (unconditional, matching the base install above): strip
+  // the CLAUDE.md block and remove the skill directory.
+  const claudeMdRemoved = uninstallClaudeMd()
+  out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+
+  const skillRemoved = uninstallSkill()
+  out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
 
   // --codex is additive on both install and uninstall (README: "Add --codex ...
   // to also strip those integrations"), so it runs on top of the base uninstall

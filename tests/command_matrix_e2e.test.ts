@@ -31,11 +31,14 @@ import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 let repo: string // indexed fixture; default cwd for read commands
 let dataBase: string // isolated data dir holding the shared index
+let homeBase: string // fake OS home dir -- keeps `install`'s unconditional
+// CLAUDE.md/skill writes (os.homedir()-based, not TOKEN_GOAT_HOME-scoped) off
+// the real developer/CI machine's actual ~/.claude
 
 const tempDirs: string[] = []
 
 function tgEnv(dir: string): NodeJS.ProcessEnv {
-  return { ...process.env, LOCALAPPDATA: dir, XDG_DATA_HOME: dir }
+  return { ...process.env, LOCALAPPDATA: dir, XDG_DATA_HOME: dir, HOME: homeBase, USERPROFILE: homeBase }
 }
 
 function mkIsolated(prefix: string): string {
@@ -74,6 +77,7 @@ function expectRead(args: string[], substr: string): void {
 beforeAll(() => {
   dataBase = mkIsolated('tg-matrix-data-')
   repo = mkIsolated('tg-matrix-repo-')
+  homeBase = mkIsolated('tg-matrix-home-')
 
   fs.mkdirSync(path.join(repo, 'src'))
   fs.writeFileSync(
