@@ -6,6 +6,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { detectHarness } from './bridges/index.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
@@ -67,15 +68,16 @@ const NOISE_SEGMENTS = [
   '/dist/', '/.turbo/',
 ]
 
-const KNOWN_HARNESSES = new Set([
-  'claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'generic',
-])
-
+// Per-harness auto-trigger multiplier defaults for getAutoTriggerMultiplier().
+// 'openclaw' has no dedicated tuning yet, so it matches 'generic' until
+// there's a clear reason to diverge (see bridges/registry.ts::detectHarness
+// for the canonical harness-detection implementation this keys off of).
 const HARNESS_MULTIPLIER_DEFAULTS: Record<string, number> = {
   claudecode: 2.0,
   codex: 1.5,
   opencode: 2.5,
   gemini: 3.0,
+  openclaw: 1.0,
   generic: 1.0,
 }
 
@@ -207,48 +209,6 @@ export function getContextPressure(cache?: SessionCacheObject): ContextPressure 
   } catch {
     return { fillFraction: 0.0, tier: 'cool' }
   }
-}
-
-/**
- * Detect the active AI harness from environment variables.
- */
-export function detectHarness(configOverride: string = 'auto'): string {
-  if (configOverride !== 'auto') {
-    if (KNOWN_HARNESSES.has(configOverride)) {
-      return configOverride
-    }
-  }
-
-  const harnessOverride = (process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] ?? '').toLowerCase().trim()
-  if (harnessOverride && KNOWN_HARNESSES.has(harnessOverride)) {
-    return harnessOverride
-  }
-
-  if (process.env['HERMES_SESSION_ID'] || process.env['HERMES_HOME']) {
-    return 'hermes'
-  }
-
-  if (process.env['CLAUDE_CODE_SESSION_ID'] || process.env['ANTHROPIC_API_KEY']) {
-    return 'claudecode'
-  }
-
-  if (process.env['CODEX_SESSION']) {
-    return 'codex'
-  }
-
-  if (process.env['OPENCODE_SESSION']) {
-    return 'opencode'
-  }
-
-  if (process.env['OPENAI_API_KEY'] && !process.env['ANTHROPIC_API_KEY']) {
-    return 'codex'
-  }
-
-  if ((process.env['GEMINI_API_KEY'] || process.env['GOOGLE_API_KEY']) && !process.env['ANTHROPIC_API_KEY']) {
-    return 'gemini'
-  }
-
-  return 'generic'
 }
 
 /**

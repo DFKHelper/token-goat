@@ -6,8 +6,23 @@
  * modules.
  */
 
-/** The AI harnesses token-goat knows how to bridge, plus a generic fallback. */
-export type HarnessName = 'claudecode' | 'codex' | 'opencode' | 'generic'
+/**
+ * The AI harnesses token-goat knows how to detect, plus a generic fallback.
+ *
+ * `gemini`, `hermes`, and `openclaw` have no install-writer yet (see
+ * `bridges/registry.ts`'s module docstring) but are still real, detectable
+ * identities: harness detection matters independently of which harnesses
+ * have install support, since it also drives hook-payload translation and
+ * compaction budget heuristics.
+ */
+export type HarnessName =
+  | 'claudecode'
+  | 'codex'
+  | 'opencode'
+  | 'gemini'
+  | 'hermes'
+  | 'openclaw'
+  | 'generic'
 
 /** Static description of how one harness's hooks are wired. */
 export interface BridgeConfig {

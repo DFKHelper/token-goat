@@ -176,7 +176,33 @@ describe('relay', () => {
 })
 
 describe('relay tool-name normalization (regression: M49 — toolName filters inert under Codex)', () => {
-  const ENV_KEYS = ['TERM_PROGRAM', 'CLAUDE_CODE_VERSION', 'CODEX_SESSION_ID', 'OPENCODE_SESSION_ID'] as const
+  // detectHarness() (bridges/registry.ts) now recognizes more signals than just
+  // these four -- CLAUDE_CODE_SESSION_ID/ANTHROPIC_API_KEY (claudecode),
+  // CODEX_SESSION (codex), OPENCODE_SESSION (opencode), OPENCLAW_SESSION_ID
+  // (openclaw), HERMES_SESSION_ID/HERMES_HOME (hermes), OPENAI_API_KEY/
+  // GEMINI_API_KEY/GOOGLE_API_KEY (codex/gemini fallback), and the
+  // TOKEN_GOAT_HARNESS_OVERRIDE escape hatch. All of them must be cleared here,
+  // not just the original two: this suite runs inside a real Claude Code
+  // session, which sets CLAUDE_CODE_SESSION_ID in the test process's ambient
+  // environment, so without clearing it the claudecode branch (checked before
+  // codex) wins over this test's CODEX_SESSION_ID and silently breaks it.
+  const ENV_KEYS = [
+    'TERM_PROGRAM',
+    'CLAUDE_CODE_VERSION',
+    'CLAUDE_CODE_SESSION_ID',
+    'ANTHROPIC_API_KEY',
+    'CODEX_SESSION_ID',
+    'CODEX_SESSION',
+    'OPENCODE_SESSION_ID',
+    'OPENCODE_SESSION',
+    'OPENCLAW_SESSION_ID',
+    'HERMES_SESSION_ID',
+    'HERMES_HOME',
+    'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'TOKEN_GOAT_HARNESS_OVERRIDE',
+  ] as const
   const savedEnv: Record<string, string | undefined> = {}
 
   beforeEach(() => {

@@ -3,11 +3,25 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { detectHarness, getHarnessName } from '../../src/bridges/registry.js'
 import { clearModuleCaches } from '../../src/reset.js'
 
+// Every env var any branch of detectHarness() reads, across both spellings
+// codex/opencode ever used (CODEX_SESSION_ID vs CODEX_SESSION, OPENCODE_SESSION_ID
+// vs OPENCODE_SESSION) plus the harness-override escape hatch.
 const ENV_KEYS = [
   'TERM_PROGRAM',
   'CLAUDE_CODE_VERSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'ANTHROPIC_API_KEY',
   'CODEX_SESSION_ID',
+  'CODEX_SESSION',
   'OPENCODE_SESSION_ID',
+  'OPENCODE_SESSION',
+  'OPENCLAW_SESSION_ID',
+  'HERMES_SESSION_ID',
+  'HERMES_HOME',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'TOKEN_GOAT_HARNESS_OVERRIDE',
 ] as const
 
 describe('harness detection', () => {
@@ -40,14 +54,76 @@ describe('harness detection', () => {
       expect(detectHarness()).toBe('claudecode')
     })
 
+    it('returns claudecode when CLAUDE_CODE_SESSION_ID is set', () => {
+      process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-abc'
+      expect(detectHarness()).toBe('claudecode')
+    })
+
+    it('returns claudecode when ANTHROPIC_API_KEY is set', () => {
+      process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+      expect(detectHarness()).toBe('claudecode')
+    })
+
     it('returns codex when CODEX_SESSION_ID is set', () => {
       process.env['CODEX_SESSION_ID'] = 'abc'
+      expect(detectHarness()).toBe('codex')
+    })
+
+    it('returns codex when CODEX_SESSION is set', () => {
+      process.env['CODEX_SESSION'] = 'abc'
       expect(detectHarness()).toBe('codex')
     })
 
     it('returns opencode when OPENCODE_SESSION_ID is set', () => {
       process.env['OPENCODE_SESSION_ID'] = 'xyz'
       expect(detectHarness()).toBe('opencode')
+    })
+
+    it('returns opencode when OPENCODE_SESSION is set', () => {
+      process.env['OPENCODE_SESSION'] = 'xyz'
+      expect(detectHarness()).toBe('opencode')
+    })
+
+    it('returns openclaw when OPENCLAW_SESSION_ID is set', () => {
+      process.env['OPENCLAW_SESSION_ID'] = 'oc-1'
+      expect(detectHarness()).toBe('openclaw')
+    })
+
+    it('returns hermes when HERMES_SESSION_ID is set', () => {
+      process.env['HERMES_SESSION_ID'] = 'h-1'
+      expect(detectHarness()).toBe('hermes')
+    })
+
+    it('returns hermes when HERMES_HOME is set', () => {
+      process.env['HERMES_HOME'] = '/home/hermes'
+      expect(detectHarness()).toBe('hermes')
+    })
+
+    it('returns codex when OPENAI_API_KEY is set without ANTHROPIC_API_KEY', () => {
+      process.env['OPENAI_API_KEY'] = 'sk-openai-test'
+      expect(detectHarness()).toBe('codex')
+    })
+
+    it('does not fall back to codex on OPENAI_API_KEY when ANTHROPIC_API_KEY is also set', () => {
+      process.env['OPENAI_API_KEY'] = 'sk-openai-test'
+      process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+      expect(detectHarness()).toBe('claudecode')
+    })
+
+    it('returns gemini when GEMINI_API_KEY is set without ANTHROPIC_API_KEY', () => {
+      process.env['GEMINI_API_KEY'] = 'gk-test'
+      expect(detectHarness()).toBe('gemini')
+    })
+
+    it('returns gemini when GOOGLE_API_KEY is set without ANTHROPIC_API_KEY', () => {
+      process.env['GOOGLE_API_KEY'] = 'gk-test'
+      expect(detectHarness()).toBe('gemini')
+    })
+
+    it('does not fall back to gemini on GEMINI_API_KEY when ANTHROPIC_API_KEY is also set', () => {
+      process.env['GEMINI_API_KEY'] = 'gk-test'
+      process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+      expect(detectHarness()).toBe('claudecode')
     })
 
     it('returns generic as fallback', () => {
@@ -58,6 +134,39 @@ describe('harness detection', () => {
       process.env['CLAUDE_CODE_VERSION'] = '1.0'
       process.env['CODEX_SESSION_ID'] = 'abc'
       expect(detectHarness()).toBe('claudecode')
+    })
+
+    it('prefers hermes over claudecode when both signals are present', () => {
+      process.env['HERMES_SESSION_ID'] = 'h-1'
+      process.env['CLAUDE_CODE_VERSION'] = '1.0'
+      expect(detectHarness()).toBe('hermes')
+    })
+
+    describe('TOKEN_GOAT_HARNESS_OVERRIDE', () => {
+      it('takes priority over every other signal', () => {
+        process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
+        process.env['CODEX_SESSION_ID'] = 'abc'
+        process.env['CLAUDE_CODE_VERSION'] = '1.0'
+        expect(detectHarness()).toBe('opencode')
+      })
+
+      it('is case-insensitive and trimmed', () => {
+        process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = '  OpenClaw  '
+        expect(detectHarness()).toBe('openclaw')
+      })
+
+      it('accepts every canonical harness name, including openclaw and hermes', () => {
+        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'generic']) {
+          process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = name
+          expect(detectHarness()).toBe(name)
+        }
+      })
+
+      it('falls through to normal detection when set to an unrecognized value', () => {
+        process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'not-a-real-harness'
+        process.env['CODEX_SESSION_ID'] = 'abc'
+        expect(detectHarness()).toBe('codex')
+      })
     })
   })
 
