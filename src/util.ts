@@ -247,7 +247,19 @@ const LOCK_STALE_MS = 5000
 const HEARTBEAT_SCRIPT = `
 const fs = require('fs')
 const [, lockPath, token, ms] = process.argv
+const ppid = process.ppid
 function tick() {
+  try {
+    process.kill(ppid, 0)
+  } catch {
+    // Parent is gone (crashed, killed, ...): stop ticking so a genuinely dead holder's lock
+    // still goes stale and gets reclaimed. Windows ties this child's lifetime to its parent's
+    // Job Object automatically, but POSIX does not -- without this check, a plain spawn()
+    // child outlives a crashed parent as an orphan and would refresh the lock file forever,
+    // permanently wedging it. This is the actual enforcement mechanism on POSIX (this
+    // project's CI runs on ubuntu-latest); on Windows it is a harmless backstop.
+    process.exit(0)
+  }
   try {
     // Only ever refresh the token already on disk; never (re)create the file. This preserves
     // the ownership check in withFileLock's finally block unchanged -- the heartbeat never
