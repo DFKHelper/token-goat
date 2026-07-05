@@ -83,6 +83,20 @@ describe('compact', () => {
   })
 
   describe('getContextPressure', () => {
+    // Pin harness detection so these assertions don't depend on the ambient
+    // environment the test runner happens to execute in ('generic''s
+    // multiplier is 1.0, matching CONTEXT_AUTOCOMPACT_TOKENS unscaled --
+    // keeps every existing expected-value formula below unchanged).
+    let savedHarnessOverride: string | undefined
+    beforeEach(() => {
+      savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
+    })
+    afterEach(() => {
+      if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
+    })
+
     it('returns cool pressure with no cache', () => {
       const pressure = getContextPressure()
       expect(pressure.fillFraction).toBe(0.0)
@@ -160,6 +174,24 @@ describe('compact', () => {
           // best-effort cleanup
         }
       }
+    })
+
+    // Regression: getAutoTriggerMultiplier() computed a real harness-tuned
+    // multiplier but getContextPressure's window was CONTEXT_AUTOCOMPACT_TOKENS
+    // unscaled, so the multiplier had zero production callers. This drives the
+    // real pressure-computing path against a harness whose default multiplier
+    // (3.0) differs from 'generic''s (1.0), so it fails against a reader that
+    // still ignores the multiplier and passes once the window is scaled by it.
+    it('scales the pressure window by the detected harness multiplier', () => {
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'gemini'
+      const cache = {
+        loadedSkillTotalTokens: 100,
+        observedToolTokens: 500_000,
+        pressureBaselineTokens: 0,
+      }
+      const pressure = getContextPressure(cache)
+      const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 3.0)
+      expect(pressure.fillFraction).toBeCloseTo(expected, 5)
     })
   })
 

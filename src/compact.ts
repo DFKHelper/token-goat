@@ -7,6 +7,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { detectHarness } from './bridges/index.js'
+import { loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
@@ -192,6 +193,20 @@ function pressureRawTotal(cache: SessionCacheObject): number {
 /**
  * Return the estimated context fill fraction and pressure tier.
  */
+// Effective auto-compact window, scaled by the harness-tuned (or user-overridden)
+// multiplier: different harnesses reach their own real auto-compact point at very
+// different token counts, so CONTEXT_AUTOCOMPACT_TOKENS (Claude Code's own figure)
+// needs scaling before it means anything for other harnesses.
+function getEffectiveAutoTriggerWindow(): number {
+  const ca = loadConfig().compact_assist
+  const multiplier = getAutoTriggerMultiplier(
+    ca.harness === 'auto'
+      ? { configExplicitMultiplier: ca.auto_trigger_multiplier }
+      : { configExplicitMultiplier: ca.auto_trigger_multiplier, harness: ca.harness },
+  )
+  return CONTEXT_AUTOCOMPACT_TOKENS * multiplier
+}
+
 export function getContextPressure(cache?: SessionCacheObject): ContextPressure {
   try {
     if (!cache) {
@@ -200,7 +215,7 @@ export function getContextPressure(cache?: SessionCacheObject): ContextPressure 
     const rawTotal = pressureRawTotal(cache)
     const baseline = cache.pressureBaselineTokens ?? 0
     const total = Math.max(0, rawTotal - baseline)
-    const window = CONTEXT_AUTOCOMPACT_TOKENS
+    const window = getEffectiveAutoTriggerWindow()
     const fill = total / window
     return {
       fillFraction: fill,
