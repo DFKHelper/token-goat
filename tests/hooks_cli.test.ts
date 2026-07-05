@@ -76,6 +76,36 @@ describe('normalizePayload', () => {
     expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt', old_string: 'foo', new_string: 'bar' })
   })
 
+  it('remaps Gemini list_directory\'s dir_path to token-goat\'s file_path key (regression: GEMINI_INPUT_KEY_MAP had no Read entry, so getFilePath() silently saw undefined for every list_directory call)', () => {
+    // list_directory's real target-directory argument is `dir_path` (confirmed
+    // against gemini-cli's own LSToolParams interface), not `file_path` --
+    // getFilePath() (hooks_common.ts) only ever reads `file_path`/`notebook_path`.
+    const payload: HookPayload = {
+      tool_name: 'list_directory',
+      tool_input: { dir_path: '/tmp/project' },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ file_path: '/tmp/project' })
+  })
+
+  it('leaves Gemini read_many_files\'s include key untouched (no single-file-path remap is possible for a glob-pattern array)', () => {
+    // read_many_files's real argument is `include` (confirmed against
+    // gemini-cli's own ReadManyFilesParams interface): an array of glob
+    // patterns, not a single file path. There is no string to remap it to, so
+    // it is deliberately left as-is; getFilePath() returns undefined for this
+    // call and preReadHandler/postReadHandler already fall back to
+    // passOutput() on an undefined path, so the real tool call still succeeds
+    // -- it just gets no session-dedup tracking or read-count hints.
+    const payload: HookPayload = {
+      tool_name: 'read_many_files',
+      tool_input: { include: ['src/**/*.ts', 'README.md'] },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_name']).toBe('Read')
+    expect(result['tool_input']).toEqual({ include: ['src/**/*.ts', 'README.md'] })
+  })
+
   it('remaps Gemini grep_search\'s dir_path to token-goat\'s path key', () => {
     // grep_search's real target-directory argument is `dir_path` (confirmed
     // against gemini-cli's GrepToolParams interface); preReadHandler's Grep

@@ -85,15 +85,32 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
  * Only keys that differ between Gemini and token-goat need to appear here.
  */
 const GEMINI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  // Gemini's real read_file/write_file/replace tool schemas already use
-  // 'file_path' (and replace's 'old_string'/'new_string') verbatim --
-  // identical to token-goat's own canonical keys (see getFilePath() in
-  // hooks_common.ts, which reads event.toolInput['file_path']) -- confirmed
-  // against gemini-cli's own ReadFileToolParams/EditToolParams/
-  // WriteFileToolParams interfaces. No remap is needed for Read/Write/Edit;
-  // the previous entries here actively renamed a key that was already
-  // correct (file_path -> path), which would have silently corrupted the
-  // path argument on every real Gemini Read/Write/Edit call.
+  // Gemini's real write_file/replace tool schemas already use 'file_path'
+  // (and replace's 'old_string'/'new_string') verbatim -- identical to
+  // token-goat's own canonical keys (see getFilePath() in hooks_common.ts,
+  // which reads event.toolInput['file_path']) -- confirmed against
+  // gemini-cli's own EditToolParams/WriteFileToolParams interfaces. No remap
+  // is needed for Write/Edit; the previous entries here actively renamed a
+  // key that was already correct (file_path -> path), which would have
+  // silently corrupted the path argument on every real Gemini Write/Edit call.
+  //
+  // 'Read' covers THREE distinct raw Gemini tools (see GEMINI_TOOL_NAME_MAP
+  // above), and they do NOT share one schema:
+  //   - read_file: already uses 'file_path' verbatim, no remap needed.
+  //   - list_directory: uses 'dir_path' (confirmed against gemini-cli's
+  //     LSToolParams) -- remapped to 'file_path' below, exactly mirroring
+  //     Grep's existing dir_path->path fix.
+  //   - read_many_files: uses 'include' (confirmed against gemini-cli's
+  //     ReadManyFilesParams), an ARRAY of glob patterns, not a single file
+  //     path -- there is no single string to remap it to, so it is
+  //     deliberately left unmapped. getFilePath() (hooks_common.ts) will
+  //     return undefined for this call, and preReadHandler/postReadHandler
+  //     already fall back to passOutput() on an undefined path (see
+  //     preReadHandler's `if (filePath === undefined) return passOutput()`),
+  //     so a real read_many_files call still succeeds normally; it just
+  //     doesn't get session-dedup tracking or read-count hints. Accepted
+  //     limitation, not a bug to force-fit.
+  Read: { dir_path: 'file_path' },
   //
   // Grep's real tool (grep_search) calls its target-directory argument
   // 'dir_path', which preReadHandler's Grep fallback
