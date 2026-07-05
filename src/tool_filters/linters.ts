@@ -83,6 +83,13 @@ const _RUFF_FOOTER_RE = /^Found \d+ error/
 const _RUFF_SUCCESS_RE = /^(?:All checks passed!|No errors found\.?)\s*$/
 const _RUFF_FORMAT_REFORMATTED_RE = /^reformatted\s+\S/
 const _RUFF_FORMAT_WOULD_REFORMAT_RE = /^would reformat\s+\S/i
+// ruff's actual DEFAULT ("full") output trails each violation header with an
+// optional context block: a bare "   |" separator, a numbered source line
+// ("12 | import os"), a caret-annotation line, and/or a "= help: ..." line.
+// These must be consumed together with their header so collapsing a
+// violation also drops its context instead of leaving it behind unfiltered.
+const _RUFF_CONTEXT_LINE_RE = /^\s*(?:\d+\s*)?\|/
+const _RUFF_HELP_LINE_RE = /^\s*=\s*help:/i
 
 class RuffFilter extends ToolFilter {
   readonly name = 'ruff'
@@ -106,25 +113,45 @@ class RuffFilter extends ToolFilter {
 
     const lines = merged.split('\n')
 
-    // First pass: group violation lines by rule code
-    const byCode = new Map<string, Array<{ file: string; line: string }>>()
-    const indexed: Array<{ isViol: boolean; line: string }> = []
+    // First pass: group lines into records. A record is either a single
+    // violation header (compact/concise formats) or a header plus its
+    // trailing "full" format context block, consumed greedily so the whole
+    // block travels together through the keep/collapse decision below.
+    type Segment =
+      | { kind: 'footer'; line: string }
+      | { kind: 'other'; line: string }
+      | { kind: 'viol'; code: string; file: string; text: string[] }
+    const indexed: Segment[] = []
+    const byCode = new Map<string, Array<{ file: string; text: string[] }>>()
 
-    for (const line of lines) {
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]!
       if (_RUFF_FOOTER_RE.test(line)) {
-        indexed.push({ isViol: false, line })
+        indexed.push({ kind: 'footer', line })
+        i++
         continue
       }
       const m = _RUFF_LINE_RE.exec(line)
       if (m?.groups) {
         const code = m.groups['code']!
         const file = m.groups['file']!
+        const text = [line]
+        i++
+        while (
+          i < lines.length &&
+          (_RUFF_CONTEXT_LINE_RE.test(lines[i]!) || _RUFF_HELP_LINE_RE.test(lines[i]!))
+        ) {
+          text.push(lines[i]!)
+          i++
+        }
         const bucket = byCode.get(code) ?? []
-        bucket.push({ file, line })
+        bucket.push({ file, text })
         byCode.set(code, bucket)
-        indexed.push({ isViol: true, line })
+        indexed.push({ kind: 'viol', code, file, text })
       } else {
-        indexed.push({ isViol: false, line })
+        indexed.push({ kind: 'other', line })
+        i++
       }
     }
 
@@ -133,34 +160,35 @@ class RuffFilter extends ToolFilter {
     for (const [code, entries] of byCode) {
       const files = new Set(entries.map((e) => e.file))
       if (entries.length >= 3 && files.size >= 2) {
-        const example = entries[0]!.line
+        const example = entries[0]!.text[0]
         summarised.set(code, `${code}: ${entries.length} occurrences in ${files.size} files (example: ${example})`)
       }
     }
 
-    // Second pass: emit lines
+    // Second pass: emit records — a summarised code contributes exactly one
+    // summary line total, dropping every occurrence's context/caret/help
+    // block along with its header; everything else (including full-format
+    // context for kept violations) passes through unchanged.
     const out: string[] = []
     const emittedSummary = new Set<string>()
     const footerLines: string[] = []
 
-    for (const { isViol, line } of indexed) {
-      if (_RUFF_FOOTER_RE.test(line)) {
-        footerLines.push(line)
+    for (const seg of indexed) {
+      if (seg.kind === 'footer') {
+        footerLines.push(seg.line)
         continue
       }
-      if (!isViol) {
-        out.push(line)
+      if (seg.kind === 'other') {
+        out.push(seg.line)
         continue
       }
-      const m = _RUFF_LINE_RE.exec(line)
-      const code = m?.groups?.['code'] ?? ''
-      if (summarised.has(code)) {
-        if (!emittedSummary.has(code)) {
-          out.push(summarised.get(code)!)
-          emittedSummary.add(code)
+      if (summarised.has(seg.code)) {
+        if (!emittedSummary.has(seg.code)) {
+          out.push(summarised.get(seg.code)!)
+          emittedSummary.add(seg.code)
         }
       } else {
-        out.push(line)
+        out.push(...seg.text)
       }
     }
     out.push(...footerLines)
@@ -654,6 +682,7 @@ class PylintFilter extends ToolFilter {
     const lines = merged.split('\n')
     const kept: string[] = []
     const codeCounts = new Map<string, number>()
+    const pendingPlaceholders: { index: number; code: string; codeName: string }[] = []
     let deduplicated = 0
     let droppedSeparators = 0
     let droppedConfig = 0
@@ -689,9 +718,8 @@ class PylintFilter extends ToolFilter {
         } else {
           if (count === PylintFilter._KEEP_PER_CODE) {
             const codeName = code.slice(1)
-            kept.push(
-              `[token-goat: +? more ${code} (${codeName}); disable via TOKEN_GOAT_BASH_COMPRESS]`,
-            )
+            pendingPlaceholders.push({ index: kept.length, code, codeName })
+            kept.push('')
           }
           deduplicated++
         }
@@ -704,6 +732,14 @@ class PylintFilter extends ToolFilter {
         moduleHasKeptIssue = false
       }
       kept.push(line)
+    }
+
+    // Patch placeholders now that codeCounts holds each code's final total,
+    // so the elided count reflects reality instead of a literal "+?".
+    for (const { index, code, codeName } of pendingPlaceholders) {
+      const elided = (codeCounts.get(code) ?? 0) - PylintFilter._KEEP_PER_CODE
+      kept[index] =
+        `[token-goat: +${elided} more ${code} (${codeName}); disable via TOKEN_GOAT_BASH_COMPRESS]`
     }
 
     const notes: string[] = []
@@ -739,11 +775,31 @@ class OxlintFilter extends ToolFilter {
     let currentFile: string | null = null
     const ruleCounts = new Map<string, number>()
     let suppressBlock = false
+    let pendingPlaceholders: { index: number; rule: string; file: string | null }[] = []
+
+    // ruleCounts (and thus each rule's final tally) resets at every file/summary
+    // boundary, so placeholders must be patched with the real elided count right
+    // before that reset — not left as a literal "+?" — and again at loop end.
+    const finalizePlaceholders = (): void => {
+      for (const { index, rule, file } of pendingPlaceholders) {
+        const elided = (ruleCounts.get(rule) ?? 0) - OxlintFilter._KEEP_PER_RULE
+        kept[index] =
+          `  [token-goat: +${elided} more ${JSON.stringify(rule)} in ${file ?? 'file'}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`
+      }
+      pendingPlaceholders = []
+    }
 
     for (const line of lines) {
       if (ERROR_SIGNAL_RE.test(line)) { kept.push(line); suppressBlock = false; continue }
-      if (_OXLINT_SUMMARY_RE.test(line)) { kept.push(line); currentFile = null; ruleCounts.clear(); continue }
+      if (_OXLINT_SUMMARY_RE.test(line)) {
+        finalizePlaceholders()
+        kept.push(line)
+        currentFile = null
+        ruleCounts.clear()
+        continue
+      }
       if (_OXLINT_FILE_HEADER_RE.test(line)) {
+        finalizePlaceholders()
         currentFile = line.trim()
         ruleCounts.clear()
         suppressBlock = false
@@ -760,9 +816,8 @@ class OxlintFilter extends ToolFilter {
           suppressBlock = false
         } else {
           if (count === OxlintFilter._KEEP_PER_RULE + 1) {
-            kept.push(
-              `  [token-goat: +? more ${JSON.stringify(rule)} in ${currentFile ?? 'file'}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
-            )
+            pendingPlaceholders.push({ index: kept.length, rule, file: currentFile })
+            kept.push('')
           }
           deduplicated++
           suppressBlock = true
@@ -776,6 +831,7 @@ class OxlintFilter extends ToolFilter {
       }
       kept.push(line)
     }
+    finalizePlaceholders()
 
     const notes: string[] = []
     maybeNote(notes, deduplicated, `deduplicated ${deduplicated} repeated-rule issue lines`)
@@ -948,6 +1004,7 @@ class KtlintFilter extends ToolFilter {
     const lines = combined.split('\n')
     const kept: string[] = []
     const ruleCounts = new Map<string, number>()
+    const pendingPlaceholders: { index: number; rule: string; suffix: string }[] = []
     let deduplicated = 0
     let droppedXmlTags = 0
 
@@ -969,9 +1026,8 @@ class KtlintFilter extends ToolFilter {
           kept.push(line)
         } else {
           if (count === KtlintFilter._KEEP_PER_RULE + 1) {
-            kept.push(
-              `  [token-goat: +? more ${rule} violations; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
-            )
+            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'violations' })
+            kept.push('')
           }
           deduplicated++
         }
@@ -990,9 +1046,8 @@ class KtlintFilter extends ToolFilter {
           kept.push(line)
         } else {
           if (count === KtlintFilter._KEEP_PER_RULE + 1) {
-            kept.push(
-              `[token-goat: +? more ${rule} warnings; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
-            )
+            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'warnings' })
+            kept.push('')
           }
           deduplicated++
         }
@@ -1001,6 +1056,15 @@ class KtlintFilter extends ToolFilter {
 
       if (ERROR_SIGNAL_RE.test(line)) { kept.push(line); continue }
       kept.push(line)
+    }
+
+    // ruleCounts is never cleared for ktlint (single global tally across the whole
+    // run), so patching after the loop yields each rule's real final elided count.
+    for (const { index, rule, suffix } of pendingPlaceholders) {
+      const elided = (ruleCounts.get(rule) ?? 0) - KtlintFilter._KEEP_PER_RULE
+      const indent = suffix === 'violations' ? '  ' : ''
+      kept[index] =
+        `${indent}[token-goat: +${elided} more ${rule} ${suffix}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`
     }
 
     const notes: string[] = []
@@ -1041,7 +1105,7 @@ const swiftlintFilter = makeLinterFilter({
 // ---------------------------------------------------------------------------
 
 const _PHPSTAN_SEP_RE = /^\s*-{3,}/
-const _PHPSTAN_FILE_HEADER_RE = /^\s+Line\s+\S.*\.php\s*$/
+const _PHPSTAN_FILE_HEADER_RE = /^\s+Line\s+(\S.*\.php)\s*$/
 const _PHPSTAN_ROW_RE = /^\s+(\d+)\s+(.+)$/
 const _PHPSTAN_SUMMARY_RE = /^\s*\[(ERROR|OK|WARNING|NOTE)\]/i
 const _PSALM_ERROR_RE = /^(ERROR|INFO|FATAL): \w+ - .+\.php:\d+/i
@@ -1089,8 +1153,8 @@ class PhpStanFilter extends ToolFilter {
       if (_PHPSTAN_SEP_RE.test(line) && !_PHPSTAN_ROW_RE.test(line)) { droppedSep++; continue }
       if (_PHPSTAN_FILE_HEADER_RE.test(line)) {
         if (currentFile) flushFileDedup(currentFile)
-        const parts = line.trim().split(/\s+/, 2)
-        currentFile = parts.length > 1 ? parts[1]!.trim() : line.trim()
+        const headerMatch = _PHPSTAN_FILE_HEADER_RE.exec(line)
+        currentFile = headerMatch?.[1] ? headerMatch[1].trim() : line.trim()
         if (!fileMsgs.has(currentFile)) fileMsgs.set(currentFile, new Map())
         kept.push(line)
         continue
