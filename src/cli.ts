@@ -23,7 +23,7 @@ import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { searchSymbolsFts } from './index_reader.js'
 import { getDb } from './db.js'
-import { searchSemantic, mergeNearbyHits } from './embeddings.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { indexFileSync, indexFileEmbeddings } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { detectLanguage } from './parser_types.js'
@@ -167,7 +167,14 @@ async function cmdSemantic(query: string, opts: { limit?: string }): Promise<voi
   // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
   // than throwing when either is unavailable or nothing has been embedded yet, so this is
   // always safe to try before falling back to keyword search.
-  const hits = mergeNearbyHits(await searchSemantic(getDb(globalDbPath()), query, n))
+  //
+  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its
+  // own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits
+  // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
+  // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
+  const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
+  const rawHits = await searchSemantic(getDb(globalDbPath()), query, overFetchForMerge)
+  const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
     const blocks = hits.map(
       (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,

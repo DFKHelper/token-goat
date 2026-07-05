@@ -153,9 +153,11 @@ const _MAX_VERBATIM_BOOST = 0.25
 const _TOKEN_RE = /\w+/g
 const _MIN_TOKEN_LEN = 3
 
-// Over-fetch factor for re-ranking candidates before truncating to k.
-const _OVER_FETCH_FACTOR = 4
-const _MAX_OVER_FETCH = 100
+// Over-fetch factor for re-ranking candidates before truncating to k. Exported (matching this
+// file's other public constants' no-underscore naming) so callers like cli.ts's cmdSemantic can
+// over-fetch by the same ratio for mergeNearbyHits headroom, instead of inventing a new one.
+export const OVER_FETCH_FACTOR = 4
+export const MAX_OVER_FETCH = 100
 
 // ============================================================================
 // Types
@@ -497,8 +499,8 @@ export async function searchSemantic(
 
   // Over-fetch candidates for re-ranking.
   const overFetchK = Math.min(
-    _MAX_OVER_FETCH,
-    Math.ceil(topK * _OVER_FETCH_FACTOR),
+    MAX_OVER_FETCH,
+    Math.ceil(topK * OVER_FETCH_FACTOR),
   )
 
   // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit) must appear as WHERE constraints for the virtual table to run an ANN scan. Omitting either causes a full-table scan or an error.
