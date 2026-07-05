@@ -227,4 +227,28 @@ describe('isCodexInstalled / uninstallCodex', () => {
     expect(agents).toContain('# Keep me')
     expect(agents).not.toContain('token-goat-codex-begin')
   })
+
+  it('does not strip an unrelated hook whose command merely contains "token-goat-shim" as a substring inside a longer identifier (regression: isCodexTokenGoatCommand used an unanchored .includes() check, so a lookalike command name would be misidentified as ours and deleted on uninstall)', () => {
+    const configP = codexConfigPath()
+    fs.mkdirSync(path.dirname(configP), { recursive: true })
+    fs.writeFileSync(
+      configP,
+      [
+        '[[hooks.PreToolUse]]',
+        'matcher = "my-own-tool"',
+        '',
+        '[[hooks.PreToolUse.hooks]]',
+        'type = "command"',
+        'command = "bash /opt/scripts/definitely-not-token-goat-shim-related.sh"',
+        '',
+      ].join('\n'),
+    )
+
+    installCodex()
+    uninstallCodex()
+
+    const config = readConfig()
+    const preCommands = commandsFor(config, 'PreToolUse')
+    expect(preCommands).toContain('bash /opt/scripts/definitely-not-token-goat-shim-related.sh')
+  })
 })
