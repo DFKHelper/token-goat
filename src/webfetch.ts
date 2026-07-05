@@ -83,7 +83,7 @@ function truncateUrl(url: string, maxLen: number = MAX_URL_IN_ERROR): string {
 }
 
 type SsrfResolution =
-  | { kind: 'safe'; address: string; family: number }
+  | { kind: 'safe'; address: string; family: number; addresses: Array<{ address: string; family: number }> }
   | { kind: 'blocked' }
   | { kind: 'unresolved' };
 
@@ -116,7 +116,7 @@ async function resolveSsrfSafeAddress(hostname: string): Promise<SsrfResolution>
 
   const first = results[0];
   if (!first) return { kind: 'unresolved' };
-  return { kind: 'safe', address: first.address, family: first.family };
+  return { kind: 'safe', address: first.address, family: first.family, addresses: results };
 }
 
 async function isSsrfSafe(url: string): Promise<boolean> {
@@ -143,16 +143,36 @@ async function isSsrfSafe(url: string): Promise<boolean> {
  * http(s).request — means the address used to open the TCP/TLS socket is
  * the exact address resolveSsrfSafeAddress just validated, with no gap for
  * a second, independent DNS lookup (and thus DNS rebinding) to slip in.
+ *
+ * Node's own dual-stack (Happy Eyeballs / autoSelectFamily, default-on since
+ * Node 20) connection logic sets `options.all` when it wants every resolved
+ * address back to race connections across, and requires the array-callback
+ * shape (`callback(err, addresses[])`) in that case -- not the single
+ * `callback(err, address, family)` shape used otherwise. Always returning
+ * the single-address shape regardless of `options.all` made Node's net
+ * internals throw "Invalid IP address: undefined" for any real, non-literal
+ * hostname (verified against raw.githubusercontent.com fetch-image dogfood
+ * run on Node 24) -- every fetch of a real URL was broken, not just SSRF
+ * targets. Both branches below now answer in whichever shape `options.all`
+ * asked for.
  */
 export function ssrfPinnedLookup(
   hostname: string,
   options: LookupOptions,
-  callback: (err: NodeJS.ErrnoException | null, address: string, family?: number) => void,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | Array<{ address: string; family: number }>,
+    family?: number,
+  ) => void,
 ): void {
   resolveSsrfSafeAddress(hostname)
     .then((result) => {
       if (result.kind === 'safe') {
-        callback(null, result.address, result.family);
+        if (options.all) {
+          callback(null, result.addresses);
+        } else {
+          callback(null, result.address, result.family);
+        }
         return;
       }
       if (result.kind === 'unresolved' && ALLOW_UNRESOLVED) {
@@ -163,7 +183,7 @@ export function ssrfPinnedLookup(
         // rebinding technique) would bypass private-IP blocking entirely.
         dnsLookup(hostname, { ...options, all: false }, (err, address, family) => {
           if (err) {
-            callback(err, '', family);
+            callback(err, options.all ? [] : '', family);
             return;
           }
           const addr = typeof address === 'string' ? address : '';
@@ -171,18 +191,25 @@ export function ssrfPinnedLookup(
           if (isPrivate) {
             callback(
               new Error(`URL blocked by SSRF safety check: ${truncateUrl(hostname)}`) as NodeJS.ErrnoException,
-              '',
+              options.all ? [] : '',
             );
             return;
           }
-          callback(null, addr, family);
+          if (options.all) {
+            callback(null, [{ address: addr, family: family ?? 0 }]);
+          } else {
+            callback(null, addr, family);
+          }
         });
         return;
       }
-      callback(new Error(`URL blocked by SSRF safety check: ${truncateUrl(hostname)}`) as NodeJS.ErrnoException, '');
+      callback(
+        new Error(`URL blocked by SSRF safety check: ${truncateUrl(hostname)}`) as NodeJS.ErrnoException,
+        options.all ? [] : '',
+      );
     })
     .catch((err: unknown) => {
-      callback(err instanceof Error ? (err as NodeJS.ErrnoException) : new Error(String(err)), '');
+      callback(err instanceof Error ? (err as NodeJS.ErrnoException) : new Error(String(err)), options.all ? [] : '');
     });
 }
 
@@ -457,6 +484,24 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
       return;
     }
     if (!['http:', 'https:'].includes(parsed.protocol)) {
+      rejectPromise(new Error(`URL blocked by SSRF safety check: ${truncateUrl(targetUrl)}`));
+      return;
+    }
+
+    // Node's http/https `lookup` option (ssrfPinnedLookup, passed to mod.request below) is
+    // only invoked when the hostname actually needs DNS resolution. For a literal IPv4 address
+    // Node connects directly and never calls the custom lookup function at all, silently
+    // bypassing SSRF protection for URLs like http://127.0.0.1/... or http://169.254.169.254/...
+    // (cloud metadata) -- on both the initial request and every redirect hop, since this
+    // function recurses into itself for redirects. Check literal IPs explicitly up front;
+    // there is no DNS to pin for them in the first place.
+    const literalIp = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
+      ? parsed.hostname.slice(1, -1)
+      : parsed.hostname;
+    const isLiteralPrivate = isIPv4(literalIp) ? isPrivateIPv4(literalIp)
+      : isIPv6(literalIp) ? isPrivateIPv6(literalIp)
+      : false;
+    if (isLiteralPrivate) {
       rejectPromise(new Error(`URL blocked by SSRF safety check: ${truncateUrl(targetUrl)}`));
       return;
     }

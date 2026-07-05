@@ -393,6 +393,55 @@ describe('webfetch', () => {
     });
   });
 
+  describe('ssrfPinnedLookup options.all handling (regression: Node\'s Happy-Eyeballs/autoSelectFamily dual-stack connect, default-on since Node 20, calls the custom lookup with options.all=true and requires the array-callback shape callback(err, addresses[]) -- always answering with the single callback(err, address, family) shape instead made Node\'s net internals throw "Invalid IP address: undefined" for any real, non-literal hostname; caught by dogfooding `token-goat fetch-image` against a real URL)', () => {
+    it('hands back an array of addresses, not a single address, when options.all is set', async () => {
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(null, [
+          { address: '185.199.111.133', family: 4 },
+          { address: '185.199.110.133', family: 4 },
+        ]);
+      });
+      const result = await new Promise((res, rej) => {
+        ssrfPinnedLookup('multi-address.example.test', { all: true }, (err, addresses) => {
+          if (err) rej(err); else res(addresses);
+        });
+      });
+      expect(Array.isArray(result)).toBe(true);
+      expect(result).toEqual([
+        { address: '185.199.111.133', family: 4 },
+        { address: '185.199.110.133', family: 4 },
+      ]);
+    });
+
+    it('still returns the single-address shape when options.all is not set (existing callers unaffected)', async () => {
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(null, [{ address: '93.184.216.34', family: 4 }]);
+      });
+      const result = await new Promise((res, rej) => {
+        ssrfPinnedLookup('single-address.example.test', {}, (err, address, family) => {
+          if (err) rej(err); else res({ address, family });
+        });
+      });
+      expect(result).toEqual({ address: '93.184.216.34', family: 4 });
+    });
+
+    it('still blocks when options.all is set and one of several resolved addresses is private', async () => {
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(null, [
+          { address: '93.184.216.34', family: 4 },
+          { address: '127.0.0.1', family: 4 },
+        ]);
+      });
+      await expect(
+        new Promise((res, rej) => {
+          ssrfPinnedLookup('mixed-address.example.test', { all: true }, (err, addresses) => {
+            if (err) rej(err); else res(addresses);
+          });
+        }),
+      ).rejects.toThrow(/SSRF/);
+    });
+  });
+
   describe('ssrfPinnedLookup ALLOW_UNRESOLVED fallback (SSRF-PINNED-LOOKUP-BYPASS)', () => {
     const ENV_KEY = 'TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED';
     const originalEnv = process.env[ENV_KEY];
@@ -477,6 +526,63 @@ describe('webfetch', () => {
       ).rejects.toThrow(/timed out/);
       expect(Date.now() - start).toBeLessThan(2000);
       expect(fakeReq.destroy).toHaveBeenCalled();
+    });
+  });
+
+  describe('performHttpFetch literal-IP SSRF check (regression: Node never invokes the custom `lookup` option for a literal IPv4 hostname, so ssrfPinnedLookup alone silently let http://127.0.0.1/... and http://169.254.169.254/... through, on both the initial request and every redirect hop)', () => {
+    it('rejects a loopback literal IPv4 URL before ever attempting a connection', async () => {
+      httpRequestMock.mockClear();
+      await expect(
+        performHttpFetch('http://127.0.0.1:1/x', {
+          deadlineAt: Date.now() + 5000,
+          timeoutSec: 5,
+          maxSizeBytes: 1000,
+          requestHeaders: {},
+          redirectsLeft: 5,
+        }),
+      ).rejects.toThrow(/blocked by ssrf safety check/i);
+      expect(httpRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a link-local (cloud metadata) literal IPv4 URL even with redirects still available', async () => {
+      httpRequestMock.mockClear();
+      await expect(
+        performHttpFetch('http://169.254.169.254/latest/meta-data/', {
+          deadlineAt: Date.now() + 5000,
+          timeoutSec: 5,
+          maxSizeBytes: 1000,
+          requestHeaders: {},
+          redirectsLeft: 3,
+        }),
+      ).rejects.toThrow(/blocked by ssrf safety check/i);
+      expect(httpRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('still allows a public literal IPv4 address through (the fix does not over-block every literal IP)', async () => {
+      httpRequestMock.mockClear();
+      httpRequestMock.mockImplementationOnce(() => {
+        const fakeReq = new EventEmitter();
+        fakeReq.end = vi.fn();
+        fakeReq.destroy = vi.fn();
+        queueMicrotask(() => {
+          const fakeRes = new EventEmitter();
+          fakeRes.statusCode = 200;
+          fakeRes.statusMessage = 'OK';
+          fakeRes.headers = {};
+          fakeReq.emit('response', fakeRes);
+          queueMicrotask(() => fakeRes.emit('end'));
+        });
+        return fakeReq;
+      });
+      const result = await performHttpFetch('http://8.8.8.8/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: {},
+        redirectsLeft: 5,
+      });
+      expect(result.status).toBe(200);
+      expect(httpRequestMock).toHaveBeenCalledTimes(1);
     });
   });
 
