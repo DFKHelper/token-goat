@@ -173,6 +173,22 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
+    const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('...(elided)...')
+      expect(r.stdout).toContain('MATCH line 1')
+      expect(r.stdout).toContain('MATCH line 200')
+      expect(r.stdout).not.toContain('MATCH line 100')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
   it('bash-output --file --transcript keeps only assistant text from a JSONL transcript', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-transcript-${Date.now()}.jsonl`)
     const jsonl = [
