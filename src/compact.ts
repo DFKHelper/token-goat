@@ -70,15 +70,18 @@ const NOISE_SEGMENTS = [
 ]
 
 // Per-harness auto-trigger multiplier defaults for getAutoTriggerMultiplier().
-// 'openclaw' has no dedicated tuning yet, so it matches 'generic' until
-// there's a clear reason to diverge (see bridges/registry.ts::detectHarness
-// for the canonical harness-detection implementation this keys off of).
+// 'openclaw', 'pi', and 'hermes' have no dedicated tuning yet, so they match
+// 'generic' until there's a clear reason to diverge (see
+// bridges/registry.ts::detectHarness for the canonical harness-detection
+// implementation this keys off of).
 const HARNESS_MULTIPLIER_DEFAULTS: Record<string, number> = {
   claudecode: 2.0,
   codex: 1.5,
   opencode: 2.5,
   gemini: 3.0,
   openclaw: 1.0,
+  pi: 1.0,
+  hermes: 1.0,
   generic: 1.0,
 }
 

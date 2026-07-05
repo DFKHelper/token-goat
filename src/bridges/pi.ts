@@ -82,17 +82,22 @@ const ARGS_TO_TG: Record<string, Record<string, string>> = {
   find: { pattern: "pattern", path: "path" },
 };
 
-// Tools that have a pre-hook (read/search/fetch types only).
-// Edit/Write tools have no pre-hook in token-goat; skip before-dispatch for them.
-const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
+// Tools that have a pre-hook (read/search/fetch types only). Glob has no
+// pre_tool_use handler in token-goat (only Read/Grep/Bash/WebFetch do), so
+// it's excluded here rather than spawning a hook call that always no-ops.
+const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
 function callHook(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
+    // TOKEN_GOAT_HARNESS_OVERRIDE=pi guarantees detectHarness() resolves to
+    // 'pi' for every call this bridge makes, instead of relying on a guessed
+    // ambient env var pi-coding-agent may or may not set.
     const r = spawnSync("token-goat", ["hook", event], {
       input: JSON.stringify(payload),
       encoding: "utf8",
       timeout: 5000,
       windowsHide: true,
+      env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
     });
     if (r.error) return null;
     const out = r.stdout?.trim();
