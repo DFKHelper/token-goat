@@ -59,7 +59,7 @@ describe('installHooks', () => {
     expect(settings.hooks['PreToolUse']).toHaveLength(1)
   })
 
-  it('recognizes legacy-branded and legacy Python-era hook commands as already installed, without appending duplicates', () => {
+  it('replaces legacy-branded and legacy Python-era hook commands with the current install instead of treating them as already installed', () => {
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(
@@ -81,8 +81,8 @@ describe('installHooks', () => {
     }
     const preCommands = settings.hooks['PreToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
     const postCommands = settings.hooks['PostToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
-    expect(preCommands).toEqual(['tokenwise hook pre_tool_use'])
-    expect(postCommands).toEqual(['pythonw -m token_goat.cli hook post_tool_use'])
+    expect(preCommands).toEqual(['token-goat hook pre_tool_use'])
+    expect(postCommands).toEqual(['token-goat hook post_tool_use'])
   })
 
   it('preserves pre-existing unrelated settings and hooks', () => {
@@ -152,6 +152,31 @@ describe('isInstalled / uninstallHooks', () => {
   it('isInstalled is false before install, true after', () => {
     expect(isInstalled('project')).toBe(false)
     installHooks('project')
+    expect(isInstalled('project')).toBe(true)
+  })
+
+  it('isInstalled is false when only legacy-branded/legacy Python-era hook commands are present, true after installHooks runs', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'tokenwise hook pre_tool_use' }] }],
+          PostToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command: 'pythonw -m token_goat.cli hook post_tool_use' }] },
+          ],
+          PreCompact: [{ matcher: '', hooks: [{ type: 'command', command: 'tg-hook.cmd hook pre_compact' }] }],
+        },
+      }),
+    )
+
+    // Every mapped event key carries a legacy-only command here -- none of
+    // them are a real, working install, so this must read as not installed.
+    expect(isInstalled('project')).toBe(false)
+
+    installHooks('project')
+
     expect(isInstalled('project')).toBe(true)
   })
 
