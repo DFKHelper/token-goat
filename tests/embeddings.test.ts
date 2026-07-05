@@ -313,6 +313,48 @@ describe('embeddings module', () => {
     })
   })
 
+  describe('cmdSemantic over-fetch + merge composition (regression: merge before truncate, not after)', () => {
+    // Simulates rerankHits' best-first output for a single semantic-search call: three hits in
+    // the same file, ordered by ascending (already re-ranked) distance. Hit A and hit C sit close
+    // enough together (gap of 4 lines, within the default proximity of 20) that mergeNearbyHits
+    // should combine them into one hit; hit B is far away in the same file and never merges.
+    const hit = (startLine: number, endLine: number, distance: number, text: string): SearchHit => ({
+      filePath: 'src/auth.ts',
+      startLine,
+      endLine,
+      kind: 'window',
+      distance,
+      text,
+    })
+    const rawHits: SearchHit[] = [
+      hit(1, 10, 0.1, 'chunk A'),
+      hit(500, 510, 0.15, 'chunk B'),
+      hit(15, 25, 0.2, 'chunk C'),
+    ]
+    const n = 2
+
+    it('drops a mergeable hit when truncating to n before merging (the pre-fix composition)', () => {
+      // Old cmdSemantic: searchSemantic already truncated to n=2 raw hits (best-first: A, B)
+      // before mergeNearbyHits ever ran, so chunk C never gets a chance to merge with chunk A.
+      const preFixResult = embeddings.mergeNearbyHits(rawHits.slice(0, n))
+      expect(preFixResult.length).toBe(2)
+      const authHit = preFixResult.find((h) => h.startLine === 1)
+      expect(authHit?.endLine).toBe(10) // NOT extended to 25 - the merge that should happen never does
+    })
+
+    it('merges the over-fetched candidate pool before truncating to n (the fixed composition)', () => {
+      // New cmdSemantic: searchSemantic over-fetches all 3 candidates, mergeNearbyHits runs on
+      // the full pool first, and only the merged result is truncated to n.
+      const postFixResult = embeddings.mergeNearbyHits(rawHits).slice(0, n)
+      expect(postFixResult.length).toBe(2)
+      const mergedHit = postFixResult.find((h) => h.startLine === 1)
+      expect(mergedHit?.endLine).toBe(25) // extended to cover chunk C - the merge happened
+      expect(mergedHit?.text).toContain('chunk A')
+      expect(mergedHit?.text).toContain('chunk C')
+      expect(mergedHit?.distance).toBe(0.1) // keeps the best distance of the merged pair
+    })
+  })
+
   describe('rerankHits()', () => {
     const mk = (filePath: string, distance: number, text: string): SearchHit => ({
       filePath,
@@ -373,6 +415,14 @@ describe('embeddings module', () => {
 
     it('should export DEFAULT_DISTANCE_THRESHOLD as 1.2', () => {
       expect(embeddings.DEFAULT_DISTANCE_THRESHOLD).toBe(1.2)
+    })
+
+    it('should export OVER_FETCH_FACTOR as 4', () => {
+      expect(embeddings.OVER_FETCH_FACTOR).toBe(4)
+    })
+
+    it('should export MAX_OVER_FETCH as 100', () => {
+      expect(embeddings.MAX_OVER_FETCH).toBe(100)
     })
   })
 
