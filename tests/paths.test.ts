@@ -56,6 +56,24 @@ describe('normalizePath', () => {
     expect(normalizePath('/mnt/c/foo\\bar')).toBe('c:/foo/bar')
   })
 
+  // Regression: UNC paths (\\host\share\...) have a case-insensitive host and share segment,
+  // analogous to a drive letter, but were never folded -- two differently-cased references to
+  // the same network share normalized to two different strings and silently missed each other
+  // in every case-insensitive-path lookup this codebase does.
+  it('lowercases a UNC path host and share segment', () => {
+    expect(normalizePath('\\\\FileServer\\Dev\\foo.ts')).toBe('//fileserver/dev/foo.ts')
+  })
+
+  it('normalizes two differently-cased UNC references to the same share to the identical string', () => {
+    expect(normalizePath('\\\\FileServer\\Dev\\foo.ts')).toBe(normalizePath('\\\\fileserver\\dev\\foo.ts'))
+  })
+
+  it("does not case-fold a UNC path's segments beyond host/share", () => {
+    expect(normalizePath('\\\\FileServer\\Dev\\SomeFolder\\FooBar.ts')).toBe(
+      '//fileserver/dev/SomeFolder/FooBar.ts',
+    )
+  })
+
   describe('Git Bash /<drive>/ mount form (win32-gated)', () => {
     const realPlatform = process.platform
     const setPlatform = (p: string): void => {
@@ -115,6 +133,31 @@ describe('lowercaseDriveLetter', () => {
     // unconditional `s[0].toLowerCase()` (project.ts's old inline check) would have applied;
     // the ASCII-only /^[A-Z]$/ guard leaves it untouched instead.
     expect(lowercaseDriveLetter('Ω:/foo')).toBe('Ω:/foo')
+  })
+
+  // Regression (8th instance of this case-fold bug class): a UNC path's host and share are
+  // case-insensitive on Windows, exactly like a drive letter, but lowercaseDriveLetter only
+  // ever checked for a drive-letter-shaped prefix. By the time normalizePath/canonicalize call
+  // this helper, backslashes are already forward slashes, so the UNC form to fold is
+  // `//host/share/...`.
+  it('lowercases a UNC path host and share segment', () => {
+    expect(lowercaseDriveLetter('//FileServer/Dev/foo.ts')).toBe('//fileserver/dev/foo.ts')
+  })
+
+  it('normalizes two differently-cased UNC host/share references to the identical string', () => {
+    expect(lowercaseDriveLetter('//FileServer/Dev/foo.ts')).toBe(
+      lowercaseDriveLetter('//fileserver/dev/foo.ts'),
+    )
+  })
+
+  it("leaves a UNC path's segments beyond host/share untouched, mirroring the drive-letter-only fold", () => {
+    expect(lowercaseDriveLetter('//FileServer/Dev/SomeFolder/FooBar.ts')).toBe(
+      '//fileserver/dev/SomeFolder/FooBar.ts',
+    )
+  })
+
+  it('leaves a UNC-shaped string with no share segment unchanged (no match, falls through)', () => {
+    expect(lowercaseDriveLetter('//FileServer')).toBe('//FileServer')
   })
 })
 
