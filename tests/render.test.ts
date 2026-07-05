@@ -64,6 +64,32 @@ describe('ANSI formatting', () => {
     expect(stripAnsi('plain text')).toBe('plain text')
   })
 
+  it('stripAnsi strips a terminated OSC 8 hyperlink down to just the visible link text', () => {
+    const hyperlink = '\x1b]8;;http://example.com\x07visible text\x1b]8;;\x07'
+    expect(stripAnsi(hyperlink)).toBe('visible text')
+  })
+
+  it('stripAnsi drops a truncated/unterminated OSC sequence at end of input without leaking raw escape bytes or eating preceding real content (regression)', () => {
+    const truncated = 'before text\x1b]8;;http://example.com/never-closed'
+    const result = stripAnsi(truncated)
+    expect(result).toBe('before text')
+    expect(result).not.toContain('\x1b')
+  })
+
+  it('stripAnsi drops a truncated/unterminated PM sequence (ESC ^) without leaking a raw escape byte or eating preceding real content (regression: ^ was missing from the bare-escape fallback range)', () => {
+    const truncated = 'before text\x1b^some pm payload with no terminator'
+    const result = stripAnsi(truncated)
+    expect(result.startsWith('before text')).toBe(true)
+    expect(result).not.toContain('\x1b')
+  })
+
+  it('stripAnsi drops a bare CSI introducer with no final byte at end of input (regression: [ was missing from the bare-escape fallback range)', () => {
+    const truncated = 'before text\x1b['
+    const result = stripAnsi(truncated)
+    expect(result).toBe('before text')
+    expect(result).not.toContain('\x1b')
+  })
+
   it('lerpRgb interpolates colors', () => {
     const result = lerpRgb([0, 0, 0], [255, 255, 255], 0.5)
     expect(result[0]).toBe(128)
