@@ -112,8 +112,14 @@ export default definePluginEntry({
 
     api.on("session_start", (event, ctx) => {
       sessionId = (ctx && (ctx.sessionId || ctx.sessionKey)) || sessionId;
-      callHook("session_start", { session_id: sessionId, cwd: process.cwd() });
     });
+
+    // No forwarding callHook for session_start here (there used to be one):
+    // token-goat retired the session_start hook -- it only ever reached a
+    // permanent no-op handler (see the removal in src/hooks_session.ts and
+    // src/types.ts). The subscription above is kept regardless, because it's
+    // OpenClaw's own lifecycle event and is still needed to refresh
+    // sessionId for every other bridged call below.
 
     // No api.on("session_end", ...) here: token-goat's own HOOK_EVENTS
     // (src/types.ts) has no session_end member, so calling it would be the

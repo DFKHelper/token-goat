@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Removed
+
+- **The `session_start` hook event is retired.** `sessionStartHandler` had been a complete no-op since the TypeScript port (every branch just returned `passOutput()`), yet Gemini's `SessionStart`, and pi's and OpenClaw's own `session_start` lifecycle subscriptions, still forwarded to it on every session start -- a `token-goat hook` subprocess spawned for zero effect. `'session_start'` is removed from `HOOK_EVENTS` (`src/types.ts`), `sessionStartHandler` and its registration are deleted (`src/hooks_session.ts`), and its `CLAUDE_CODE_EVENT_NAMES` entry is removed (`src/hook_registry.ts`). Gemini's installer no longer writes a `SessionStart` entry at all (`src/bridges/gemini_install.ts`), and the dead forwarding calls are removed from the pi and OpenClaw bridge templates (`src/bridges/pi.ts`, `src/bridges/openclaw.ts`) while keeping their subscriptions to the *host's* own `session_start` lifecycle event, which those bridges still need to refresh `sessionId`/`cwd` for every other bridged call. `runHook` already passes through `{}` for any unregistered event name, so a not-yet-reinstalled Gemini/pi/OpenClaw integration that still sends `session_start` keeps behaving exactly as before (a no-op), with no crash. See [src/hooks_session.ts](src/hooks_session.ts), [src/types.ts](src/types.ts), [src/hook_registry.ts](src/hook_registry.ts), [src/bridges/gemini_install.ts](src/bridges/gemini_install.ts), [src/bridges/pi.ts](src/bridges/pi.ts), and [src/bridges/openclaw.ts](src/bridges/openclaw.ts); regression-tested in [tests/install_gemini.test.ts](tests/install_gemini.test.ts), [tests/install_pi.test.ts](tests/install_pi.test.ts), [tests/install_openclaw.test.ts](tests/install_openclaw.test.ts), and [tests/bridges/shims.test.ts](tests/bridges/shims.test.ts).
+
 ## [2.6.3] - 2026-07-05
 
 ### Added

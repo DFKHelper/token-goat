@@ -29,7 +29,7 @@
  * `session_before_compact`, and `session_compact`.
  *
  * `token-goat hook <event>` only accepts the exact snake_case event names in
- * HOOK_EVENTS: `pre_tool_use`, `post_tool_use`, `pre_compact`, `session_start`,
+ * HOOK_EVENTS: `pre_tool_use`, `post_tool_use`, `pre_compact`,
  * `notification`, `stop`, `user_prompt_submit`, `subagent_stop`.
  *
  * Response contract from `token-goat hook <event>` (`src/hook_registry.ts`
@@ -168,11 +168,16 @@ export default function (pi: ExtensionAPI) {
   // Manifest captured at session_before_compact, injected after compaction.
   let pendingManifest: string | undefined;
 
+  // No forwarding callHook for session_start here (there used to be one):
+  // token-goat retired the session_start hook -- it only ever reached a
+  // permanent no-op handler (see the removal in src/hooks_session.ts and
+  // src/types.ts). This subscription is kept regardless, because it's pi's
+  // own lifecycle event and is still needed to refresh sessionId/cwd for
+  // every other bridged call below.
   pi.on("session_start", (_event, ctx) => {
     cwd = ctx.cwd ?? process.cwd();
     const file = ctx.sessionManager?.getSessionFile?.();
     sessionId = file ? \`pi-\${file.replace(/[^A-Za-z0-9._-]/g, "_")}\` : \`pi-\${process.pid}\`;
-    callHook("session_start", { session_id: sessionId, cwd });
   });
 
   pi.on("tool_call", async (event, _ctx) => {

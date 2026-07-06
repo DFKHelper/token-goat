@@ -46,7 +46,7 @@
  *
  * `token-goat hook <event>` only accepts the exact snake_case event names in
  * HOOK_EVENTS (src/types.ts): pre_tool_use, post_tool_use, pre_compact,
- * session_start, notification, stop, user_prompt_submit, subagent_stop --
+ * notification, stop, user_prompt_submit, subagent_stop --
  * relay() (src/relay.ts) checks the event name against that closed set via
  * isHookEventName() and no-ops to `{}` on anything else. This plugin uses
  * those exact names (unlike PI_EXTENSION_SCRIPT's pre-existing

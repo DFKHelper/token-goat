@@ -123,7 +123,6 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
     notification: 'Notification',
     stop: 'Stop',
     pre_compact: 'PreCompact',
-    session_start: 'SessionStart',
     user_prompt_submit: 'UserPromptSubmit',
     subagent_stop: 'SubagentStop',
   }
