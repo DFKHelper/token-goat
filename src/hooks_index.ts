@@ -121,4 +121,7 @@ export function preCompactIndexHandler(_event: HookEvent): HookOutput {
   return passOutput()
 }
 
-registerHook('pre_compact', preCompactIndexHandler)
+// advisory: this handler is a side-effect-only snapshot writer that always intends to
+// pass through; marking it advisory guarantees runHook never lets a future non-pass
+// return from it suppress another pre_compact handler's output (see hook_registry.ts).
+registerHook('pre_compact', preCompactIndexHandler, { advisory: true })

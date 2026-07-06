@@ -97,6 +97,64 @@ describe('hook registry', () => {
     })
   })
 
+  describe('advisory handlers', () => {
+    // Regression coverage for the pre_compact ordering hazard: hooks_index.ts registers
+    // an always-pass, side-effect-only handler for pre_compact ahead of hooks_compact.ts's
+    // manifest handler, purely because of import order in relay.ts. If that handler ever
+    // started returning non-pass, the old first-non-pass-wins loop would short-circuit
+    // and the real compaction manifest would never run. Marking it `advisory: true`
+    // removes that dependency on import order entirely -- these tests simulate exactly
+    // that "handler starts returning non-pass" future regression, in both possible
+    // registration orders, and assert the authoritative handler's result still comes
+    // through every time.
+    it('an advisory handler turning non-pass does not suppress a later authoritative handler', async () => {
+      const advisory = vi.fn((): HookOutput => ({ hookType: 'context', context: 'snapshot-side-effect' }))
+      const authoritative = vi.fn((): HookOutput => ({ hookType: 'context', context: 'manifest' }))
+      registerHook('pre_compact', advisory, { advisory: true })
+      registerHook('pre_compact', authoritative)
+      const result = await runHook(makeEvent({ eventName: 'pre_compact' }))
+      expect(result).toEqual({ hookType: 'context', context: 'manifest' })
+      expect(advisory).toHaveBeenCalledTimes(1)
+      expect(authoritative).toHaveBeenCalledTimes(1)
+    })
+
+    it('order-independence: an authoritative handler registered before an advisory one still wins', async () => {
+      const authoritative = vi.fn((): HookOutput => ({ hookType: 'context', context: 'manifest' }))
+      const advisory = vi.fn((): HookOutput => ({ hookType: 'context', context: 'snapshot-side-effect' }))
+      // Deliberately reversed from the real hooks_index/hooks_compact import order. A
+      // non-advisory handler still short-circuits normally, so the advisory handler
+      // registered after it correctly never runs here -- the point is that the
+      // authoritative result is what comes through regardless of which order the two
+      // were registered in, not that every handler always fires.
+      registerHook('pre_compact', authoritative)
+      registerHook('pre_compact', advisory, { advisory: true })
+      const result = await runHook(makeEvent({ eventName: 'pre_compact' }))
+      expect(result).toEqual({ hookType: 'context', context: 'manifest' })
+      expect(authoritative).toHaveBeenCalledTimes(1)
+      expect(advisory).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the advisory result when no authoritative handler fires', async () => {
+      registerHook('pre_compact', () => ({ hookType: 'context', context: 'snapshot-side-effect' }), {
+        advisory: true,
+      })
+      const result = await runHook(makeEvent({ eventName: 'pre_compact' }))
+      expect(result).toEqual({ hookType: 'context', context: 'snapshot-side-effect' })
+    })
+
+    it('a non-advisory handler after an advisory one still short-circuits any handler behind it', async () => {
+      const advisory = vi.fn((): HookOutput => ({ hookType: 'pass' }))
+      const authoritative = vi.fn((): HookOutput => ({ hookType: 'deny', message: 'stop' }))
+      const never = vi.fn((): HookOutput => ({ hookType: 'context', context: 'never' }))
+      registerHook('pre_compact', advisory, { advisory: true })
+      registerHook('pre_compact', authoritative)
+      registerHook('pre_compact', never)
+      const result = await runHook(makeEvent({ eventName: 'pre_compact' }))
+      expect(result).toEqual({ hookType: 'deny', message: 'stop' })
+      expect(never).not.toHaveBeenCalled()
+    })
+  })
+
   describe('reset', () => {
     it('clearModuleCaches drops all registered handlers', async () => {
       const handler = vi.fn((): HookOutput => ({ hookType: 'deny', message: 'x' }))
