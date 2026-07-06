@@ -67,9 +67,11 @@ export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
 
 function preMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
+  if (!toolName || !event.sessionId) return passOutput()
+  const toolInput = getToolInput(event)
+  if (!isMcpReadOnly(toolName, toolInput)) return passOutput()
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
-  const id = getMcpOutput(event.sessionId, toolName, getToolInput(event), ttlMs)
+  const id = getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)
   if (!id) return passOutput()
   return denyOutput(
     'Identical read-only MCP call already cached this session. Use `token-goat bash-output ' +
@@ -80,11 +82,12 @@ function preMcpHandler(event: HookEvent): HookOutput {
 
 function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
+  if (!toolName || !event.sessionId) return passOutput()
+  const toolInput = getToolInput(event)
+  if (!isMcpReadOnly(toolName, toolInput)) return passOutput()
   // An in-band MCP error is a valid response, not a cacheable one — never let a
   // transient or now-resolved failure block every later identical retry.
   if (isMcpErrorResponse(event.raw)) return passOutput()
-  const toolInput = getToolInput(event)
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
   // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
   if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()

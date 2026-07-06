@@ -22,11 +22,24 @@ export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
 const MUTABLE_VERBS_RE = /^request(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit)(?=_|$)/i
 
 /**
+ * Input keys that make an otherwise read-verb MCP call state-changing
+ * regardless of tool name, e.g. `createIfEmpty` on `tabs_context_mcp`,
+ * `clear` on the claude-in-chrome console/network readers, or `save_to_disk`
+ * on a screenshot call. Anthropic's own permission system already treats
+ * these flags as mutating (code.claude.com/docs/en/chrome), so the cache
+ * must never dedup/serve a stale result for a call carrying one truthy.
+ */
+const STATE_CHANGING_INPUT_KEYS = ['createIfEmpty', 'clear', 'save_to_disk']
+
+/**
  * Return true when *toolName* is a read-only MCP tool safe to cache.
  * Only `mcp__`-prefixed tools are considered; the trailing method segment is
  * matched against a verb blocklist so mutating calls are never deduped.
+ * *toolInput* is also inspected: a truthy `STATE_CHANGING_INPUT_KEYS` flag
+ * overrides the name-based verdict, since it makes the specific call mutate
+ * state even though the tool name itself reads as read-only.
  */
-export function isMcpReadOnly(toolName: string): boolean {
+export function isMcpReadOnly(toolName: string, toolInput: Record<string, unknown>): boolean {
   if (!toolName.startsWith('mcp__')) {
     return false
   }
@@ -34,7 +47,10 @@ export function isMcpReadOnly(toolName: string): boolean {
   // Screenshots are not idempotent: page content can change between calls,
   // so they must never be cached/dedup'd.
   if (/screenshot/i.test(method)) return false
-  return !MUTABLE_VERBS_RE.test(method)
+  if (!MUTABLE_VERBS_RE.test(method)) {
+    return !STATE_CHANGING_INPUT_KEYS.some((key) => toolInput[key])
+  }
+  return false
 }
 
 /**
