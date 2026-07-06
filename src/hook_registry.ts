@@ -42,6 +42,13 @@ export type HookHandler = (event: HookEvent) => HookOutput | Promise<HookOutput>
 interface Registration {
   readonly handler: HookHandler
   readonly toolName: string | undefined
+  // Advisory handlers are never authoritative for their event: a non-pass result from
+  // one is remembered as a fallback but never short-circuits runHook, so later
+  // (non-advisory) handlers for the same event still always run. This lets a
+  // side-effect-only handler (e.g. one that just writes an index snapshot) keep that
+  // guarantee true even if its own logic changes later, without depending on
+  // registration/import order across files.
+  readonly advisory: boolean
 }
 
 /**
@@ -64,14 +71,14 @@ const _handlers = new Map<HookEventName, Registration[]>()
 export function registerHook(
   eventName: HookEventName,
   handler: HookHandler,
-  opts?: { toolName?: string },
+  opts?: { toolName?: string; advisory?: boolean },
 ): void {
   let list = _handlers.get(eventName)
   if (list === undefined) {
     list = []
     _handlers.set(eventName, list)
   }
-  list.push({ handler, toolName: opts?.toolName })
+  list.push({ handler, toolName: opts?.toolName, advisory: opts?.advisory === true })
 }
 
 /**
@@ -88,12 +95,24 @@ export function registerHook(
 export async function runHook(event: HookEvent): Promise<HookOutput> {
   const list = _handlers.get(event.eventName)
   if (list === undefined) return { hookType: 'pass' }
-  for (const { handler, toolName } of list) {
+  // Advisory handlers never short-circuit: their non-pass results are remembered as a
+  // fallback, but the loop always continues so every later, non-advisory handler for
+  // this event still runs and can still return its own result. This keeps a
+  // side-effect-only handler from ever silently suppressing another handler's output,
+  // regardless of registration order.
+  let advisoryResult: HookOutput | undefined
+  for (const { handler, toolName, advisory } of list) {
     if (toolName !== undefined && toolName !== event.toolName) continue
     const result = await handler(event)
-    if (result.hookType !== 'pass') return result
+    if (result.hookType !== 'pass') {
+      if (advisory) {
+        advisoryResult = result
+        continue
+      }
+      return result
+    }
   }
-  return { hookType: 'pass' }
+  return advisoryResult ?? { hookType: 'pass' }
 }
 
 /** Drop every registered handler. Internal — invoked by {@link registerReset}. */
