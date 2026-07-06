@@ -132,23 +132,19 @@ export interface CallersOptions {
   limit?: number
 }
 
-interface CallerEntry {
+export interface CallerEntry {
   caller: string
   kind: string
   file: string
   line: number
 }
 
-export function runCallers(opts: CallersOptions): number {
-  const refs = queryRefs({ name: opts.symbol, limit: opts.limit ?? 500 })
-  if (refs.length === 0) {
-    emitErr(`No references found for '${opts.symbol}'`)
-    return 1
-  }
-
+/** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`. */
+export function resolveCallers(name: string, limit?: number): CallerEntry[] {
+  const refs = queryRefs({ name, limit: limit ?? 500 })
   const getSyms = buildFileSymCache()
 
-  const entries: CallerEntry[] = refs.map((ref) => {
+  return refs.map((ref) => {
     const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
     return {
       caller: enc?.name ?? '(module scope)',
@@ -157,6 +153,14 @@ export function runCallers(opts: CallersOptions): number {
       line: ref.line,
     }
   })
+}
+
+export function runCallers(opts: CallersOptions): number {
+  const entries = resolveCallers(opts.symbol, opts.limit)
+  if (entries.length === 0) {
+    emitErr(`No references found for '${opts.symbol}'`)
+    return 1
+  }
 
   if (opts.json === true) {
     emit(JSON.stringify(entries, null, 2))

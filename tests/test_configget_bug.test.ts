@@ -38,23 +38,50 @@ describe('configGet section scoping bug', () => {
 
     const f = tmpFile('pyproject.toml', content)
 
-    // When looking for `project.version`, we want the value from the [project] section, not the value from [tool.ruff]. However, the naive line-based search finds the FIRST line with "version =", which is in [tool.ruff], returning "0.1" instead of "2.0.0".
     let stdout = ''
-    let stderr = ''
-    // Capture output
     const oldWrite = process.stdout.write
-    const oldErrWrite = process.stderr.write
     process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
-    process.stderr.write = ((s: string) => { stderr += s; return true }) as typeof process.stderr.write
 
     runConfigGet({ file: f, key: 'project.version' })
 
     process.stdout.write = oldWrite
-    process.stderr.write = oldErrWrite
-
-    // This test will FAIL on the current (buggy) implementation because it returns "0.1" from [tool.ruff], but we expect "2.0.0" from [project]
-    console.log('stdout:', stdout);
-    console.log('stderr:', stderr);
     expect(stdout.trim()).toBe('2.0.0')
+  })
+
+  it('should recognize section headers with trailing comments', () => {
+    const content = [
+      '[tool.ruff] # comment',
+      'version = "0.1"',
+      '',
+      '[project] ; another comment',
+      'version = "2.0.0"',
+      '',
+      '[tool.other]  ; comment after spaces',
+      'value = "3.0"',
+    ].join('\n')
+
+    const f = tmpFile('pyproject.toml', content)
+    const oldWrite = process.stdout.write
+
+    // Test 1: [tool.ruff] with # comment
+    let stdout = ''
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'tool.ruff.version' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe('0.1')
+
+    // Test 2: [project] with ; comment
+    stdout = ''
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'project.version' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe('2.0.0')
+
+    // Test 3: [tool.other] with trailing comment after spaces
+    stdout = ''
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'tool.other.value' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe('3.0')
   })
 })

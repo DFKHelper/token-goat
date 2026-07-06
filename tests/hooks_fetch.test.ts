@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HookEvent } from '../src/hook_registry.js';
 import { postFetchHandler, preFetchHandler } from '../src/hooks_fetch.js';
+import { getWebOutput } from '../src/web_cache.js';
 import { clearModuleCaches } from '../src/reset.js';
 
 beforeEach(() => {
@@ -151,5 +152,67 @@ describe('postFetchHandler', () => {
       },
     };
     expect(postFetchHandler(event).hookType).toBe('pass');
+  });
+
+  it('stores extracted clean text, not raw markup, for an HTML body at/above the compress threshold', () => {
+    const url = 'https://example.com/article';
+    const paragraph = '<p>Real article content that a reader actually cares about.</p>\n'.repeat(400);
+    const html = `<!DOCTYPE html><html><head><title>Test</title><script>evilTrackingPixel();</script></head><body>${paragraph}</body></html>`;
+
+    const result = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'html-extract-session',
+      raw: { tool_response: html },
+    });
+    expect(result.hookType).toBe('pass');
+
+    // Recover the cache id the same way a real dedup deny would carry it.
+    const denyResult = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'html-extract-session',
+      raw: {},
+    });
+    expect(denyResult.hookType).toBe('deny');
+    if (denyResult.hookType !== 'deny') throw new Error('unreachable');
+    const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
+    expect(cacheId).toBeTruthy();
+
+    const stored = getWebOutput(cacheId as string);
+    expect(stored).not.toBeNull();
+    expect(stored).not.toContain('<html>');
+    expect(stored).not.toContain('<script>');
+    expect(stored).not.toContain('evilTrackingPixel');
+    expect(stored).toContain('Real article content');
+    expect((stored as string).length).toBeLessThan(html.length);
+  });
+
+  it('leaves a large non-HTML body untouched', () => {
+    const url = 'https://example.com/plain-data.json';
+    const body = JSON.stringify({ items: Array.from({ length: 200 }, (_, i) => ({ id: i })) });
+
+    postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'plain-body-session',
+      raw: { tool_response: body },
+    });
+
+    const denyResult = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'plain-body-session',
+      raw: {},
+    });
+    expect(denyResult.hookType).toBe('deny');
+    if (denyResult.hookType !== 'deny') throw new Error('unreachable');
+    const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
+
+    expect(getWebOutput(cacheId as string)).toBe(body);
   });
 });

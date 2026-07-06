@@ -144,6 +144,26 @@ export function queryRefs(
 }
 
 /**
+ * Batched reference count per symbol name, for `outline --stats`/`skeleton --stats`. One
+ * `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1
+ * queries when a file has many symbols. Names with zero references are simply absent from
+ * the returned map (callers should default to 0).
+ */
+export function queryRefCounts(names: string[], dbPath: string = globalDbPath()): Map<string, number> {
+  const counts = new Map<string, number>()
+  if (names.length === 0) return counts
+
+  const db = getDb(dbPath)
+  const placeholders = names.map(() => '?').join(', ')
+  const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${placeholders}) GROUP BY name`
+  const rows = db.prepare(sql).all(...names) as Array<{ name: string; c: number }>
+  for (const row of rows) {
+    counts.set(row.name, row.c)
+  }
+  return counts
+}
+
+/**
  * Fetch the index entry for one file by its stored path. Returns `null` when
  * the file is not in the index.
  */

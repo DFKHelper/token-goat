@@ -6,6 +6,8 @@ import { recordStat } from './stats.js';
 import { storeWebOutput, getWebOutput } from './web_cache.js';
 import { recordWebFetch } from './session.js';
 import { shortFingerprint } from './fingerprint.js';
+import { loadConfig } from './config.js';
+import { looksLikeHtml, extractCleanText } from './web_extract.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   const toolResponse = raw['tool_response'];
@@ -103,7 +105,23 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // record it in the session (url-keyed) for the compact-manifest "fetched this
     // session" listing.
     const prompt = typeof toolInput['prompt'] === 'string' ? (toolInput['prompt'] as string) : '';
-    const cacheId = storeWebOutput(url, body, `${url}\x00${prompt}`);
+
+    // A raw HTML body is the same unshrunk-payload problem image_shrink.ts already
+    // solves for images: extract clean text before caching, so a later recall (web-output,
+    // or a repeat fetch caught by preFetchHandler's dedup) never re-surfaces raw markup.
+    // webfetch.compress_bodies/compress_min_bytes already existed as persisted, validated,
+    // env-overridable config with zero consumers until now.
+    let storedBody = body;
+    const wfCfg = loadConfig().webfetch;
+    if (wfCfg.compress_bodies && body.length >= wfCfg.compress_min_bytes && looksLikeHtml(body)) {
+      try {
+        storedBody = extractCleanText(body);
+      } catch {
+        storedBody = body;
+      }
+    }
+
+    const cacheId = storeWebOutput(url, storedBody, `${url}\x00${prompt}`);
     recordWebFetch(url, prompt, cacheId);
 
     return passOutput();

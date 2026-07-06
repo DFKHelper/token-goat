@@ -8,6 +8,7 @@ vi.mock('../src/index_reader.js', () => ({
   querySymbols: vi.fn(() => []),
   queryRefs: vi.fn(() => []),
   getFileEntry: vi.fn(() => null),
+  queryRefCounts: vi.fn(() => new Map()),
 }))
 
 vi.mock('../src/section_reader.js', () => ({
@@ -15,6 +16,11 @@ vi.mock('../src/section_reader.js', () => ({
   listSections: vi.fn(() => []),
   listAllSections: vi.fn(() => []),
   extractSection: vi.fn(() => null),
+  findContainingSection: vi.fn(() => null),
+}))
+
+vi.mock('../src/graph_commands.js', () => ({
+  resolveCallers: vi.fn(() => []),
 }))
 
 vi.mock('../src/parser.js', () => ({
@@ -47,22 +53,28 @@ import {
   runListSections,
   runGrep,
   runConfigGet,
+  runCsvQuery,
   runExports,
   runChanged,
   runRefs,
+  runBrief,
   extractImports,
   extractExportNames,
   extractTranscriptText,
   parseDiffHunks,
 } from '../src/read_commands.js'
-import { querySymbols, queryRefs } from '../src/index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
-import { readSection, listSections, listAllSections } from '../src/section_reader.js'
+import { readSection, listSections, listAllSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
 import { indexFileSync } from '../src/parser.js'
+import { resolveCallers } from '../src/graph_commands.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
+const mockQueryRefCounts = vi.mocked(queryRefCounts)
+const mockFindContainingSection = vi.mocked(findContainingSection)
+const mockResolveCallers = vi.mocked(resolveCallers)
 const mockQueryRefs = vi.mocked(queryRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
@@ -592,6 +604,150 @@ describe('read_commands', () => {
     })
   })
 
+  describe('outline/skeleton --stats', () => {
+    it('runOutline adds refCount and hasDoc per symbol in JSON mode', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
+        { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
+      const { stdout } = capture(() => { runOutline({ file: 'f.ts', stats: true, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
+      const used = parsed.find((p) => p.name === 'used')
+      const unused = parsed.find((p) => p.name === 'unused')
+      expect(used?.refCount).toBe(2)
+      expect(used?.hasDoc).toBe(true)
+      expect(unused?.refCount).toBe(0)
+      expect(unused?.hasDoc).toBe(false)
+    })
+
+    it('runSkeleton adds refCount and hasDoc per symbol in JSON mode', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
+        { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
+      const { stdout } = capture(() => { runSkeleton({ file: 'f.ts', stats: true, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
+      const used = parsed.find((p) => p.name === 'used')
+      const unused = parsed.find((p) => p.name === 'unused')
+      expect(used?.refCount).toBe(2)
+      expect(used?.hasDoc).toBe(true)
+      expect(unused?.refCount).toBe(0)
+      expect(unused?.hasDoc).toBe(false)
+    })
+
+    it('runOutline plain-text output shows ref count and doc status per symbol', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'does a thing' },
+        { name: 'unused', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 15, body: 'y', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
+      const { stdout } = capture(() => { runOutline({ file: 'f.ts', stats: true }) })
+      expect(stdout).toContain('2 refs')
+      expect(stdout).toContain('documented')
+      expect(stdout).toContain('0 refs')
+      expect(stdout).toContain('undocumented')
+    })
+
+    it('does not query ref counts when --stats is not passed', () => {
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      capture(() => { runOutline({ file: 'f.ts' }) })
+      expect(mockQueryRefCounts).not.toHaveBeenCalled()
+    })
+  })
+
+  // ---- runBrief -----------------------------------------------------------
+
+  describe('runBrief', () => {
+    it('returns 1 when the symbol is not found', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const code = runBrief({ spec: 'f.ts::missing' })
+      expect(code).toBe(1)
+    })
+
+    it('assembles symbol, callers, and section into JSON shape', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: 'g.ts', line: 3 }])
+      mockFindContainingSection.mockReturnValue({ heading: 'Usage', content: 'body', lineStart: 8, lineEnd: 25 })
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true }) })
+      const parsed = JSON.parse(stdout) as {
+        symbol: { name: string }
+        callers: Array<{ caller: string }>
+        section: { heading: string } | null
+      }
+      expect(parsed.symbol.name).toBe('myFunc')
+      expect(parsed.callers).toHaveLength(1)
+      expect(parsed.callers[0]?.caller).toBe('caller1')
+      expect(parsed.section?.heading).toBe('Usage')
+    })
+
+    it('renders plain text with symbol body, callers, and section line', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: 'g.ts', line: 3 }])
+      mockFindContainingSection.mockReturnValue({ heading: 'Usage', content: 'body', lineStart: 8, lineEnd: 25 })
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc' }) })
+      expect(stdout).toContain('myFunc')
+      expect(stdout).toContain('function myFunc() {}')
+      expect(stdout).toContain('Callers (1):')
+      expect(stdout).toContain('caller1')
+      expect(stdout).toContain('Section: Usage')
+    })
+
+    it('omits the Section line entirely when no containing section is found', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([])
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc' }) })
+      expect(stdout).not.toContain('Section:')
+    })
+
+    it('shows a real elided-count message when true caller count exceeds the display limit', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
+      mockResolveCallers.mockReturnValue(tenCallers)
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5 }) })
+      // resolveCallers must be queried for the true count, not capped at the display limit --
+      // otherwise callers.length can never exceed shown.length and the elided message can't fire.
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc')
+      expect(stdout).toContain('Callers (10):')
+      expect(stdout).toContain('...(5 more elided)')
+    })
+
+    it('signals the true caller count and truncation in JSON mode', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
+      mockResolveCallers.mockReturnValue(tenCallers)
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5, json: true }) })
+      const parsed = JSON.parse(stdout) as { callers: unknown[]; totalCallers: number; truncated: boolean }
+      expect(parsed.callers).toHaveLength(5)
+      expect(parsed.totalCallers).toBe(10)
+      expect(parsed.truncated).toBe(true)
+    })
+  })
+
   // ---- runGrep ------------------------------------------------------------
 
   describe('runGrep', () => {
@@ -882,7 +1038,55 @@ describe('read_commands', () => {
     })
   })
 
-  // ---- runListSections ----------------------------------------------------
+  // ---- runCsvQuery ----------------------------------------------------
+
+  describe('runCsvQuery', () => {
+    const CSV = 'id,name,status\n1,Alice,active\n2,Bob,inactive\n'
+
+    it('emits all columns and rows as CSV by default', () => {
+      const f = path.join(tempDir, 'people.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f }) })
+      expect(stdout).toContain('id,name,status')
+      expect(stdout).toContain('1,Alice,active')
+    })
+
+    it('projects a column subset via --columns', () => {
+      const f = path.join(tempDir, 'cols.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, columns: 'name,status' }) })
+      expect(stdout.split('\n')[0]).toBe('name,status')
+      expect(stdout).not.toContain('id,name')
+    })
+
+    it('filters rows via --where col=value', () => {
+      const f = path.join(tempDir, 'where.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: 'status=active' }) })
+      expect(stdout).toContain('Alice')
+      expect(stdout).not.toContain('Bob')
+    })
+
+    it('emits JSON rows when --json is set', () => {
+      const f = path.join(tempDir, 'json.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed[0]).toEqual({ id: '1', name: 'Alice', status: 'active' })
+    })
+
+    it('returns 1 and reports the error for an unknown --where column', () => {
+      const f = path.join(tempDir, 'badwhere.csv')
+      fs.writeFileSync(f, CSV)
+      const code = runCsvQuery({ file: f, where: 'nope=x' })
+      expect(code).toBe(1)
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runCsvQuery({ file: path.join(tempDir, 'missing.csv') })
+      expect(code).toBe(1)
+    })
+  })
 
   describe('runListSections', () => {
     it('returns 1 when no sections found', () => {
@@ -960,6 +1164,38 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runFind({ pattern: 'foo', limit: 2 }) })
       const lines = stdout.trim().split('\n')
       expect(lines).toHaveLength(2)
+    })
+
+    it('warns when index scan hits FIND_SCAN_LIMIT', () => {
+      // Test that truncation is detected and reported. We create an array with length ===
+      // FIND_SCAN_LIMIT (20_000) so that rawSymbols.length === FIND_SCAN_LIMIT and
+      // the truncated flag is set.
+      const limit = 20_000 // matches FIND_SCAN_LIMIT in read_commands.ts
+      const syms: MockSymbol[] = Array.from({ length: limit }, (_, i) => ({
+        name: i < 5 ? `match${i}` : `unmatch${i}`, // first 5 match our pattern
+        kind: 'function',
+        filePath: `src/file${i}.ts`,
+        lineStart: 1,
+        lineEnd: 5,
+        body: '',
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+
+      // Plain-text mode should emit truncation warning to stderr
+      const { stdout, stderr } = capture(() => { runFind({ pattern: 'match' }) })
+      expect(stderr).toContain('Results may be incomplete')
+      expect(stderr).toContain('20000')
+      // Should still emit matching files to stdout
+      expect(stdout).toContain('file0.ts')
+
+      // JSON mode should include truncated flag
+      const jsonOutput = capture(() => { runFind({ pattern: 'match', json: true }) })
+      const parsed = JSON.parse(jsonOutput.stdout)
+      expect(parsed).toHaveProperty('truncated', true)
+      expect(parsed).toHaveProperty('files')
+      expect(Array.isArray(parsed.files)).toBe(true)
     })
   })
 

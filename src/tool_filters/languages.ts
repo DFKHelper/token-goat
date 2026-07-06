@@ -1279,26 +1279,74 @@ const PWSH_INSTALL_MODULE_RE = /^(?:Install-Module:|PackageManagement\\|Installi
 const PWSH_PROGRESS_RECORD_RE =
   /^(?:Processing record\s+\d+\s+of\s+\d+|PROGRESS:\s+\d+%)/i
 
-export const powerShellFilter = makeLanguageFilter({
-  name: 'powershell',
-  binaries: ['pwsh', 'powershell', 'powershell.exe'],
-  errorPassthrough: false,
-  countedRules: [
-    {
-      res: [PWSH_VERBOSE_RE, PWSH_DEBUG_RE, PWSH_INSTALL_MODULE_RE, PWSH_PROGRESS_RECORD_RE],
-      position: 'note',
-      note: (n) => `collapsed ${n} verbose/debug/install-progress line(s)`,
-    },
-  ] as AiCliCountedRule[],
-  dedupeRules: [
-    {
-      re: PWSH_WARNING_RE,
-      maxPerKey: 1,
-      keyLen: 40,
-      note: (n) => `deduplicated ${n} repeated WARNING(s)`,
-    },
-  ],
-})
+// A CommandNotFoundException ErrorRecord is PowerShell's well-documented,
+// version-stable error-record shape for "command not found" -- most commonly
+// hit here when Git-Bash pre-expands an unescaped `$_` (bash's own "last arg
+// of previous command") before pwsh/powershell ever sees the -Command string,
+// mangling it into a bogus binary name. The ErrorRecord itself is what is
+// noisy (a multi-KB stack trace for a one-line diagnosis), so detection keys
+// on the two stable markers -- `+ CategoryInfo ... ObjectNotFound:` and
+// `+ FullyQualifiedErrorId : CommandNotFoundException` -- rather than the $_
+// cause specifically; the shape is noise regardless of what produced it.
+const PS_CNF_ERROR_RE =
+  /^(\S.*?) : (?:The term '.*?' is|.*? is) not recognized as the name of a cmdlet, function, script file, or operable program\.\r?\n(?:.*\r?\n)*?[ \t]*\+ CategoryInfo\s*:\s*ObjectNotFound:\s*\(([^:]*):String\)\s*\[\],\s*CommandNotFoundException\r?\n[ \t]*\+ FullyQualifiedErrorId\s*:\s*CommandNotFoundException\r?\n?/gm
+
+export class PowerShellErrorFilter extends ToolFilter {
+  readonly name = 'powershell'
+  override readonly binaries = new Set(['pwsh', 'powershell', 'powershell.exe'])
+
+  override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+    const merged = this.combineOutput(stdout, stderr)
+    const collapsed = this._collapseCommandNotFound(merged)
+    const lines = collapsed.split('\n')
+    const kept: string[] = []
+    let noiseCount = 0
+    const warnSeen = new Map<string, number>()
+    let warnElided = 0
+
+    for (const line of lines) {
+      if (
+        PWSH_VERBOSE_RE.test(line) ||
+        PWSH_DEBUG_RE.test(line) ||
+        PWSH_INSTALL_MODULE_RE.test(line) ||
+        PWSH_PROGRESS_RECORD_RE.test(line)
+      ) {
+        noiseCount++
+        continue
+      }
+      if (PWSH_WARNING_RE.test(line)) {
+        const key = line.slice(0, 40)
+        const n = (warnSeen.get(key) ?? 0) + 1
+        warnSeen.set(key, n)
+        if (n <= 1) kept.push(line)
+        else warnElided++
+        continue
+      }
+      kept.push(line)
+    }
+
+    const notes: string[] = []
+    if (noiseCount > 0) notes.push(`collapsed ${noiseCount} verbose/debug/install-progress line(s)`)
+    if (warnElided > 0) notes.push(`deduplicated ${warnElided} repeated WARNING(s)`)
+    this.emitNotes(kept, notes)
+    return this.finalize(kept)
+  }
+
+  /** Replace each matched CommandNotFoundException ErrorRecord block with one summary line. */
+  private _collapseCommandNotFound(text: string): string {
+    return text.replace(PS_CNF_ERROR_RE, (match: string, headerCmd: string, categoryCmd: string) => {
+      const cmd = (categoryCmd || headerCmd || '').trim()
+      const elidedLines = match.replace(/\r?\n$/, '').split(/\r?\n/).length
+      return (
+        `PowerShell CommandNotFoundException: '${cmd}' not found (elided ${elidedLines} lines of stack trace). ` +
+        'If invoked from Bash/Git-Bash and the command used $_, bash pre-expands it before PowerShell sees it -- ' +
+        'escape as `$_` (backtick) or single-quote the whole -Command string.'
+      )
+    })
+  }
+}
+
+export const powerShellFilter: ToolFilter = new PowerShellErrorFilter()
 
 // ===========================================================================
 // Registry

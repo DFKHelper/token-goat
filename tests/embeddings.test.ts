@@ -240,6 +240,28 @@ describe('embeddings module', () => {
       expect(chunks[1].endLine).toBe(7)
     })
 
+    it('relabels kind to "window" when a short leading gap (no prior chunk range yet) is folded forward into the first boundary', () => {
+      const contentLines = [
+        '// short header comment', // 1 - small leading gap, well under MIN_CHUNK_CHARS, before any boundary
+        'function a() {', // 2
+        '  return "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa";', // 3
+        '}', // 4
+      ]
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [{ start: 2, end: 4, kind: 'symbol' }]
+
+      const chunks = embeddings.chunkFile('leadgap.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      expect(chunks.length).toBe(1)
+      // The folded chunk now spans the leading comment line in addition to the
+      // symbol's own lines, so it must not be mislabeled 'symbol' - it should carry
+      // the generic 'window' kind, same as any other chunk that isn't exactly one
+      // boundary's content.
+      expect(chunks[0].kind).toBe('window')
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[0].endLine).toBe(4)
+    })
+
     it('keeps a gap large enough to clear MIN_CHUNK_CHARS as its own standalone window chunk', () => {
       const fillerLines = Array(20)
         .fill(0)

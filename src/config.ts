@@ -97,6 +97,10 @@ export interface ImageShrinkConfig {
   screenshot_redirect: boolean
 }
 
+export interface ScreenshotConfig {
+  chrome_path: string
+}
+
 export interface RepomapConfig {
   compact_file_threshold: number
   exclude_tests: boolean
@@ -203,6 +207,7 @@ export interface Config {
   curator: CuratorConfig
   hint_budget: HintBudgetConfig
   image_shrink: ImageShrinkConfig
+  screenshot: ScreenshotConfig
   repomap: RepomapConfig
   overflow_guard: OverflowGuardConfig
   stats: StatsConfig
@@ -292,6 +297,9 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     jpeg_quality: 75,
     max_image_pixels: 16_000_000,
     screenshot_redirect: true,
+  },
+  screenshot: {
+    chrome_path: '',
   },
   repomap: {
     compact_file_threshold: 50,
@@ -387,6 +395,7 @@ export function defaultConfig(): Config {
     curator: getDefaultConfig('curator') as CuratorConfig,
     hint_budget: getDefaultConfig('hint_budget') as HintBudgetConfig,
     image_shrink: getDefaultConfig('image_shrink') as ImageShrinkConfig,
+    screenshot: getDefaultConfig('screenshot') as ScreenshotConfig,
     repomap: getDefaultConfig('repomap') as RepomapConfig,
     overflow_guard: getDefaultConfig('overflow_guard') as OverflowGuardConfig,
     stats: getDefaultConfig('stats') as StatsConfig,
@@ -682,6 +691,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, 0, 1_000_000_000)
 
+  const sc_raw = section(raw, 'screenshot')
+  const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
+  sc_cfg.chrome_path = validatedStr(sc_raw['chrome_path'], sc_cfg.chrome_path)
+
   const cur_raw = section(raw, 'curator')
   const cur = getDefaultConfig('curator') as CuratorConfig
   cur.enabled = validatedBool(cur_raw['enabled'], cur.enabled)
@@ -832,6 +845,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
     curator: cur,
     hint_budget: hb,
     image_shrink: is_cfg,
+    screenshot: sc_cfg,
     repomap: rm,
     overflow_guard: og,
     stats: st,
@@ -972,6 +986,9 @@ export function saveConfig(config: Config): void {
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
       screenshot_redirect: is_cfg.screenshot_redirect,
+    },
+    screenshot: {
+      chrome_path: config.screenshot.chrome_path,
     },
     repomap: {
       compact_file_threshold: config.repomap.compact_file_threshold,

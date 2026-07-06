@@ -150,6 +150,12 @@ describe('cmdConfig set', () => {
     expect(cfg.compact_assist.enabled).toBe(false)
   })
 
+  it('throws on invalid boolean values', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.enabled', value: 'True' })).toThrow()
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.enabled', value: 'yes' })).toThrow()
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.enabled', value: 'maybe' })).toThrow()
+  })
+
   it('coerces number values correctly', () => {
     cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_tokens', value: '777' })
     invalidateConfigCache()

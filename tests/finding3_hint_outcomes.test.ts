@@ -12,10 +12,13 @@ import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
 
+// Unrecognized extension (deliberately not .txt) -- these tests exercise the generic
+// size-based soft-hint/deny gate specifically, not one of the per-type handlers
+// dispatchFileTypeHandler() short-circuits .txt/.csv/.html/etc to.
 function makeTmpFile(content = 'data', sizeBytes?: number): string {
   const p = path.join(
     os.tmpdir(),
-    `tg-find3-${process.pid}-${Math.random().toString(36).slice(2)}.txt`,
+    `tg-find3-${process.pid}-${Math.random().toString(36).slice(2)}.bin`,
   )
   // Create file with specified size (or use content length if no size specified)
   const actualContent = sizeBytes !== undefined ? 'x'.repeat(sizeBytes) : content

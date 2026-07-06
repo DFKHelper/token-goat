@@ -93,7 +93,9 @@ function walkParent(obj: Record<string, unknown>, parts: string[]): { parent: Re
 /** Coerce `raw` string to the same JS type as `existing`. */
 function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown {
   if (typeof existing === 'boolean') {
-    return raw === 'true' || raw === '1'
+    if (raw === 'true' || raw === '1') return true
+    if (raw === 'false' || raw === '0') return false
+    throw new Error(`expected a boolean ('true', 'false', '1', or '0'), got: ${raw}`)
   }
   if (typeof existing === 'number') {
     const n = Number(raw)

@@ -52,6 +52,8 @@
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "commander": "^12.1.0",
+    "csv-parse": "^7.0.1",
+    "html-to-text": "^10.0.0",
     "sharp": "^0.33.5",
     "smol-toml": "^1.7.0"
   },
@@ -68,16 +70,18 @@
   },
   "optionalDependencies": {
     "@xenova/transformers": "^2.17.2",
+    "pdfjs-dist": "^6.1.200",
+    "puppeteer-core": "^23.0.0",
     "sqlite-vec": "^0.1.9",
     "tree-sitter": "^0.22.4",
+    "tree-sitter-c": "^0.23.0",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-go": "^0.23.0",
+    "tree-sitter-java": "^0.23.0",
     "tree-sitter-javascript": "^0.23.1",
     "tree-sitter-python": "^0.23.6",
-    "tree-sitter-typescript": "^0.23.2",
-    "tree-sitter-go": "^0.23.0",
-    "tree-sitter-rust": "^0.23.0",
     "tree-sitter-ruby": "^0.23.0",
-    "tree-sitter-java": "^0.23.0",
-    "tree-sitter-c": "^0.23.0",
-    "tree-sitter-cpp": "^0.23.4"
+    "tree-sitter-rust": "^0.23.0",
+    "tree-sitter-typescript": "^0.23.2"
   }
 }
