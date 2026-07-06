@@ -12,18 +12,6 @@ describe('hooks_session', () => {
     vi.clearAllMocks();
   });
 
-  it('should handle session_start event with missing sessionId', () => {
-    const event: HookEvent = {
-      eventName: 'session_start',
-      toolName: undefined,
-      toolInput: {},
-      sessionId: '',
-      raw: {},
-    };
-    expect(event).toBeDefined();
-    expect(event.eventName).toBe('session_start');
-  });
-
   it('should handle user_prompt_submit event for short prompts', () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',

@@ -13,8 +13,8 @@
  * Claude Code's own `settings.json` uses (see `HookMatcherGroup`/`HookCommandEntry`
  * in `../install.ts`), just under different event keys and with tool-name
  * matchers that are genuine regexes (Gemini docs: "matchers are Regular
- * Expressions" for `BeforeTool`/`AfterTool`; lifecycle events like
- * `SessionStart`/`PreCompress` take no matcher and fire on every occurrence).
+ * Expressions" for `BeforeTool`/`AfterTool`; the lifecycle event
+ * `PreCompress` takes no matcher and fires on every occurrence).
  * No shim script is needed the way Codex's strict `additionalProperties: false`
  * schemas require one: Gemini's hook command is invoked directly
  * (`token-goat hook <event>`), exactly as Claude Code's own `hookCommand` in
@@ -59,14 +59,13 @@ import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from 
 const GEMINI_COMMAND_MARKER = 'token-goat hook'
 
 /** Gemini CLI's own hook event keys that token-goat wires (README "Gemini CLI users"). */
-const GEMINI_HOOK_EVENTS = ['BeforeTool', 'AfterTool', 'SessionStart', 'PreCompress'] as const
+const GEMINI_HOOK_EVENTS = ['BeforeTool', 'AfterTool', 'PreCompress'] as const
 type GeminiHookEvent = (typeof GEMINI_HOOK_EVENTS)[number]
 
 /** Gemini event key -> the internal event arg passed to `token-goat hook`. */
 const GEMINI_EVENT_ARG: Record<GeminiHookEvent, string> = {
   BeforeTool: 'pre_tool_use',
   AfterTool: 'post_tool_use',
-  SessionStart: 'session_start',
   PreCompress: 'pre_compact',
 }
 
@@ -207,15 +206,15 @@ function geminiNamesByInternalTool(): Map<string, string[]> {
 /**
  * Desired matcher list for one Gemini hook event.
  *
- * `SessionStart`/`PreCompress` are lifecycle events: a single no-matcher
- * group (`undefined`) that fires on every occurrence, per Gemini's own docs.
+ * `PreCompress` is a lifecycle event: a single no-matcher group
+ * (`undefined`) that fires on every occurrence, per Gemini's own docs.
  * `BeforeTool`/`AfterTool` get one regex-alternation matcher per internal tool
  * that actually has a registered handler for that (event, tool) pair (see
  * {@link GEMINI_PRE_TOOLS}/{@link GEMINI_POST_TOOLS}), e.g.
  * `^(read_file|read_many_files|list_directory)$` for Read.
  */
 function desiredMatchersFor(event: GeminiHookEvent): Array<string | undefined> {
-  if (event === 'SessionStart' || event === 'PreCompress') return [undefined]
+  if (event === 'PreCompress') return [undefined]
   const toolSet = event === 'BeforeTool' ? GEMINI_PRE_TOOLS : GEMINI_POST_TOOLS
   const matchers: string[] = []
   for (const [internalTool, names] of geminiNamesByInternalTool()) {

@@ -4,24 +4,6 @@ import type { HookOutput } from './types.js';
 import { passOutput, contextOutput } from './hooks_common.js';
 import { runGit } from './util.js';
 
-function sessionStartHandler(event: HookEvent): HookOutput {
-  try {
-    if (!event.sessionId) {
-      return passOutput();
-    }
-
-    const source = (event.raw['source'] as string) || 'unknown';
-
-    if (source === 'compact') {
-      return passOutput();
-    }
-
-    return passOutput();
-  } catch {
-    return passOutput();
-  }
-}
-
 function userPromptSubmitHandler(event: HookEvent): HookOutput {
   try {
     const rawPrompt = (event.raw['prompt'] as string) || '';
@@ -108,7 +90,6 @@ function subagentStopHandler(event: HookEvent): HookOutput {
   }
 }
 
-registerHook('session_start', sessionStartHandler);
 registerHook('user_prompt_submit', userPromptSubmitHandler);
 registerHook('subagent_stop', subagentStopHandler);
 
