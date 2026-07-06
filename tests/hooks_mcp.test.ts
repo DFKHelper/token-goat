@@ -164,4 +164,67 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
     )
     expect(pre.hookType).toBe('pass')
   })
+
+  // Bug: Anthropic's Claude-in-Chrome docs (code.claude.com/docs/en/chrome) state that
+  // an otherwise read-only call that sets createIfEmpty/clear/save_to_disk is treated
+  // as state-changing by their own permission system (v2.1.199+). Before this fix,
+  // preMcpHandler/postMcpHandler classified purely off tool name, so a repeat
+  // read_console_messages({..., clear: true}) call would be denied and silently
+  // redirected to the FIRST call's cached messages — even though the real second
+  // call would see only whatever arrived after the first clear (likely different,
+  // possibly empty). These two tests fail on the pre-fix isMcpReadOnly(toolName)
+  // (both would be denied) and pass once the toolInput flag check is added.
+  it('does not dedup a claude-in-chrome read with a truthy clear flag (state-changing)', async () => {
+    const chromeToolName = 'mcp__claude-in-chrome__read_console_messages'
+    const chromeInput = { tabId: 5, clear: true }
+    const post = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: chromeToolName,
+        tool_input: chromeInput,
+        session_id: sessionId,
+        tool_response: 'messages batch A',
+      }),
+    )
+    expect(post.hookType).toBe('pass')
+
+    // Never cached/dedup'd: an identical repeat with clear:true must be let through,
+    // not denied and redirected to the first call's now-stale cached result.
+    const pre = await runHook(
+      buildEvent('pre_tool_use', {
+        tool_name: chromeToolName,
+        tool_input: chromeInput,
+        session_id: sessionId,
+      }),
+    )
+    expect(pre.hookType).toBe('pass')
+  })
+
+  it('still dedups the same claude-in-chrome read when clear is false/absent', async () => {
+    const chromeToolName = 'mcp__claude-in-chrome__read_console_messages'
+    const chromeInput = { tabId: 5, clear: false }
+    const post = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: chromeToolName,
+        tool_input: chromeInput,
+        session_id: sessionId,
+        tool_response: 'messages batch A',
+      }),
+    )
+    expect(post.hookType).toBe('pass')
+
+    // With no state-changing flag set, this is a genuinely read-only call and the
+    // existing dedup behavior still applies: the identical repeat is denied and
+    // redirected to the cached result.
+    const pre = await runHook(
+      buildEvent('pre_tool_use', {
+        tool_name: chromeToolName,
+        tool_input: chromeInput,
+        session_id: sessionId,
+      }),
+    )
+    expect(pre.hookType).toBe('deny')
+    if (pre.hookType === 'deny') {
+      expect(pre.message).toContain('already cached')
+    }
+  })
 })

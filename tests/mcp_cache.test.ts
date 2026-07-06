@@ -35,66 +35,101 @@ afterEach(() => {
 
 describe('isMcpReadOnly', () => {
   it('returns true for read-only tools', () => {
-    expect(isMcpReadOnly('mcp__plugin_github_github__get_file_contents')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_github_github__list_issues')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_file_contents', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__list_issues', {})).toBe(true)
   })
 
   it('returns false for mutation tools', () => {
-    expect(isMcpReadOnly('mcp__plugin_github_github__create_issue')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_github_github__update_issue')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_github_github__delete_file')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_github_github__create_issue', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_github_github__update_issue', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_github_github__delete_file', {})).toBe(false)
   })
 
   it('returns false for non-mcp tools', () => {
-    expect(isMcpReadOnly('some_tool')).toBe(false)
-    expect(isMcpReadOnly('bash')).toBe(false)
+    expect(isMcpReadOnly('some_tool', {})).toBe(false)
+    expect(isMcpReadOnly('bash', {})).toBe(false)
   })
 
   it('handles case-insensitive mutation verbs', () => {
-    expect(isMcpReadOnly('mcp__test__Create')).toBe(false)
-    expect(isMcpReadOnly('mcp__test__UPDATE')).toBe(false)
+    expect(isMcpReadOnly('mcp__test__Create', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__UPDATE', {})).toBe(false)
   })
 
   it('returns false for browser-automation / state-mutating verbs', () => {
     // These chrome-devtools-mcp tool names mutate page/browser state (or their
     // result is expected to change between calls), so they must never be
     // classified as read-only/cacheable.
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__click')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill_form')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__press_key')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__type_text')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__navigate_page')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__drag')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__hover')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__handle_dialog')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__wait_for')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__emulate')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__upload_file')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__close_page')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__new_page')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__select_page')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__resize_page')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__click', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill_form', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__press_key', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__type_text', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__navigate_page', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__drag', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__hover', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__handle_dialog', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__wait_for', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__emulate', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__upload_file', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__close_page', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__new_page', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__select_page', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__resize_page', {})).toBe(false)
   })
 
   it('returns true for genuinely read-only chrome-devtools tools, borderline ones excluded', () => {
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_pages')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_console_message')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_console_messages')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_network_request')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_pages', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_console_message', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_console_messages', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_network_request', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests', {})).toBe(true)
     // Borderline (triggers a page reload/navigation): conservative default is to exclude it.
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__lighthouse_audit')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__lighthouse_audit', {})).toBe(false)
   })
 
   it('returns false for screenshot tools (not idempotent, content changes between calls)', () => {
     // Screenshots are not idempotent: the page content can change between calls,
     // so they must never be cached/dedup'd. This test ensures the pre_screenshot hook
     // can always capture a fresh screenshot within the cache TTL window.
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot')).toBe(false)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__browser_take_screenshot')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__browser_take_screenshot', {})).toBe(false)
+  })
+
+  // Bug: Anthropic's Claude-in-Chrome docs (code.claude.com/docs/en/chrome) state that
+  // an otherwise read-only call that sets createIfEmpty/clear/save_to_disk is treated
+  // as state-changing by their own permission system as of v2.1.199 - token-goat's
+  // verb-only classifier didn't know this, so it would dedup e.g. a second
+  // read_console_messages({clear: true}) call and silently re-serve the first call's
+  // messages instead of letting the (state-mutating) clear actually re-run. These
+  // tests fail on the pre-fix single-arg isMcpReadOnly(toolName) and pass once the
+  // toolInput flag check is added.
+  it('returns false for a read-verb tool when a state-changing input flag is truthy', () => {
+    expect(
+      isMcpReadOnly('mcp__claude-in-chrome__read_console_messages', { tabId: 5, clear: true }),
+    ).toBe(false)
+    expect(
+      isMcpReadOnly('mcp__claude-in-chrome__read_network_requests', { tabId: 5, clear: true }),
+    ).toBe(false)
+    expect(isMcpReadOnly('mcp__claude-in-chrome__tabs_context_mcp', { createIfEmpty: true })).toBe(
+      false,
+    )
+    // Use a non-screenshot-named tool for save_to_disk so this assertion actually
+    // exercises the input-flag check rather than the pre-existing screenshot-name regex.
+    expect(
+      isMcpReadOnly('mcp__claude-in-chrome__get_page_source', { save_to_disk: true }),
+    ).toBe(false)
+  })
+
+  it('returns true for the same read-verb tools when those flags are absent or falsy', () => {
+    expect(isMcpReadOnly('mcp__claude-in-chrome__read_console_messages', { tabId: 5 })).toBe(true)
+    expect(
+      isMcpReadOnly('mcp__claude-in-chrome__read_console_messages', { tabId: 5, clear: false }),
+    ).toBe(true)
+    expect(isMcpReadOnly('mcp__claude-in-chrome__tabs_context_mcp', { createIfEmpty: false })).toBe(
+      true,
+    )
   })
 })
 
