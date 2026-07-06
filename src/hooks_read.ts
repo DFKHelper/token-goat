@@ -279,6 +279,19 @@ function isSourceExtension(basename: string): boolean {
   return SOURCE_EXT_RE.test(basename)
 }
 
+// Extensions dispatchFileTypeHandler() (hints/file_type_handler.ts) recognizes and gives
+// type-specific advice for (real headers/sample rows for CSV, always-block for PDF, etc).
+// BINARY_FILE_TYPE_EXTS/TEXT_FILE_TYPE_EXTS mirror that dispatcher's own binary/text split
+// (binary ones are never read as utf8 text before dispatch) -- single source of truth for
+// both the early large-file-gate exemption below and the universal handler further down.
+const BINARY_FILE_TYPE_EXTS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'])
+const TEXT_FILE_TYPE_EXTS = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv'])
+const DISPATCHED_FILE_TYPE_EXTS = new Set([...BINARY_FILE_TYPE_EXTS, ...TEXT_FILE_TYPE_EXTS])
+
+function isDispatchedFileType(basename: string): boolean {
+  return DISPATCHED_FILE_TYPE_EXTS.has(path.extname(basename).slice(1).toLowerCase())
+}
+
 /** Generate extension-aware surgical-read hint for a file. */
 function surgicalHint(filePath: string, basename: string): string {
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
@@ -834,7 +847,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   // estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema),
   // which would otherwise gate it on the full file size and hard-deny it with an "edit it
   // anyway" message that makes no sense for a search operation.
-  if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
+  if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized) && !isDispatchedFileType(normalized)) {
     // A genuine, bounded offset/limit request gates on the requested slice's size instead
     // of the whole file's — a small window into a huge file should be let through. Whole-file
     // requests (no offset/limit, or an unboundable window) keep gating on the real file size.
@@ -874,10 +887,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)
   const fileTypeExt = path.extname(normalized).slice(1).toLowerCase()
-  const binaryExts = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'])
-  const textTypeExts = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv'])
   const fileStatSize = size ?? statSize(normalized) ?? 0
-  const isKnownFileType = binaryExts.has(fileTypeExt) || textTypeExts.has(fileTypeExt)
+  const isKnownFileType = DISPATCHED_FILE_TYPE_EXTS.has(fileTypeExt)
   // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers
   // (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block
   // purely on the whole file's size/type, with no notion of a search pattern — without this,
@@ -885,7 +896,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   // tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
     let ftContent = ''
-    if (!binaryExts.has(fileTypeExt)) {
+    if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt)) {
       try {
         ftContent = fs.readFileSync(normalized, 'utf8')
       } catch {

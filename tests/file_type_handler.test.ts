@@ -26,13 +26,13 @@ describe('handlePdf', () => {
     const result = handlePdf('/path/to/doc.pdf', 1024)
     expect(result.message).not.toContain('pages')
     expect(result.message).not.toContain('Read({')
-    expect(result.message).toContain('pdftotext')
+    expect(result.message).toContain('pdf-extract')
     expect(result.message).toContain('/path/to/doc.pdf')
   })
 
-  it('message contains pdfinfo command', () => {
+  it('message points at pdf-extract for a large PDF too', () => {
     const result = handlePdf('/path/to/doc.pdf', 500000)
-    expect(result.message).toContain('pdfinfo')
+    expect(result.message).toContain('pdf-extract')
   })
 })
 
@@ -218,7 +218,7 @@ describe('handleCsv', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('name,age,city')
     expect(result.message).toContain('rows')
-    expect(result.message).toContain('DuckDB')
+    expect(result.message).toContain('csv-query')
   })
 
   it('blocks large TSV', () => {
@@ -284,7 +284,7 @@ describe('dispatchFileTypeHandler', () => {
   it('dispatches PDF — always blocks', () => {
     const result = dispatchFileTypeHandler('/path/to/doc.pdf', '')
     expect(result?.shouldBlock).toBe(true)
-    expect(result?.message).toContain('pdftotext')
+    expect(result?.message).toContain('pdf-extract')
   })
 
   it('uses contentLengthHint for PDF size display', () => {

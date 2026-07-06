@@ -242,6 +242,45 @@ describe('processDirtyBatch', () => {
     expect(log).toContain(lockedPath)
     expect(log).toContain('transient read failure')
   })
+
+  // Regression (worker requeueDirtyPath had no retry cap/backoff): a permanently stuck path
+  // (e.g. a lock that never clears) used to be requeued into dirty.txt forever, every single
+  // drain cycle, with no bound and no visibility into the fact that it was stuck. Drive the
+  // REAL drain path (drainOnce -- the same call runWorkerLoop makes every ~2s) across many
+  // cycles with a path that fails every single time via a REAL, unmocked read error (a
+  // directory sitting at the dirty-queued path, same technique as the test above), and confirm
+  // it is eventually dropped instead of requeued forever, exactly one throttled warning is
+  // logged for it (not one per cycle), and a healthy path queued in the same initial batch is
+  // indexed once and never starved or reprocessed just because it shares a batch with the
+  // stuck path.
+  it('caps transient-read-failure retries for a permanently stuck path without starving healthy paths', () => {
+    const lockedPath = path.join(DIR, 'stuck.ts')
+    fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR every time
+    const healthy = path.join(DIR, 'healthy.ts')
+    fs.writeFileSync(healthy, 'export const x = 1\n')
+    writeQueue(DIR, [lockedPath, healthy])
+
+    const indexed: string[] = []
+    // Drive many real drain cycles -- comfortably more than any reasonable retry cap.
+    for (let cycle = 0; cycle < 10; cycle++) {
+      drainOnce(DIR, (p) => indexed.push(p))
+    }
+
+    // The healthy path was indexed on the very first cycle and never reprocessed again -- it
+    // is not starved or repeatedly reprocessed just because the stuck path shares its batch.
+    expect(indexed).toEqual([healthy])
+
+    // The stuck path eventually stops being requeued -- the queue empties out instead of
+    // holding it forever.
+    expect(getDirtyPathsFor(DIR)).toEqual([])
+
+    // Exactly one throttled "giving up" warning was logged for it, not one per cycle.
+    const log = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
+    const giveUpLines = log
+      .split('\n')
+      .filter((l) => l.includes('giving up on') && l.includes(lockedPath))
+    expect(giveUpLines.length).toBe(1)
+  })
 })
 
 describe('drainOnce', () => {

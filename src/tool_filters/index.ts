@@ -99,7 +99,7 @@ export {
   haskellFilter,
   elmFilter,
   juliaFilter,
-  powerShellFilter,
+  PowerShellErrorFilter, powerShellFilter,
 } from './languages.js'
 export type { LangDedupeRule, LanguageFilterConfig } from './families.js'
 export {

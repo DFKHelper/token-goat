@@ -10,15 +10,21 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
-import { querySymbols, queryRefs } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { globalDbPath } from './constants.js'
-import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
+import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
+import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { trimToBudget } from './overflow_guard.js'
+import { resolveCallers } from './graph_commands.js'
+import type { CallerEntry } from './graph_commands.js'
+import { queryCsv, formatCsvTable } from './csv_query.js'
+import { extractPdfText } from './pdf_extract.js'
+import { takeScreenshot } from './screenshot.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -210,22 +216,12 @@ function runLineRange(range: { file: string; start: number; end: number }, opts:
   return 0
 }
 
-/** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
-export function runRead(opts: ReadOptions): number {
-  const range = parseLineRange(opts.spec)
-  if (range !== null) return runLineRange(range, opts)
-
-  const { file, symbol } = parseReadSpec(opts.spec)
-
-  if (symbol === undefined || symbol === '') {
-    const text = readFileText(file)
-    if (text === null) {
-      emitErr(`Could not read: ${file}`)
-      return 1
-    }
-    emitGuarded(text, 'symbol')
-    return 0
-  }
+// Resolves a `file::symbol` spec to its indexed SymbolEntry, including dotted-path ("Class.method")
+// disambiguation and the partial-path fallback for an index keyed by a longer relative path.
+// Shared by `runRead` and `runBrief` -- do not reimplement this resolution elsewhere.
+function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | null {
+  const { file, symbol } = parseReadSpec(spec)
+  if (symbol === undefined || symbol === '') return null
 
   // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol we want is the leaf — the LAST segment — since methods are indexed by their bare name. Using split('.')[1] would pick the middle segment of a 3+ part path and resolve to the wrong symbol (e.g. the inner class instead of its method).
   const dotParts = symbol.split('.')
@@ -237,7 +233,7 @@ export function runRead(opts: ReadOptions): number {
   // When a method name is given (e.g. "Session.refresh"), query for the method name directly. Querying for symBase (the class name) and then searching for methodName among those results always fails because all returned symbols have name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
   const resolved = resolveIndexPath(file)
-  if (opts.forceRefresh === true) {
+  if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
   }
   let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
@@ -273,10 +269,31 @@ export function runRead(opts: ReadOptions): number {
     if (scoped.length > 0) candidates = scoped
   }
 
-  const match = candidates[0]
+  return candidates[0] ?? null
+}
 
-  if (match === undefined) {
+/** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
+export function runRead(opts: ReadOptions): number {
+  const range = parseLineRange(opts.spec)
+  if (range !== null) return runLineRange(range, opts)
+
+  const { file, symbol } = parseReadSpec(opts.spec)
+
+  if (symbol === undefined || symbol === '') {
+    const text = readFileText(file)
+    if (text === null) {
+      emitErr(`Could not read: ${file}`)
+      return 1
+    }
+    emitGuarded(text, 'symbol')
+    return 0
+  }
+
+  const match = resolveSymbolSpec(opts.spec, opts.forceRefresh)
+
+  if (match === null) {
     emitErr(`Symbol '${symbol}' not found in '${file}'`)
+    const resolved = resolveIndexPath(file)
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) emitErr(didYouMean(closes))
     return 1
@@ -452,6 +469,7 @@ export interface SkeletonOptions {
   json?: boolean
   minLines?: number
   forceRefresh?: boolean
+  stats?: boolean
 }
 
 /** Handle ``token-goat skeleton file``. */
@@ -472,6 +490,8 @@ export function runSkeleton(opts: SkeletonOptions): number {
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
+  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+
   if (opts.json === true) {
     emit(
       JSON.stringify(
@@ -480,6 +500,9 @@ export function runSkeleton(opts: SkeletonOptions): number {
           kind: s.kind,
           lineStart: s.lineStart,
           lineEnd: s.lineEnd,
+          ...(refCounts !== undefined
+            ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: s.docstring.trim().length > 0 }
+            : {}),
         })),
         null,
         2,
@@ -492,7 +515,11 @@ export function runSkeleton(opts: SkeletonOptions): number {
   emit(`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`)
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
-    emit(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}`)
+    const statsStr =
+      refCounts !== undefined
+        ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
+        : ''
+    emit(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
   return 0
 }
@@ -504,6 +531,7 @@ export interface OutlineOptions {
   json?: boolean
   minLines?: number
   forceRefresh?: boolean
+  stats?: boolean
 }
 
 /** Handle ``token-goat outline file``. */
@@ -524,8 +552,22 @@ export function runOutline(opts: OutlineOptions): number {
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
+  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+
   if (opts.json === true) {
-    emit(JSON.stringify(filtered, null, 2))
+    emit(
+      JSON.stringify(
+        refCounts !== undefined
+          ? filtered.map((s) => ({
+              ...s,
+              refCount: refCounts.get(s.name) ?? 0,
+              hasDoc: s.docstring.trim().length > 0,
+            }))
+          : filtered,
+        null,
+        2,
+      ),
+    )
     return 0
   }
 
@@ -535,8 +577,171 @@ export function runOutline(opts: OutlineOptions): number {
     const kindStr = sym.kind.padEnd(14)
     const bodyLen = sym.lineEnd - sym.lineStart + 1
     const docFirst = sym.docstring ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
-    emit(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}`)
+    const statsStr =
+      refCounts !== undefined
+        ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
+        : ''
+    emit(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
+  return 0
+}
+
+// ---- csv / pdf / screenshot --------------------------------------------------
+
+interface CsvQueryCliOptions {
+  file: string
+  columns?: string
+  where?: string
+  head?: string
+  json?: boolean
+}
+
+export function runCsvQuery(opts: CsvQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  const columns = opts.columns
+    ? opts.columns
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean)
+    : undefined
+
+  let whereColumn: string | undefined
+  let whereValue: string | undefined
+  if (opts.where !== undefined) {
+    const eq = opts.where.indexOf('=')
+    if (eq === -1) {
+      emitErr(`invalid --where spec: ${opts.where} (expected col=value)`)
+      return 1
+    }
+    whereColumn = opts.where.slice(0, eq).trim()
+    whereValue = opts.where.slice(eq + 1)
+  }
+
+  const head = opts.head !== undefined ? parseInt(opts.head, 10) : undefined
+
+  try {
+    const result = queryCsv(text, {
+      ...(columns !== undefined ? { columns } : {}),
+      ...(whereColumn !== undefined ? { whereColumn, whereValue } : {}),
+      ...(head !== undefined ? { head } : {}),
+    })
+    if (opts.json === true) {
+      emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
+    } else {
+      emit(formatCsvTable(result))
+    }
+    return 0
+  } catch (e) {
+    emitErr(e instanceof Error ? e.message : String(e))
+    return 1
+  }
+}
+
+/** Thin async wrapper: reads the PDF off disk and extracts its text. Kept
+ * separate from the synchronous run*(opts): number handlers above because
+ * pdfjs-dist's parser is async; the caller (cli.ts's cmdPdfExtract) drives
+ * it through guard() (which supports async actions) rather than runExit
+ * (sync-only). Throws on error, matching this file's extractPdfText
+ * contract, rather than returning an exit code. */
+export async function runPdfExtractText(file: string, pagesSpec?: string): Promise<string> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  const result = await extractPdfText(new Uint8Array(data), pagesSpec)
+  return result.text
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above): drives a real
+ * headless browser, so it needs guard()'s async support rather than runExit. */
+export async function runScreenshot(
+  url: string,
+  destPath: string,
+  opts: { executablePath?: string; width?: string; height?: string; fullPage?: boolean },
+): Promise<string> {
+  const screenshotOpts: Parameters<typeof takeScreenshot>[2] = {}
+  if (opts.executablePath !== undefined) screenshotOpts.executablePath = opts.executablePath
+  if (opts.width !== undefined) screenshotOpts.width = parseInt(opts.width, 10)
+  if (opts.height !== undefined) screenshotOpts.height = parseInt(opts.height, 10)
+  if (opts.fullPage !== undefined) screenshotOpts.fullPage = opts.fullPage
+  const result = await takeScreenshot(url, destPath, screenshotOpts)
+  return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
+}
+
+interface BriefOptions {
+  spec: string
+  limit?: number
+  json?: boolean
+}
+
+interface BriefResult {
+  symbol: SymbolEntry
+  callers: CallerEntry[]
+  totalCallers: number
+  truncated: boolean
+  section: SectionResult | null
+}
+
+/** Handle ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved
+ * callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic),
+ * and its containing doc section (if the file has heading structure) into one response --
+ * cutting the common "understand this function" pattern from 2-3 round-trips to 1. */
+export function runBrief(opts: BriefOptions): number {
+  const match = resolveSymbolSpec(opts.spec)
+  if (match === null) {
+    emitErr(`Symbol not found: ${opts.spec}`)
+    return 1
+  }
+
+  // Query with resolveCallers's own (much larger) default limit so we learn the true
+  // caller count, then apply the display limit ourselves — otherwise the DB query and
+  // the display slice are capped at the same value and the "more elided" message can
+  // never fire even when far more callers exist than are shown.
+  const callers = resolveCallers(match.name)
+  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd)
+  const limit = opts.limit ?? 20
+  const shown = callers.slice(0, limit)
+  const truncated = callers.length > shown.length
+
+  if (opts.json === true) {
+    const result: BriefResult = {
+      symbol: match,
+      callers: shown,
+      totalCallers: callers.length,
+      truncated,
+      section,
+    }
+    emit(JSON.stringify(result, null, 2))
+    return 0
+  }
+
+  const bodyLen = match.lineEnd - match.lineStart + 1
+  const lines: string[] = [
+    `# ${match.name}  ${match.kind}  ${match.filePath}:${match.lineStart}-${match.lineEnd}`,
+    `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
+    match.body,
+    '',
+  ]
+
+  lines.push(`Callers (${callers.length}):`)
+  for (const c of shown) {
+    lines.push(`  ${c.caller}\t${c.file}:${c.line}`)
+  }
+  if (truncated) {
+    lines.push(`  ...(${callers.length - shown.length} more elided)`)
+  }
+
+  if (section !== null) {
+    lines.push('')
+    lines.push(`Section: ${section.heading} (lines ${section.lineStart}-${section.lineEnd})`)
+  }
+
+  emitGuarded(trimBlankLines(lines).join('\n'), 'symbol')
   return 0
 }
 
@@ -553,10 +758,12 @@ export function runFind(opts: FindOptions): number {
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
-  const symbols = querySymbols({ limit: FIND_SCAN_LIMIT }).filter((s) =>
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT })
+  const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
   const files = [...new Set(symbols.map((s) => s.filePath))].slice(0, opts.limit ?? 50)
+  const truncated = rawSymbols.length === FIND_SCAN_LIMIT
 
   if (files.length === 0) {
     emitErr(`No indexed files match '${opts.pattern}'`)
@@ -564,13 +771,18 @@ export function runFind(opts: FindOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(files, null, 2))
+    emit(JSON.stringify({ files, truncated }, null, 2))
     return 0
   }
 
   for (const f of files) {
     emit(f)
   }
+
+  if (truncated) {
+    emitErr(`Results may be incomplete; index scan hit limit of ${FIND_SCAN_LIMIT} symbols`)
+  }
+
   return 0
 }
 
@@ -986,9 +1198,12 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    // Check for section header like [tool.ruff] or [tool]
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      currentSection = trimmed.slice(1, -1)
+    // Check for section header like [tool.ruff] or [tool]. Strip a trailing inline
+    // comment (# or ;) before the endsWith(']') check so a header like
+    // "[tool.ruff] # comment" is still recognized as a section header.
+    const headerLine = (trimmed.split(/[#;]/)[0] ?? '').trim()
+    if (headerLine.startsWith('[') && headerLine.endsWith(']')) {
+      currentSection = headerLine.slice(1, -1)
       continue
     }
 

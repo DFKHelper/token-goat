@@ -70,6 +70,24 @@ const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
  */
 const unclearedDrainingSnapshots = new Map<string, string>()
 
+/**
+ * Cap on consecutive transient-read-failure requeues for the same path (see
+ * {@link requeueDirtyPath}). Without this, a file with a permanently stuck read lock (or
+ * any other per-file failure that never clears) gets requeued forever, every ~2s drain
+ * cycle, with no cap and no throttled visibility into the fact that it's stuck.
+ */
+const MAX_TRANSIENT_RETRIES = 5
+
+/**
+ * Consecutive transient-read-failure count per path, keyed by the case-folded normalized
+ * absolute path (see {@link foldPath}/{@link normalizePath}) so case-variant references to
+ * the same file on a case-insensitive filesystem share one counter. Cleared as soon as the
+ * path reads successfully again (see {@link processDirtyBatch}), so a file that starts
+ * failing again later (e.g. after a fresh edit) gets a full new retry budget instead of
+ * picking up where a much earlier, unrelated failure streak left off.
+ */
+const transientRetryCounts = new Map<string, number>()
+
 /** Absolute path to the dirty queue file for `dir`. */
 function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
@@ -174,6 +192,23 @@ function logTransientReadFailure(dir: string, absPath: string): void {
 // if the requeue write itself fails, the path is lost for this cycle, but the failure is still
 // captured via logTransientReadFailure above.
 function requeueDirtyPath(dir: string, absPath: string): void {
+  const retryKey = foldPath(normalizePath(absPath))
+  const attempts = (transientRetryCounts.get(retryKey) ?? 0) + 1
+  transientRetryCounts.set(retryKey, attempts)
+  if (attempts > MAX_TRANSIENT_RETRIES) {
+    // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path
+    // doesn't get hammered every single drain cycle forever. Log exactly once -- on the
+    // cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is
+    // visible without spamming the log. A future edit to this path re-dirties it through
+    // the normal queue-append path (not this function), which gives it a fresh retry budget.
+    if (attempts === MAX_TRANSIENT_RETRIES + 1) {
+      appendWorkerErrorLog(
+        dir,
+        `${new Date().toISOString()} giving up on ${absPath} after ${MAX_TRANSIENT_RETRIES} consecutive transient read failures -- no longer retrying automatically (will retry again if the file changes)\n`,
+      )
+    }
+    return
+  }
   const queuePath = dirtyQueuePathFor(dir)
   try {
     fs.mkdirSync(path.dirname(queuePath), { recursive: true })
@@ -277,6 +312,10 @@ export function processDirtyBatch(
       requeueDirtyPath(dir, p)
       continue
     }
+    // The read succeeded -- clear any transient-retry count from a prior failure streak so a
+    // later failure on this same path (e.g. after a fresh edit) starts from a full budget
+    // instead of resuming a much earlier streak (see requeueDirtyPath / transientRetryCounts).
+    transientRetryCounts.delete(foldPath(normalizePath(p)))
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
     // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
     // other return value (including void/undefined from callers that don't bother returning

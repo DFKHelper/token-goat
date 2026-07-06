@@ -637,6 +637,76 @@ describe('powerShellFilter compress', () => {
   })
 })
 
+describe('powerShellFilter compress: CommandNotFoundException ErrorRecord collapse', () => {
+  it('collapses a $_-mangled CommandNotFoundException block into one summary line', () => {
+    const block = [
+      "gti : gti is not recognized as the name of a cmdlet, function, script file, or operable program.",
+      'Check the spelling of the name, or if a path was included, verify that the path is correct and try again.',
+      'At line:1 char:1',
+      '+ gti status',
+      '+ ~~~',
+      '    + CategoryInfo          : ObjectNotFound: (gti:String) [], CommandNotFoundException',
+      '    + FullyQualifiedErrorId : CommandNotFoundException',
+      'Done',
+    ].join('\n')
+    const out = compress(powerShellFilter, block, ['pwsh', '-Command', 'gti status'])
+    expect(out).toContain('Done')
+    expect(out).not.toContain('CategoryInfo')
+    expect(out).not.toContain('FullyQualifiedErrorId')
+    expect(out).not.toContain('At line:1 char:1')
+    const collapsedLine = out.split('\n').find((l) => l.includes('CommandNotFoundException'))
+    expect(collapsedLine).toBeDefined()
+    expect(collapsedLine).toContain("'gti' not found")
+    expect(collapsedLine).toMatch(/elided \d+ lines of stack trace/)
+    expect(collapsedLine).toContain('$_')
+    expect(collapsedLine).toContain('backtick')
+  })
+
+  it('does not fire on unrelated PowerShell output', () => {
+    const lines = ['VERBOSE: Performing operation', 'Hello, world!', 'Done'].join('\n')
+    const out = compress(powerShellFilter, lines, ['pwsh', '-Command', 'Write-Host hi'])
+    expect(out).not.toContain('CommandNotFoundException')
+    expect(out).toContain('Hello, world!')
+  })
+
+  it('does not fire on a different exception type that superficially resembles an ErrorRecord', () => {
+    const block = [
+      "Get-Item : Cannot find path 'C:\\missing.txt' because it does not exist.",
+      'At line:1 char:1',
+      '+ Get-Item C:\\missing.txt',
+      '+ ~~~~~~~~~~~~~~~~~~~~~~~~',
+      '    + CategoryInfo          : ObjectNotFound: (C:\\missing.txt:String) [], ItemNotFoundException',
+      '    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetItemCommand',
+      'Done',
+    ].join('\n')
+    const out = compress(powerShellFilter, block, ['pwsh', '-Command', 'Get-Item C:\\missing.txt'])
+    expect(out).not.toContain('PowerShell CommandNotFoundException')
+    expect(out).toContain('ItemNotFoundException')
+    expect(out).toContain('Done')
+  })
+})
+
+describe('powerShellFilter dispatch: CommandNotFoundException reachability', () => {
+  it('routes a $_-mangled CommandNotFoundException block to powerShellFilter (not shadowed by an earlier filter)', () => {
+    const argv = ['pwsh', '-Command', 'foo']
+    const filter = selectFilter(argv)
+    expect(filter).toBe(powerShellFilter)
+
+    const block = [
+      "foo : foo is not recognized as the name of a cmdlet, function, script file, or operable program.",
+      'Check the spelling of the name, or if a path was included, verify that the path is correct and try again.',
+      'At line:1 char:1',
+      '+ foo',
+      '+ ~~~',
+      '    + CategoryInfo          : ObjectNotFound: (foo:String) [], CommandNotFoundException',
+      '    + FullyQualifiedErrorId : CommandNotFoundException',
+    ].join('\n')
+    const out = filter!.compress(block, '', 1, argv)
+    expect(out).toContain('PowerShell CommandNotFoundException')
+    expect(out).toContain("'foo' not found")
+  })
+})
+
 // ===========================================================================
 // LANGUAGE_FILTERS registry
 // ===========================================================================

@@ -134,6 +134,15 @@ afterAll(() => {
   }
 })
 
+// Minimal hand-authored single-page PDF (Helvetica text object) for the pdf-extract case below.
+const MINIMAL_PDF = '%PDF-1.4\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n' +
+  '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
+  '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
+  'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
+
 /**
  * One assertion per registered command. Keys MUST equal the registered command
  * set (enforced by the coverage gate below). Read commands run against the
@@ -157,8 +166,25 @@ const cases: Record<string, () => void> = {
   // the query's words, with a control run showing the same query genuinely misses under FTS
   // alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => expectRead(['semantic', 'alphamarker'], 'alphaSym'),
-  skeleton: () => expectRead(['skeleton', 'src/mod.ts'], 'alphaSym'),
-  outline: () => expectRead(['outline', 'src/mod.ts'], 'alphaSym'),
+  skeleton: () => {
+    expectRead(['skeleton', 'src/mod.ts'], 'alphaSym')
+    const r = run(['skeleton', 'src/mod.ts', '--stats'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/\d+ refs/)
+  },
+  outline: () => {
+    expectRead(['outline', 'src/mod.ts'], 'alphaSym')
+    const r = run(['outline', 'src/mod.ts', '--stats'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/\d+ refs/)
+  },
+  brief: () => {
+    const r = run(['brief', 'src/mod.ts::alphaSym'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('alphaSym')
+    expect(r.stdout).toContain('return 1')
+    expect(r.stdout).toMatch(/Callers \(\d+\)/)
+  },
   refs: () => {
     const r = run(['refs', 'caller.ts::refHelper', '--callers'])
     expect(r.status, r.stderr).toBe(0)
@@ -187,6 +213,32 @@ const cases: Record<string, () => void> = {
     expect(rs.stdout).not.toContain('betaSym')
   },
   'config-get': () => expectRead(['config-get', 'pkg.json', 'version'], '3.2.1'),
+  'csv-query': () => {
+    const dir = mkIsolated('tg-matrix-csv-')
+    const csvPath = path.join(dir, 'people.csv')
+    fs.writeFileSync(csvPath, 'id,name,status\n1,Alice,active\n2,Bob,inactive\n')
+    const r = run(['csv-query', csvPath, '--where', 'status=active'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).not.toContain('Bob')
+  },
+  'pdf-extract': () => {
+    const dir = mkIsolated('tg-matrix-pdf-')
+    const pdfPath = path.join(dir, 'doc.pdf')
+    fs.writeFileSync(pdfPath, Buffer.from(MINIMAL_PDF, 'latin1'))
+    const r = run(['pdf-extract', pdfPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Hello PDF')
+  },
+  screenshot: () => {
+    // Real behavior needs a real browser (present on dev machines, not guaranteed in CI) and
+    // network access -- same constraint 'fetch-image' below hits, same fix: verify dispatch
+    // via --help instead of a real invocation.
+    const r = run(['screenshot', '--help'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/url|chrome|chromium/i)
+  },
   map: () => {
     const r = run(['map'])
     expect(r.status, r.stderr).toBe(0)

@@ -463,6 +463,7 @@ export function chunkFile(
 
   for (const b of flattened) {
     let boundaryStart = b.start
+    let boundaryKind = b.kind
     const gapStart = cursor
     const gapEnd = b.start - 1
     if (gapEnd >= gapStart) {
@@ -475,12 +476,17 @@ export function chunkFile(
           prev.end = gapEnd
         } else {
           boundaryStart = gapStart
+          // The folded-forward range now spans non-boundary content in addition to
+          // this boundary's own lines, so it's no longer purely `b.kind` (e.g.
+          // 'symbol') - relabel it 'window', the same generic kind already used
+          // above for gap content that isn't tied to a specific boundary.
+          boundaryKind = 'window'
         }
       } else {
         ranges.push({ start: gapStart, end: gapEnd, kind: 'window' })
       }
     }
-    ranges.push({ start: boundaryStart, end: b.end, kind: b.kind })
+    ranges.push({ start: boundaryStart, end: b.end, kind: boundaryKind })
     cursor = b.end + 1
   }
 

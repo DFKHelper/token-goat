@@ -4,7 +4,14 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { extractSection, listSections, listAllSections, normalizeHeading, readSection } from '../src/section_reader.js'
+import {
+  extractSection,
+  listSections,
+  listAllSections,
+  normalizeHeading,
+  readSection,
+  findContainingSection,
+} from '../src/section_reader.js'
 
 const tmpDirs: string[] = []
 
@@ -418,5 +425,38 @@ describe('BOM stripping regression', () => {
     const file = tmpFile('nested-bom.md', md)
     const sections = listAllSections(file)
     expect(sections).toEqual(['First', 'Second', 'Third'])
+  })
+})
+
+describe('findContainingSection', () => {
+  it('finds the enclosing markdown heading for a symbol inside it', () => {
+    const md = ['# Title', '', '## Install', 'line one', 'line two', 'line three', '', '## Usage', 'usage line'].join(
+      '\n',
+    )
+    const file = tmpFile('containing.md', md)
+    // "line two" is line 5 (1-based) -- inside the "## Install" section (lines 4-6).
+    const result = findContainingSection(file, 5, 5)
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Install')
+  })
+
+  it('returns the innermost heading when sections nest', () => {
+    const md = ['# Outer', 'outer body', '', '## Inner', 'inner body line'].join('\n')
+    const file = tmpFile('nested-containing.md', md)
+    // "inner body line" is line 5, inside both "# Outer" (1-5) and "## Inner" (4-5) -- the
+    // innermost (deepest/last) enclosing heading, "Inner", must win.
+    const result = findContainingSection(file, 5, 5)
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Inner')
+  })
+
+  it('returns null when the file has no heading structure enclosing the symbol', () => {
+    const text = ['line one', 'line two', 'line three'].join('\n')
+    const file = tmpFile('plain.txt', text)
+    expect(findContainingSection(file, 2, 2)).toBeNull()
+  })
+
+  it('returns null for an unreadable file', () => {
+    expect(findContainingSection('/no/such/path/nope.md', 1, 1)).toBeNull()
   })
 })

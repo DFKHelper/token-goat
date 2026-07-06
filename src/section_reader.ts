@@ -381,7 +381,7 @@ export function extractSection(text: string, headingSpec: string): SectionResult
  * used (e.g. a `.py` file uses the Python def/class finder rather than the
  * markdown sniffer).
  */
-export function readSection(filePath: string, headingSpec: string): SectionResult | null {
+function readTextForSections(filePath: string): string | null {
   let text: string
   try {
     text = readFileSync(filePath, 'utf-8')
@@ -393,6 +393,12 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   if (text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1)
   }
+  return text
+}
+
+export function readSection(filePath: string, headingSpec: string): SectionResult | null {
+  const text = readTextForSections(filePath)
+  if (text === null) return null
 
   const language = detectLanguage(filePath)
   const { headers, kind } = findHeaders(text, language)
@@ -404,6 +410,45 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   const resolved = resolveHeaderPos(headers, base, ordinal)
   if (resolved === null) return null
   return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
+}
+
+// Finds the tightest (innermost) heading section whose line range contains a symbol's
+// [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break
+// approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null
+// when the file has no heading structure enclosing the symbol, which is the common case for
+// source files without markdown-style doc comments.
+export function findContainingSection(
+  filePath: string,
+  lineStart: number,
+  lineEnd: number,
+): SectionResult | null {
+  const text = readTextForSections(filePath)
+  if (text === null) return null
+
+  const language = detectLanguage(filePath)
+  const { headers, kind } = findHeaders(text, language)
+  if (headers.length === 0) return null
+
+  const lines = text.split('\n')
+
+  let bestPos = -1
+  let bestHeaderLine = -1
+  for (let i = 0; i < headers.length; i++) {
+    const header = headers[i]
+    if (header === undefined) continue
+    const endIndex =
+      kind === 'table' ? tableSectionEndIndex(headers, i, lines.length) : sectionEndIndex(headers, i, lines.length)
+    const sectionLineStart = header.index + 1
+    if (sectionLineStart <= lineStart && lineEnd <= endIndex) {
+      if (header.index > bestHeaderLine) {
+        bestHeaderLine = header.index
+        bestPos = i
+      }
+    }
+  }
+
+  if (bestPos === -1) return null
+  return buildSectionResult(headers, kind, lines, bestPos, null)
 }
 
 /**

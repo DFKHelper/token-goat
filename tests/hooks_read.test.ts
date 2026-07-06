@@ -17,10 +17,13 @@ import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
 
+// Unrecognized extension (deliberately not .txt) so callers testing the generic
+// size-based gate exercise that path specifically, not one of the per-type handlers
+// dispatchFileTypeHandler() now short-circuits .txt/.csv/.html/etc to.
 function makeTmpFile(content = 'data'): string {
   const p = path.join(
     os.tmpdir(),
-    `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.txt`,
+    `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.bin`,
   )
   fs.writeFileSync(p, content)
   tmpFiles.push(p)
@@ -61,12 +64,7 @@ function readEventWithRange(filePath: string, offset?: number, limit?: number): 
 // content (as opposed to a single padded-out line), so line-based offset/limit slicing
 // actually has lines to work with.
 function makeTmpMultilineFile(totalBytes: number): string {
-  const lineTemplate = (i: number) => `line ${i.toString().padStart(6, '0')}: some sample content here\n`
-  const perLine = lineTemplate(0).length
-  const lineCount = Math.ceil(totalBytes / perLine)
-  let content = ''
-  for (let i = 0; i < lineCount; i++) content += lineTemplate(i)
-  return makeTmpFile(content)
+  return makeTmpMultilineFileWithExt(totalBytes, 'bin')
 }
 
 // Same shape as makeTmpMultilineFile but with a configurable extension, so offset/limit
@@ -311,7 +309,7 @@ describe('preReadHandler', () => {
   it('allows a mid-size (20-100KB) .txt read when offset/limit narrows it to a small slice — exercises the universal file-type-handler branch (handleTxt), not just the top-level large-file gate', () => {
     // 50KB: above FILE_TYPE_THRESHOLDS.txt (20KB) but below LARGE_FILE_BYTES (100KB), so this
     // is gated by the per-type handler branch, not the earlier whole-file size branch.
-    const p = makeTmpMultilineFile(50 * 1024)
+    const p = makeTmpMultilineFileWithExt(50 * 1024, 'txt')
 
     const whole = preReadHandler(readEvent(p))
     expect(whole.hookType).toBe('deny')
@@ -371,6 +369,26 @@ describe('preReadHandler', () => {
     expect(retry.hookType).toBe('deny')
     if (retry.hookType === 'deny') {
       expect(retry.message).not.toContain('already read this session')
+    }
+  })
+
+  it('routes a CSV bigger than the generic large-file threshold (>100KB) to handleCsv, not the size-blind generic deny (regression: dispatch-order bug -- the generic gate fired first and pre-empted the CSV-specific advice)', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.csv`)
+    const rows = ['id,name,status']
+    let i = 0
+    while (rows.join(`\n`).length < 150 * 1024) {
+      rows.push(`${i},name-${i},active`)
+      i++
+    }
+    fs.writeFileSync(p, rows.join(`\n`))
+    tmpFiles.push(p)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('csv-query')
+      expect(result.message).toContain('Columns:')
+      expect(result.message).not.toContain('Consider token-goat skeleton or token-goat section')
     }
   })
 

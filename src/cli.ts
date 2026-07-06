@@ -59,6 +59,7 @@ import * as bashRunner from './bash_runner.js'
 import {
   runSymbol,
   runRead,
+  runBrief,
   runSection,
   runListSections,
   runRefs,
@@ -70,6 +71,9 @@ import {
   runImports,
   runFind,
   runGrep,
+  runCsvQuery,
+  runPdfExtractText,
+  runScreenshot,
   extractTranscriptText,
   extractSection,
   findSpecSeparator,
@@ -676,6 +680,29 @@ function cmdWebOutput(
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
   _applyFiltersAndPrint(content, opts)
+}
+
+async function cmdPdfExtract(
+  file: string,
+  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+) {
+  const text = await runPdfExtractText(file, opts.pages)
+  _applyFiltersAndPrint(text, opts)
+}
+
+function cmdCsvQuery(
+  file: string,
+  opts: { columns?: string; where?: string; head?: string; json?: boolean },
+) {
+  process.exitCode = runCsvQuery({ file, ...opts })
+}
+
+async function cmdScreenshot(
+  url: string,
+  destPath: string,
+  opts: { executablePath?: string; width?: string; height?: string; fullPage?: boolean },
+) {
+  out(await runScreenshot(url, destPath, opts))
 }
 
 /**
@@ -1566,6 +1593,21 @@ export function buildProgram(): Command {
     )
 
   program
+    .command('brief <spec>')
+    .description('symbol body + callers + containing doc section in one call (spec: file::symbol)')
+    .option('-j, --json', 'output as JSON')
+    .option('--limit <n>', 'max callers to show (default: 20)')
+    .action((spec: string, opts: { json?: boolean; limit?: string }) =>
+      runExit(() =>
+        runBrief({
+          spec,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+        }),
+      ),
+    )
+
+  program
     .command('section <spec>')
     .description('read one section from a file (spec: file::heading), or list all sections with --list')
     .option('-j, --json', 'output as JSON')
@@ -1590,15 +1632,18 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
-    .action((file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean }) =>
-      runExit(() =>
-        runSkeleton({
-          file,
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
-          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-        }),
-      ),
+    .option('--stats', 'add per-symbol reference count and doc-coverage flag')
+    .action(
+      (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+        runExit(() =>
+          runSkeleton({
+            file,
+            ...(opts.json === true ? { json: true } : {}),
+            ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+            ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(opts.stats === true ? { stats: true } : {}),
+          }),
+        ),
     )
 
   program
@@ -1607,15 +1652,18 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
-    .action((file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean }) =>
-      runExit(() =>
-        runOutline({
-          file,
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
-          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-        }),
-      ),
+    .option('--stats', 'add per-symbol reference count and doc-coverage flag')
+    .action(
+      (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+        runExit(() =>
+          runOutline({
+            file,
+            ...(opts.json === true ? { json: true } : {}),
+            ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+            ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(opts.stats === true ? { stats: true } : {}),
+          }),
+        ),
     )
 
   program
@@ -2248,6 +2296,35 @@ export function buildProgram(): Command {
     .command('config-get <file> <key>')
     .description('read one value from a config file (TOML/JSON/YAML/INI)')
     .action((file: string, key: string) => runExit(() => runConfigGet({ file, key })))
+
+  program
+    .command('pdf-extract <file>')
+    .description('extract plain text from a PDF (optionally --pages N or N-M) instead of a raw Read')
+    .option('--pages <spec>', 'page range to extract, e.g. 1-5 or 3 (default: all pages)')
+    .option('--head <n>', 'show only the first N lines')
+    .option('--tail <n>', 'show only the last N lines')
+    .option('--grep <pattern>', 'filter to lines matching this regex')
+    .option('--section <heading>', 'extract one markdown section by heading')
+    .option('--max-matches <n>', 'cap the number of --grep matches shown')
+    .action(guard(cmdPdfExtract))
+
+  program
+    .command('csv-query <file>')
+    .description('project columns / filter rows from a CSV instead of a raw Read')
+    .option('--columns <cols>', 'comma-separated column names to include (default: all)')
+    .option('--where <spec>', 'equality filter, e.g. status=active')
+    .option('--head <n>', 'limit to the first N matching rows')
+    .option('--json', 'emit rows as a JSON array of objects instead of CSV')
+    .action(guard(cmdCsvQuery))
+
+  program
+    .command('screenshot <url> <destPath>')
+    .description('capture a local headless-browser screenshot, shrunk the same way local image reads are')
+    .option('--executable-path <path>', 'Chrome/Chromium executable to launch (overrides config/auto-detect)')
+    .option('--width <n>', 'viewport width in pixels (default: 1280)')
+    .option('--height <n>', 'viewport height in pixels (default: 800)')
+    .option('--full-page', 'capture the full scrollable page instead of just the viewport')
+    .action(guard(cmdScreenshot))
 
   program
     .command('write-file <dest>')

@@ -44,8 +44,7 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
     shouldBlock: true,
     message: [
       `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
-      `Extract text first: pdftotext "${filePath}" "${filePath}.txt"`,
-      `Then read the extracted .txt file. For the page count: pdfinfo "${filePath}" | grep Pages`,
+      `Extract text instead: token-goat pdf-extract "${filePath}"`,
     ].join('\n'),
   }
 }
@@ -140,7 +139,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
       `Large CSV file (${formatBytes(content.length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
       `Columns: ${headers}`,
       `Sample rows:\n${sampleRows.join('\n')}`,
-      `Use Read with offset/limit to sample rows, or query with DuckDB: duckdb -c "SELECT * FROM '${filePath}' LIMIT 10"`,
+      `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
     ].join('\n'),
   }
 }

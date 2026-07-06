@@ -13,6 +13,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
+import { querySymbols } from '../src/index_reader.js'
 import {
   bfsCallChains,
   compareHopEntries,
@@ -25,6 +26,7 @@ import {
   runArch,
   runBlame,
   runCallers,
+  resolveCallers,
   runCallChain,
   runContextFor,
   runCoverageGaps,
@@ -244,6 +246,14 @@ describe('runScope integration', () => {
   })
 
   it('returns JSON array for --json flag', () => {
+    // Resolve a line guaranteed to be inside a real function body at test-run time, rather than
+    // a hardcoded line number -- this file grows over time and a fixed magic number eventually
+    // drifts outside every symbol's range (as happened here), making runScope legitimately find
+    // nothing and never print, which is a real test bug, not a runScope bug.
+    const anySymbol = querySymbols({ filePath: normalizePath(resolve('src/read_commands.ts')), limit: 1 })[0]
+    expect(anySymbol).toBeDefined()
+    const line = (anySymbol?.lineStart ?? 1) + 1
+
     let captured = ''
     const origWrite = process.stdout.write.bind(process.stdout)
     process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
@@ -251,7 +261,7 @@ describe('runScope integration', () => {
       return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
     }
     try {
-      runScope({ spec: 'src/read_commands.ts:42', json: true })
+      runScope({ spec: `src/read_commands.ts:${line}`, json: true })
     } finally {
       process.stdout.write = origWrite
     }
@@ -406,7 +416,20 @@ describe('runCallers integration', () => {
     expect(typeof arr[0]?.caller).toBe('string')
     expect(typeof arr[0]?.line).toBe('number')
   })
+
+  it('resolveCallers returns the same enclosing-function-aware entries runCallers prints', () => {
+    const entries = resolveCallers('querySymbols')
+    expect(entries.length).toBeGreaterThan(0)
+    expect(typeof entries[0]?.caller).toBe('string')
+    expect(typeof entries[0]?.file).toBe('string')
+    expect(typeof entries[0]?.line).toBe('number')
+  })
+
+  it('resolveCallers returns an empty array for an unknown symbol', () => {
+    expect(resolveCallers('__xyzzy_no_such_symbol_9f3k__')).toEqual([])
+  })
 })
+
 
 // ---- integration: runDead against the real repo index ----------------------
 
