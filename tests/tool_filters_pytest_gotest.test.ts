@@ -260,6 +260,26 @@ describe('go-test filter', () => {
     expect(result.text).not.toContain('TestPassing')
   })
 
+  it('closes a FAIL block on "=== RUN", not just on PASS/FAIL', () => {
+    // Regression: TEST_RPC_RE (=== RUN|PAUSE|CONT) used to `continue` before the
+    // inFailBlock-closing logic in TEST_RUN_RE could ever run for RUN/PAUSE/CONT lines,
+    // so a FAIL block's `inFailBlock` flag stayed stuck open past the next test's
+    // "=== RUN" line. TEST_RUN_RE's own inFailBlock branch is only reachable for
+    // "=== NAME" lines (RUN/PAUSE/CONT are intercepted earlier), so the stale flag's
+    // only observable symptom is a later "=== NAME" line getting misread as "closing
+    // structure" and kept verbatim, instead of being dropped like ordinary
+    // outside-fail-block noise.
+    const text =
+      '--- FAIL: TestA (0.00s)\n' +
+      '    a_test.go:10: boom\n' +
+      '=== RUN   TestB\n' +
+      '=== NAME  TestB/sub\n' +
+      '--- PASS: TestB (0.00s)\n'
+    const result = goTestFilter.apply(text, '', 1, ['go', 'test'])
+    expect(result.text).toContain('boom')
+    expect(result.text).not.toContain('TestB/sub')
+  })
+
   it('drops "go: downloading" dependency lines', () => {
     const text =
       'go: downloading github.com/pkg/errors v0.9.1\n' +
