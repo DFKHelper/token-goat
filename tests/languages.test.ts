@@ -1320,5 +1320,19 @@ function AfterComment {
     expect(bar?.kind).toBe('method')
     expect(bar?.docstring).toBe('Foo')
   })
+
+  it('does not let an unbalanced brace in block-comment prose desync the brace-depth counter', () => {
+    const content = `<#
+ example { here
+#>
+function Get-Foo {
+  return 1
+}
+`
+    const { symbols } = extractPowershell(content, 'comment_brace.ps1')
+    const foo = symbols.find((s) => s.name === 'Get-Foo')
+    expect(foo).toBeDefined()
+    expect(foo?.kind).toBe('function')
+  })
 })
 })
