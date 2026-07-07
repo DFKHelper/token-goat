@@ -1189,6 +1189,53 @@ message Bar {
     expect(bar?.lineEnd).toBe(8)
   })
 
+  it('reports the rpc/oneof keyword line, not a preceding blank line', () => {
+    const content = `service S {
+
+  rpc Foo(A) returns (B);
+}
+
+message M {
+
+  oneof choice {
+    string a = 1;
+  }
+}
+`
+    const { symbols } = extractProto(content, 'blank_before.proto')
+    const foo = symbols.find((s) => s.name === 'Foo')
+    const choice = symbols.find((s) => s.name === 'choice')
+    // Regression: RPC_RE/ONEOF_RE started with `^\s+`, and \s matches newlines, so a blank
+    // line right before the keyword let `^` anchor at the blank line and \s+ bridge across
+    // the newline down to the keyword -- reporting the blank line's number instead of the
+    // actual rpc/oneof keyword line.
+    expect(foo?.lineStart).toBe(3)
+    expect(choice?.lineStart).toBe(8)
+  })
+
+  it('extracts a message after a string literal containing // without corrupting its range', () => {
+    const content = `message Foo {
+  option (my.url) = "https://example.com";
+}
+
+message Bar {
+  string x = 1;
+}
+`
+    const { symbols } = extractProto(content, 'url_string.proto')
+    const foo = symbols.find((s) => s.name === 'Foo')
+    const bar = symbols.find((s) => s.name === 'Bar')
+    // Regression: stripComments' line-comment pass had no string-literal awareness, so the
+    // "//" inside the URL got treated as a real comment start and blanked the rest of the
+    // line -- deleting the string's closing quote, desyncing quote-tracking, and corrupting
+    // Foo's brace range / Bar's extraction.
+    expect(foo?.lineStart).toBe(1)
+    expect(foo?.lineEnd).toBe(3)
+    expect(bar).toBeDefined()
+    expect(bar?.lineStart).toBe(5)
+    expect(bar?.lineEnd).toBe(7)
+  })
+
 describe('PowerShell adapter', () => {
   it('extracts function, filter, class, enum, and method symbols', () => {
     const content = `# PowerShell script

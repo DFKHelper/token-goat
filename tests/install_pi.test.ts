@@ -192,4 +192,18 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     expect(match).not.toBeNull()
     expect(match?.[1]).not.toMatch(/"Glob"/)
   })
+
+  // Regression: the tool_result handler built its post_tool_use payload with
+  // session_id/tool_name/tool_input/cwd but never forwarded tool_response, so
+  // extractReadOutput (src/hooks_read.ts) and hooks_bash's truncation-marker
+  // detection always saw empty output for files/commands run through pi --
+  // silently disabling confirmed re-read denial despite this module's header
+  // comment listing it as a working feature.
+  it("forwards tool_result's real output (event.content) as tool_response.output in the post_tool_use payload, mirroring opencode.ts's tool_response shape", () => {
+    const match = /pi\.on\("tool_result",[\s\S]*?\n {2}\}\);/.exec(PI_EXTENSION_SCRIPT)
+    expect(match).not.toBeNull()
+    const handlerBody = match?.[0] ?? ''
+    expect(handlerBody).toMatch(/tool_response/)
+    expect(handlerBody).toMatch(/event\.content/)
+  })
 })

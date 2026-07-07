@@ -223,11 +223,23 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, _ctx) => {
     const tg = TOOL_TO_TG[event.toolName];
     if (!tg) return;
+    // event.content is tool_result's real output field (ToolResultEventBase.content:
+    // (TextContent | ImageContent)[] -- verified against pi's own
+    // core/extensions/types.ts). Join the text blocks into a single string so
+    // extractReadOutput's truncation-marker detection (which only recognizes a
+    // string tool_response.output) can see it, mirroring opencode.ts's
+    // tool_response: { output } shape.
+    const contentBlocks = Array.isArray(event.content) ? event.content : [];
+    const output = contentBlocks
+      .filter((c: { type?: string }) => c && c.type === "text")
+      .map((c: { text?: string }) => c.text ?? "")
+      .join("\n");
     callHook("post_tool_use", {
       session_id: sessionId,
       tool_name: tg,
       tool_input: toToolInput(event.toolName, (event.input ?? {}) as Record<string, unknown>),
       cwd,
+      tool_response: { output },
     });
   });
 
