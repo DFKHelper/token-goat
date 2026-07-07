@@ -6,9 +6,10 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { parse } from 'smol-toml'
 import { detectHarness } from './bridges/index.js'
 import { loadConfig } from './config.js'
-import { dataDir } from './constants.js'
+import { configPath, dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
 import { readSessionStateFile } from './session_store.js'
@@ -209,12 +210,34 @@ function pressureRawTotal(cache: SessionCacheObject): number {
 // needs scaling before it means anything for other harnesses.
 function getEffectiveAutoTriggerWindow(): number {
   const ca = loadConfig().compact_assist
+  const isConfigDefault = !isAutoTriggerMultiplierExplicit()
   const multiplier = getAutoTriggerMultiplier(
     ca.harness === 'auto'
-      ? { configExplicitMultiplier: ca.auto_trigger_multiplier }
-      : { configExplicitMultiplier: ca.auto_trigger_multiplier, harness: ca.harness },
+      ? { configExplicitMultiplier: ca.auto_trigger_multiplier, isConfigDefault }
+      : { configExplicitMultiplier: ca.auto_trigger_multiplier, harness: ca.harness, isConfigDefault },
   )
   return CONTEXT_AUTOCOMPACT_TOKENS * multiplier
+}
+
+/**
+ * Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw
+ * config.toml, as opposed to it merely holding the (indistinguishable) default value of 2.0.
+ * loadConfig()'s merged Config object can't tell these two cases apart, so this reads and
+ * parses the raw file directly -- mirroring config.ts's own load path -- to check for the
+ * key's real presence.
+ */
+function isAutoTriggerMultiplierExplicit(): boolean {
+  try {
+    const text = fs.readFileSync(configPath(), 'utf8')
+    const raw = parse(text) as Record<string, unknown>
+    const ca_raw = raw['compact_assist']
+    if (ca_raw === null || typeof ca_raw !== 'object' || Array.isArray(ca_raw)) {
+      return false
+    }
+    return (ca_raw as Record<string, unknown>)['auto_trigger_multiplier'] !== undefined
+  } catch {
+    return false
+  }
 }
 
 export function getContextPressure(cache?: SessionCacheObject): ContextPressure {
@@ -310,9 +333,11 @@ export function inferSessionGoal(cache: SessionCacheObject, maxTokens: number = 
 
     const goal = parts.join(' ')
     const goalTokens = estimateTokens(goal)
-    if (goalTokens > maxTokens && parts.length > 1) {
-      const first = parts[0]
-      if (first !== undefined) return first
+    if (goalTokens > maxTokens) {
+      // Reserve room for the 3-char ellipsis suffix so the truncated result (mirroring
+      // estimateTokens's ~length/3 heuristic) actually lands back within maxTokens.
+      const maxChars = Math.max(0, (maxTokens - 2) * 3)
+      return `${goal.slice(0, maxChars).trimEnd()}...`
     }
 
     return goal.trim()

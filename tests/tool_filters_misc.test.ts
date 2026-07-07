@@ -230,6 +230,36 @@ describe('PsqlFilter migration summary', () => {
     const out = apply(psqlFilter, 'CREATE TABLE foo\nCREATE TABLE bar\n', ['psql'])
     expect(out).toContain('CREATE TABLE foo')
   })
+
+  it('counts non-table/index DDL categories instead of silently dropping them (regression)', () => {
+    const lines = [
+      'CREATE TABLE users',
+      'CREATE TABLE posts',
+      'CREATE TABLE comments',
+      'CREATE FUNCTION update_ts()',
+      'CREATE VIEW active_users',
+      'CREATE TYPE status_enum',
+      'CREATE SEQUENCE seq_1',
+      'CREATE TRIGGER trg_1',
+      'ALTER TABLE users',
+      'ADD CONSTRAINT fk_1',
+    ].join('\n')
+    const out = apply(psqlFilter, lines, ['psql'])
+    expect(out).toMatch(/Created.*3 tables/)
+    expect(out).toMatch(/1 function\b/)
+    expect(out).toMatch(/1 view\b/)
+    expect(out).toMatch(/1 type\b/)
+    expect(out).toMatch(/1 sequence\b/)
+    expect(out).toMatch(/1 trigger\b/)
+    expect(out).toMatch(/2 alterations/)
+    expect(out).not.toMatch(/CREATE FUNCTION/)
+    expect(out).not.toMatch(/CREATE VIEW/)
+    expect(out).not.toMatch(/CREATE TYPE/)
+    expect(out).not.toMatch(/CREATE SEQUENCE/)
+    expect(out).not.toMatch(/CREATE TRIGGER/)
+    expect(out).not.toMatch(/ALTER TABLE/)
+    expect(out).not.toMatch(/ADD CONSTRAINT/)
+  })
 })
 
 describe('PsqlFilter table collapse', () => {
@@ -798,11 +828,23 @@ describe('JsonArrayFilter compression', () => {
     expect(parsed).toHaveLength(50)
   })
 
-  it('deduplicates objects with same key signature', () => {
+  it('does NOT dedup distinct records that merely share the same fields (regression)', () => {
+    // Same shape ({id, name}) but every value differs — a typical homogeneous API/DB list
+    // response. None of these are duplicates; all must be preserved.
     const arr = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `item${i}` }))
     const out = apply(jsonArrayFilter, JSON.stringify(arr), ['json'])
-    // All 10 share {id, name} → first kept, 9 deduped
+    expect(out).not.toContain('duplicate objects')
+    const parsed = JSON.parse(out.split('\n[')[0]!)
+    expect(parsed).toHaveLength(10)
+  })
+
+  it('deduplicates objects with identical values', () => {
+    const arr = Array.from({ length: 10 }, () => ({ id: 1, name: 'same' }))
+    const out = apply(jsonArrayFilter, JSON.stringify(arr), ['json'])
+    // All 10 are value-identical → first kept, 9 deduped
     expect(out).toContain('9 duplicate objects with keys {id, name}')
+    const parsed = JSON.parse(out.split('\n[')[0]!)
+    expect(parsed).toHaveLength(1)
   })
 
   it('preserves objects with high-entropy values (UUIDs, hashes)', () => {

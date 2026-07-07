@@ -188,6 +188,10 @@ const PSQL_ERROR_RE = /^(ERROR|FATAL|PANIC):/i
 const PSQL_ROWS_RE = /^\((\d+) rows?\)$/
 const PSQL_CREATE_RE = /^(CREATE TABLE|CREATE INDEX|CREATE UNIQUE INDEX|CREATE SEQUENCE|CREATE TYPE|CREATE FUNCTION|CREATE VIEW|CREATE TRIGGER|ALTER TABLE|ADD CONSTRAINT)\b/i
 
+function pluralize(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : plural}`
+}
+
 export class PsqlFilter extends ToolFilter {
   readonly name = 'psql'
   override readonly binaries = new Set(['psql'])
@@ -206,14 +210,26 @@ export class PsqlFilter extends ToolFilter {
     // Check for migration-style output (bulk DDL).
     const createTables = lines.filter((ln) => /^CREATE TABLE\b/i.test(ln)).length
     const createIndexes = lines.filter((ln) => /^CREATE (UNIQUE )?INDEX\b/i.test(ln)).length
+    const createFunctions = lines.filter((ln) => /^CREATE FUNCTION\b/i.test(ln)).length
+    const createViews = lines.filter((ln) => /^CREATE VIEW\b/i.test(ln)).length
+    const createTypes = lines.filter((ln) => /^CREATE TYPE\b/i.test(ln)).length
+    const createSequences = lines.filter((ln) => /^CREATE SEQUENCE\b/i.test(ln)).length
+    const createTriggers = lines.filter((ln) => /^CREATE TRIGGER\b/i.test(ln)).length
+    const alterations = lines.filter((ln) => /^(ALTER TABLE|ADD CONSTRAINT)\b/i.test(ln)).length
     if (createTables >= 3) {
       const nonDdl: string[] = []
       for (const ln of lines) {
         if (PSQL_CREATE_RE.test(ln)) continue
         nonDdl.push(ln)
       }
-      const summaryParts = [`${createTables} tables`]
-      if (createIndexes) summaryParts.push(`${createIndexes} indexes`)
+      const summaryParts = [pluralize(createTables, 'table')]
+      if (createIndexes) summaryParts.push(pluralize(createIndexes, 'index', 'indexes'))
+      if (createFunctions) summaryParts.push(pluralize(createFunctions, 'function'))
+      if (createViews) summaryParts.push(pluralize(createViews, 'view'))
+      if (createTypes) summaryParts.push(pluralize(createTypes, 'type'))
+      if (createSequences) summaryParts.push(pluralize(createSequences, 'sequence'))
+      if (createTriggers) summaryParts.push(pluralize(createTriggers, 'trigger'))
+      if (alterations) summaryParts.push(pluralize(alterations, 'alteration'))
       nonDdl.unshift(`[token-goat: Created ${summaryParts.join(', ')}]`)
       return this.finalize(nonDdl)
     }
@@ -1067,6 +1083,17 @@ export const envFilter = new EnvFilter()
 
 const JSON_ARRAY_MAX_ITEMS = 50
 
+// Canonical JSON serialization (object keys sorted recursively) so dedup compares actual
+// VALUE content rather than being sensitive to key ordering.
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>).sort()
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
 export class JsonArrayFilter extends ToolFilter {
   readonly name = 'json_array'
   override readonly binaries = new Set(['json'])
@@ -1093,20 +1120,23 @@ export class JsonArrayFilter extends ToolFilter {
       return text
     }
 
-    // Key-set deduplication (dicts only)
-    const seen = new Map<string, number>() // key→first-index
+    // Value-based deduplication (dicts only) — dedup on actual content, not just which
+    // fields are present, so that homogeneous arrays of distinct records (the common case)
+    // are not mistaken for duplicates.
+    const seen = new Map<string, number>() // value→first-index
     const kept: unknown[] = []
-    const dupCounts = new Map<string, number>()
+    const dupCounts = new Map<string, number>() // key-signature→count, for the summary label
     for (const item of data) {
       if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+        const valueKey = stableStringify(item)
         const ks = Object.keys(item as Record<string, unknown>).sort().join(',')
         const preserve = Object.values(item as Record<string, unknown>).some(
           (v) => typeof v === 'string' && hasHighEntropyToken(v),
         )
-        if (seen.has(ks) && !preserve) {
+        if (seen.has(valueKey) && !preserve) {
           dupCounts.set(ks, (dupCounts.get(ks) ?? 0) + 1)
         } else {
-          if (!seen.has(ks)) seen.set(ks, kept.length)
+          if (!seen.has(valueKey)) seen.set(valueKey, kept.length)
           kept.push(item)
         }
       } else {

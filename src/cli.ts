@@ -333,7 +333,7 @@ async function cmdInstall(opts: {
 
   // --copilot is additive, exactly like --codex above.
   if (opts.copilot === true) {
-    const copilotResult = installCopilotCli()
+    const copilotResult = installCopilotCli({ local: opts.local === true })
     if (copilotResult.alreadyInstalled) {
       out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
     } else {
@@ -463,7 +463,7 @@ function cmdUninstall(opts: {
 
   // --copilot is additive, exactly like --codex above.
   if (opts.copilot === true) {
-    const copilotRemoved = uninstallCopilotCli()
+    const copilotRemoved = uninstallCopilotCli({ local: opts.local === true })
     out(
       copilotRemoved
         ? 'Removed token-goat Copilot CLI integration.'

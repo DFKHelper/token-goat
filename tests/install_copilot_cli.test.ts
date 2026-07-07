@@ -55,7 +55,7 @@ afterEach(() => {
 })
 
 describe('installCopilotCli (user scope)', () => {
-  it('writes the shim script and a hooks config registering all five implemented events on a fresh install', () => {
+  it('writes the shim script and a hooks config registering all six implemented events on a fresh install', () => {
     const result = installCopilotCli()
     expect(result.alreadyInstalled).toBe(false)
     expect(result.configPath).toBe(copilotCliConfigPath())
@@ -69,13 +69,32 @@ describe('installCopilotCli (user scope)', () => {
       hooks: Record<string, Array<{ type: string; command: string }>>
     }
     expect(config.version).toBe(1)
-    for (const event of ['preToolUse', 'postToolUse', 'preCompact', 'agentStop', 'subagentStop']) {
+    for (const event of [
+      'preToolUse',
+      'postToolUse',
+      'preCompact',
+      'agentStop',
+      'subagentStop',
+      'userPromptSubmitted',
+    ]) {
       expect(config.hooks[event]).toBeDefined()
       expect(config.hooks[event]?.[0]?.type).toBe('command')
       expect(config.hooks[event]?.[0]?.command).toContain(result.scriptPath)
     }
 
     expect(isCopilotCliInstalled()).toBe(true)
+  })
+
+  it('uses the absolute Node binary path (process.execPath), not bare node, in the generated hook command (github/copilot-cli#4001 regression)', () => {
+    const result = installCopilotCli()
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      hooks: Record<string, Array<{ command: string }>>
+    }
+    const command = config.hooks['preToolUse']?.[0]?.command
+    expect(command).toBeDefined()
+    expect(command).toContain(process.execPath)
+    expect(command).not.toBe(`node "${result.scriptPath}" preToolUse`)
+    expect(command?.startsWith('node ')).toBe(false)
   })
 
   it('is idempotent: a second install reports alreadyInstalled and does not duplicate or alter entries', () => {
@@ -86,7 +105,14 @@ describe('installCopilotCli (user scope)', () => {
     const config = JSON.parse(fs.readFileSync(second.configPath, 'utf8')) as {
       hooks: Record<string, unknown[]>
     }
-    for (const event of ['preToolUse', 'postToolUse', 'preCompact', 'agentStop', 'subagentStop']) {
+    for (const event of [
+      'preToolUse',
+      'postToolUse',
+      'preCompact',
+      'agentStop',
+      'subagentStop',
+      'userPromptSubmitted',
+    ]) {
       expect(config.hooks[event]).toHaveLength(1)
     }
   })
@@ -109,6 +135,30 @@ describe('installCopilotCli (user scope)', () => {
     installCopilotCli()
 
     expect(fs.readFileSync(unrelatedPath, 'utf8')).toBe('{"version":1,"hooks":{}}\n')
+  })
+
+  it('backs up a hand-edited hooks config (with the OLD content) before overwriting it on reinstall', () => {
+    const result = installCopilotCli()
+    const handEdited = JSON.stringify({ version: 1, hooks: { preToolUse: [{ type: 'command', command: 'custom', timeoutSec: 30 }] } })
+    fs.writeFileSync(result.configPath, handEdited)
+
+    installCopilotCli()
+
+    const dir = path.dirname(result.configPath)
+    const bakFiles = fs.readdirSync(dir).filter((f) => f.startsWith(path.basename(result.configPath) + '.bak.'))
+    expect(bakFiles.length).toBe(1)
+    expect(fs.readFileSync(path.join(dir, bakFiles[0] as string), 'utf8')).toBe(handEdited)
+    // and the config itself was regenerated back to the desired shape
+    expect(fs.readFileSync(result.configPath, 'utf8')).not.toBe(handEdited)
+  })
+
+  it('does not create a spurious .bak file when reinstalling with no actual config change', () => {
+    const result = installCopilotCli()
+    installCopilotCli()
+
+    const dir = path.dirname(result.configPath)
+    const bakFiles = fs.readdirSync(dir).filter((f) => f.startsWith(path.basename(result.configPath) + '.bak.'))
+    expect(bakFiles.length).toBe(0)
   })
 })
 
@@ -337,20 +387,83 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('you already read this file')
   })
 
-  it('translates a pre_compact systemMessage response into additionalContext for preCompact', () => {
+  it('preCompact discards any token-goat response and always emits {} -- Copilot treats preCompact as notification-only', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(cwd, JSON.stringify({ systemMessage: 'session manifest here' }))
     const stdout = runShim('preCompact', JSON.stringify({ sessionId: 's1' }), cwd, env)
-    const parsed = JSON.parse(stdout)
-    expect(parsed.additionalContext).toBe('session manifest here')
+    expect(stdout.trim()).toBe('{}')
   })
 
-  it('maps shell/read/write/url tool names to Bash/Read/Write/WebFetch before calling token-goat', () => {
+  it('maps userPromptSubmitted to the internal user_prompt_submit event but discards the response -- Copilot treats it as notification-only too', () => {
+    const cwd = mkIsolated()
+    const argvPath = path.join(cwd, 'argv.txt')
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\necho %* > "${argvPath}"\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {"systemMessage":"branch: main"}\r\n`
+        : `#!/bin/sh\necho "$@" > "${argvPath}"\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{"systemMessage":"branch: main"}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    const stdout = runShim(
+      'userPromptSubmitted',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', prompt: 'fix the bug please' }),
+      cwd,
+      env,
+    )
+
+    expect(stdout.trim()).toBe('{}')
+    expect(fs.readFileSync(argvPath, 'utf8')).toContain('user_prompt_submit')
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+    expect(captured.session_id).toBe('s1')
+  })
+
+  it('translates an agentStop deny (decision:"block") into {decision:"block", reason}, never additionalContext', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({ decision: 'block', reason: 'clean up before stopping' }))
+    const stdout = runShim('agentStop', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed).toEqual({ decision: 'block', reason: 'clean up before stopping' })
+    expect(parsed.additionalContext).toBeUndefined()
+  })
+
+  it('translates a non-blocking agentStop response into {decision:"allow"}', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({}))
+    const stdout = runShim('agentStop', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed).toEqual({ decision: 'allow' })
+  })
+
+  it('translates a subagentStop deny (decision:"block") into {decision:"block", reason}, never additionalContext', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({ decision: 'block', reason: 'possible hallucination' }))
+    const stdout = runShim('subagentStop', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed).toEqual({ decision: 'block', reason: 'possible hallucination' })
+    expect(parsed.additionalContext).toBeUndefined()
+  })
+
+  it('translates a non-blocking subagentStop response into {decision:"allow"}', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, JSON.stringify({}))
+    const stdout = runShim('subagentStop', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed).toEqual({ decision: 'allow' })
+  })
+
+  it('maps bash/powershell/view/create/edit/web_fetch/grep/glob tool names to their token-goat equivalents before calling token-goat', () => {
     for (const [copilotTool, tgTool] of [
-      ['shell', 'Bash'],
-      ['read', 'Read'],
-      ['write', 'Write'],
-      ['url', 'WebFetch'],
+      ['bash', 'Bash'],
+      ['powershell', 'Bash'],
+      ['view', 'Read'],
+      ['create', 'Write'],
+      ['edit', 'Edit'],
+      ['web_fetch', 'WebFetch'],
+      ['grep', 'Grep'],
+      ['glob', 'Glob'],
     ] as const) {
       const cwd = mkIsolated()
       const capturePath = path.join(cwd, 'captured.json')
@@ -368,5 +481,102 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { tool_name: string }
       expect(captured.tool_name).toBe(tgTool)
     }
+  })
+
+  it('passes task/ask_user tool names through unmapped, since neither has a token-goat equivalent', () => {
+    for (const copilotTool of ['task', 'ask_user']) {
+      const cwd = mkIsolated()
+      const capturePath = path.join(cwd, 'captured.json')
+      const script =
+        process.platform === 'win32'
+          ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+          : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+      const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+      fs.writeFileSync(binPath, script, 'utf8')
+      if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+      const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+      runShim('preToolUse', JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs: {} }), cwd, env)
+
+      const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { tool_name: string }
+      expect(captured.tool_name).toBe(copilotTool)
+    }
+  })
+
+  it('never propagates an uncaught exception or a non-zero exit code, even for adversarial/malformed payloads the per-step guards were not written against', () => {
+    const cwd = mkIsolated()
+    const scriptPath = path.join(cwd, 'shim.js')
+    fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const env = withFakeTokenGoat(cwd, JSON.stringify({ hookSpecificOutput: { updatedInput: null } }))
+
+    const adversarialStdins = [
+      '[1,2,3]',
+      '"just a string"',
+      '42',
+      'null',
+      JSON.stringify({ toolName: 'bash', toolArgs: { a: { b: { c: { d: { e: 'deeply nested' } } } } } }),
+      JSON.stringify({ toolName: { nested: 'object as tool name' }, toolArgs: [] }),
+    ]
+
+    for (const stdin of adversarialStdins) {
+      const res = spawnSync(process.execPath, [scriptPath, 'preToolUse'], {
+        cwd,
+        input: stdin,
+        encoding: 'utf8',
+        timeout: 15000,
+        env,
+      })
+      expect(res.status).toBe(0)
+      expect(() => JSON.parse(res.stdout ?? '')).not.toThrow()
+    }
+  })
+
+  it('parses a JSON-encoded-string toolArgs (github/copilot-cli#3349) into an object instead of forwarding a raw string', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    // toolArgs sent as a JSON-encoded string, not a parsed object -- the documented-vs-real
+    // schema mismatch confirmed in the still-open github/copilot-cli#3349.
+    runShim(
+      'preToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'shell', toolArgs: JSON.stringify({ command: 'ls -la' }) }),
+      cwd,
+      env,
+    )
+
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { tool_input: unknown }
+    expect(captured.tool_input).toEqual({ command: 'ls -la' })
+  })
+
+  it('falls back to {} (never crashes) when toolArgs is a malformed, unparsable string', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    const stdout = runShim(
+      'preToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'shell', toolArgs: 'not valid json {{{' }),
+      cwd,
+      env,
+    )
+
+    expect(stdout.trim()).toBe('{}')
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { tool_input: unknown }
+    expect(captured.tool_input).toEqual({})
   })
 })

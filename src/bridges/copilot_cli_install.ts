@@ -14,13 +14,20 @@
  * file is entirely token-goat's own (no other tool writes to a file named
  * exactly `token-goat.json` in that directory), this follows pi_install.ts's
  * simpler whole-file overwrite-on-diff pattern rather than Codex's
- * parse/merge/`.bak`-backup pattern -- there is nothing to merge into.
+ * parse/merge pattern -- there is nothing to merge into. It does, however,
+ * still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw),
+ * because Copilot's hooks schema supports per-entry fields token-goat never
+ * writes (`timeoutSec`, `cwd`, `env`, `matcher`, `allowedEnvVars` --
+ * https://docs.github.com/en/copilot/reference/hooks-reference) that a user
+ * could plausibly hand-tune; since install always regenerates the whole file
+ * from scratch, a hand-edit would otherwise be silently destroyed with no
+ * recovery path.
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
@@ -30,7 +37,14 @@ export interface CopilotCliScopeOptions {
 }
 
 /** Copilot's own hook event names that this bridge implements (see copilot_cli.ts's COPILOT_TO_TG_EVENT). */
-const COPILOT_CLI_HOOK_EVENTS = ['preToolUse', 'postToolUse', 'preCompact', 'agentStop', 'subagentStop'] as const
+const COPILOT_CLI_HOOK_EVENTS = [
+  'preToolUse',
+  'postToolUse',
+  'preCompact',
+  'agentStop',
+  'subagentStop',
+  'userPromptSubmitted',
+] as const
 type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number]
 
 interface CopilotHookEntry {
@@ -72,8 +86,18 @@ export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string 
 // toolName/toolArgs) identifies which event fired, so the command line is the
 // only place this bridge can encode it. Caught by dogfooding a real install +
 // invocation before this was tested any other way.
+//
+// The interpreter is invoked via the absolute path to the Node binary that
+// ran this installer (`process.execPath`, baked in at install time), not a
+// bare `node` relying on PATH resolution -- confirmed live-production root
+// cause of every tool call being denied with "(hook errored)" on Copilot CLI
+// 1.0.68 (github/copilot-cli#4001): Copilot's `command`-type hooks fail
+// closed, so if the environment it spawns them in doesn't resolve `node` on
+// PATH, the hook process never launches, Copilot sees a failed process, and
+// denies unconditionally. Quoted the same way as scriptPath below since the
+// Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`).
 function hookCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
-  return `node "${scriptPath}" ${event}`
+  return `"${process.execPath}" "${scriptPath}" ${event}`
 }
 
 function buildConfig(scriptPath: string): CopilotCliConfig {
@@ -85,7 +109,7 @@ function buildConfig(scriptPath: string): CopilotCliConfig {
 }
 
 /** Writes `content` to `p` only if it differs from what's already on disk; returns whether a write happened. */
-function writeIfDifferent(p: string, content: string): boolean {
+function writeIfDifferent(p: string, content: string, backup = false): boolean {
   let existing: string | undefined
   try {
     existing = fs.readFileSync(p, 'utf8')
@@ -93,6 +117,7 @@ function writeIfDifferent(p: string, content: string): boolean {
     existing = undefined
   }
   if (existing === content) return false
+  if (backup) backupFile(p)
   ensureDirSync(path.dirname(p))
   atomicWriteText(p, content)
   return true
@@ -115,7 +140,7 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
   const scriptChanged = writeIfDifferent(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
 
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
-  const configChanged = writeIfDifferent(configPath, desiredText)
+  const configChanged = writeIfDifferent(configPath, desiredText, true)
 
   return { configPath, scriptPath, alreadyInstalled: !scriptChanged && !configChanged }
 }

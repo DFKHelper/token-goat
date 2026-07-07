@@ -6,7 +6,21 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// vi.mock is hoisted — this redirects configPath() to a per-test temp file so the
+// getEffectiveAutoTriggerWindow regression test below can write a real config.toml
+// without touching the machine's real config file.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return {
+    ...original,
+    configPath: () => _testConfigPath,
+  }
+})
+
+const _testConfigPath = path.join(os.tmpdir(), `tg-compact-test-config-${process.pid}.toml`)
+
 import {
   CATALOG_TOKENS,
   CONTEXT_AUTOCOMPACT_TOKENS,
@@ -22,6 +36,7 @@ import {
   findLatestSessionId,
   getAutoTriggerMultiplier,
   getContextPressure,
+  inferSessionGoal,
   isNoisePath,
   loadSessionCache,
   mergeSessionManifests,
@@ -29,6 +44,7 @@ import {
   tierForFraction,
   type SessionCacheObject,
 } from '../src/compact.js'
+import { invalidateConfigCache } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { importSessionState, recordBashOutput, recordFileEdit, recordFileRead, recordWebFetch, type FileEntry } from '../src/session.js'
@@ -195,6 +211,46 @@ describe('compact', () => {
       const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 3.0)
       expect(pressure.fillFraction).toBeCloseTo(expected, 5)
     })
+
+    // Regression: getEffectiveAutoTriggerWindow() called getAutoTriggerMultiplier() without
+    // passing isConfigDefault, so that function fell back to a heuristic (isDefault = config
+    // === 2.0) that can't tell "user explicitly wrote 2.0" apart from "field never touched,
+    // still holding the 2.0 default". A user who explicitly sets auto_trigger_multiplier =
+    // 2.0 on a harness whose own default is NOT 2.0 (gemini's is 3.0) got their explicit
+    // value silently discarded in favor of the harness default -- backwards. This writes a
+    // real config.toml (via the mocked configPath()) with harness = 'gemini' and an explicit
+    // auto_trigger_multiplier = 2.0, then drives the real getContextPressure() path: it fails
+    // against a reader that still applies gemini's 3.0 harness default and passes once the
+    // real "was this explicitly set in the raw file" signal is threaded through.
+    it('respects an explicit auto_trigger_multiplier that happens to equal the global default, even when the harness default differs', () => {
+      fs.writeFileSync(
+        _testConfigPath,
+        `[compact_assist]
+harness = "gemini"
+auto_trigger_multiplier = 2.0
+`,
+        'utf8',
+      )
+      invalidateConfigCache()
+      try {
+        const cache = {
+          loadedSkillTotalTokens: 100,
+          observedToolTokens: 500_000,
+          pressureBaselineTokens: 0,
+        }
+        const pressure = getContextPressure(cache)
+        // Explicit 2.0 must win over gemini's 3.0 harness default.
+        const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
+        expect(pressure.fillFraction).toBeCloseTo(expected, 5)
+      } finally {
+        invalidateConfigCache()
+        try {
+          fs.unlinkSync(_testConfigPath)
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    })
   })
 
   describe('getAutoTriggerMultiplier', () => {
@@ -243,6 +299,28 @@ describe('compact', () => {
         harness: 'codex',
       })
       expect(with30).toBe(3.0)
+    })
+  })
+
+  describe('inferSessionGoal', () => {
+    // Regression: parts (the goal-fragment array) is built via an if/else-if/else-if chain
+    // that pushes AT MOST ONE string, so the old guard `goalTokens > maxTokens && parts.length
+    // > 1` could never fire -- parts.length is always 0 or 1. A long directory name (the only
+    // signal here, so only one fragment gets pushed) could blow well past the ~80 token budget
+    // with zero truncation. Fails against a reader that still gates truncation on parts.length
+    // > 1 and passes once truncation engages purely off goalTokens > maxTokens.
+    it('truncates an over-budget goal even when only a single fragment was built (long dir name)', () => {
+      const longDir = 'a'.repeat(300)
+      const cache: SessionCacheObject = {
+        files: [
+          fileEntry(`${longDir}/one.ts`, { wasEdited: true }),
+          fileEntry(`${longDir}/two.ts`, { wasEdited: true }),
+        ],
+      }
+      const goal = inferSessionGoal(cache)
+      expect(estimateTokens(goal)).toBeLessThanOrEqual(80)
+      expect(goal.length).toBeLessThan(longDir.length)
+      expect(goal.endsWith('...')).toBe(true)
     })
   })
 
