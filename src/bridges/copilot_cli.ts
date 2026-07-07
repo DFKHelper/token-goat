@@ -42,6 +42,12 @@
  * and any `modifiedArgs` token-goat returns is likewise passed back verbatim
  * -- unconfirmed, flag for follow-up if Copilot's real key names turn out to
  * differ.
+ *
+ * `postToolUse`'s payload also carries `toolResult`, confirmed (same hooks-reference
+ * doc above) as an object -- `{ resultType: 'success', textResultForLlm: string }` --
+ * not a bare string. `textResultForLlm` is extracted into `canonical.tool_response` so
+ * token-goat's post-read/post-bash stat handlers (which measure `tool_response`) see
+ * real content instead of nothing.
  */
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
@@ -149,6 +155,24 @@ function main() {
   if (toolName) {
     canonical.tool_name = TOOL_TO_TG[toolName] || toolName
     canonical.tool_input = parseMaybeJsonObject(payload && payload.toolArgs)
+  }
+
+  // postToolUse only: confirmed via https://docs.github.com/en/copilot/reference/hooks-reference
+  // that Copilot's toolResult is an object ({resultType, textResultForLlm}), not a bare string
+  // or array. Without this, token-goat's tool_response consumers (hooks_read.ts's
+  // extractReadOutput, hooks_bash.ts's extractBashOutput, etc. -- all of which check for a
+  // string or an object keyed by output/content/text/body) never see any content, so
+  // post-read/post-bash stats stay empty no matter how many tool calls happen. Extract the
+  // LLM-facing text directly rather than forwarding the raw object, since textResultForLlm
+  // isn't one of those recognized object keys.
+  const rawResult = payload && payload.toolResult
+  if (rawResult && typeof rawResult === 'object') {
+    const tr = rawResult
+    // text_result_for_llm: Copilot's docs also describe a "VS Code compatible" snake_case
+    // wire format (tool_result.text_result_for_llm) alongside the camelCase one above; try
+    // both rather than assuming only the camelCase shape ever reaches this shim.
+    const text = typeof tr.textResultForLlm === 'string' ? tr.textResultForLlm : tr.text_result_for_llm
+    if (typeof text === 'string') canonical.tool_response = text
   }
 
   // A single command string (not an args array) with shell: true, exactly like
