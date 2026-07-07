@@ -13,6 +13,7 @@ import {
   makeSymbolEmitter,
   propagateEndLinesToSymbols,
   stripCstyleComments,
+  stripLineComment,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -24,13 +25,16 @@ export interface ProtoImport {
   readonly line: number
 }
 
-// Strip // line comments
-const LINE_COMMENT_RE = /\/\/[^\n]*/g
-
 function stripComments(text: string): string {
-  let out = stripCstyleComments(text)
-  out = out.replace(LINE_COMMENT_RE, (m) => ' '.repeat(m.length))
+  const out = stripCstyleComments(text)
+  // Quote-aware per-line scan (via stripLineComment) instead of a plain regex replace, so a
+  // "//" inside a string literal (e.g. a URL) is never treated as a real comment start -- a
+  // naive regex replace here would blank the rest of the line, including the string's
+  // closing quote, desyncing quote-tracking for everything after.
   return out
+    .split('\n')
+    .map((line) => stripLineComment(line))
+    .join('\n')
 }
 
 // Top-level: message Name {, enum Name {, service Name {
@@ -44,10 +48,10 @@ const TOP_LEVEL_RE =
 const EXTEND_RE = /^[ \t]*extend\s+(?<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\{/gm
 
 // rpc MethodName(...) inside a service block
-const RPC_RE = /^\s+rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
+const RPC_RE = /^[ \t]+rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
 
 // oneof name { } inside a message
-const ONEOF_RE = /^\s+oneof\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
+const ONEOF_RE = /^[ \t]+oneof\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
 
 // import "path.proto" — both weak/public modifiers accepted
 const IMPORT_RE = /^import\s+(?:weak\s+|public\s+)?["']([^"']+)["']/gm
