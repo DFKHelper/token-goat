@@ -73,6 +73,7 @@ export function extractPowershell(
     // it isn't sitting inside a quoted string literal - PowerShell strings can
     // legitimately contain that two-character sequence (e.g. "the <# marker").
     let line = rawLine
+    let openedBlockCommentThisLine = false
     if (!inBlockComment) {
       const openIdx = findUnquoted(rawLine, '<#')
       if (openIdx !== -1) {
@@ -92,13 +93,19 @@ export function extractPowershell(
             // the line as normal code instead of short-circuiting the whole line.
             line = rawLine.slice(0, openIdx) + ' '.repeat(closeIdx + 2 - openIdx) + rawLine.slice(closeIdx + 2)
           } else {
+            // The comment opens here but doesn't close on this line. Any code
+            // before the opener (e.g. `function Foo {`) is still real code and
+            // must not be discarded - only the swallow-check below (for lines
+            // fully INSIDE an already-open comment) should be skipped this pass.
             inBlockComment = true
+            openedBlockCommentThisLine = true
+            line = rawLine.slice(0, openIdx)
           }
         }
       }
     }
 
-    if (inBlockComment) {
+    if (inBlockComment && !openedBlockCommentThisLine) {
       const closeMarkerIdx = rawLine.indexOf('#>')
       if (closeMarkerIdx === -1) {
         // The whole line sits inside the block comment. Comment prose is not code, so it

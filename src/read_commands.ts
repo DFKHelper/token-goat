@@ -227,6 +227,22 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') return null
 
+  const resolved = resolveIndexPath(file)
+  if (forceRefresh === true) {
+    indexFileSync(resolved, globalDbPath())
+  }
+
+  // Some indexed symbol names legitimately contain dots (TOML sections like "tool.poetry", CSS
+  // selectors like ".btn") and must be matched exactly before assuming the dot is a Class.method
+  // separator. Try the full unsplit symbol name first; only fall back to dot-split heuristic
+  // if the exact match returns nothing.
+  if (symbol.includes('.')) {
+    const exactMatch = querySymbols({ name: symbol, filePath: resolved, limit: 10 })
+    if (exactMatch.length > 0) {
+      return exactMatch[0] ?? null
+    }
+  }
+
   // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol we want is the leaf — the LAST segment — since methods are indexed by their bare name. Using split('.')[1] would pick the middle segment of a 3+ part path and resolve to the wrong symbol (e.g. the inner class instead of its method).
   const dotParts = symbol.split('.')
   const [symBase, methodName] =
@@ -236,10 +252,6 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
 
   // When a method name is given (e.g. "Session.refresh"), query for the method name directly. Querying for symBase (the class name) and then searching for methodName among those results always fails because all returned symbols have name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
-  const resolved = resolveIndexPath(file)
-  if (forceRefresh === true) {
-    indexFileSync(resolved, globalDbPath())
-  }
   let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
   if (candidates.length === 0) {
     // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by
