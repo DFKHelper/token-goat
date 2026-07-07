@@ -387,6 +387,59 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('you already read this file')
   })
 
+  it('forwards postToolUse toolResult.textResultForLlm to token-goat as canonical.tool_response', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({
+        sessionId: 's1',
+        cwd: '/tmp',
+        toolName: 'view',
+        toolArgs: { path: '/big.txt' },
+        toolResult: { resultType: 'success', textResultForLlm: 'this file returned 219KB of text' },
+      }),
+      cwd,
+      env,
+    )
+
+    expect(stdout.trim()).toBe('{}')
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+    expect(captured.tool_response).toBe('this file returned 219KB of text')
+  })
+
+  it('does not set canonical.tool_response when postToolUse has no toolResult (e.g. preToolUse-shaped payloads)', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    const script =
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    fs.writeFileSync(binPath, script, 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+    runShim(
+      'postToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'view', toolArgs: { path: '/f.txt' } }),
+      cwd,
+      env,
+    )
+
+    const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+    expect(captured.tool_response).toBeUndefined()
+  })
+
   it('preCompact discards any token-goat response and always emits {} -- Copilot treats preCompact as notification-only', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(cwd, JSON.stringify({ systemMessage: 'session manifest here' }))
