@@ -72,8 +72,15 @@ export function stripCstyleComments(
           break
         }
         result += line.slice(j, open)
-        inComment = true
-        j = open
+        const close = line.indexOf('*/', open + 2)
+        if (close === -1) {
+          result += ' '.repeat(line.length - open)
+          inComment = true
+          break
+        }
+        result += ' '.repeat(close + 2 - open)
+        j = close + 2
+        inComment = false
       } else {
         const close = line.indexOf('*/', j)
         if (close === -1) {
