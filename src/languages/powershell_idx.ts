@@ -76,14 +76,24 @@ export function extractPowershell(
     if (!inBlockComment) {
       const openIdx = findUnquoted(rawLine, '<#')
       if (openIdx !== -1) {
-        const closeIdx = rawLine.indexOf('#>', openIdx + 2)
-        if (closeIdx !== -1) {
-          // Opens and closes on this same line: blank out the comment span
-          // (keeping column positions stable) and keep processing the rest of
-          // the line as normal code instead of short-circuiting the whole line.
-          line = rawLine.slice(0, openIdx) + ' '.repeat(closeIdx + 2 - openIdx) + rawLine.slice(closeIdx + 2)
-        } else {
-          inBlockComment = true
+        // A `<#` only opens a real block comment if no unquoted `#` line-comment
+        // marker appears earlier on the line. Otherwise the `<#` is just text
+        // sitting inside an ordinary `# ...` line comment (e.g. `# See <# for
+        // syntax details`), and treating it as an opener would leave
+        // inBlockComment stuck true for the rest of the file since no matching
+        // #> ever follows. Fall through to the line-comment stripping below instead.
+        const hashIdx = findUnquoted(rawLine, '#')
+        const isRealOpener = hashIdx === -1 || hashIdx >= openIdx
+        if (isRealOpener) {
+          const closeIdx = rawLine.indexOf('#>', openIdx + 2)
+          if (closeIdx !== -1) {
+            // Opens and closes on this same line: blank out the comment span
+            // (keeping column positions stable) and keep processing the rest of
+            // the line as normal code instead of short-circuiting the whole line.
+            line = rawLine.slice(0, openIdx) + ' '.repeat(closeIdx + 2 - openIdx) + rawLine.slice(closeIdx + 2)
+          } else {
+            inBlockComment = true
+          }
         }
       }
     }
