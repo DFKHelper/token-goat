@@ -23,19 +23,25 @@
  * `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking
  * `token-goat hook`, instead of relying on a guessed detection branch.
  *
- * Copilot's built-in tool names are `shell`, `write`, `read`, `url`,
- * `memory`, and MCP-server tool invocations (confirmed via
- * https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference).
- * Only the four with a clear token-goat equivalent are remapped
- * (shell->Bash, read->Read, write->Write, url->WebFetch); `memory` and MCP
- * tool calls are forwarded with their original name unchanged, which is safe
- * because token-goat's dispatch loop simply no-ops for tool names none of
- * its handlers are registered for. The exact `toolArgs` key names Copilot
- * sends per tool (e.g. whether the shell tool's command key is literally
- * `command`) were NOT enumerated in any fetched doc, so `toolArgs` is
- * forwarded to token-goat verbatim (no key renaming) and any `modifiedArgs`
- * token-goat returns is likewise passed back verbatim -- unconfirmed, flag
- * for follow-up if Copilot's real key names turn out to differ.
+ * Copilot's real built-in tool names -- confirmed via `@github/copilot-sdk`
+ * type definitions and multiple real GitHub issue payload dumps, superseding
+ * an earlier docs-based guess (`shell`/`write`/`read`/`url`) that didn't hold
+ * up in practice (`write` in particular was never a real `toolName` value at
+ * all, only a Copilot permission-pattern keyword) -- are `view`, `grep`
+ * (alias `rg`), `glob`, `bash`, `powershell`, `edit`, `create`, `web_fetch`,
+ * `task`, `ask_user`, `memory`, and MCP-server tool invocations (named
+ * `<server-name>-<tool-name>`). The ones with a clear token-goat equivalent
+ * are remapped (bash/powershell->Bash, view->Read, create->Write,
+ * edit->Edit, web_fetch->WebFetch, grep->Grep, glob->Glob); `task`,
+ * `ask_user`, `memory`, and MCP tool calls are forwarded with their original
+ * name unchanged, which is safe because token-goat's dispatch loop simply
+ * no-ops for tool names none of its handlers are registered for. The exact
+ * `toolArgs` key names Copilot sends per tool (e.g. whether the bash tool's
+ * command key is literally `command`) were NOT enumerated in any fetched
+ * doc, so `toolArgs` is forwarded to token-goat verbatim (no key renaming)
+ * and any `modifiedArgs` token-goat returns is likewise passed back verbatim
+ * -- unconfirmed, flag for follow-up if Copilot's real key names turn out to
+ * differ.
  */
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
@@ -44,29 +50,65 @@ export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
-// HOOK_EVENTS). Only these five have a token-goat handler; every other real
-// Copilot event (sessionEnd, userPromptSubmitted, postToolUseFailure,
-// subagentStart, errorOccurred, notification, permissionRequest) is left
-// unimplemented rather than guessed at, and falls through to the default
-// no-op below. 'sessionStart' is handled as a permanent no-op even though
-// it's a real Copilot event, because token-goat has no internal session_start
-// handler (mirrors PI_EXTENSION_SCRIPT's documented precedent).
+// HOOK_EVENTS). Only these six have a token-goat handler; every other real
+// Copilot event (sessionEnd, postToolUseFailure, subagentStart,
+// errorOccurred, notification, permissionRequest) is left unimplemented
+// rather than guessed at, and falls through to the default no-op below.
+// 'sessionStart' is handled as a permanent no-op even though it's a real
+// Copilot event, because token-goat has no internal session_start handler
+// (mirrors PI_EXTENSION_SCRIPT's documented precedent).
 const COPILOT_TO_TG_EVENT = {
   preToolUse: 'pre_tool_use',
   postToolUse: 'post_tool_use',
   preCompact: 'pre_compact',
   agentStop: 'stop',
   subagentStop: 'subagent_stop',
+  userPromptSubmitted: 'user_prompt_submit',
 }
 
-// Copilot built-in tool name -> token-goat internal tool name. 'memory' and
-// MCP-server tool invocations have no equivalent and are passed through
-// unmapped (safe no-op for handlers that don't recognize the name).
+// Copilot built-in tool name -> token-goat internal tool name. Confirmed via
+// @github/copilot-sdk type definitions and multiple real GitHub issue payload
+// dumps -- supersedes an earlier docs-based guess (shell/read/write/url) that
+// didn't hold up in practice; 'write' in particular was never a real
+// toolName value, only a Copilot permission-pattern keyword. 'powershell'
+// maps to the same 'Bash' handler as 'bash' since both are shell-command
+// execution from token-goat's perspective (mirrors how hooks_bash.ts's own
+// filters already treat powershell-wrapped commands as part of the Bash
+// pipeline, not a separate tool). 'task', 'ask_user', 'memory', and
+// MCP-server tool invocations (<server-name>-<tool-name>) have no
+// token-goat equivalent and are passed through unmapped (safe no-op for
+// handlers that don't recognize the name).
 const TOOL_TO_TG = {
-  shell: 'Bash',
-  read: 'Read',
-  write: 'Write',
-  url: 'WebFetch',
+  bash: 'Bash',
+  powershell: 'Bash',
+  view: 'Read',
+  create: 'Write',
+  edit: 'Edit',
+  web_fetch: 'WebFetch',
+  grep: 'Grep',
+  glob: 'Glob',
+}
+
+// Confirmed via github/copilot-cli#3349 (open, unresolved as of writing): some
+// real Copilot CLI invocations send toolArgs as a JSON-*encoded string*
+// rather than a parsed object, contradicting the documented schema. Left
+// unhandled, canonical.tool_input would become a raw string and every
+// downstream event.toolInput[key] lookup in token-goat's handlers would
+// silently return undefined -- the deny/dedup mechanism would no-op with no
+// error surfaced. Parse it defensively; on a non-string, absent, or
+// unparsable value, fall back to {} rather than throwing (this shim's
+// convention throughout is fail-open, never crash on a malformed payload).
+function parseMaybeJsonObject(value) {
+  if (value && typeof value === 'object') return value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      if (parsed && typeof parsed === 'object') return parsed
+    } catch {
+      // fall through to {}
+    }
+  }
+  return {}
 }
 
 function main() {
@@ -106,7 +148,7 @@ function main() {
   }
   if (toolName) {
     canonical.tool_name = TOOL_TO_TG[toolName] || toolName
-    canonical.tool_input = (payload && payload.toolArgs) || {}
+    canonical.tool_input = parseMaybeJsonObject(payload && payload.toolArgs)
   }
 
   // A single command string (not an args array) with shell: true, exactly like
@@ -160,13 +202,27 @@ function translate(copilotEvent, resp) {
     return {}
   }
 
-  // preCompact / agentStop / subagentStop: Copilot's docs (as fetched) do not
-  // enumerate an output schema for these three events. This maps the one
-  // context channel token-goat produces for them (systemMessage, per
-  // src/hook_registry.ts's serializeOutput) onto additionalContext as a
-  // best-effort guess -- unconfirmed, verify against Copilot's real behavior.
-  const context = extractContext(resp)
-  if (context) return { additionalContext: context }
+  if (copilotEvent === 'agentStop' || copilotEvent === 'subagentStop') {
+    // Confirmed against the hooks reference doc: the only accepted response
+    // shape for these two events is {decision, reason} -- additionalContext
+    // is not part of their schema and Copilot silently ignores it there.
+    // token-goat's internal 'stop'/'subagent_stop' handlers never return a
+    // real deny today (subagentStopHandler only ever logs and passes), but a
+    // future deny is mapped through here rather than silently dropped.
+    if (resp && resp.decision === 'block') {
+      const reason = (resp && resp.reason) || 'blocked by token-goat'
+      return { decision: 'block', reason: reason }
+    }
+    return { decision: 'allow' }
+  }
+
+  // preCompact / userPromptSubmitted: confirmed against the hooks reference
+  // doc that both are notification-only -- Copilot never reads a response
+  // body for either, so any additionalContext/systemMessage token-goat
+  // produces has no surfacing channel here. This still routes through the
+  // token-goat hook call above (unlike sessionStart's early no-op) so the
+  // internal handler's own side effects keep running; only the response is
+  // discarded.
   return {}
 }
 
@@ -177,5 +233,24 @@ function extractContext(resp) {
   return undefined
 }
 
-main()
+// Hard outer safety net, on top of main()'s own per-step try/catch fallbacks
+// (JSON.parse, readFileSync, spawnSync): a hook error must never itself cause
+// Copilot's fail-closed "(hook errored)" behavior, which denies EVERY tool
+// call unconditionally (the exact live-production failure mode behind
+// github/copilot-cli#4001). Any uncaught exception anywhere in this script --
+// including one a future code path adds that the existing per-step guards
+// don't anticipate -- still guarantees stdout gets valid JSON and the
+// process exits 0. process.exitCode is set explicitly and unconditionally at
+// the very end of every path so nothing upstream (e.g. an unhandled-rejection
+// warning in some Node versions nudging exit-code inference) can flip it.
+try {
+  main()
+} catch {
+  try {
+    process.stdout.write('{}')
+  } catch {
+    // stdout itself is broken; nothing more can be done here.
+  }
+}
+process.exitCode = 0
 `

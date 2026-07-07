@@ -185,12 +185,16 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
  * `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness
  * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
  */
-export function stripLineComment(line: string): string {
-  let idx = line.indexOf('//')
-  while (idx !== -1 && isInsideStringLiteral(line, idx)) {
-    idx = line.indexOf('//', idx + 1)
+export function stripLineComment(line: string, markers: string[] = ['//']): string {
+  let cutIdx = -1
+  for (const marker of markers) {
+    let idx = line.indexOf(marker)
+    while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+      idx = line.indexOf(marker, idx + 1)
+    }
+    if (idx !== -1 && (cutIdx === -1 || idx < cutIdx)) cutIdx = idx
   }
-  return idx === -1 ? line : line.slice(0, idx)
+  return cutIdx === -1 ? line : line.slice(0, cutIdx)
 }
 
 /**

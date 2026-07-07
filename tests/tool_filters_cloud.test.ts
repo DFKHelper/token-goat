@@ -732,11 +732,47 @@ describe('VaultFilter', () => {
   })
 
   it('shows first 5 list items then elides rest for long lists', () => {
-    const items = Array.from({ length: 15 }, (_, i) => `  secret-${i}`)
-    const stdout = ['Keys', ...items].join('\n')
+    // Realistic `vault kv list` output: flush-left keys, single-dash divider.
+    const items = Array.from({ length: 15 }, (_, i) => `secret-${i}`)
+    const stdout = ['Keys', '----', ...items].join('\n')
     const { text } = apply(f, stdout, '', 0, ['vault', 'kv', 'list', 'secret/'])
     const secretLines = text.split('\n').filter((l) => /secret-\d+/.test(l))
     expect(secretLines.length).toBeLessThanOrEqual(5)
+    expect(text).toContain('more secret path')
+  })
+
+  it('recognizes the real single-dash divider and keeps collecting keys through it', () => {
+    const stdout = ['Keys', '----', 'alpha', 'beta', 'gamma/'].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['vault', 'list', 'secret/'])
+    expect(text).toContain('alpha')
+    expect(text).toContain('beta')
+    expect(text).toContain('gamma/')
+    expect(text).not.toContain('----')
+  })
+
+  it('collapses a realistic full vault kv list transcript with real key names', () => {
+    const keys = [
+      'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf',
+      'hotel', 'india', 'juliet', 'kilo', 'lima',
+    ]
+    const stdout = ['Keys', '----', ...keys].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['vault', 'kv', 'list', 'secret/'])
+    const keyLines = text.split('\n').filter((l) => keys.includes(l.trim()))
+    expect(keyLines.length).toBeLessThanOrEqual(5)
+    expect(text).toContain('more secret path')
+  })
+
+  it('matches a full-path vault invocation for list collapsing', () => {
+    const keys = Array.from({ length: 12 }, (_, i) => `secret-${i}`)
+    const stdout = ['Keys', '----', ...keys].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['/usr/local/bin/vault', 'list', 'secret/'])
+    expect(text).toContain('more secret path')
+  })
+
+  it('matches a vault.exe invocation for list collapsing', () => {
+    const keys = Array.from({ length: 12 }, (_, i) => `secret-${i}`)
+    const stdout = ['Keys', '----', ...keys].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['vault.exe', 'kv', 'list', 'secret/'])
     expect(text).toContain('more secret path')
   })
 

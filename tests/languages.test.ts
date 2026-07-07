@@ -248,6 +248,23 @@ public class Foo {
     expect(constructors).toHaveLength(2)
     expect(constructors.map((c) => c.name)).toEqual(['Box', 'Box'])
   })
+
+  it('does not let a brace inside a trailing // comment desync scope depth', () => {
+    const content = `class Foo {
+    void Bar() {  // TODO: close the } here
+    }
+    void After() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: stripStringLiterals does not strip a trailing // comment, so the } inside
+    // it cancelled out the real { that opened Bar's body, desyncing braceDepth and popping
+    // Foo's scope one method early - After was mis-parented as top-level, not Foo's member.
+    const after = symbols.find((s) => s.name === 'After')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('Foo')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -389,6 +406,22 @@ function afterFoo() {}
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
     expect(afterFoo?.docstring).toBe('')
+  })
+
+  it('does not let a brace inside a trailing // or # comment desync scope depth', () => {
+    const content = `<?php
+class A {
+    const X = 1; // resets the } counter
+    public function method1() {}
+}
+`
+    const { symbols } = extractPhp(content, 'A.php')
+    // Regression: stripStringLiterals does not strip trailing // or # comments, so the }
+    // inside the comment on the const line was counted as real code, popping A's scope one
+    // declaration early and mis-parenting method1 as a top-level function instead of A's method.
+    const method1 = symbols.find((s) => s.name === 'method1')
+    expect(method1?.kind).toBe('method')
+    expect(method1?.docstring).toBe('A')
   })
 })
 

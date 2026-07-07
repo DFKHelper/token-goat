@@ -8,6 +8,7 @@ import {
   headTailCompress,
   maybeNote,
   pathName,
+  pathStem,
   positionalArgs,
 } from './helpers.js'
 
@@ -1064,14 +1065,14 @@ export const cdkFilter = new CdkFilter()
 // VaultFilter
 // ---------------------------------------------------------------------------
 
-const _VAULT_TABLE_DIVIDER_RE = /^\s*-{3,}\s+-{3,}\s*$/
+const _VAULT_TABLE_DIVIDER_RE = /^\s*-{3,}(?:\s+-{3,})?\s*$/
 const _VAULT_LEASE_META_RE =
   /^\s*(?:lease_(?:id|renewable|duration|accessor)|token_(?:policies|accessor|type|ttl|issue_time|expire_time|explicit_max_ttl|num_uses|renewable)|renewable|request_id)\s/i
 const _VAULT_SUCCESS_RE = /^\s*Success!\s+/i
 const _VAULT_HEADER_RE = /^\s*(?:WARNING|==>|Key\s+Value\s*$)/i
 const _VAULT_AUTH_HEADER_RE =
   /^\s*(?:Token\s+information:|The\s+token\s+information|Complete\s+the\s+following|vault\s+(?:kv|secrets|auth|policy|lease|token)\s)/i
-const _VAULT_LIST_ITEM_RE = /^\s{1,6}[a-zA-Z0-9_./-]+\/?$/
+const _VAULT_LIST_ITEM_RE = /^\s{0,6}[a-zA-Z0-9_./-]+\/?$/
 const _VAULT_LIST_HEADER_RE = /^\s*Keys\s*$/i
 const _VAULT_LIST_COLLAPSE_THRESHOLD = 10
 
@@ -1094,7 +1095,7 @@ export class VaultFilter extends ToolFilter {
 
     const isListCmd =
       argv.length >= 2 &&
-      argv[0]!.toLowerCase() === 'vault' &&
+      pathStem(argv[0]!).toLowerCase() === 'vault' &&
       ((argv[1]!.toLowerCase() === 'list') ||
         (argv.length >= 3 &&
           argv[1]!.toLowerCase() === 'kv' &&
