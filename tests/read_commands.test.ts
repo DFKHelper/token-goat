@@ -258,6 +258,16 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Inner' }))
     })
 
+    it('resolves a literal dotted symbol name via exact match before falling back to Class.method splitting (e.g. a TOML section)', () => {
+      const tomlSection: MockSymbol = { name: 'tool.poetry', kind: 'section', filePath: 'pyproject.toml', lineStart: 4, lineEnd: 4, body: '[tool.poetry]', docstring: '' }
+      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+        if (opts.name === 'tool.poetry') return [tomlSection] as unknown as ReturnType<typeof mockQuerySymbols>
+        return []
+      })
+      const { text: stdout } = runRead({ spec: 'pyproject.toml::tool.poetry' })
+      expect(stdout).toContain('[tool.poetry]')
+    })
+
     it('does not let a bare filename match an indexed path with a different prefix in the partial-path fallback (M34)', () => {
       // 'src/myutils.ts'.endsWith('utils.ts') is true, but requesting `utils.ts` must not
       // resolve to a completely different file that merely happens to share a suffix.
