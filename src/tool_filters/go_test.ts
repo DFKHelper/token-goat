@@ -153,6 +153,7 @@ export class GoTestFilter extends ToolFilter {
       }
       // Suppress RUN/PAUSE/CONT both outside and inside fail blocks, but remember the most recent one in case a panic follows.
       if (TEST_RPC_RE.test(line)) {
+        if (inFailBlock) inFailBlock = false
         lastRunLine = line
         droppedRun += 1
         continue
