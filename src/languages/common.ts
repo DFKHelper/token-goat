@@ -51,20 +51,68 @@ export function stripCstyleComments(
   text: string,
   lineCommentRe?: RegExp,
 ): string {
-  // Strip block comments first
-  let out = text.replace(/\/\*[\s\S]*?\*\//g, (m) => {
-    // Preserve newlines so line numbers stay correct
-    return m.replace(/[^\n]/g, ' ')
-  })
+  // Strip block comments first, quote-aware (like isInsideStringLiteral /
+  // stripBlockCommentSpan below) so a stray "/*" inside a string literal is not
+  // mistaken for a real comment opener. Comment content is blanked with spaces
+  // (not removed) so line/column offsets are preserved.
+  const lines = text.split('\n')
+  let inComment = false
+  const outLines: string[] = []
+  for (const line of lines) {
+    let result = ''
+    let j = 0
+    while (j < line.length) {
+      if (!inComment) {
+        let open = line.indexOf('/*', j)
+        while (open !== -1 && isInsideStringLiteral(line, open)) {
+          open = line.indexOf('/*', open + 1)
+        }
+        if (open === -1) {
+          result += line.slice(j)
+          break
+        }
+        result += line.slice(j, open)
+        inComment = true
+        j = open
+      } else {
+        const close = line.indexOf('*/', j)
+        if (close === -1) {
+          result += ' '.repeat(line.length - j)
+          break
+        }
+        result += ' '.repeat(close + 2 - j)
+        j = close + 2
+        inComment = false
+      }
+    }
+    outLines.push(result)
+  }
+  let out = outLines.join('\n')
   if (lineCommentRe !== undefined) {
     out = out.replace(lineCommentRe, (m) => ' '.repeat(m.length))
   }
   return out
 }
 
-/** Strip GraphQL / shell / Python style ``# …`` line comments. */
+/**
+ * Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an
+ * open single- or double-quoted string literal on the same line is not treated as a comment
+ * starter, so e.g. a GraphQL description string containing a literal `#` is preserved.
+ * Blank-fills (rather than deletes) the comment span so line/column offsets are preserved for
+ * downstream line-based symbol extraction, matching `stripSqlLineComments` below.
+ */
 export function stripHashComments(text: string): string {
-  return text.replace(/#[^\n]*/g, '')
+  return text
+    .split('\n')
+    .map((line) => {
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === '#' && !isInsideStringLiteral(line, i)) {
+          return line.slice(0, i) + ' '.repeat(line.length - i)
+        }
+      }
+      return line
+    })
+    .join('\n')
 }
 
 /** Strip SQL ``-- …`` line comments. */

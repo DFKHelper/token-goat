@@ -133,14 +133,14 @@ describe('read_commands', () => {
   describe('runSymbol', () => {
     it('returns 1 when no symbols found', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { stderr } = capture(() => { runSymbol({ name: 'missing' }) })
+      const { text: stderr } = runSymbol({ name: 'missing' })
       expect(stderr).toContain('missing')
     })
 
     it('returns 0 and prints symbols when found', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'src/foo.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       mockQuerySymbols.mockReturnValue([sym as Parameters<typeof mockQuerySymbols>[0] extends infer _O ? never : never] as unknown as ReturnType<typeof mockQuerySymbols>)
-      const { stdout } = capture(() => { runSymbol({ name: 'myFunc' }) })
+      const { text: stdout } = runSymbol({ name: 'myFunc' })
       expect(stdout).toContain('myFunc')
     })
 
@@ -148,7 +148,7 @@ describe('read_commands', () => {
       const sym: MockSymbol = { name: 'fn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function fn() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      const { stdout } = capture(() => { runSymbol({ name: 'fn', json: true }) })
+      const { text: stdout } = runSymbol({ name: 'fn', json: true })
       const parsed = JSON.parse(stdout) as unknown[]
       expect(Array.isArray(parsed)).toBe(true)
     })
@@ -172,7 +172,7 @@ describe('read_commands', () => {
     it('reads a plain file when no :: separator', () => {
       const f = path.join(tempDir, 'plain.txt')
       fs.writeFileSync(f, 'hello world')
-      const { stdout } = capture(() => { runRead({ spec: f }) })
+      const { text: stdout } = runRead({ spec: f })
       expect(stdout).toContain('hello world')
     })
 
@@ -186,7 +186,7 @@ describe('read_commands', () => {
       } as unknown as ReturnType<typeof loadConfig>)
       const f = path.join(tempDir, 'huge.txt')
       fs.writeFileSync(f, 'x'.repeat(2000))
-      const { stdout } = capture(() => { runRead({ spec: f }) })
+      const { text: stdout } = runRead({ spec: f })
       expect(stdout).toContain('output capped at ~50 tokens')
       expect(stdout).not.toContain('x'.repeat(2000))
     })
@@ -198,19 +198,19 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'huge2.txt')
       const body = 'x'.repeat(2000)
       fs.writeFileSync(f, body)
-      const { stdout } = capture(() => { runRead({ spec: f }) })
+      const { text: stdout } = runRead({ spec: f })
       expect(stdout).toContain(body)
       expect(stdout).not.toContain('output capped at')
     })
 
     it('returns 1 when file does not exist', () => {
-      const code = runRead({ spec: path.join(tempDir, 'nope.txt') })
+      const { code } = runRead({ spec: path.join(tempDir, 'nope.txt') })
       expect(code).toBe(1)
     })
 
     it('returns 1 when symbol not found', () => {
       mockQuerySymbols.mockReturnValue([])
-      const code = runRead({ spec: 'src/foo.ts::missing' })
+      const { code } = runRead({ spec: 'src/foo.ts::missing' })
       expect(code).toBe(1)
     })
 
@@ -218,7 +218,7 @@ describe('read_commands', () => {
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
+      const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
       expect(stdout).toContain('myFn')
     })
 
@@ -229,7 +229,7 @@ describe('read_commands', () => {
       const sym: MockSymbol = { name: 'hugeFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 500, body: 'x'.repeat(2000), docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::hugeFn' }) })
+      const { text: stdout } = runRead({ spec: 'src/foo.ts::hugeFn' })
       expect(stdout).toContain('output capped at ~50 tokens')
       expect(stdout).toContain('Request a specific method (file.py::Class.method) or use --json for structured access.')
       expect(stdout).not.toContain('x'.repeat(2000))
@@ -240,7 +240,7 @@ describe('read_commands', () => {
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 10, body: 'function myFn() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
+      const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
       expect(stdout).toContain('# 6 lines')
     })
 
@@ -267,7 +267,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [wrongMatch as any]
       })
-      const code = runRead({ spec: 'utils.ts::helper' })
+      const { code } = runRead({ spec: 'utils.ts::helper' })
       expect(code).toBe(1)
     })
 
@@ -278,7 +278,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [rightMatch as any]
       })
-      const { stdout } = capture(() => { runRead({ spec: 'utils.ts::helper' }) })
+      const { text: stdout } = runRead({ spec: 'utils.ts::helper' })
       expect(stdout).toContain('helper')
     })
 
@@ -293,7 +293,7 @@ describe('read_commands', () => {
         if (opts.name === 'ClassB') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
         return []
       })
-      const { stdout } = capture(() => { runRead({ spec: 'src/comp.ts::ClassB.render' }) })
+      const { text: stdout } = runRead({ spec: 'src/comp.ts::ClassB.render' })
       expect(stdout).toContain('ClassB.render body')
       expect(stdout).not.toContain('ClassA.render body')
     })
@@ -314,62 +314,59 @@ describe('read_commands', () => {
       }
 
       it('reads an inclusive N-M range', () => {
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-4` }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@2-4` })
         expect(stdout).toContain('two\nthree\nfour')
         expect(stdout).not.toContain('one')
         expect(stdout).not.toContain('five')
       })
 
       it('reads a single line with @N', () => {
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@3` }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@3` })
         expect(stdout).toContain('three')
         expect(stdout).not.toContain('two')
         expect(stdout).not.toContain('four')
       })
 
       it('does not count a trailing newline as an extra line', () => {
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@1-99` }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@1-99` })
         expect(stdout).toContain('# lines 1-5 of 5')
         expect(stdout.trimEnd().endsWith('five')).toBe(true)
       })
 
       it('clamps an end past EOF to the last line', () => {
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@4-100` }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@4-100` })
         expect(stdout).toContain('four\nfive')
         expect(stdout).toContain('# lines 4-5 of 5')
       })
 
       it('errors when start > end', () => {
-        let code = 0
-        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@5-2` }) })
+        const { text: stderr, code } = runRead({ spec: `${rangeFile()}@5-2` })
         expect(code).toBe(1)
         expect(stderr).toContain('before start')
       })
 
       it('errors when start < 1', () => {
-        let code = 0
         // Assert the range-specific message, not just the exit code: a plain file-not-found also returns 1, so a code-only check would pass even with the range path disabled.
-        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@0-3` }) })
+        const { text: stderr, code } = runRead({ spec: `${rangeFile()}@0-3` })
         expect(code).toBe(1)
         expect(stderr).toContain('start must be >= 1')
       })
 
       it('errors when start is past EOF', () => {
-        let code = 0
-        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@99` }) })
+        const { text: stderr, code } = runRead({ spec: `${rangeFile()}@99` })
         expect(code).toBe(1)
         expect(stderr).toContain('past end of file')
       })
 
       it('reads an out-of-project path without consulting the index', () => {
         // Line-range reads must not require an indexed project (closes the out-of-project read gap). The symbol index is never queried.
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-3` }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@2-3` })
         expect(stdout).toContain('two\nthree')
         expect(mockQuerySymbols).not.toHaveBeenCalled()
       })
 
       it('emits structured JSON with the json flag', () => {
-        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-3`, json: true }) })
+        const { text: stdout } = runRead({ spec: `${rangeFile()}@2-3`, json: true })
         const parsed = JSON.parse(stdout) as { start: number; end: number; lines: string[] }
         expect(parsed.start).toBe(2)
         expect(parsed.end).toBe(3)
@@ -389,7 +386,7 @@ describe('read_commands', () => {
         const f = path.join(tempDir, 'biglines.txt')
         const bigLines = Array.from({ length: 200 }, (_, i) => `line ${i} `.repeat(10)).join('\n')
         fs.writeFileSync(f, bigLines)
-        const { stdout } = capture(() => { runRead({ spec: `${f}@1-200` }) })
+        const { text: stdout } = runRead({ spec: `${f}@1-200` })
         expect(stdout).toContain('output capped at ~50 tokens')
         expect(stdout).toContain("Request a smaller line range, e.g. 'file.py::100-150'.")
       })
@@ -409,7 +406,7 @@ describe('read_commands', () => {
         ])
         const newContent = 'export function newSymbol() {\n  return 2\n}'
         fs.writeFileSync(f, newContent)
-        const { stdout } = capture(() => { runRead({ spec: `${f}::oldSymbol` }) })
+        const { text: stdout } = runRead({ spec: `${f}::oldSymbol` })
         expect(stdout).toContain('oldSymbol')
       })
 
@@ -426,7 +423,7 @@ describe('read_commands', () => {
             body: 'export function newSymbol() {\n  return 2\n}',
           } as never,
         ])
-        capture(() => { runRead({ spec: `${f}::newSymbol`, forceRefresh: true }) })
+        runRead({ spec: `${f}::newSymbol`, forceRefresh: true })
         expect(mockIndexFileSync).toHaveBeenCalled()
       })
 
@@ -434,15 +431,14 @@ describe('read_commands', () => {
         const f = path.join(tempDir, 'notes@2024')
         const content = 'file content with @ in name'
         fs.writeFileSync(f, content)
-        const { stdout } = capture(() => { runRead({ spec: f }) })
+        const { text: stdout } = runRead({ spec: f })
         expect(stdout).toContain('file content with @ in name')
       })
 
       it('still correctly reads a line range when the stripped base file does not exist (file@N-M with no file)', () => {
         const f = path.join(tempDir, 'nonexistent.txt')
         // The file does NOT exist, so @2-4 should try to be a range read and fail with "file not found" or similar
-        let code = 0
-        const { stderr } = capture(() => { code = runRead({ spec: `${f}@2-4` }) })
+        const { text: stderr, code } = runRead({ spec: `${f}@2-4` })
         expect(code).toBe(1)
         // Should complain about file not existing, not about line range parsing
         expect(stderr).toContain('nonexistent.txt')
@@ -454,7 +450,7 @@ describe('read_commands', () => {
 
   describe('runSection', () => {
     it('returns 1 for invalid spec without ::', () => {
-      const code = runSection({ spec: 'no-separator' })
+      const { code } = runSection({ spec: 'no-separator' })
       expect(code).toBe(1)
     })
 
@@ -468,14 +464,14 @@ describe('read_commands', () => {
     it('returns 1 when section not found', () => {
       mockReadSection.mockReturnValue(null)
       mockListAllSections.mockReturnValue(['Other'])
-      const { stderr } = capture(() => { runSection({ spec: 'README.md::Install' }) })
+      const { text: stderr } = runSection({ spec: 'README.md::Install' })
       expect(stderr).toContain('Install')
     })
 
     it('shows full heading list on section miss', () => {
       mockReadSection.mockReturnValue(null)
       mockListAllSections.mockReturnValue(['Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing'])
-      const { stderr } = capture(() => { runSection({ spec: 'README.md::Nonexistent' }) })
+      const { text: stderr } = runSection({ spec: 'README.md::Nonexistent' })
       expect(stderr).toContain('Available sections')
       expect(stderr).toContain('Introduction')
       expect(stderr).toContain('API Reference')
@@ -485,14 +481,14 @@ describe('read_commands', () => {
     it('prints section content when found', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
-      const { stdout } = capture(() => { runSection({ spec: 'README.md::Install' }) })
+      const { text: stdout } = runSection({ spec: 'README.md::Install' })
       expect(stdout).toContain('npm install')
     })
 
     it('annotates the header with a redirect note when a prefix redirect resolved it (#92)', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Business / logic\nbody', heading: 'Business / logic', lineStart: 1, lineEnd: 2, redirectedFrom: 'Business' } as any)
-      const { stdout } = capture(() => { runSection({ spec: 'doc.md::Business' }) })
+      const { text: stdout } = runSection({ spec: 'doc.md::Business' })
       expect(stdout).toContain("redirected from: 'Business'")
       expect(stdout).toContain('Business / logic')
     })
@@ -500,14 +496,14 @@ describe('read_commands', () => {
     it('omits the redirect note on an exact match (#92)', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Setup\nbody', heading: 'Setup', lineStart: 1, lineEnd: 2 } as any)
-      const { stdout } = capture(() => { runSection({ spec: 'doc.md::Setup' }) })
+      const { text: stdout } = runSection({ spec: 'doc.md::Setup' })
       expect(stdout).not.toContain('redirected from')
     })
 
     it('emits JSON when json flag is set', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Hello', heading: 'Hello', startLine: 1, endLine: 2 } as any)
-      const { stdout } = capture(() => { runSection({ spec: 'doc.md::Hello', json: true }) })
+      const { text: stdout } = runSection({ spec: 'doc.md::Hello', json: true })
       const parsed = JSON.parse(stdout) as { heading: string }
       expect(parsed.heading).toBe('Hello')
     })
@@ -518,7 +514,7 @@ describe('read_commands', () => {
       } as unknown as ReturnType<typeof loadConfig>)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: 'x'.repeat(2000), heading: 'Install', lineStart: 1, lineEnd: 400 } as any)
-      const { stdout } = capture(() => { runSection({ spec: 'README.md::Install' }) })
+      const { text: stdout } = runSection({ spec: 'README.md::Install' })
       expect(stdout).toContain('output capped at ~50 tokens')
       expect(stdout).toContain("Request a narrower sub-heading, e.g. 'doc.md::Section#2'.")
       expect(stdout).not.toContain('x'.repeat(2000))
@@ -530,7 +526,7 @@ describe('read_commands', () => {
   describe('runSkeleton', () => {
     it('returns 1 when no symbols found', () => {
       mockQuerySymbols.mockReturnValue([])
-      const code = runSkeleton({ file: 'missing.ts' })
+      const { code } = runSkeleton({ file: 'missing.ts' })
       expect(code).toBe(1)
     })
 
@@ -541,7 +537,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts' }) })
+      const { text: stdout } = runSkeleton({ file: 'a.ts' })
       expect(stdout).toContain('Skeleton')
       expect(stdout).toContain('2 symbols')
     })
@@ -553,7 +549,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts', minLines: 10 }) })
+      const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10 })
       expect(stdout).toContain('1 symbols')
       expect(stdout).toContain('30 lines')
     })
@@ -565,7 +561,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts', minLines: 10, json: true }) })
+      const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10, json: true })
       const parsed = JSON.parse(stdout) as Array<{ name: string }>
       expect(parsed).toHaveLength(1)
       expect(parsed[0]?.name).toBe('large')
@@ -582,7 +578,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts' }) })
+      const { text: stdout } = runSkeleton({ file: 'a.ts' })
       expect(stdout).toContain('2 symbols')
       expect(stdout).toContain('100 lines')
     })
@@ -593,7 +589,7 @@ describe('read_commands', () => {
   describe('runOutline', () => {
     it('returns 1 when no symbols found', () => {
       mockQuerySymbols.mockReturnValue([])
-      const code = runOutline({ file: 'empty.ts' })
+      const { code } = runOutline({ file: 'empty.ts' })
       expect(code).toBe(1)
     })
 
@@ -603,7 +599,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runOutline({ file: 'f.ts' }) })
+      const { text: stdout } = runOutline({ file: 'f.ts' })
       expect(stdout).toContain('10')
       expect(stdout).toContain('myFunc')
     })
@@ -615,7 +611,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runOutline({ file: 'f.ts', minLines: 10, json: true }) })
+      const { text: stdout } = runOutline({ file: 'f.ts', minLines: 10, json: true })
       const parsed = JSON.parse(stdout) as Array<{ name: string }>
       expect(parsed).toHaveLength(1)
       expect(parsed[0]?.name).toBe('large')
@@ -631,7 +627,7 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
-      const { stdout } = capture(() => { runOutline({ file: 'f.ts', stats: true, json: true }) })
+      const { text: stdout } = runOutline({ file: 'f.ts', stats: true, json: true })
       const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
       const used = parsed.find((p) => p.name === 'used')
       const unused = parsed.find((p) => p.name === 'unused')
@@ -649,7 +645,7 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
-      const { stdout } = capture(() => { runSkeleton({ file: 'f.ts', stats: true, json: true }) })
+      const { text: stdout } = runSkeleton({ file: 'f.ts', stats: true, json: true })
       const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
       const used = parsed.find((p) => p.name === 'used')
       const unused = parsed.find((p) => p.name === 'unused')
@@ -667,7 +663,7 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
-      const { stdout } = capture(() => { runOutline({ file: 'f.ts', stats: true }) })
+      const { text: stdout } = runOutline({ file: 'f.ts', stats: true })
       expect(stdout).toContain('2 refs')
       expect(stdout).toContain('documented')
       expect(stdout).toContain('0 refs')
@@ -680,7 +676,7 @@ describe('read_commands', () => {
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      capture(() => { runOutline({ file: 'f.ts' }) })
+      runOutline({ file: 'f.ts' })
       expect(mockQueryRefCounts).not.toHaveBeenCalled()
     })
   })

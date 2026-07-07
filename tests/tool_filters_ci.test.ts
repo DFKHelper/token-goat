@@ -951,6 +951,43 @@ describe('BanditFilter output', () => {
   it('handles empty stdout without throwing', () => {
     expect(() => apply(f, '', argv)).not.toThrow()
   })
+
+  it('keeps a HIGH severity issue header before its numbered source-context lines', () => {
+    const issueWithContext =
+      '>> Issue: [B301:unsafe_serialize] Unsafe deserialization detected.\n' +
+      '   Severity: High   Confidence: Medium\n' +
+      '   CWE: CWE-502\n' +
+      '   Location: src/load.py:10:4\n' +
+      '   More Info: https://bandit.readthedocs.io/en/latest/\n' +
+      '9\tdef load(data):\n' +
+      '10\t    return pickle.loads(data)\n' +
+      '11\t\n' +
+      '--------------------------------------------------\n'
+    const out = apply(f, banditOutput([issueWithContext]), argv)
+    const headerIdx = out.indexOf('>> Issue: [B301:unsafe_serialize]')
+    const contextIdx = out.indexOf('return pickle.loads(data)')
+    expect(headerIdx).toBeGreaterThanOrEqual(0)
+    expect(contextIdx).toBeGreaterThanOrEqual(0)
+    expect(headerIdx).toBeLessThan(contextIdx)
+  })
+
+  it('does not leak numbered source-context lines from a collapsed LOW severity issue', () => {
+    const lowIssueWithContext =
+      '>> Issue: [B105:hardcoded_password_string] Possible hardcoded password.\n' +
+      '   Severity: Low   Confidence: Medium\n' +
+      '   CWE: CWE-259\n' +
+      '   Location: ./app.py:12:8\n' +
+      '   More Info: https://bandit.readthedocs.io/en/latest/\n' +
+      '11\tdef foo():\n' +
+      '12\t    password = "hunter2"\n' +
+      '13\t    return password\n' +
+      '--------------------------------------------------\n'
+    const out = apply(f, banditOutput([lowIssueWithContext]), argv)
+    expect(out).not.toContain('hunter2')
+    expect(out).not.toContain('def foo():')
+    expect(out).not.toContain('return password')
+    expect(out.toLowerCase()).toMatch(/collapsed|low/)
+  })
 })
 
 // ---------------------------------------------------------------------------

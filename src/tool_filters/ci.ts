@@ -725,8 +725,10 @@ export class BanditFilter extends ToolFilter {
         continue
       }
 
-      // Inside an issue block
-      if (inIssue && (_BANDIT_ISSUE_META_RE.test(line) || line.trim().startsWith('--') || line.trim() === '')) {
+      // Inside an issue block — buffer every line unconditionally (including
+      // numbered source-context lines) until the closing separator/blank
+      // line decides keep-vs-drop.
+      if (inIssue) {
         issueBuf.push(line)
         if (line.trim() === '' || line.trim().startsWith('--')) {
           flushIssue()

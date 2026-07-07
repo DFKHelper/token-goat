@@ -33,7 +33,7 @@ const PROPERTY_RE = new RegExp(
   '([A-Z][A-Za-z0-9_]*)\\s*\\{[^}]*(?:get|set)',
 )
 const CONSTRUCTOR_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static)\\s+)+' +
+  '^\\s+(?:(?:public|protected|private|internal|static)\\s+)*' +
   '([A-Z][A-Za-z0-9_]*)\\s*\\(',
 )
 const CLASS_HEADER_RE = new RegExp(

@@ -322,11 +322,23 @@ npx token-goat install --pi --local
 
 This writes `.pi/extensions/token-goat.ts` in the current project only. Remove it by deleting that file.
 
-### Cline, Windsurf, Cursor, Copilot CLI, and other AI tool CLIs
+### Copilot CLI users
+
+```
+token-goat install --copilot
+```
+
+The `--copilot` flag patches Claude Code and registers a Copilot CLI hook config: `~/.copilot/hooks/token-goat.json` (a `{ version, hooks }` file registering `preToolUse`, `postToolUse`, `preCompact`, `agentStop`, and `subagentStop`, per Copilot's own [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)) plus the shim script it points at, `~/.copilot/hooks/token-goat-shim.js`. Unlike Codex, Copilot's event names and response schema (`permissionDecision`/`modifiedArgs` for `preToolUse`, `modifiedResult`/`additionalContext` for `postToolUse`) genuinely differ from Claude Code's, so the shim translates rather than passes through.
+
+What works: **bash output compression and re-read denial** (`preToolUse` returns `modifiedArgs` or `permissionDecision: "deny"`), **image shrinking and post-edit indexing** (`postToolUse` returns `additionalContext`), and the **compaction manifest** (`preCompact`). Copilot's built-in tool names (`shell`, `read`, `write`, `url`, `memory`, and MCP-server calls) are remapped onto token-goat's internal names where a clear match exists (`shell`→Bash, `read`→Read, `write`→Write, `url`→WebFetch); `memory` and MCP tool calls pass through unmapped and simply no-op.
+
+No ambient environment variable documents "this process is running under Copilot CLI" the way Codex/opencode set one, so the shim sets `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before calling `token-goat hook` (same workaround `--pi` uses). To install for one project instead of user scope: `token-goat install --copilot --local` (writes `.github/hooks/token-goat.json` in the current project). To remove: `token-goat uninstall --copilot`.
+
+### Cline, Windsurf, Cursor, and other AI tool CLIs
 
 No separate install step needed. Token-goat compresses the terminal output of these tools automatically as soon as they appear on your PATH. Run `token-goat doctor` to confirm they are detected — the "Third-party AI tools" section will show `detected — bash output compression active`.
 
-Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor`), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
+Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`windsurf`, including Cascade AI patterns), **Cursor** (`cursor`), **GitHub Copilot CLI** (`gh copilot explain/suggest` and the standalone `copilot` binary — this passive output filter is separate from the `--copilot` hook bridge above; it works with no install step and covers Copilot CLI's own terminal chrome, not the hook-driven read/index integrations), **Aider** (`aider`), **Continue** (`continue`), **OpenCode** (`opencode`). Each filter strips version banners, spinner/thinking lines, token-usage boilerplate, and tool-call progress noise while keeping the AI response body, error signals, and any user-approval prompts verbatim.
 
 ### Updating
 
@@ -454,6 +466,43 @@ To check overhead for your current skills: `token-goat skill-size`. To inspect c
 
 `token-goat install` now pre-generates compacts for all installed skills as its final step, so compacts are ready from the first session. If you install new skills after the initial install, run `token-goat skill-compact --all` manually — or check `token-goat doctor --context` which reports how many skills were added since the last pre-gen pass and shows the exact command to run.
 
+## MCP server
+
+```
+token-goat mcp-serve
+```
+
+Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing `read`, `symbol`, `section`, `outline`, `skeleton`, and `semantic` as tools that call the same in-process logic the CLI commands do — no subprocess spawn per call.
+
+**VS Code** — add it to `.vscode/mcp.json` under the `"servers"` key (this is the correct root key for VS Code's MCP config; it is not `"mcpServers"`):
+
+```json
+{
+  "servers": {
+    "token-goat": {
+      "type": "stdio",
+      "command": "token-goat",
+      "args": ["mcp-serve"]
+    }
+  }
+}
+```
+
+**Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "token-goat": {
+      "command": "token-goat",
+      "args": ["mcp-serve"]
+    }
+  }
+}
+```
+
+**Caveat.** Registering the server does not force any harness to prefer it. Unlike the hook-based bridges elsewhere in this project — which intercept a `Read`/`Grep`/`Glob` call before it reaches the model and can redirect or deny it outright — an MCP tool is just one more option in the harness's own tool-selection decision. Copilot (or any other MCP-aware client) decides for itself whether to call token-goat's `read` tool or fall back to its own built-in file-read tool; there is no interception mechanism for MCP the way there is for hooks.
+
 ## What gets installed?
 
 `token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Run `token-goat doctor` at any time to see which of these are currently present.
@@ -519,6 +568,13 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 | Path | What |
 |------|------|
 | `~/.pi/agent/extensions/token-goat.ts` | TypeScript extension (default-exported `ExtensionAPI` factory). Subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact`. Covers bash compression, re-read denial, pressure-scaled surgical-read redirects for oversized first reads, image shrinking, post-edit indexing, output caching, and the compaction manifest. A project-local install writes `<project>/.pi/extensions/token-goat.ts` instead. |
+
+**With `--copilot`** (Copilot CLI hook bridge)
+
+| Path | What |
+|------|------|
+| `~/.copilot/hooks/token-goat.json` | Hook config (`{ version, hooks }`) registering `preToolUse`, `postToolUse`, `preCompact`, `agentStop`, and `subagentStop`, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched. |
+| `~/.copilot/hooks/token-goat-shim.js` | The shim `token-goat.json`'s hook commands invoke (`node "<path>"`). Translates Copilot's event names and response schema (`permissionDecision`/`modifiedArgs`, `additionalContext`) to/from token-goat's internal hook protocol. Regenerated on every `install --copilot` run. A project-local install (`--copilot --local`) writes `<project>/.github/hooks/token-goat.json` and `<project>/.github/hooks/token-goat-shim.js` instead. |
 
 **With `--hermes`** (Hermes Agent integration)
 
@@ -773,7 +829,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, or `--copilot` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 

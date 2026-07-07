@@ -20,3 +20,14 @@ export {
   uninstallCodex,
 } from './codex_install.js'
 export type { CodexInstallResult } from './codex_install.js'
+export { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
+export {
+  copilotCliConfigPath,
+  copilotCliProjectHooksDir,
+  copilotCliScriptPath,
+  copilotCliUserHooksDir,
+  installCopilotCli,
+  isCopilotCliInstalled,
+  uninstallCopilotCli,
+} from './copilot_cli_install.js'
+export type { CopilotCliInstallResult, CopilotCliScopeOptions } from './copilot_cli_install.js'
