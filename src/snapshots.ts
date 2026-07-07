@@ -147,7 +147,9 @@ export function store(
   const sha = crypto.createHash('sha256').update(stored).digest('hex')
 
   try {
-    if (fs.existsSync(p)) {
+    const isNewEntry = !fs.existsSync(p)
+
+    if (!isNewEntry) {
       try {
         const existing = fs.readFileSync(p)
         if (Buffer.from(existing).equals(stored)) {
@@ -167,7 +169,9 @@ export function store(
       fs.mkdirSync(dir, { recursive: true })
     }
 
-    evictOldest(dir, MAX_SNAPSHOTS_PER_SESSION - 1)
+    if (isNewEntry) {
+      evictOldest(dir, MAX_SNAPSHOTS_PER_SESSION - 1)
+    }
 
     // Write atomically via temp file
     const tempPath = p + '.tmp'

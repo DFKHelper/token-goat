@@ -32,6 +32,8 @@ import {
 import { storeBlob } from '../src/disk_cache.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { importSessionState, recordBashOutput, recordFileEdit, recordFileRead, recordWebFetch, type FileEntry } from '../src/session.js'
+import { postBashHandler } from '../src/hooks_bash.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 /** Build a minimal {@link FileEntry} for SessionCacheObject.files fixtures. */
 function fileEntry(p: string, overrides: Partial<FileEntry> = {}): FileEntry {
@@ -687,6 +689,107 @@ describe('compact', () => {
       expect(manifest).toContain('## Recent bash')
       expect(manifest).toContain('## Web fetches')
       expect(manifest).toContain('https://example.com/page')
+    })
+  })
+
+  // End-to-end coverage for two fields that compact.ts reads but that nothing
+  // used to write, so their contributions were permanently dead:
+  //   - symbols_read -> symbolsBonus (was always 0)
+  //   - created_ts   -> session-age budget multiplier (was always the young/0.6 tier)
+  // These drive the REAL production path (postBashHandler hook / saveSessionState
+  // writer -> loadSessionCache reader -> compact consumer), not a hand-built cache,
+  // so they fail against the pre-fix dead-code behavior and pass once wired.
+  describe('dead-field wiring (symbolsBonus + created_ts)', () => {
+    let prevHome: string | undefined
+    let tmpHome: string
+
+    beforeEach(() => {
+      prevHome = process.env['TOKEN_GOAT_HOME']
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-deadfield-'))
+      process.env['TOKEN_GOAT_HOME'] = tmpHome
+      resetSessionState()
+    })
+
+    afterEach(() => {
+      resetSessionState()
+      if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+      else process.env['TOKEN_GOAT_HOME'] = prevHome
+      try {
+        fs.rmSync(tmpHome, { recursive: true, force: true })
+      } catch {
+        // best-effort cleanup
+      }
+    })
+
+    function postBash(command: string): Promise<unknown> {
+      return postBashHandler(
+        makeHookEvent({
+          eventName: 'post_tool_use',
+          toolName: 'Bash',
+          toolInput: { command },
+          sessionId: 'deadfield-session',
+          raw: { tool_name: 'Bash', tool_input: { command }, tool_response: 'ok', cwd: tmpHome },
+        }),
+      )
+    }
+
+    // Bug 1: a surgical `token-goat read file::symbol` must, via the real hook,
+    // mark the file's session entry with symbols_read so computeAdaptiveBudget's
+    // symbolsBonus fires. Pre-fix nothing wrote the field, so symbolFiles was
+    // always 0 and the bonus 0 (budget would be 200 here, not 350).
+    it('rewards surgical reads recorded through the real postBashHandler hook path', async () => {
+      const files = ['alpha', 'beta', 'gamma', 'delta', 'epsilon']
+      for (const name of files) {
+        const abs = path.join(tmpHome, `${name}.ts`).replace(/\\/g, '/')
+        await postBash(`token-goat read ${abs}::sym_${name}`)
+      }
+      saveSessionState('symbols-e2e')
+
+      const cache = loadSessionCache('symbols-e2e')
+      expect(cache).not.toBeNull()
+      const symbolFiles = (cache!.files ?? []).filter(
+        (f) => ((f as unknown as Record<string, unknown>)['symbols_read'] as unknown[] | undefined)?.length,
+      )
+      // All five surgical reads must have persisted their symbols_read token.
+      expect(symbolFiles).toHaveLength(5)
+
+      // age 4000s + zero edits -> activity factor 1.0, so no minTotal floor masks
+      // the bonus: rawTotal = base(200) + symbolsBonus(min(150, 5*30)=150) = 350.
+      const budget = computeAdaptiveBudget(cache ?? {}, 4000)
+      expect(budget).toBe(350)
+      // Sanity: with no symbol reads the same age yields only the base 200.
+      expect(computeAdaptiveBudget({}, 4000)).toBe(200)
+    })
+
+    // Bug 2: buildManifestAdaptive scales its budget by the session cache's real
+    // age, derived from the persisted created_ts. Pre-fix created_ts was never
+    // written and loadSessionCache dropped it, so age was always 0 (young tier)
+    // and an old cache produced the same budget as a fresh one.
+    it('scales the manifest budget by the real persisted cache age (created_ts)', () => {
+      // 40 edited files so the "## Edited files" section is budget-limited: a
+      // bigger (older) budget lists more of them, making the effect observable.
+      for (let i = 0; i < 40; i++) recordFileEdit(`/proj/src/edited${i}.ts`)
+      saveSessionState('age-e2e')
+
+      const p = path.join(tmpHome, SESSIONS_SUBDIR, 'age-e2e.json')
+      const nowSecs = Math.floor(Date.now() / 1000)
+      const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>
+
+      // Mature cache: created ~4000s ago (>3600s tier). 40 edits over ~66min keeps
+      // edit density above the 0.3/min floor, so the multiplier stays at 1.4.
+      raw['created_ts'] = nowSecs - 4000
+      fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
+      const matureManifest = buildManifestAdaptive('age-e2e')
+
+      // Young cache: created just now -> 0.6 tier.
+      raw['created_ts'] = nowSecs
+      fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
+      const youngManifest = buildManifestAdaptive('age-e2e')
+
+      // The mature cache's larger budget must list strictly more edited files.
+      const editedLines = (m: string): number =>
+        (m.split('## Edited files')[1]?.split('##')[0]?.match(/^- /gm) ?? []).length
+      expect(editedLines(matureManifest)).toBeGreaterThan(editedLines(youngManifest))
     })
   })
 })

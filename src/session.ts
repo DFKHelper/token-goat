@@ -42,6 +42,15 @@ export interface FileEntry {
   readonly sizeBytes: number
   /** True when a Read result contained a truncation marker ([Truncated:). */
   readonly wasTruncated?: boolean
+  /**
+   * Symbol/section/range tokens this file was read *surgically* by this session
+   * (via `token-goat read|section "file::symbol"` and friends), as opposed to a
+   * whole-file Read. Non-empty means the file was engaged with narrowly, which
+   * compact.ts's `computeAdaptiveBudget` rewards with a manifest-budget bonus.
+   * Populated by {@link recordSymbolRead}; never touched by
+   * {@link recordFileRead} (whole-file Read tracking is unchanged).
+   */
+  readonly symbols_read?: string[]
 }
 
 // path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
@@ -149,6 +158,41 @@ export function recordFileRead(filePath: string): void {
     lastReadAt: now,
     sizeBytes: size,
   })
+}
+
+/** Upper bound on distinct symbol tokens tracked per file, so a session that reads many symbols of one file can't grow its entry unboundedly. */
+const MAX_SYMBOLS_PER_FILE = 25
+
+/**
+ * Record that `filePath` was read *surgically* (by symbol/section/range) this
+ * session, e.g. via `token-goat read "file::symbol"`. This is deliberately
+ * separate from {@link recordFileRead}: a surgical CLI read is not a whole-file
+ * Read tool fire, so it must NOT bump `readCount` (that field means Read-tool
+ * hits). It records the narrowing token on the file's entry so the compaction
+ * manifest can reward files that were engaged with narrowly. If the file has no
+ * entry yet (surgically read but never Read-tooled), a `readCount: 0` entry is
+ * created so the read is still represented; otherwise the existing entry is
+ * annotated in place, leaving its read/edit state untouched.
+ */
+export function recordSymbolRead(filePath: string, symbol: string): void {
+  const normalized = normalizePath(filePath)
+  const key = resolveFilesKey(normalized)
+  const prev = _files.get(key)
+  if (prev === undefined) {
+    _files.set(key, {
+      path: key,
+      readCount: 0,
+      lastReadAt: Date.now(),
+      wasEdited: false,
+      sizeBytes: fileSize(normalized),
+      symbols_read: [symbol],
+    })
+    return
+  }
+  const existing = prev.symbols_read ?? []
+  if (existing.includes(symbol)) return
+  const symbols_read = [...existing, symbol].slice(-MAX_SYMBOLS_PER_FILE)
+  _files.set(key, { ...prev, symbols_read })
 }
 
 /** Snapshot of each file's readCount exactly as it was at hydration time, before this process
@@ -402,6 +446,13 @@ export interface SerializedSession {
   fileLineRanges?: Array<[string, Array<[number, number]>]>
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
+  /**
+   * Unix time in *seconds* at which this session's on-disk cache was first
+   * written. Set exactly once by `session_store.ts::saveSessionState` and
+   * preserved across every later write, so it marks cache creation, not last
+   * modification. compact.ts derives the session-age budget multiplier from it.
+   */
+  created_ts?: number
 }
 
 /** Snapshot the current in-memory session state for persistence. */

@@ -660,6 +660,25 @@ fun afterFoo(): Int {
     expect(outerMethod?.kind).toBe('method')
     expect(outerMethod?.docstring).toBe('Outer')
   })
+
+  it('does not drop top-level declarations after a class whose body opens and closes on the same line', () => {
+    const content = `class Empty {}
+
+fun afterEmpty(): Int {
+  return 1
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    // Regression: an empty class body (`class Empty {}`) has a net brace delta of zero for its
+    // line, so bodyEntered never flipped true and the class frame was never popped - every
+    // declaration after it, including afterEmpty, was silently dropped instead of being
+    // recognized as a top-level function.
+    const empty = symbols.find((s) => s.name === 'Empty')
+    expect(empty?.kind).toBe('class')
+    const afterEmpty = symbols.find((s) => s.name === 'afterEmpty')
+    expect(afterEmpty?.kind).toBe('function')
+    expect(afterEmpty?.docstring).toBe('')
+  })
 })
 
 // ---------------------------------------------------------------------------

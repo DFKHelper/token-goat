@@ -784,6 +784,21 @@ Some content that makes the file large enough`
     }
   })
 
+  it('does not count a Grep toward the Read-specific re-read counter, so a first real Read after two Greps on the same file still passes (regression: recordFileRead used to fire unconditionally in several branches even for Grep events, inflating the counter the Read-only deny check relies on)', () => {
+    const p = makeTmpFile('x'.repeat(5 * 1024))
+
+    // Two Greps on the same file. The count-based deny check explicitly exempts Grep, so
+    // neither of these should feed the Read-specific read-count either.
+    const g1 = preReadHandler(grepEvent(p))
+    expect(g1.hookType).toBe('pass')
+    const g2 = preReadHandler(grepEvent(p))
+    expect(g2.hookType).toBe('pass')
+
+    // First real Read of this file: must pass, not be denied as "already read this session".
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+  })
+
   it('counts a 3rd physical read as reads=2 even when it arrives under different path casing than the first-seen key (regression: the reread-count lookup used a direct getSessionFiles().get(normalized) instead of the case-fold-aware resolution recordFileRead/wasFileReadThisSession use, so a differently-cased 3rd read under-reported as reads=1 and returned "context" instead of "deny")', () => {
     const prevCaseEnv = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'

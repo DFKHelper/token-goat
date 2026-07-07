@@ -545,6 +545,31 @@ describe('GitDiffFilter stat rollup', () => {
     expect(result).toContain('new/ (21 files,')
     expect(result).not.toContain('old/')
   })
+
+  // Regression: git's --stat bar-graph glyphs are WIDTH-SCALED once a file's true change count
+  // exceeds --stat-width -- the +/- ratio survives scaling but the absolute glyph count does not
+  // (e.g. a real 900/100 split can render as only 45 '+' / 5 '-' characters). Counting bar glyphs
+  // directly silently undercounted large diffs by up to ~20x; the fix recovers the true split from
+  // the line's numeric total column instead.
+  it('recovers real insert/delete counts from a width-scaled stat bar instead of undercounting', () => {
+    const smallFiles = Array.from({ length: 20 }, (_, i) => ` small/file${i}.py | 1 +`)
+    const bigFile = ` big/file.ts | 1000 ${'+'.repeat(45)}${'-'.repeat(5)}`
+    const summary = ' 21 files changed, 1020 insertions(+), 100 deletions(-)'
+    const text = [...smallFiles, bigFile, summary].join('\n')
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat'])
+    expect(result).toContain('big/ (1 file, +900/-100)')
+    expect(result).toContain('small/ (20 files, +20/-0)')
+  })
+
+  it('pathspec truncation branch also recovers real counts instead of undercounting the scaled bar', () => {
+    const headFiles = Array.from({ length: 10 }, (_, i) => ` src/head${i}.py | 1 +`)
+    const elidedSmall = Array.from({ length: 14 }, (_, i) => ` src/mid${i}.py | 1 +`)
+    const bigFile = ` src/big.ts | 1000 ${'+'.repeat(45)}${'-'.repeat(5)}`
+    const summary = ' 25 files changed, 1029 insertions(+), 100 deletions(-)'
+    const text = [...headFiles, ...elidedSmall, bigFile, summary].join('\n')
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat', '--', 'src/'])
+    expect(result).toContain('+15 more files changed, +914 -100 lines')
+  })
 })
 
 // ---------------------------------------------------------------------------

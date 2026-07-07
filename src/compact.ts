@@ -116,6 +116,13 @@ export interface SessionCacheObject {
   files?: FileEntry[]
   symbolAccessCounts?: Record<string, number>
   skillHistory?: Record<string, unknown>
+  /**
+   * Unix time in *seconds* the on-disk session cache was first created (written
+   * once by session_store.ts::saveSessionState). buildManifestAdaptive derives
+   * the session-age budget multiplier from it; undefined for a cache written
+   * before this field existed (age then treated as 0).
+   */
+  created_ts?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +620,12 @@ export function loadSessionCache(sessionId: string): SessionCacheObject | null {
   if (!disk) {
     return null
   }
-  return { files: disk.files, webFetches: disk.webFetches, bashOutputs: disk.bashOutputs }
+  return {
+    files: disk.files,
+    webFetches: disk.webFetches,
+    bashOutputs: disk.bashOutputs,
+    ...(disk.created_ts !== undefined ? { created_ts: disk.created_ts } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -773,7 +785,7 @@ export function buildManifestAdaptive(sessionId: string): string {
     return ''
   }
 
-  const createdTs = (cache as unknown as Record<string, unknown>)['created_ts'] as number | undefined
+  const createdTs = cache.created_ts
   const ageSecs = createdTs ? Math.max(0, Date.now() / 1000 - createdTs) : 0
 
   const budget = computeAdaptiveBudget(cache, ageSecs, {

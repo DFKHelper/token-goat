@@ -53,4 +53,36 @@ describe('markdown symbol extraction ignores fenced code blocks', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('does not let a nested ``` example close an outer ```` fence early', async () => {
+    // Regression: fence-close was checked by matching only the first backtick
+    // character, not the run length, so a 3-backtick line nested inside an
+    // outer 4-backtick fence wrongly closed it early (CommonMark requires a
+    // closing run >= the opening run's length).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-md-fence-'))
+    const file = path.join(dir, 'doc.md')
+    const md = [
+      '# Real',
+      '',
+      '````markdown',
+      "Here's an example:",
+      '```',
+      '# not a heading',
+      '```',
+      'More content after.',
+      '````',
+      '',
+      '## Tail',
+    ].join('\n')
+    fs.writeFileSync(file, md)
+    try {
+      const result = await parseFile(file)
+      const headings = result.symbols.filter((s) => s.kind === 'heading').map((s) => s.name)
+      expect(headings).toContain('Real')
+      expect(headings).toContain('Tail')
+      expect(headings).not.toContain('not a heading')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -567,3 +567,40 @@ describe('ignores command', () => {
     expect(parsed.walkMode).toBe('git')
   })
 })
+
+describe('isProjectFrame path boundary check', () => {
+  it('does not match sibling directories with similar names (regression: path boundary bug with startsWith)', () => {
+    // Bug: if project root is /tmp/abc, a frame from /tmp/abc-fork/file.py should NOT match
+    // because startsWith("/tmp/abc") on "/tmp/abc-fork/file.py" returns true without boundary check.
+    const sibling = tmpDir + '-fork'
+    const traceback = [
+      'Traceback (most recent call last):',
+      `  File "${sibling}/src/something.py", line 1, in test`,
+      '    result = helper()',
+      'ValueError: bad input',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: traceback, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }> }> }
+    // The fork path should NOT be treated as a project frame (0 frames)
+    // If the bug exists, this will fail and show 1 frame instead of 0
+    expect(parsed.tracebacks[0]?.frames.length).toBe(0)
+  })
+
+  it('still matches actual project subdirectories and exact project root', () => {
+    // Real project frames should still be matched
+    const traceback = [
+      'Traceback (most recent call last):',
+      `  File "${tmpDir}/src/something.py", line 1, in test`,
+      '    result = helper()',
+      `  File "${tmpDir}", line 2, in root`,
+      '    run()',
+      'ValueError: bad input',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: traceback, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }> }> }
+    // Both the subdirectory and the exact root should be treated as project frames (2 frames)
+    expect(parsed.tracebacks[0]?.frames.length).toBe(2)
+  })
+})

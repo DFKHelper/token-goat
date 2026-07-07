@@ -73,14 +73,22 @@ function asFileEntry(raw: unknown): FileEntry | null {
   ) {
     return null
   }
-  const entry: FileEntry = {
+  let entry: FileEntry = {
     path: o['path'],
     readCount: o['readCount'],
     lastReadAt: o['lastReadAt'],
     wasEdited: o['wasEdited'],
     sizeBytes: o['sizeBytes'],
   }
-  return o['wasTruncated'] === true ? { ...entry, wasTruncated: true } : entry
+  if (o['wasTruncated'] === true) entry = { ...entry, wasTruncated: true }
+  // Preserve the surgical-read tokens so compact.ts's symbolsBonus survives a
+  // save -> load round-trip; without this the field is silently dropped and the
+  // bonus is always zero.
+  if (Array.isArray(o['symbols_read'])) {
+    const symbols = (o['symbols_read'] as unknown[]).filter((s): s is string => typeof s === 'string')
+    if (symbols.length > 0) entry = { ...entry, symbols_read: symbols }
+  }
+  return entry
 }
 
 /**
@@ -168,6 +176,7 @@ function coerce(raw: unknown): SerializedSession {
     fileLineRanges: asLineRanges(o['fileLineRanges']),
     cliReads,
     pendingLargeFileHints,
+    ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
 }
 
@@ -185,14 +194,19 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   // real read from the same starting point sum to two instead of collapsing to one.
   const baseline = filesReadCountAtLoad().get(b.path) ?? 0
   const newReadsThisProcess = Math.max(0, b.readCount - baseline)
-  const merged: FileEntry = {
+  let merged: FileEntry = {
     path: a.path,
     readCount: a.readCount + newReadsThisProcess,
     lastReadAt: Math.max(a.lastReadAt, b.lastReadAt),
     wasEdited: a.wasEdited || b.wasEdited,
     sizeBytes: newest.sizeBytes,
   }
-  return a.wasTruncated || b.wasTruncated ? { ...merged, wasTruncated: true } : merged
+  if (a.wasTruncated || b.wasTruncated) merged = { ...merged, wasTruncated: true }
+  // Union the surgical-read tokens from both views so a concurrent process's
+  // symbol reads are not clobbered by whichever save lands last.
+  const symbols = Array.from(new Set([...(a.symbols_read ?? []), ...(b.symbols_read ?? [])]))
+  if (symbols.length > 0) merged = { ...merged, symbols_read: symbols }
+  return merged
 }
 
 function mergePairs(disk: Array<[string, string]>, mem: Array<[string, string]>): Array<[string, string]> {
@@ -264,6 +278,14 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
+    // Prefer the value already on disk: it marks the original creation time, and
+    // must never be bumped forward to the merge's "now". `mem` never carries one
+    // (it is not tracked in memory), so this is really "keep whatever disk has".
+    ...(disk.created_ts !== undefined
+      ? { created_ts: disk.created_ts }
+      : mem.created_ts !== undefined
+        ? { created_ts: mem.created_ts }
+        : {}),
   }
 }
 
@@ -336,6 +358,12 @@ export function saveSessionState(sessionId: string): void {
     const writeMerged = (): true => {
       const disk = readDiskState(p)
       const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
+      // Stamp the cache's creation time exactly once, on the first write that
+      // produces no inherited value (disk had none and mem carries none). Every
+      // later write inherits it via readDiskState -> coerce -> mergeSessionState,
+      // so it represents creation, not last-modification. Unit: seconds, matching
+      // compact.ts's `Date.now() / 1000 - created_ts` age computation.
+      if (merged.created_ts === undefined) merged.created_ts = Date.now() / 1000
       atomicWriteText(p, JSON.stringify(merged))
       return true
     }
