@@ -1466,5 +1466,45 @@ function Get-Foo {
     expect(foo).toBeDefined()
     expect(foo?.kind).toBe('function')
   })
+
+  it('does not treat a literal <# inside a # line comment as a real block-comment opener', () => {
+    const content = `# See <# for syntax details
+function Get-Foo { $x = 1 }
+function Get-Bar { $y = 2 }
+`
+    const { symbols } = extractPowershell(content, 'hash_then_marker.ps1')
+    // Regression: the `#` line comment starts before the `<#` sequence, so `<#` here is just
+    // text inside ordinary comment prose, not a real block-comment opener. Mistaking it for one
+    // leaves inBlockComment stuck true (no #> ever follows), silently dropping every symbol
+    // from this point to EOF.
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Foo')
+    expect(names).toContain('Get-Bar')
+  })
+
+  it('still opens a real multi-line block comment when <# appears before any # marker', () => {
+    const content = `<#
+  Real block comment
+  spanning multiple lines
+#>
+function Get-Foo {
+  return 1
+}
+`
+    const { symbols } = extractPowershell(content, 'real_block_comment.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Foo')
+  })
+
+  it('still handles a real single-line <# ... #> block comment', () => {
+    const content = `<# single line block comment #>
+function Get-Foo {
+  return 1
+}
+`
+    const { symbols } = extractPowershell(content, 'real_singleline_block_comment.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Foo')
+  })
 })
 })
