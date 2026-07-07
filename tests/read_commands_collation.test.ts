@@ -30,21 +30,6 @@ const { querySymbols } = await import('../src/index_reader.js')
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 
-/** Capture stdout for a runRead() call. */
-function capture(fn: () => number): { code: number; stdout: string } {
-  let stdout = ''
-  const origWrite = process.stdout.write.bind(process.stdout)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(process.stdout as any).write = (s: string) => { stdout += s; return true }
-  try {
-    const code = fn()
-    return { code, stdout }
-  } finally {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(process.stdout as any).write = origWrite
-  }
-}
-
 const SEEDED_SYMBOL = {
   filePath: 'c:/proj/Foo.ts',
   name: 'login',
@@ -68,14 +53,14 @@ describe('runRead path-collation handling', () => {
 
   it('case-insensitive FS: resolves a symbol via the fallback when the requested path differs only in case', () => {
     simulateCaseInsensitiveFs = true
-    const { code, stdout } = capture(() => runRead({ spec: 'c:/proj/foo.ts::login' }))
+    const { code, text: stdout } = runRead({ spec: 'c:/proj/foo.ts::login' })
     expect(code).toBe(0)
     expect(stdout).toContain('function login()')
   })
 
   it('case-sensitive FS: does not resolve a symbol whose indexed path differs only in case', () => {
     simulateCaseInsensitiveFs = false
-    const { code } = capture(() => runRead({ spec: 'c:/proj/foo.ts::login' }))
+    const { code } = runRead({ spec: 'c:/proj/foo.ts::login' })
     expect(code).toBe(1)
   })
 })

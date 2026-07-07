@@ -10,10 +10,12 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
-import { querySymbols, queryRefs, queryRefCounts } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { globalDbPath } from './constants.js'
+import { getDb } from './db.js'
+import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
@@ -70,9 +72,12 @@ function emitErr(text: string): void {
  * never call this — line-based truncation would corrupt the JSON payload.
  */
 function emitGuarded(text: string, command: string): void {
+  emit(guardText(text, command))
+}
+
+function guardText(text: string, command: string): string {
   const cfg = loadConfig()
-  const payload = cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
-  emit(payload)
+  return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
 }
 
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
@@ -126,7 +131,7 @@ export interface SymbolOptions {
 }
 
 /** Handle ``token-goat symbol <name>``. */
-export function runSymbol(opts: SymbolOptions): number {
+export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
   if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file)
@@ -136,13 +141,11 @@ export function runSymbol(opts: SymbolOptions): number {
   const results = querySymbols(queryOpts)
 
   if (results.length === 0) {
-    emitErr(`No matches for '${opts.name ?? '*'}'`)
-    return 1
+    return { text: `No matches for '${opts.name ?? '*'}'`, code: 1 }
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
-    return 0
+    return { text: JSON.stringify(results, null, 2), code: 0 }
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
@@ -151,8 +154,7 @@ export function runSymbol(opts: SymbolOptions): number {
     const preview = sym.body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
-  emit(blocks.join('\n\n'))
-  return 0
+  return { text: blocks.join('\n\n'), code: 0 }
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -182,40 +184,40 @@ function parseLineRange(spec: string): { file: string; start: number; end: numbe
 }
 
 // Read an inclusive, 1-indexed line range straight from disk. Index-independent (raw fs read), so it works for files in any project and for paths outside every indexed project root.
-function runLineRange(range: { file: string; start: number; end: number }, opts: ReadOptions): number {
+function runLineRange(
+  range: { file: string; start: number; end: number },
+  opts: ReadOptions,
+): { text: string; code: number } {
   const { file, start, end } = range
   if (start < 1) {
-    emitErr(`Invalid line range: start must be >= 1 (got ${start})`)
-    return 1
+    return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
   }
   if (end < start) {
-    emitErr(`Invalid line range: end (${end}) is before start (${start})`)
-    return 1
+    return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
   }
   const text = readFileText(file)
   if (text === null) {
-    emitErr(`Could not read: ${file}`)
-    return 1
+    return { text: `Could not read: ${file}`, code: 1 }
   }
   const allLines = text.split(/\r?\n/)
   // A trailing newline terminates the last line rather than starting a new empty one; drop the phantom empty element split() appends so the line count matches editor/symbol-read conventions.
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
   if (start > allLines.length) {
-    emitErr(`Line ${start} is past end of file (${allLines.length} lines): ${file}`)
-    return 1
+    return { text: `Line ${start} is past end of file (${allLines.length} lines): ${file}`, code: 1 }
   }
   const clampedEnd = Math.min(end, allLines.length)
   const slice = allLines.slice(start - 1, clampedEnd)
   if (opts.json === true) {
-    emit(JSON.stringify({ file, start, end: clampedEnd, lines: slice }, null, 2))
-    return 0
+    return { text: JSON.stringify({ file, start, end: clampedEnd, lines: slice }, null, 2), code: 0 }
   }
   const tok = Math.ceil(slice.join('\n').length / 4)
-  emitGuarded(
-    [`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'),
-    'lines',
-  )
-  return 0
+  return {
+    text: guardText(
+      [`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'),
+      'lines',
+    ),
+    code: 0,
+  }
 }
 
 // Resolves a `file::symbol` spec to its indexed SymbolEntry, including dotted-path ("Class.method")
@@ -275,7 +277,7 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
 }
 
 /** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
-export function runRead(opts: ReadOptions): number {
+export function runRead(opts: ReadOptions): { text: string; code: number } {
   const range = parseLineRange(opts.spec)
   if (range !== null) return runLineRange(range, opts)
 
@@ -284,26 +286,23 @@ export function runRead(opts: ReadOptions): number {
   if (symbol === undefined || symbol === '') {
     const text = readFileText(file)
     if (text === null) {
-      emitErr(`Could not read: ${file}`)
-      return 1
+      return { text: `Could not read: ${file}`, code: 1 }
     }
-    emitGuarded(text, 'symbol')
-    return 0
+    return { text: guardText(text, 'symbol'), code: 0 }
   }
 
   const match = resolveSymbolSpec(opts.spec, opts.forceRefresh)
 
   if (match === null) {
-    emitErr(`Symbol '${symbol}' not found in '${file}'`)
+    const messages = [`Symbol '${symbol}' not found in '${file}'`]
     const resolved = resolveIndexPath(file)
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
-    if (closes.length > 0) emitErr(didYouMean(closes))
-    return 1
+    if (closes.length > 0) messages.push(didYouMean(closes))
+    return { text: messages.join('\n'), code: 1 }
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(match, null, 2))
-    return 0
+    return { text: JSON.stringify(match, null, 2), code: 0 }
   }
 
   const bodyLen = match.lineEnd - match.lineStart + 1
@@ -311,8 +310,7 @@ export function runRead(opts: ReadOptions): number {
     `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
     match.body,
   ]
-  emitGuarded(trimBlankLines(lines).join('\n'), 'symbol')
-  return 0
+  return { text: guardText(trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- section ----------------------------------------------------------------
@@ -323,41 +321,41 @@ export interface SectionOptions {
 }
 
 /** Handle ``token-goat section "file::Heading"``. */
-export function runSection(opts: SectionOptions): number {
+export function runSection(opts: SectionOptions): { text: string; code: number } {
   const colonIdx = findSpecSeparator(opts.spec)
   if (colonIdx === -1) {
-    emitErr(`Invalid section spec — expected "file::Heading", got: ${opts.spec}`)
-    return 1
+    return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
   }
   const filePath = opts.spec.slice(0, colonIdx)
   const heading = opts.spec.slice(colonIdx + 2)
 
   const result = readSection(filePath, heading)
   if (result === null) {
-    emitErr(`Section '${heading}' not found in '${filePath}'`)
+    const messages = [`Section '${heading}' not found in '${filePath}'`]
     const available = listAllSections(filePath)
     if (available.length > 0) {
       const lines = ['Available sections:']
       for (const s of available) {
         lines.push(`  - ${s}`)
       }
-      emitErr(lines.join('\n'))
+      messages.push(lines.join('\n'))
     }
-    return 1
+    return { text: messages.join('\n'), code: 1 }
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(result, null, 2))
-    return 0
+    return { text: JSON.stringify(result, null, 2), code: 0 }
   }
 
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  emitGuarded(
-    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
-    'heading',
-  )
-  return 0
+  return {
+    text: guardText(
+      `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
+      'heading',
+    ),
+    code: 0,
+  }
 }
 
 // ---- refs -------------------------------------------------------------------
@@ -475,7 +473,7 @@ export interface SkeletonOptions {
 }
 
 /** Handle ``token-goat skeleton file``. */
-export function runSkeleton(opts: SkeletonOptions): number {
+export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const resolved = resolveIndexPath(opts.file)
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -483,8 +481,7 @@ export function runSkeleton(opts: SkeletonOptions): number {
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    emitErr(`No indexed symbols found in '${opts.file}'`)
-    return 1
+    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
   }
 
   const filtered =
@@ -495,8 +492,8 @@ export function runSkeleton(opts: SkeletonOptions): number {
   const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
 
   if (opts.json === true) {
-    emit(
-      JSON.stringify(
+    return {
+      text: JSON.stringify(
         filtered.map((s) => ({
           name: s.name,
           kind: s.kind,
@@ -509,21 +506,21 @@ export function runSkeleton(opts: SkeletonOptions): number {
         null,
         2,
       ),
-    )
-    return 0
+      code: 0,
+    }
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
-  emit(`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`)
+  const lines: string[] = [`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`]
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
     const statsStr =
       refCounts !== undefined
         ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
         : ''
-    emit(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
+    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  return 0
+  return { text: lines.join('\n'), code: 0 }
 }
 
 // ---- outline ----------------------------------------------------------------
@@ -537,7 +534,7 @@ export interface OutlineOptions {
 }
 
 /** Handle ``token-goat outline file``. */
-export function runOutline(opts: OutlineOptions): number {
+export function runOutline(opts: OutlineOptions): { text: string; code: number } {
   const resolved = resolveIndexPath(opts.file)
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -545,8 +542,7 @@ export function runOutline(opts: OutlineOptions): number {
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    emitErr(`No indexed symbols found in '${opts.file}'`)
-    return 1
+    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
   }
 
   const filtered =
@@ -557,8 +553,8 @@ export function runOutline(opts: OutlineOptions): number {
   const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
 
   if (opts.json === true) {
-    emit(
-      JSON.stringify(
+    return {
+      text: JSON.stringify(
         refCounts !== undefined
           ? filtered.map((s) => ({
               ...s,
@@ -569,11 +565,11 @@ export function runOutline(opts: OutlineOptions): number {
         null,
         2,
       ),
-    )
-    return 0
+      code: 0,
+    }
   }
 
-  emit(`# Outline: ${opts.file}  (${filtered.length} symbols)`)
+  const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
@@ -583,9 +579,9 @@ export function runOutline(opts: OutlineOptions): number {
       refCounts !== undefined
         ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
         : ''
-    emit(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
+    lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
-  return 0
+  return { text: lines.join('\n'), code: 0 }
 }
 
 // ---- csv / pdf / screenshot --------------------------------------------------
@@ -1474,4 +1470,56 @@ export function extractTranscriptText(jsonl: string): string {
   return collected.join('\n')
 }
 
-export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections }
+/** First `n` lines of a body, for the semantic-search preview. */
+function previewLines(body: string, n: number): string {
+  return body.split(/\r?\n/).slice(0, n).join('\n')
+}
+
+/** `name (kind) — file:start-end` header line for a symbol. */
+function symbolHeader(s: SymbolEntry): string {
+  return `# ${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}-${s.lineEnd}`
+}
+
+interface SemanticOptions {
+  limit?: number
+}
+
+// Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
+// `guard` wrapper, which prefixes it with "token-goat: " before printing to stderr) on a
+// no-matches miss instead of returning a code. The "token-goat: " prefix is baked into the
+// returned text here so the CLI's output stays byte-identical to that historical path.
+async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
+  const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
+
+  // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
+  // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
+  // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
+  // than throwing when either is unavailable or nothing has been embedded yet, so this is
+  // always safe to try before falling back to keyword search.
+  //
+  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its
+  // own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits
+  // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
+  // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
+  const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
+  const rawHits = await searchSemantic(getDb(globalDbPath()), query, overFetchForMerge)
+  const hits = mergeNearbyHits(rawHits).slice(0, n)
+  if (hits.length > 0) {
+    const blocks = hits.map(
+      (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
+    )
+    return { text: blocks.join('\n\n'), code: 0 }
+  }
+
+  // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
+  // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
+  // distance threshold.
+  const results = searchSymbolsFts(query, n)
+  if (results.length === 0) {
+    return { text: `token-goat: no matches for '${query}'`, code: 1 }
+  }
+  const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
+  return { text: blocks.join('\n\n'), code: 0 }
+}
+
+export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections, runSemantic }

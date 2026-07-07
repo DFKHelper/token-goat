@@ -286,6 +286,16 @@ describe('go-test filter', () => {
     expect(nonNote.some((l) => l.startsWith('=== RUN'))).toBe(false)
   })
 
+  it('counts both normal (0.02s) and cached packages in the summary', () => {
+    const text =
+      '=== RUN   TestPassing\n' +
+      '--- PASS: TestPassing (0.00s)\n' +
+      'ok  \tgithub.com/org/normal-pkg\t0.015s\n' +
+      'ok  \tgithub.com/org/cached-pkg\t(cached)\n'
+    const result = goTestFilter.apply(text, '', 0, ['go', 'test', './...'])
+    expect(result.text).toContain('[2 packages passed')
+  })
+
   it('passes "go test -json" through unchanged (no compression markers)', () => {
     const jsonLines = [
       '{"Action":"run","Test":"TestFoo"}',

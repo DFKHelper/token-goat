@@ -23,6 +23,7 @@ export type HarnessName =
   | 'hermes'
   | 'openclaw'
   | 'pi'
+  | 'copilot_cli'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */

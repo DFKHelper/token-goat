@@ -31,6 +31,7 @@ const KNOWN_HARNESS_NAMES = new Set<string>([
   'hermes',
   'openclaw',
   'pi',
+  'copilot_cli',
   'generic',
 ])
 
@@ -58,6 +59,16 @@ const KNOWN_HARNESS_NAMES = new Set<string>([
  *  8. Gemini -- `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and no
  *     `ANTHROPIC_API_KEY`.
  *  9. `generic` -- no signal matched.
+ *
+ * `copilot_cli` (GitHub Copilot CLI) has no branch here: its documentation
+ * (hooks reference / use-hooks guide) lists `COPILOT_HOME` and
+ * `COPILOT_MODEL` as user-configurable overrides, not an ambient signal
+ * Copilot sets in every subprocess/tool-execution environment the way
+ * `CODEX_SESSION_ID` or `OPENCODE_SESSION_ID` are. Rather than guess, the
+ * Copilot bridge (src/bridges/copilot_cli.ts) sets
+ * `TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli` itself before invoking `token-goat
+ * hook`, the same workaround `pi` uses for the same reason (see PI_EXTENSION_SCRIPT
+ * in src/bridges/pi.ts).
  */
 export function detectHarness(): HarnessName {
   const env = process.env

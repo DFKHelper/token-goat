@@ -21,15 +21,11 @@ import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { searchSymbolsFts } from './index_reader.js'
-import { getDb } from './db.js'
-import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { indexFileSync, indexFileEmbeddings } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
 import { appendDirtyPath } from './hooks_index.js'
-import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import {
   installHooks,
@@ -46,6 +42,9 @@ import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
 import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
+import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
+import { createMcpServer } from './mcp_server.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -77,6 +76,7 @@ import {
   extractTranscriptText,
   extractSection,
   findSpecSeparator,
+  runSemantic,
 } from './read_commands.js'
 import {
   runCallers,
@@ -126,16 +126,6 @@ function err(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
-/** First `n` lines of a body, for the symbol-search preview. */
-function previewLines(body: string, n: number): string {
-  return body.split(/\r?\n/).slice(0, n).join('\n')
-}
-
-/** `name (kind) — file:start-end` header line for a symbol. */
-function symbolHeader(s: SymbolEntry): string {
-  return `# ${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}-${s.lineEnd}`
-}
-
 // Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean
 // CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3
 // rejects with an opaque "datatype mismatch" error).
@@ -175,40 +165,14 @@ function requirePositiveInt(flag: string, raw: string): number {
 
 // --- Command handlers -------------------------------------------------------
 
+// Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in
+// read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic
+// in-process without going through the CLI/commander layer.
 async function cmdSemantic(query: string, opts: { limit?: string }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const n = Number.isFinite(limit) ? limit : 20
-
-  // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
-  // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
-  // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
-  // than throwing when either is unavailable or nothing has been embedded yet, so this is
-  // always safe to try before falling back to keyword search.
-  //
-  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its
-  // own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits
-  // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
-  // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
-  const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const rawHits = await searchSemantic(getDb(globalDbPath()), query, overFetchForMerge)
-  const hits = mergeNearbyHits(rawHits).slice(0, n)
-  if (hits.length > 0) {
-    const blocks = hits.map(
-      (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
-    )
-    out(blocks.join('\n\n'))
-    return
-  }
-
-  // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
-  // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
-  // distance threshold.
-  const results = searchSymbolsFts(query, n)
-  if (results.length === 0) {
-    throw new CliError(`no matches for '${query}'`)
-  }
-  const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
-  out(blocks.join('\n\n'))
+  const { text, code } = await runSemantic(query, { limit })
+  ;(code === 0 ? out : err)(text)
+  process.exitCode = code
 }
 
 export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: string } = {}): Promise<void> {
@@ -273,6 +237,20 @@ function cmdMap(opts: { compact?: boolean }): void {
   }
 }
 
+// Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The
+// returned promise only resolves once the underlying Server reports its connection closed (via
+// the Protocol-level `onclose` hook, set after `connect()` so it's not clobbered by the wiring
+// `connect()` itself does to the transport's own `onclose`) -- resolving early here would let
+// `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
+async function cmdMcpServe(): Promise<void> {
+  const server = createMcpServer()
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  await new Promise<void>((resolve) => {
+    server.server.onclose = resolve
+  })
+}
+
 async function cmdHook(event: string): Promise<void> {
   // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
@@ -286,6 +264,7 @@ async function cmdInstall(opts: {
   opencode?: boolean
   hermes?: boolean
   openclaw?: boolean
+  copilot?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -349,6 +328,16 @@ async function cmdInstall(opts: {
       out(`OpenClaw integration already installed → ${openclawResult.configPath}`)
     } else {
       out(`Installed token-goat OpenClaw integration → ${openclawResult.configPath}, ${openclawResult.pluginPath}`)
+    }
+  }
+
+  // --copilot is additive, exactly like --codex above.
+  if (opts.copilot === true) {
+    const copilotResult = installCopilotCli()
+    if (copilotResult.alreadyInstalled) {
+      out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
+    } else {
+      out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}`)
     }
   }
 
@@ -419,6 +408,7 @@ function cmdUninstall(opts: {
   opencode?: boolean
   hermes?: boolean
   openclaw?: boolean
+  copilot?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -468,6 +458,16 @@ function cmdUninstall(opts: {
       openclawRemoved
         ? 'Removed token-goat OpenClaw integration.'
         : 'No token-goat OpenClaw integration to remove.',
+    )
+  }
+
+  // --copilot is additive, exactly like --codex above.
+  if (opts.copilot === true) {
+    const copilotRemoved = uninstallCopilotCli()
+    out(
+      copilotRemoved
+        ? 'Removed token-goat Copilot CLI integration.'
+        : 'No token-goat Copilot CLI integration to remove.',
     )
   }
 
@@ -714,6 +714,23 @@ async function cmdScreenshot(
 function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
+/**
+ * Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }`
+ * instead of printing directly. Writes `text` to stdout on success (code 0) or stderr
+ * otherwise, then maps `code` onto `process.exitCode` — preserving which stream each
+ * handler's message goes to (these handlers only ever write to one stream per call).
+ */
+function runExitText(fn: () => { text: string; code: number }): void {
+  try {
+    const { text, code } = fn()
+    ;(code === 0 ? out : err)(text)
+    process.exitCode = code
   } catch (e) {
     err(`token-goat: ${extractErrorMessage(e)}`)
     process.exitCode = 1
@@ -1572,7 +1589,7 @@ export function buildProgram(): Command {
     .option('-k, --kind <kind>', 'restrict to one kind (function, class, ...)')
     .option('-j, --json', 'output as JSON')
     .action((name: string, opts: { limit?: string; file?: string; kind?: string; json?: boolean }) =>
-      runExit(() =>
+      runExitText(() =>
         runSymbol({
           name,
           limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
@@ -1589,7 +1606,7 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean }) =>
-      runExit(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}), ...(opts.forceRefresh === true ? { forceRefresh: true } : {}) })),
+      runExitText(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}), ...(opts.forceRefresh === true ? { forceRefresh: true } : {}) })),
     )
 
   program
@@ -1613,11 +1630,9 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
     .action((spec: string, opts: { json?: boolean; list?: boolean }) =>
-      runExit(() =>
-        opts.list === true
-          ? runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}) })
-          : runSection({ spec, ...(opts.json === true ? { json: true } : {}) }),
-      ),
+      opts.list === true
+        ? runExit(() => runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}) }))
+        : runExitText(() => runSection({ spec, ...(opts.json === true ? { json: true } : {}) })),
     )
 
   program
@@ -1635,7 +1650,7 @@ export function buildProgram(): Command {
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
       (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
-        runExit(() =>
+        runExitText(() =>
           runSkeleton({
             file,
             ...(opts.json === true ? { json: true } : {}),
@@ -1655,7 +1670,7 @@ export function buildProgram(): Command {
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
       (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
-        runExit(() =>
+        runExitText(() =>
           runOutline({
             file,
             ...(opts.json === true ? { json: true } : {}),
@@ -1696,6 +1711,11 @@ export function buildProgram(): Command {
     .action(guard(cmdMap))
 
   program
+    .command('mcp-serve')
+    .description('run token-goat as an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic tools')
+    .action(guard(cmdMcpServe))
+
+  program
     .command('hook <event>')
     .description('hook relay entrypoint (reads JSON on stdin)')
     .action(guard(cmdHook))
@@ -1710,6 +1730,7 @@ export function buildProgram(): Command {
     .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
     .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
+    .option('--copilot', 'also register a Copilot CLI hook config (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -1723,6 +1744,7 @@ export function buildProgram(): Command {
     .option('--opencode', 'also remove the opencode plugin')
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
     .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
+    .option('--copilot', 'also remove the Copilot CLI hook config and shim script')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 

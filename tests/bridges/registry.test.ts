@@ -155,8 +155,8 @@ describe('harness detection', () => {
         expect(detectHarness()).toBe('openclaw')
       })
 
-      it('accepts every canonical harness name, including openclaw, pi, and hermes', () => {
-        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'generic']) {
+      it('accepts every canonical harness name, including openclaw, pi, copilot_cli, and hermes', () => {
+        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'copilot_cli', 'generic']) {
           process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = name
           expect(detectHarness()).toBe(name)
         }
@@ -165,6 +165,11 @@ describe('harness detection', () => {
       it('is the only way to resolve pi, since pi has no ambient env-var signal of its own', () => {
         process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'pi'
         expect(detectHarness()).toBe('pi')
+      })
+
+      it('is the only way to resolve copilot_cli, since Copilot CLI has no documented ambient env-var signal of its own', () => {
+        process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+        expect(detectHarness()).toBe('copilot_cli')
       })
 
       it('falls through to normal detection when set to an unrecognized value', () => {

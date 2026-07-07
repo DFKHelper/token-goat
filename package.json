@@ -1,6 +1,6 @@
 {
   "name": "token-goat",
-  "version": "2.6.4",
+  "version": "2.6.5",
   "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
   "type": "module",
   "main": "./dist/token-goat.mjs",
@@ -50,12 +50,14 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.3.0",
     "commander": "^12.1.0",
     "csv-parse": "^7.0.1",
     "html-to-text": "^10.0.0",
     "sharp": "^0.33.5",
-    "smol-toml": "^1.7.0"
+    "smol-toml": "^1.7.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -9,6 +9,7 @@ import { extractHtml } from '../src/languages/html.js'
 import { extractLiquid } from '../src/languages/liquid.js'
 import { extractKotlin } from '../src/languages/kotlin.js'
 import { extractGraphql } from '../src/languages/graphql_idx.js'
+import { stripHashComments } from '../src/languages/common.js'
 import { extractSql } from '../src/languages/sql_idx.js'
 import { extractIni, extractEnv } from '../src/languages/ini_idx.js'
 import { extractMakefile } from '../src/languages/makefile_idx.js'
@@ -233,6 +234,19 @@ public class Foo {
     const outerMethod = symbols.find((s) => s.name === 'OuterMethod')
     expect(outerMethod?.kind).toBe('method')
     expect(outerMethod?.docstring).toBe('Outer')
+  })
+
+  it('extracts constructors with no explicit access modifier', () => {
+    const content = `public class Box {
+    Box(int x) { }
+    public Box(string name) { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Box.cs')
+    const constructors = symbols.filter((s) => s.kind === 'method' && s.docstring === 'Box')
+    // Both constructors should be indexed: the no-modifier one and the public one
+    expect(constructors).toHaveLength(2)
+    expect(constructors.map((c) => c.name)).toEqual(['Box', 'Box'])
   })
 })
 
@@ -726,6 +740,21 @@ type Query { users: [User] }
     expect(imports.some((i) => i.target === 'user.graphql')).toBe(true)
   })
 
+  it('stripHashComments preserves a `#` inside a quoted string (used before parsing GraphQL SDL)', () => {
+    // A description string containing a literal `#` must not have its content past the `#`
+    // treated as a comment and truncated - `type Foo {` on the same line must survive intact.
+    const content = '"A weird desc # not a comment" type Foo {\n  id: ID!\n}\n'
+    const stripped = stripHashComments(content)
+    expect(stripped).toContain('type Foo {')
+  })
+
+  it('blank-fills real `#` comments instead of deleting them, preserving line length', () => {
+    const content = 'type Foo { id: ID! } # a real comment\n'
+    const stripped = stripHashComments(content)
+    expect(stripped.length).toBe(content.length)
+    expect(stripped).toMatch(/^type Foo \{ id: ID! \} +\n$/)
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractGraphql('', 'empty.graphql')
     expect(symbols).toHaveLength(0)
@@ -1135,6 +1164,29 @@ service UserService {
     expect(status?.lineEnd).toBe(7)
     expect(outer?.lineStart).toBe(1)
     expect(outer?.lineEnd).toBe(9)
+  })
+
+  it('does not treat a stray /* inside a string literal as a real block comment', () => {
+    const content = `message Foo {
+  string desc = 1 [default = "text /* not a real comment"];
+}
+
+message Bar {
+  /* a real comment */
+  string x = 1;
+}
+`
+    const { symbols } = extractProto(content, 'quotes.proto')
+    const foo = symbols.find((s) => s.name === 'Foo')
+    const bar = symbols.find((s) => s.name === 'Bar')
+    // Regression: the naive /\*[\s\S]*?\*\/ regex has no string-literal awareness, so the
+    // "/*" inside Foo's string literal gets treated as opening a real block comment that
+    // doesn't close until Bar's actual "*/", blanking out Foo's closing brace and merging
+    // it into Bar's range.
+    expect(foo?.lineEnd).toBe(3)
+    expect(bar).toBeDefined()
+    expect(bar?.lineStart).toBe(5)
+    expect(bar?.lineEnd).toBe(8)
   })
 
 describe('PowerShell adapter', () => {

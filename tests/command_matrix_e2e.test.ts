@@ -17,7 +17,7 @@
  * the unregistered / tree-shaken-out-of-bundle bug class.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -148,7 +148,7 @@ const MINIMAL_PDF = '%PDF-1.4\n' +
  * set (enforced by the coverage gate below). Read commands run against the
  * shared indexed fixture; stateful commands use their own isolated dirs.
  */
-const cases: Record<string, () => void> = {
+const cases: Record<string, () => void | Promise<void>> = {
   index: () => {
     const r = run(['index', '.'])
     expect(r.status, r.stderr).toBe(0)
@@ -400,6 +400,53 @@ const cases: Record<string, () => void> = {
     const r = run(['gdrive-sections', 'not-a-real-doc-id'])
     expect(r.status).not.toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
+  },
+  'mcp-serve': async () => {
+    // mcp-serve is a long-running stdio server, not a one-shot command, so it can't go through
+    // the shared spawnSync-based run() helper (spawnSync writes stdin, closes it, and waits for
+    // exit -- but this process never exits on its own). Spawn it directly, write one real
+    // tools/list JSON-RPC request, read stdout until a response with a matching id arrives (or a
+    // bounded timeout elapses), then always kill the child so a broken response can't hang the
+    // suite.
+    const child = spawn(process.execPath, [BUNDLE, 'mcp-serve'], { cwd: repo, env: tgEnv(dataBase) })
+    try {
+      const toolNames = await new Promise<string[]>((resolve, reject) => {
+        let buf = ''
+        const timer = setTimeout(() => reject(new Error('mcp-serve: timed out waiting for tools/list response')), 15000)
+        child.stdout.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8')
+          let idx: number
+          while ((idx = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, idx)
+            buf = buf.slice(idx + 1)
+            if (line.trim() === '') continue
+            const msg = JSON.parse(line) as { id?: number; result?: { tools?: Array<{ name: string }> } }
+            if (msg.id === 1 && msg.result?.tools !== undefined) {
+              clearTimeout(timer)
+              resolve(msg.result.tools.map((t) => t.name))
+              return
+            }
+          }
+        })
+        child.on('error', (err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
+        child.stdin.write(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 0,
+            method: 'initialize',
+            params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'matrix-e2e', version: '0.0.1' } },
+          })}\n`,
+        )
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`)
+      })
+      expect(toolNames.sort()).toEqual(['outline', 'read', 'section', 'semantic', 'skeleton', 'symbol'])
+    } finally {
+      child.kill()
+    }
   },
   callers: () => {
     // The fixture has refDriver calling refHelper twice; callers should find refDriver as the enclosing symbol.
