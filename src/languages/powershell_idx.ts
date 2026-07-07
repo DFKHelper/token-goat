@@ -89,14 +89,19 @@ export function extractPowershell(
     }
 
     if (inBlockComment) {
-      if (rawLine.includes('#>')) {
-        inBlockComment = false
+      const closeMarkerIdx = rawLine.indexOf('#>')
+      if (closeMarkerIdx === -1) {
+        // The whole line sits inside the block comment. Comment prose is not code, so it
+        // must never affect braceDepth - counting braces here is what desyncs braceDepth
+        // away from 0 whenever comment-based help text (e.g. `.EXAMPLE ... { foo }`)
+        // contains an unbalanced brace, silently dropping every top-level symbol after it.
+        continue
       }
-      // Brace-count on a string-stripped copy of the raw line so a literal brace inside a
-      // string literal appearing in the comment text is never counted as real nesting.
-      const braceLine = stripStringLiterals(rawLine)
-      braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
-      continue
+      inBlockComment = false
+      // The comment closes on this line. Slice off everything up to and including `#>` so
+      // only the real trailing code (if any) is brace-counted and processed as normal code
+      // below, instead of `continue`-ing past it.
+      line = rawLine.slice(closeMarkerIdx + 2)
     }
 
     // Strip an unquoted `#` onward before anything else, so comment text
