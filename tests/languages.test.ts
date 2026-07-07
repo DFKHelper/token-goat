@@ -830,6 +830,14 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(symbols.find((s) => s.name === 'active_users')?.kind).toBe('sql_view')
   })
 
+  it('does not let a /*/ opener close its own comment against its trailing asterisk (comment overlap off-by-one)', () => {
+    const content = `/*/ CREATE TABLE ghost (id int); */ CREATE TABLE real_table (id int);`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('ghost')
+    expect(names).toContain('real_table')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
@@ -1393,6 +1401,24 @@ function MyFunction {
     const { symbols } = extractPowershell(content, 'inline_comment.ps1')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Setup')
+  })
+
+  it('preserves code before a mid-line block-comment opener that does not close on the same line', () => {
+    const content = `function Foo {
+    <# doc
+       more doc
+    #>
+    return 1
+}
+
+function Bar {
+    return 2
+}
+`
+    const { symbols } = extractPowershell(content, 'mid_line_comment.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
   })
 
   it('does not treat <# inside a string literal as a real block comment opener', () => {
