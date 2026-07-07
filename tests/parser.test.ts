@@ -80,6 +80,30 @@ describe('parseFile', () => {
     expect(itemList?.lineEnd).toBe(17)
   })
 
+  it('does not let a previously-parsed .tsx file poison the plain .ts grammar cache entry (regression: cache write used `lang` instead of `cacheKey`, so parsing a .tsx first stored the tsx grammar under the `typescript` key, corrupting every later .ts parse in the same process)', async () => {
+    const tsxFile = write(
+      'Poison.tsx',
+      ['export function Poison() {', '  return <div>hi</div>', '}', ''].join('\n'),
+    )
+    await parseFile(tsxFile) // populate the cache under 'typescript:tsx'
+
+    const tsFile = write(
+      'assertion.ts',
+      [
+        'function foo(): number { return 1; }',
+        'const x = <Foo>someValue;',
+        'function bar(): number { return 2; }',
+      ].join('\n'),
+    )
+    const result = await parseFile(tsFile)
+    expect(result.language).toBe('typescript')
+    const names = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
+    // Under the poisoned (tsx) grammar, `<Foo>someValue` is parsed as an unclosed
+    // JSX element, producing ERROR nodes that drop `bar` entirely.
+    expect(names).toContain('foo')
+    expect(names).toContain('bar')
+  })
+
   it('excludes function-local variable declarations from the symbol index (regression: nested lexical_declaration walked unconditionally)', async () => {
     const file = write(
       'scope.ts',
@@ -463,6 +487,17 @@ describe('parseFile', () => {
     const names = properties.map((p) => p.name)
     expect(names).toContain('name')
     expect(names).toContain('nested')
+  })
+
+  it('counts newlines between a JSON key and its colon when computing lineEnd (regression: only the colon-to-value gap was counted, undercounting lineEnd when the key and colon are on different lines)', async () => {
+    const file = write(
+      'nlkey.json',
+      ['{', '  "key"', ': "value on next-next line"', '}', ''].join('\n'),
+    )
+    const result = await parseFile(file)
+    const key = result.symbols.find((s) => s.kind === 'property' && s.name === 'key')
+    expect(key?.lineStart).toBe(2)
+    expect(key?.lineEnd).toBe(3)
   })
 
   it('extracts Dockerfile directives in lowercase (regression: case-insensitive keywords)', async () => {

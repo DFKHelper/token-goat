@@ -479,23 +479,8 @@ export function listSections(filePath: string): string[] {
  * List every section heading in a file at all nesting levels, in document order.
  *
  * Returns an empty array when the file cannot be read or has no recognisable
- * sections. Unlike `listSections`, this includes all levels (## and ### etc.),
- * so the caller can show the complete heading inventory when a lookup misses.
+ * sections. Alias for `listSections` — both return all heading levels.
  */
 export function listAllSections(filePath: string): string[] {
-  let text: string
-  try {
-    text = readFileSync(filePath, 'utf-8')
-  } catch {
-    return []
-  }
-
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
-  if (text.charCodeAt(0) === 0xfeff) {
-    text = text.slice(1)
-  }
-
-  const language = detectLanguage(filePath)
-  const { headers } = findHeaders(text, language)
-  return headers.map((h) => h.heading)
+  return listSections(filePath)
 }
