@@ -217,12 +217,16 @@ export abstract class ToolFilter {
 
     let body: string
     try {
+      // Byte count of the (already truncated) pre-normalisation streams, so the
+      // "did normalisation itself help" check below isn't credited for size
+      // reduction that truncation alone already produced.
+      const preNormBytes = byteLength(so) + byteLength(se)
       const normOut = this.postNormalise(normalise(so, { skipProgress }))
       const normErr = this.postNormalise(normalise(se, { skipProgress }))
       const normBytes = byteLength(normOut) + byteLength(normErr)
 
       // Step 6a: normalisation alone achieved ≥40% reduction — skip the expensive per-tool filter and use simple dedupe.
-      if (originalBytes > 0 && normBytes <= originalBytes * 0.6) {
+      if (preNormBytes > 0 && normBytes <= preNormBytes * 0.6) {
         body = compressBashOutput(normOut, normErr)
         notes.push('early-exit: normalisation alone sufficient')
       } else if (normBytes > MAX_INSPECT_BYTES) {

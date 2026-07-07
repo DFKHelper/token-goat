@@ -2118,6 +2118,48 @@ describe('postBashHandler — escaped quote inside quoted arg does not expose in
   })
 })
 
+// Regression: a backslash-escaped quote next to a real trailing pipe must not
+// desynchronize the inside-quotes tracker used to find the pipeline split point.
+describe('postBashHandler — escaped quote next to a real pipe does not desync quote tracking', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('caches under the full command, not a base truncated at the escaped quote', async () => {
+    // Bug: the pipe-split scanner toggled inDouble/inSingle on every raw quote char,
+    // with no backslash-escape check. The escaped backslash-quote inside the -k pattern
+    // flipped the tracker out of sync, so the scanner either split on the | still inside
+    // the quoted string or missed the real trailing | head -20 pipe -- either way producing
+    // the wrong base command and thus the wrong cache key.
+    const cmd = 'pytest -k "fix: replace \\" | \\" separator"' + ' | head -20'
+    const largeOutput = 'PASSED test_skipme\n'.repeat(60)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+
+    // Must be stored under the base command with the trailing | head -20 stripped,
+    // but the whole quoted -k value (including the escaped quotes) intact.
+    const correctBase = 'pytest -k "fix: replace \\" | \\" separator"'
+    const correctHash = fingerprintContent(correctBase).slice(0, 16)
+    expect(getBashOutputId(correctHash)).not.toBeNull()
+
+    // Must NOT be stored under a key truncated at the escaped quote.
+    const wrongBase = 'pytest -k "fix: replace \\"'
+    const wrongHash = fingerprintContent(wrongBase).slice(0, 16)
+    expect(getBashOutputId(wrongHash)).toBeNull()
+  })
+
+  it('still splits on a real pipe inside a normally-quoted argument (no backslash escapes)', async () => {
+    const cmd = 'pytest -k "value | other"' + ' | head -20'
+    const largeOutput = 'PASSED test_skipme\n'.repeat(60)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+    const correctHash = fingerprintContent('pytest -k "value | other"').slice(0, 16)
+    expect(getBashOutputId(correctHash)).not.toBeNull()
+  })
+})
+
 describe('postBashHandler — gh api advisory hints', () => {
   beforeEach(() => {
     clearModuleCaches()

@@ -227,6 +227,41 @@ describe('GenericFilter (golden)', () => {
   })
 })
 
+describe("apply(): normalisation early-exit ratio uses pre-normalisation size, not pre-truncation size", () => {
+  const ENV_KEY = 'TOKEN_GOAT_FILTER_MAX_BYTES'
+  const previous = process.env[ENV_KEY]
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env[ENV_KEY]
+    else process.env[ENV_KEY] = previous
+  })
+
+  it('does NOT early-exit on normalisation when truncation alone produced the size drop', () => {
+    // maxInput is tiny relative to the raw payload, so truncation alone already
+    // shrinks the stream to well under 60% of its original size. The surviving
+    // text has no \r progress markers, ANSI codes, or control chars, so
+    // normalise() does nothing to it beyond the truncation that already happened.
+    process.env[ENV_KEY] = '200'
+    const lines: string[] = []
+    for (let i = 0; i < 2000; i++) lines.push(`plain distinct line number ${i} with no normalisable content`)
+    const raw = lines.join('\n')
+    expect(Buffer.byteLength(raw, 'utf8')).toBeGreaterThan(2000)
+
+    const result = new GenericFilter().apply(raw, '', 0, [])
+    expect(result.notes.join(' ')).not.toContain('early-exit: normalisation alone sufficient')
+  })
+
+  it('DOES early-exit on normalisation when it achieves >=40% reduction beyond truncation', () => {
+    // Same tiny maxInput, but the surviving (truncated) text is dense with \r
+    // progress-bar updates, so stripProgress() collapses it to just the final
+    // segment -- a large reduction that truncation alone did not produce.
+    process.env[ENV_KEY] = '200'
+    const progress = Array.from({ length: 4000 }, (_, i) => `${i}%`).join('\r')
+    const result = new GenericFilter().apply(progress, '', 0, [])
+    expect(result.notes.join(' ')).toContain('early-exit: normalisation alone sufficient')
+  })
+})
+
 describe('error-passthrough filters', () => {
   class PassthroughFilter extends ToolFilter {
     readonly name = 'passthrough'

@@ -4,13 +4,14 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { loadSessionState, readSessionStateFile, saveSessionState } from '../src/session_store.js'
 import { normalizePath } from '../src/paths.js'
 import {
   exportSessionState,
   importSessionState,
   recordFileRead,
   recordLargeFileHintPending,
+  recordSymbolRead,
   takePendingLargeFileHint,
   type FileEntry,
   type SerializedSession,
@@ -484,6 +485,87 @@ describe('Python-format session file compatibility', () => {
     const saved = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as { files: unknown[] }
     expect(Array.isArray(saved.files)).toBe(true)
     expect(saved.files).toHaveLength(1)
+  })
+})
+
+describe('created_ts (session-cache creation timestamp)', () => {
+  // Regression: compact.ts::buildManifestAdaptive derives the session-age budget
+  // multiplier from `created_ts`, but nothing ever wrote it, so age was always 0
+  // and the multiplier was permanently stuck at the young/0.6 tier. saveSessionState
+  // must stamp it once, in seconds, and never bump it on later writes.
+  it('stamps created_ts once on first save and preserves it across later saves', () => {
+    importSessionState(empty())
+    const before = Date.now() / 1000
+    recordFileRead('/proj/x.ts')
+    saveSessionState('sid-created')
+    const after = Date.now() / 1000
+
+    const first = readSessionStateFile('sid-created')
+    expect(first?.created_ts).toBeTypeOf('number')
+    // Unit is seconds (matches compact.ts's `Date.now() / 1000 - created_ts`), not ms.
+    expect(first!.created_ts!).toBeGreaterThanOrEqual(before)
+    expect(first!.created_ts!).toBeLessThanOrEqual(after)
+
+    const originalTs = first!.created_ts!
+    // A later save (even after more activity and wall-clock movement) must not
+    // move created_ts forward — it marks creation, not last modification.
+    recordFileRead('/proj/y.ts')
+    saveSessionState('sid-created')
+    const second = readSessionStateFile('sid-created')
+    expect(second!.created_ts!).toBe(originalTs)
+  })
+
+  it('does not resurrect created_ts as "now" after a write that inherits an older value', () => {
+    importSessionState(empty())
+    // Pre-seed a backdated created_ts on disk, then drive a real save; the merge
+    // must keep the old value rather than overwrite it with the current time.
+    recordFileRead('/proj/z.ts')
+    saveSessionState('sid-backdate')
+    const p = sessionFile('sid-backdate')
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as SerializedSession
+    const backdated = Math.floor(Date.now() / 1000) - 4000
+    raw.created_ts = backdated
+    fs.writeFileSync(p, JSON.stringify(raw), 'utf8')
+
+    recordFileRead('/proj/z2.ts')
+    saveSessionState('sid-backdate')
+    expect(readSessionStateFile('sid-backdate')!.created_ts).toBe(backdated)
+  })
+})
+
+describe('symbols_read (surgical-read tokens) persistence', () => {
+  // Regression: compact.ts::computeAdaptiveBudget rewards files with a non-empty
+  // symbols_read via symbolsBonus, but the field was never written and, even if
+  // present, asFileEntry/mergeFileEntry dropped it — so the bonus was always 0.
+  // Drive the real writer (recordSymbolRead) through the real store round-trip.
+  it('preserves symbols_read across a save -> load round-trip', () => {
+    importSessionState(empty())
+    recordSymbolRead('/proj/src/foo.ts', 'myFunc')
+    recordSymbolRead('/proj/src/foo.ts', 'otherFunc')
+    saveSessionState('sid-symbols')
+
+    const disk = readSessionStateFile('sid-symbols')
+    const entry = disk?.files.find((f) => f.path.endsWith('foo.ts'))
+    expect(entry).toBeDefined()
+    expect(entry!.symbols_read).toEqual(['myFunc', 'otherFunc'])
+    // A surgical CLI read is not a Read-tool fire, so readCount stays 0.
+    expect(entry!.readCount).toBe(0)
+  })
+
+  it('unions symbols_read from disk and memory on merge (concurrent writer not clobbered)', () => {
+    importSessionState(empty())
+    // Landed on disk by another process: foo.ts read for symbol "a".
+    recordSymbolRead('/proj/src/foo.ts', 'a')
+    saveSessionState('sid-symbols-merge')
+
+    // This process starts fresh and records a different symbol for the same file,
+    // then saves — the merge must keep both, not drop the disk one.
+    importSessionState(empty())
+    recordSymbolRead('/proj/src/foo.ts', 'b')
+    saveSessionState('sid-symbols-merge')
+
+    const entry = readSessionStateFile('sid-symbols-merge')?.files.find((f) => f.path.endsWith('foo.ts'))
+    expect(entry?.symbols_read?.sort()).toEqual(['a', 'b'])
   })
 })
 

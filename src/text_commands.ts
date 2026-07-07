@@ -234,7 +234,14 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // (matching the platform-gated convention used elsewhere, e.g. isUnderBlockedRoot).
   const normalCwd = foldPath(canonicalize(cwd))
   const normalAbs = foldPath(canonicalize(framePath, cwd))
-  if (normalAbs.startsWith(normalCwd)) return true
+  if (normalAbs.startsWith(normalCwd)) {
+    // Ensure it's a real directory boundary: the path is either exactly the cwd,
+    // or the next character after cwd is a path separator. This prevents false matches
+    // like /tmp/abc-fork matching /tmp/abc (bug: path-prefix without boundary check).
+    if (normalAbs === normalCwd || normalAbs[normalCwd.length] === '/' || normalAbs[normalCwd.length] === '\\') {
+      return true
+    }
+  }
   if (framePath.includes('site-packages') || framePath.includes('lib/python')) return false
   if (/^<.+>$/.test(framePath)) return false
   if (!path.isAbsolute(framePath) && !framePath.startsWith('..')) return true
@@ -682,7 +689,16 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
     const project = findProject(process.cwd())
     if (project !== null) {
       const root = project.root.toLowerCase()
-      entries = entries.filter((e) => e.path.toLowerCase().startsWith(root))
+      entries = entries.filter((e) => {
+        const normalPath = e.path.toLowerCase()
+        // Ensure it's a real directory boundary: the path is either exactly root,
+        // or the next character after root is a path separator. This prevents false matches
+        // like /tmp/abc-fork matching /tmp/abc (bug: path-prefix without boundary check).
+        if (!normalPath.startsWith(root)) return false
+        if (normalPath === root) return true
+        const nextChar = normalPath[root.length]
+        return nextChar === '/' || nextChar === '\\'
+      })
     }
   }
 

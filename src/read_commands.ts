@@ -174,6 +174,8 @@ function parseReadSpec(spec: string): { file: string; symbol?: string } {
 function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
   const m = /^(.+)@(\d+)(?:-(\d+))?$/.exec(spec)
   if (m === null) return null
+  // If the full spec is a real file (e.g., a file literally named "notes@2024"), treat it as a plain file, not a range.
+  if (fileExists(spec)) return null
   const start = parseInt(m[2]!, 10)
   const end = m[3] !== undefined ? parseInt(m[3], 10) : start
   return { file: m[1]!, start, end }

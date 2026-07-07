@@ -313,6 +313,32 @@ const _GIT_DIFF_BINARY_RE = /^Binary files? .+ (?:and .+ )?differ$/
 const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+\d+/
 const _GIT_DIFF_STAT_SUMMARY_RE = /^\s*\d+ files? changed/
 const _DIFF_STAT_DIR_ROLLUP_THRESHOLD = 20
+// Matches the numeric total-changes column that follows " | " in a stat line, e.g. "1000" in
+// " src/big.ts | 1000 +++++++++++++++++++++++++++++++++++++++++++-----". The bar-graph glyphs
+// after this number are WIDTH-SCALED by git once a file's true change count exceeds
+// --stat-width, so counting '+'/'-' characters silently undercounts large diffs by an order of
+// magnitude or more. The ratio between '+' and '-' glyphs is preserved under scaling, so the true
+// insert/delete split is reconstructed by applying that ratio to the real total from this column.
+const _GIT_DIFF_STAT_TOTAL_RE = /^(\d+)\s*([+-]*)/
+
+/**
+ * Parses a stat line's "<total> <bar>" column (the text after " | ") into a real +/- split.
+ * The bar's glyph ratio is preserved by git's width scaling even though the absolute glyph
+ * count is not, so this recovers accurate adds/dels from the true total rather than from
+ * counting scaled-down bar characters directly.
+ */
+function _diffStatLineCounts(statPart: string): { adds: number; dels: number } {
+  const m = _GIT_DIFF_STAT_TOTAL_RE.exec(statPart.trim())
+  if (!m) return { adds: 0, dels: 0 }
+  const total = parseInt(m[1]!, 10)
+  const bar = m[2]!
+  const plusGlyphs = (bar.match(/\+/g) ?? []).length
+  const minusGlyphs = (bar.match(/-/g) ?? []).length
+  const barTotal = plusGlyphs + minusGlyphs
+  if (barTotal === 0) return { adds: total, dels: 0 }
+  const adds = Math.round((total * plusGlyphs) / barTotal)
+  return { adds, dels: total - adds }
+}
 
 function _isDiffAdd(line: string): boolean {
   return line.startsWith('+') && !line.startsWith('+++')
@@ -365,8 +391,9 @@ function _diffStatDirRollup(statLines: string[]): string[] {
     const pathPart = _resolveRenameNewPath(stripped.split(' | ')[0]!.trim())
     const topDir = pathPart.includes('/') ? pathPart.split('/')[0]! + '/' : '(root)'
     const statPart = stripped.includes(' | ') ? stripped.split(' | ').slice(1).join(' | ') : ''
-    dirAdds.set(topDir, (dirAdds.get(topDir) ?? 0) + (statPart.match(/\+/g) ?? []).length)
-    dirDels.set(topDir, (dirDels.get(topDir) ?? 0) + (statPart.match(/-/g) ?? []).length)
+    const { adds, dels } = _diffStatLineCounts(statPart)
+    dirAdds.set(topDir, (dirAdds.get(topDir) ?? 0) + adds)
+    dirDels.set(topDir, (dirDels.get(topDir) ?? 0) + dels)
     dirCount.set(topDir, (dirCount.get(topDir) ?? 0) + 1)
   }
 
@@ -400,8 +427,10 @@ function _compressGitDiffStat(stdout: string, stderr: string, argv: string[]): s
       let adds = 0
       let dels = 0
       for (const ln of statLines.slice(HEAD_FILES)) {
-        adds += (ln.match(/\+/g) ?? []).length
-        dels += (ln.match(/-/g) ?? []).length
+        const statPart = ln.includes(' | ') ? ln.split(' | ').slice(1).join(' | ') : ''
+        const counts = _diffStatLineCounts(statPart)
+        adds += counts.adds
+        dels += counts.dels
       }
       const keptStat = [
         ...statLines.slice(0, HEAD_FILES),

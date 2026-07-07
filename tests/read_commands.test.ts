@@ -429,6 +429,24 @@ describe('read_commands', () => {
         capture(() => { runRead({ spec: `${f}::newSymbol`, forceRefresh: true }) })
         expect(mockIndexFileSync).toHaveBeenCalled()
       })
+
+      it('prefers reading a real file named "notes@2024" over treating it as a line-range spec', () => {
+        const f = path.join(tempDir, 'notes@2024')
+        const content = 'file content with @ in name'
+        fs.writeFileSync(f, content)
+        const { stdout } = capture(() => { runRead({ spec: f }) })
+        expect(stdout).toContain('file content with @ in name')
+      })
+
+      it('still correctly reads a line range when the stripped base file does not exist (file@N-M with no file)', () => {
+        const f = path.join(tempDir, 'nonexistent.txt')
+        // The file does NOT exist, so @2-4 should try to be a range read and fail with "file not found" or similar
+        let code = 0
+        const { stderr } = capture(() => { code = runRead({ spec: `${f}@2-4` }) })
+        expect(code).toBe(1)
+        // Should complain about file not existing, not about line range parsing
+        expect(stderr).toContain('nonexistent.txt')
+      })
     })
   })
 

@@ -163,3 +163,67 @@ describe('sessionDir / store honor TOKEN_GOAT_HOME override', () => {
     }
   })
 })
+
+describe('store eviction behavior', () => {
+  it('should NOT evict unrelated snapshots when updating an existing key', () => {
+    const prevHome = process.env.TOKEN_GOAT_HOME
+    process.env.TOKEN_GOAT_HOME = TMP
+    
+    try {
+      const MAX_SNAPSHOTS = 150
+      const sessionId = 'eviction-test'
+      
+      // Fill the snapshot dir with exactly MAX_SNAPSHOTS distinct keys
+      for (let i = 0; i < MAX_SNAPSHOTS; i++) {
+        const content = Buffer.from(`file${i} content`)
+        store(sessionId, `file${i}.ts`, content)
+      }
+      
+      // Get the snapshot directory to count files
+      const firstPath = snapshot_path(sessionId, 'file0.ts')
+      expect(firstPath).not.toBeNull()
+      if (!firstPath) return
+      
+      const snapshotDir = path.dirname(firstPath)
+      const filesBeforeUpdate = fs.readdirSync(snapshotDir)
+        .filter(f => f.endsWith('.bin'))
+        .length
+      
+      // Record all existing file names (other than file0)
+      const otherFilesBefore = new Set(
+        fs.readdirSync(snapshotDir)
+          .filter(f => f.endsWith('.bin') && !f.includes('file0'))
+      )
+      
+      expect(filesBeforeUpdate).toBe(MAX_SNAPSHOTS)
+      
+      // Now update an existing key (file0) with different content
+      const newContent = Buffer.from('file0 updated content - definitely different')
+      const result = store(sessionId, 'file0.ts', newContent)
+      expect(result).not.toBeNull()
+      
+      // Check that no unrelated files were evicted
+      const filesAfterUpdate = fs.readdirSync(snapshotDir)
+        .filter(f => f.endsWith('.bin'))
+        .length
+      
+      const otherFilesAfter = new Set(
+        fs.readdirSync(snapshotDir)
+          .filter(f => f.endsWith('.bin') && !f.includes('file0'))
+      )
+      
+      // Total file count should remain MAX_SNAPSHOTS (we updated, not added)
+      expect(filesAfterUpdate).toBe(MAX_SNAPSHOTS)
+      
+      // No OTHER files should have been deleted
+      expect(otherFilesAfter.size).toBe(otherFilesBefore.size)
+      for (const file of otherFilesBefore) {
+        expect(otherFilesAfter.has(file))
+          .toBe(true, `File ${file} was evicted when updating an existing key`)
+      }
+    } finally {
+      if (prevHome === undefined) delete process.env.TOKEN_GOAT_HOME
+      else process.env.TOKEN_GOAT_HOME = prevHome
+    }
+  })
+})

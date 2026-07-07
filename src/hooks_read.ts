@@ -419,6 +419,16 @@ function scanCrossSessionManifests(
  * Returns `pass` otherwise.
  * Always records the read so the re-read hint fires on the next touch.
  */
+// Grep's cost/relevance depends on its search pattern, not the file's total size or content —
+// re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed
+// the Read-specific read-count that the count-based deny check (and every "already read X"
+// hint below) relies on. Route every recordFileRead call in this handler through here so a
+// Grep on a file can never poison a subsequent single Read's count.
+function recordActualRead(event: HookEvent, filePath: string): void {
+  if (event.toolName === 'Grep') return
+  recordFileRead(filePath)
+}
+
 export function preReadHandler(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -459,12 +469,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   const manifestHint = buildPackageManifestHint({ file_path: normalized })
   if (manifestHint) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     return contextOutput(manifestHint.text)
   }
 
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     return contextOutput(
       'Already read ' + basename + '. Use `token-goat section "' + normalized + '::compilerOptions"` ' +
       'to extract compiler options, or `token-goat config-get ' + normalized + ' compilerOptions.target` for a single value.',
@@ -472,7 +482,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   }
 
   if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     return contextOutput(
       'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
       'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
@@ -488,7 +498,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       const compact = getCompactAnySessionSync(skillName)
       const stale = isCompactStale(compact, skillName, bodySha)
       if (stale === true) {
-        recordFileRead(normalized)
+        recordActualRead(event, normalized)
         return contextOutput(
           'This skill\'s cached compact is stale. Run `token-goat skill-compact ' + skillName + '` to regenerate it.',
         )
@@ -508,7 +518,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     if (isCompactFresh(compactPath, normalized)) {
       const compactBody = readCompactBody(compactPath)
       if (compactBody !== null) {
-        recordFileRead(normalized)
+        recordActualRead(event, normalized)
         const fullSize = statSize(normalized) ?? 0
         const savedBytes = Math.max(0, fullSize - compactBody.length)
         recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
@@ -540,7 +550,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       const sidecarContent = fs.readFileSync(sidecarPath, 'utf-8')
       const savedBytes = rawBytes.length - sidecarContent.length
       if (savedBytes >= NB_STRIP_MIN_SAVINGS) {
-        recordFileRead(normalized)
+        recordActualRead(event, normalized)
         recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
         return denyOutput(
           'Serving the output-stripped notebook in place of the full file ' +
@@ -573,7 +583,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
         const alreadyRead = wasFileReadThisSession(normalized)
-        recordFileRead(normalized)
+        recordActualRead(event, normalized)
         const hintText = formatHeadingTree(headings, normalized)
         const wellKnown = getWellKnownSections(basename)
         const wellKnownText =
@@ -606,7 +616,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
   )
   if (isMemoryMd && wasFileReadThisSession(normalized)) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     const isMainMemory = basename.toLowerCase() === 'memory.md'
     return denyOutput(
@@ -618,7 +628,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   // Item 5: .improve-state-*.json re-read denial
   if (/^\.improve-state-.*\.json$/.test(basename) && wasFileReadThisSession(normalized)) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(
       'Orchestrator state already read this session. ' + sessionArtifactRecall(normalized),
@@ -627,7 +637,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   // .env re-read: deny after first read (size thresholds never catch tiny env files)
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(
       normalized + ' was already read this session. Environment files rarely change mid-session. ' +
@@ -639,7 +649,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   if (isSessionArtifactFile(normalized)) {
     if (wasFileReadThisSession(normalized)) {
       if (wasFileTruncatedThisSession(normalized)) {
-        recordFileRead(normalized)
+        recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
         return denyOutput(
           'File was truncated on last read. ' + sessionArtifactRecall(normalized),
@@ -657,7 +667,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
             const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
             const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
             if (oldContent === currentContent) {
-              recordFileRead(normalized)
+              recordActualRead(event, normalized)
               recordStat('session_hint', 0, 0)
               return denyOutput(
                 basename + ' is unchanged since last read. ' + sessionArtifactRecall(normalized),
@@ -665,7 +675,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
             }
             const diff = buildLineDiff(oldContent, currentContent, basename)
             if (diff !== '') {
-              recordFileRead(normalized)
+              recordActualRead(event, normalized)
               const savedBytes = Math.max(0, currentContent.length - diff.length)
               recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
               return denyOutput(
@@ -679,7 +689,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
         }
       }
       // No snapshot or file too large — generic re-read denial
-      recordFileRead(normalized)
+      recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
         normalized + ' was already read this session. ' + sessionArtifactRecall(normalized),
@@ -687,7 +697,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
     // First read of tasks/*.output — allow but emit a proactive hint
     if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)) {
-      recordFileRead(normalized)
+      recordActualRead(event, normalized)
       return contextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
     }
     // First read of tool-results/*.txt — fall through to normal handling
@@ -699,7 +709,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
     // Truncation takes priority: redirect to skeleton/surgical reads.
     if (wasFileTruncatedThisSession(normalized)) {
-      recordFileRead(normalized)
+      recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
         'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
@@ -721,7 +731,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
           const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
 
           if (oldContent === currentContent) {
-            recordFileRead(normalized)
+            recordActualRead(event, normalized)
             recordStat('session_hint', 0, 0)
             return denyOutput(
               basename + ' is unchanged since last read. ' +
@@ -735,7 +745,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
             if (isSourceDiffable && !isDocDiffable && diff.length > currentContent.length * 0.6) {
               // Diff is not a good savings — fall through to generic deny block below
             } else {
-              recordFileRead(normalized)
+              recordActualRead(event, normalized)
               const savedBytes = Math.max(0, currentContent.length - diff.length)
               recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
               return denyOutput(
@@ -768,7 +778,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       if (!relPath.startsWith('..')) {
         const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
-          recordFileRead(normalized)
+          recordActualRead(event, normalized)
           return contextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
@@ -788,7 +798,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const entry = getSessionFileEntry(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
     recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
 
@@ -855,7 +865,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const gateSize = slice.kind === 'bytes' ? Math.min(slice.bytes, size) : size
 
     if (gateSize < LARGE_FILE_BYTES) {
-      recordFileRead(normalized)
+      recordActualRead(event, normalized)
       return passOutput()
     }
 
@@ -875,7 +885,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
-    recordFileRead(normalized)
+    recordActualRead(event, normalized)
     if (config.hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalized, size)
     }
@@ -917,7 +927,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
-  recordFileRead(normalized)
+  recordActualRead(event, normalized)
   return passOutput()
 }
 

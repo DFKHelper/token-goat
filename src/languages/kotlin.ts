@@ -153,12 +153,20 @@ export function extractKotlin(
     }
 
     // Brace-count on a string-stripped copy of the line so a literal brace inside a string
-    // literal is never counted as real nesting.
+    // literal is never counted as real nesting. Walk char-by-char (rather than a single
+    // open-count minus close-count) so a same-line open+close (`class Empty {}`) still marks
+    // bodyEntered - the net delta for that line is zero, but depth genuinely peaked one above
+    // the frame's start in between the two braces, which a batched delta can never observe.
     const braceLine = stripStringLiterals(line)
-    braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
-
-    if (frame !== null && braceDepth > frame.braceDepth) {
-      frame.bodyEntered = true
+    for (const ch of braceLine) {
+      if (ch === '{') {
+        braceDepth++
+        if (frame !== null && braceDepth > frame.braceDepth) {
+          frame.bodyEntered = true
+        }
+      } else if (ch === '}') {
+        braceDepth--
+      }
     }
     // Pop finished class frames. A frame only pops once its own opening brace has actually been
     // entered (bodyEntered) - this guards a class whose primary-constructor header spans

@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
@@ -80,12 +80,21 @@ function stripOutputPipeline(cmd: string): string {
   let inSingle = false
   let inDouble = false
   let cut = cmd.length
+  let backslashes = 0
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
+    if (ch === '\\') {
+      backslashes++
+      continue
+    }
+    // A quote is escaped only when preceded by an odd number of consecutive
+    // backslashes (\" is escaped, \\" is a literal backslash then a real quote).
+    const escaped = backslashes % 2 === 1
+    backslashes = 0
     if (ch === "'" && !inDouble) {
-      inSingle = !inSingle
+      if (!escaped) inSingle = !inSingle
     } else if (ch === '"' && !inSingle) {
-      inDouble = !inDouble
+      if (!escaped) inDouble = !inDouble
     } else if (ch === '|' && !inSingle && !inDouble) {
       if (cmd[i + 1] === '|') {
         i++ // skip the `||` logical-OR operator; keep scanning
@@ -1653,6 +1662,16 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const tgRead = extractTgSurgicalRead(cmd, cwd)
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
+      // Record a surgical (symbol/section/range-scoped) read against the file's
+      // session entry so compact.ts's symbolsBonus can reward narrowly-engaged
+      // files. `spec` for read/section is `filePath` + a narrowing suffix
+      // (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a
+      // whole-file `token-goat read <file>`, which is not symbol-scoped and is
+      // left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
+      if (tgRead.filePath !== null) {
+        const narrowing = tgRead.spec.slice(tgRead.filePath.length)
+        if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
+      }
       if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
         const pendingSize = takePendingLargeFileHint(tgRead.filePath)
         if (pendingSize !== null) {
