@@ -134,7 +134,7 @@ function loadGrammar(lang: Language, filePath?: string): Grammar | null {
     grammar = null
   }
 
-  _grammarCache.set(lang, grammar)
+  _grammarCache.set(cacheKey, grammar)
   return grammar
 }
 
@@ -901,7 +901,11 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
           inString = false
           // A string is a top-level key iff it opened at object depth 1 and its next non-whitespace char is ':'. This rule is layout-independent, so it captures keys in single-line/minified JSON and keys that share a line with '{', which the previous line-oriented scan missed (it emitted zero symbols for minified JSON).
           let k = i + 1
-          while (k < content.length && /\s/.test(content[k] ?? '')) k++
+          let keyToColonNewlines = 0
+          while (k < content.length && /\s/.test(content[k] ?? '')) {
+            if (content[k] === '\n') keyToColonNewlines++
+            k++
+          }
           if (content[k] === ':' && depthWhenStringOpened === 1) {
             // lineEnd/body defaulted to the key's own line for every value kind. When the value is itself a string that contains an embedded literal newline, that undersells the span: scan forward past the colon and, if the value opens with a quote, walk to its matching closing quote (respecting escapes) to find the value's real end line, then widen body to cover every line in between. Non-string values (numbers, booleans, objects, arrays) keep the original single-line behavior.
             let v = k + 1
@@ -913,7 +917,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
             let lineEnd = strStartLine
             let body = (lines[strStartLine - 1] ?? '').trim()
             if (content[v] === '"') {
-              let valueLine = line + gapNewlines
+              let valueLine = line + keyToColonNewlines + gapNewlines
               let valueEscaping = false
               for (let j = v + 1; j < content.length; j++) {
                 const vch = content[j]
