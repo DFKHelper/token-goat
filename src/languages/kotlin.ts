@@ -124,7 +124,11 @@ export function extractKotlin(
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     if (frame !== null) {
       const depthInClass = braceDepth - frame.braceDepth
-      if (depthInClass >= 1) {
+      // === 1, not >= 1: a bare statement/local declaration inside a method body sits at
+      // depthInClass 2+ (matches csharp.ts / powershell_idx.ts, which gate the same way) --
+      // an ungated >= 1 check indexed local functions and local SCREAMING_SNAKE vals declared
+      // inside a method as if they were members of the enclosing class.
+      if (depthInClass === 1) {
         const fm = FUN_RE.exec(line)
         if (fm) {
           const fname = fm[1] ?? ''

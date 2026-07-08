@@ -308,6 +308,28 @@ describe('read_commands', () => {
       expect(stdout).not.toContain('ClassA.render body')
     })
 
+    it('disambiguates a dotted symbol by docstring parent when the class symbol is a single-line span (regex adapters, M35b)', () => {
+      // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a
+      // class symbol at lineStart === lineEnd (the header line only, not the full body), so
+      // the line-containment check the M35 test above exercises always misses for them. These
+      // adapters instead record the parent class name in the method symbol's own docstring
+      // field. B.foo must resolve to B's copy via that docstring match, not silently fall
+      // through to whichever same-named method the index lists first.
+      const classA: MockSymbol = { name: 'A', kind: 'class', filePath: 'src/widget.php', lineStart: 1, lineEnd: 1, body: 'class A {', docstring: '' }
+      const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '' }
+      const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A' }
+      const fooInB: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 12, lineEnd: 14, body: 'B.foo body', docstring: 'B' }
+      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+        if (opts.name === 'foo') return [fooInA, fooInB] as unknown as ReturnType<typeof mockQuerySymbols>
+        if (opts.name === 'B') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
+        if (opts.name === 'A') return [classA] as unknown as ReturnType<typeof mockQuerySymbols>
+        return []
+      })
+      const { text: stdout } = runRead({ spec: 'src/widget.php::B.foo' })
+      expect(stdout).toContain('B.foo body')
+      expect(stdout).not.toContain('A.foo body')
+    })
+
     it('splits on the LAST :: so a file path containing a literal :: still resolves the correct symbol (#m2)', () => {
       mockQuerySymbols.mockReturnValue([])
       runRead({ spec: 'a::b::mySymbol' })

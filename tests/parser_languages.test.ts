@@ -261,6 +261,57 @@ value = 1
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('skips spurious keys inside multi-line literal strings', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'literal.toml')
+
+      const content = `[project]
+name = "myapp"
+example = '''
+fake_key = "not a real key"
+'''
+version = "1.0.0"
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).not.toContain('fake_key')
+      expect(names).toContain('name')
+      expect(names).toContain('version')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('handles complex multi-line strings correctly', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'complex.toml')
+
+      const content = `[project]
+description = """
+fake_key = "still not real"
+another_key = 5
+"""
+real_key = "yes"
+
+[project.example]
+name = "single-line triple quote: """not multiline""" still fine"
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).not.toContain('fake_key')
+      expect(names).not.toContain('another_key')
+      expect(names).toContain('real_key')
+      expect(names).toContain('name')
+      expect(names).toContain('project.example')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('css symbols', () => {
@@ -287,6 +338,32 @@ value = 1
       const names = result.symbols.map((s) => s.name)
       expect(names).toContain('.button')
       expect(names).toContain('#header')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('does not extract selectors from inside block comments', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'test.css')
+
+      const content = `/*
+.legacy-btn {
+  color: red;
+}
+*/
+.active {
+  color: blue;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      // Regression: extractCssSymbols scanned raw lines without stripping /* */ comments
+      // first, so a commented-out selector at column 0 was indexed as a live one.
+      const names = result.symbols.map((s) => s.name)
+      expect(names).not.toContain('.legacy-btn')
+      expect(names).toContain('.active')
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })

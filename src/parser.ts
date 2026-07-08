@@ -37,6 +37,7 @@ import { extractLiquid } from './languages/liquid.js'
 import { extractKotlin } from './languages/kotlin.js'
 import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
+import { stripCstyleComments } from './languages/common.js'
 import { extractIni, extractEnv } from './languages/ini_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
@@ -993,10 +994,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (line === undefined) continue
-
+  function matchLine(line: string, lineNum: number): void {
     // `\[?` matches the optional second bracket of a TOML array-of-tables header (`[[bin]]`) so the name captures as `bin`, not `[bin`.
     const sectionMatch = /^\s*\[\[?\s*([^\]]+)\s*\]/.exec(line)
     if (sectionMatch !== null && sectionMatch[1] !== undefined) {
@@ -1004,8 +1002,8 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
         filePath,
         name: sectionMatch[1].trim(),
         kind: 'section',
-        lineStart: i + 1,
-        lineEnd: i + 1,
+        lineStart: lineNum + 1,
+        lineEnd: lineNum + 1,
         body: line.trim(),
         docstring: '',
       })
@@ -1017,12 +1015,43 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
         filePath,
         name: keyMatch[1],
         kind: 'key',
-        lineStart: i + 1,
-        lineEnd: i + 1,
+        lineStart: lineNum + 1,
+        lineEnd: lineNum + 1,
         body: line.trim(),
         docstring: '',
       })
     }
+  }
+
+  // Multi-line TOML strings (`"""..."""` or `'''...'''`) can span many lines; text inside
+  // them (e.g. a description field quoting example TOML) must never be scanned for
+  // key/section syntax. Track whether a triple-quote span opened on an earlier line is still
+  // open across the loop, keyed by which delimiter opened it.
+  let inBasicString = false
+  let inLiteralString = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    if (inBasicString || inLiteralString) {
+      const closer = inBasicString ? '"""' : "'''"
+      const closeIdx = line.indexOf(closer)
+      if (closeIdx === -1) continue // whole line is inside the open string body
+      inBasicString = false
+      inLiteralString = false
+      matchLine(line.slice(closeIdx + closer.length), i)
+      continue
+    }
+
+    matchLine(line, i)
+
+    // An odd count of """ (or ''') on this line means it opened a multi-line string that
+    // was not also closed on the same line.
+    const basicCount = (line.match(/"""/g) ?? []).length
+    const literalCount = (line.match(/'''/g) ?? []).length
+    if (basicCount % 2 === 1) inBasicString = true
+    if (literalCount % 2 === 1) inLiteralString = true
   }
 
   return out
@@ -1030,7 +1059,10 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
 
 function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
-  const lines = content.split(/\r?\n/)
+  // Strip /* */ block comments (newlines preserved so line numbers stay correct) before
+  // scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block)
+  // is indexed as if it were live CSS.
+  const lines = stripCstyleComments(content).split(/\r?\n/)
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -1224,6 +1256,28 @@ function parseContent(content: string, filePath: string, language: Language): Pa
  * Symbol extraction for languages with no tree-sitter grammar: the regex and
  * structured-config adapters. Returns an empty list for `unknown`.
  */
+/**
+ * Map an adapter's parsed `.sections` (heading, level, line, endLine) into indexable
+ * SymbolEntry rows. HTML and Liquid compute headings into `.sections` for the section-outline
+ * consumer but historically never surfaced them as symbols, so they never entered the index
+ * and were unreachable via `symbol`/`skeleton`/`outline` -- unlike markdown/proto/graphql/sql,
+ * which push headings into both symbols and sections via makeSymbolEmitter.
+ */
+function sectionsToHeadingSymbols(
+  sections: ReadonlyArray<{ heading: string; level: number; line: number; endLine: number }>,
+  filePath: string,
+): SymbolEntry[] {
+  return sections.map((s) => ({
+    filePath,
+    name: s.heading,
+    kind: 'heading',
+    lineStart: s.line,
+    lineEnd: s.endLine,
+    body: '',
+    docstring: '',
+  }))
+}
+
 function extractSymbolsNoTreeSitter(
   content: string,
   filePath: string,
@@ -1239,8 +1293,14 @@ function extractSymbolsNoTreeSitter(
   // New language adapters from ./languages/
   if (language === 'csharp') return extractCsharp(content, filePath).symbols
   if (language === 'php') return extractPhp(content, filePath).symbols
-  if (language === 'html') return extractHtml(content, filePath).symbols
-  if (language === 'liquid') return extractLiquid(content, filePath).symbols
+  if (language === 'html') {
+    const r = extractHtml(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  }
+  if (language === 'liquid') {
+    const r = extractLiquid(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  }
   if (language === 'kotlin') return extractKotlin(content, filePath).symbols
   if (language === 'graphql') return extractGraphql(content, filePath).symbols
   if (language === 'sql') return extractSql(content, filePath)
@@ -1387,7 +1447,9 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
  */
 function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: string): ChunkBoundary[] {
   if (detectLanguage(filePath) === 'markdown') {
-    const headings = extractMarkdownHeadings(content)
+    // Extract all headings (no cap) for embedding boundaries so sections remain heading-aligned
+    // even for docs with >40 headings (large API references, changelogs, multi-section docs).
+    const headings = extractMarkdownHeadings(content, Infinity)
     return headings.map((h, i) => ({
       start: h.lineNumber,
       // Runs to just before the next heading, or to end-of-file for the last one.

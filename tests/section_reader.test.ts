@@ -391,6 +391,18 @@ describe('readSection', () => {
     expect(result).not.toBeNull()
     expect(result?.heading).toBe('database')
   })
+
+  it('finds an <h2> heading in an HTML file', () => {
+    // Regression: html/liquid fell through findHeaders' unknown-language sniff, which never
+    // recognizes <hN> tags, so every html/liquid file routed to the key-value finder and
+    // `token-goat section` could never resolve a real heading.
+    const html = ['<h1>Title</h1>', '<p>intro</p>', '<h2>Install</h2>', '<p>run the installer</p>'].join('\n')
+    const file = tmpFile('page.html', html)
+    const result = readSection(file, 'Install')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Install')
+    expect(result?.content).toContain('run the installer')
+  })
 })
 
 describe('listSections regression: nested headings visibility', () => {

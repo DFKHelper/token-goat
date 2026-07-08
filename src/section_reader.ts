@@ -187,6 +187,25 @@ function findKeyValueHeaders(lines: readonly string[]): SectionHeader[] {
   return headers
 }
 
+// Matches the same single-line <h1>-<h6> pattern extractHtml/extractLiquid use for indexing
+// (src/languages/html.ts, src/languages/liquid.ts), kept in sync so a heading indexed as a
+// symbol is also reachable via the live `section` command.
+const HTML_HEADER_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/i
+
+function findHtmlHeaders(lines: readonly string[]): SectionHeader[] {
+  const headers: SectionHeader[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+    const m = HTML_HEADER_RE.exec(line)
+    if (m === null || m[1] === undefined || m[2] === undefined) continue
+    const heading = m[2].replace(/<[^>]+>/g, '').trim()
+    if (!heading) continue
+    headers.push({ heading, level: parseInt(m[1], 10), index: i })
+  }
+  return headers
+}
+
 /**
  * Choose the right header finder for `text` given a language hint.
  *
@@ -202,6 +221,7 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   const lines = text.split('\n')
 
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
+  if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(lines), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading.
