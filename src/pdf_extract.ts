@@ -55,7 +55,51 @@ export function parsePageRange(spec: string | undefined, pageCount: number): { s
   return { start: Math.min(start, pageCount), end: Math.min(end, pageCount) }
 }
 
-export async function extractPdfText(data: Uint8Array, pagesSpec?: string): Promise<PdfExtractResult> {
+/**
+ * Reconstructs rough reading order from pdfjs's per-item x/y coordinates instead of pdfjs's
+ * raw content-stream order (which interleaves columns/sidebars/footnotes on multi-column
+ * pages). Groups items into rows by y-proximity, sorts each row left-to-right, and widens the
+ * gap between items with a large x-jump (a likely column boundary). This is a heuristic, not
+ * a real layout engine -- it will misjudge rotated text, overlapping text boxes, and tables
+ * with irregular column widths.
+ */
+interface LayoutTextItem {
+  str: string
+  transform: number[]
+  width?: number
+}
+
+function reconstructLayout(items: LayoutTextItem[]): string {
+  const rows: LayoutTextItem[][] = []
+  const Y_EPSILON = 2
+  for (const item of items) {
+    const y = item.transform[5] as number
+    const row = rows.find((r) => Math.abs((r[0] as LayoutTextItem).transform[5]! - y) < Y_EPSILON)
+    if (row) row.push(item)
+    else rows.push([item])
+  }
+  rows.sort((a, b) => ((b[0] as LayoutTextItem).transform[5] as number) - ((a[0] as LayoutTextItem).transform[5] as number))
+
+  const lines: string[] = []
+  for (const row of rows) {
+    row.sort((a, b) => (a.transform[4] as number) - (b.transform[4] as number))
+    let line = ''
+    let prevEndX: number | null = null
+    for (const item of row) {
+      const x = item.transform[4] as number
+      if (prevEndX !== null) {
+        const gap = x - prevEndX
+        line += gap > 20 ? '   ' : gap > 4 ? ' ' : ''
+      }
+      line += item.str
+      prevEndX = x + (item.width ?? 0)
+    }
+    lines.push(line)
+  }
+  return lines.join('\n')
+}
+
+export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layout = false): Promise<PdfExtractResult> {
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-extract')
 
@@ -70,11 +114,94 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string): Prom
     for (let i = start; i <= end; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
-      const pageText = content.items.map((item) => ('str' in item ? item.str : '')).join(' ')
+      const textItems = content.items.filter((item) => 'str' in item) as unknown as LayoutTextItem[]
+      const pageText = layout ? reconstructLayout(textItems) : textItems.map((item) => item.str).join(' ')
       pages.push(pageText.trim())
     }
 
     return { text: pages.join('\n\n'), pageCount: doc.numPages, pagesExtracted: end - start + 1 }
+  } finally {
+    await loadingTask.destroy()
+  }
+}
+
+export interface PdfOutlineEntry {
+  level: number
+  title: string
+  page: number | null
+}
+
+async function resolveDestPage(doc: pdfjsTypes.PDFDocumentProxy, dest: string | unknown[] | null): Promise<number | null> {
+  let explicitDest = dest
+  if (typeof explicitDest === 'string') {
+    explicitDest = await doc.getDestination(explicitDest)
+  }
+  if (!Array.isArray(explicitDest) || explicitDest.length === 0) return null
+  try {
+    const pageIndex = await doc.getPageIndex(explicitDest[0] as never)
+    return pageIndex + 1
+  } catch {
+    return null
+  }
+}
+
+export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEntry[]> {
+  const pdfjs = await loadPdfjs()
+  if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-outline')
+
+  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
+  try {
+    const doc = await loadingTask.promise
+    const outline = await doc.getOutline()
+    if (!outline) return []
+
+    const entries: PdfOutlineEntry[] = []
+    interface OutlineNode {
+      title: string
+      dest: string | unknown[] | null
+      items: OutlineNode[]
+    }
+    async function walk(items: OutlineNode[], level: number): Promise<void> {
+
+      for (const item of items) {
+        const page = await resolveDestPage(doc, item.dest)
+        entries.push({ level, title: item.title.trim(), page })
+        if (item.items.length > 0) await walk(item.items, level + 1)
+      }
+    }
+    await walk(outline, 0)
+    return entries
+  } finally {
+    await loadingTask.destroy()
+  }
+}
+
+export interface PdfMeta {
+  pageCount: number
+  title: string | null
+  author: string | null
+  hasTextLayer: boolean
+}
+
+export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
+  const pdfjs = await loadPdfjs()
+  if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-meta')
+
+  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
+  try {
+    const doc = await loadingTask.promise
+    const { info } = await doc.getMetadata()
+    const infoDict = info as Record<string, unknown>
+    const page = await doc.getPage(1)
+    const content = await page.getTextContent()
+    const hasTextLayer = content.items.some((item) => 'str' in item && item.str.trim().length > 0)
+
+    return {
+      pageCount: doc.numPages,
+      title: typeof infoDict['Title'] === 'string' && infoDict['Title'].trim().length > 0 ? infoDict['Title'] : null,
+      author: typeof infoDict['Author'] === 'string' && infoDict['Author'].trim().length > 0 ? infoDict['Author'] : null,
+      hasTextLayer,
+    }
   } finally {
     await loadingTask.destroy()
   }

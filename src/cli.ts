@@ -73,6 +73,9 @@ import {
   runGrep,
   runCsvQuery,
   runPdfExtractText,
+  runPdfMeta,
+  runPdfOutline,
+
   runScreenshot,
   extractTranscriptText,
   extractSection,
@@ -690,10 +693,30 @@ function cmdWebOutput(
 
 async function cmdPdfExtract(
   file: string,
-  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean },
 ) {
-  const text = await runPdfExtractText(file, opts.pages)
+  const text = await runPdfExtractText(file, opts.pages, opts.layout === true)
   _applyFiltersAndPrint(text, opts)
+}
+
+async function cmdPdfOutline(file: string) {
+  const entries = await runPdfOutline(file)
+  if (entries.length === 0) {
+    out('no bookmarks in this PDF; try pdf-extract')
+    return
+  }
+  out(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
+}
+
+async function cmdPdfMeta(file: string) {
+  const meta = await runPdfMeta(file)
+  const lines = [
+    `Pages: ${meta.pageCount}`,
+    `Title: ${meta.title ?? '(none)'}`,
+    `Author: ${meta.author ?? '(none)'}`,
+    `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
+  ]
+  out(lines.join('\n'))
 }
 
 async function cmdXlsxSheets(file: string) {
@@ -2439,12 +2462,23 @@ export function buildProgram(): Command {
     .command('pdf-extract <file>')
     .description('extract plain text from a PDF (optionally --pages N or N-M) instead of a raw Read')
     .option('--pages <spec>', 'page range to extract, e.g. 1-5 or 3 (default: all pages)')
+    .option('--layout', 'heuristic column-aware reading-order reconstruction from text-item coordinates (imperfect on rotated/overlapping text)')
     .option('--head <n>', 'show only the first N lines')
     .option('--tail <n>', 'show only the last N lines')
     .option('--grep <pattern>', 'filter to lines matching this regex')
     .option('--section <heading>', 'extract one markdown section by heading')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
     .action(guard(cmdPdfExtract))
+
+  program
+    .command('pdf-outline <file>')
+    .description('list a PDF\'s bookmark/outline tree with page numbers instead of a raw Read')
+    .action(guard(cmdPdfOutline))
+
+  program
+    .command('pdf-meta <file>')
+    .description('page count, title/author, and whether a PDF has an extractable text layer')
+    .action(guard(cmdPdfMeta))
 
   program
     .command('xlsx-sheets <file>')

@@ -230,6 +230,26 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['pdf-extract', pdfPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Hello PDF')
+    const rLayout = run(['pdf-extract', pdfPath, '--layout'])
+    expect(rLayout.status, rLayout.stderr).toBe(0)
+    expect(rLayout.stdout).toContain('Hello PDF')
+  },
+  'pdf-outline': () => {
+    const dir = mkIsolated('tg-matrix-pdfo-')
+    const pdfPath = path.join(dir, 'doc.pdf')
+    fs.writeFileSync(pdfPath, Buffer.from(MINIMAL_PDF, 'latin1'))
+    const r = run(['pdf-outline', pdfPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('no bookmarks')
+  },
+  'pdf-meta': () => {
+    const dir = mkIsolated('tg-matrix-pdfm-')
+    const pdfPath = path.join(dir, 'doc.pdf')
+    fs.writeFileSync(pdfPath, Buffer.from(MINIMAL_PDF, 'latin1'))
+    const r = run(['pdf-meta', pdfPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Pages: 1')
+    expect(r.stdout).toContain('Text layer: yes')
   },
   'xlsx-sheets': () => {
     const dir = mkIsolated('tg-matrix-xlsx-')
