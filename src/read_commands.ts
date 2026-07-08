@@ -277,11 +277,21 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
   // symbol named symBase in the same file — otherwise the wrong class's method can win.
   if (methodName !== undefined && candidates.length > 1) {
     const containers = querySymbols({ name: symBase, limit: 50 })
-    const scoped = candidates.filter((c) =>
-      containers.some(
+    // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
+    // class symbol with lineEnd === lineStart (single-line span at the class header, not the
+    // full body), so the line-containment check below always misses for them -- they instead
+    // record the parent class name directly in the method symbol's `docstring` field (see
+    // makeSymbol in each of those files). Match on either signal so both regex adapters
+    // (docstring) and tree-sitter/flat-emitter adapters (line-containment) disambiguate
+    // correctly instead of silently falling through to candidates[0] (the first same-named
+    // method, regardless of which class was actually requested).
+    const symBaseLower = symBase.toLowerCase()
+    const scoped = candidates.filter((c) => {
+      if (c.docstring.toLowerCase() === symBaseLower) return true
+      return containers.some(
         (cls) => cls.filePath === c.filePath && c.lineStart >= cls.lineStart && c.lineEnd <= cls.lineEnd,
-      ),
-    )
+      )
+    })
     if (scoped.length > 0) candidates = scoped
   }
 

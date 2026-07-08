@@ -483,6 +483,20 @@ describe('html adapter', () => {
     const { sections } = extractHtml(content, 'multiline.html')
     expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
   })
+
+  it('headings are included in symbols via parseFile', async () => {
+    // Regression: extractHtml computed headings into .sections, but extractSymbolsNoTreeSitter
+    // only consumed .symbols, so headings never entered the index and were unreachable via
+    // symbol/skeleton/outline or the live `section` command.
+    const file = tmp('page.html', '<h2 id="setup">Setup Guide</h2>\n<p>content</p>\n<h3>Next Steps</h3>')
+    const result = await parseFile(file)
+    const heading = result.symbols.find((s) => s.name === 'Setup Guide')
+    expect(heading?.kind).toBe('heading')
+    expect(heading?.lineStart).toBe(1)
+    const nextHeading = result.symbols.find((s) => s.name === 'Next Steps')
+    expect(nextHeading?.kind).toBe('heading')
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -532,6 +546,16 @@ describe('liquid adapter', () => {
     const content = `<h1>\n  Multi-line Title\n</h1>`
     const { sections } = extractLiquid(content, 'multiline.liquid', 'multiline.liquid')
     expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
+  })
+
+  it('headings are included in symbols via parseFile', async () => {
+    // Regression: extractLiquid computed headings into .sections, but extractSymbolsNoTreeSitter
+    // only consumed .symbols, so headings never entered the index.
+    const file = tmp('test.liquid', '<h2>Setup Guide</h2>\n<p>content</p>')
+    const result = await parseFile(file)
+    const heading = result.symbols.find((s) => s.name === 'Setup Guide')
+    expect(heading?.kind).toBe('heading')
+    fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
 })
 
@@ -725,6 +749,26 @@ fun afterEmpty(): Int {
     const afterEmpty = symbols.find((s) => s.name === 'afterEmpty')
     expect(afterEmpty?.kind).toBe('function')
     expect(afterEmpty?.docstring).toBe('')
+  })
+
+  it('does not index local functions/vals inside method bodies as class members', () => {
+    const content = `class Service {
+  fun handle() {
+    fun inner() = 42
+    val LOCAL_THING = 5
+    inner()
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    // Regression: depthInClass was gated with >= 1 instead of === 1, so a bare statement or
+    // local declaration nested inside a method body (depthInClass 2+) was ALSO matched as if
+    // it were a direct member of the enclosing class.
+    const handle = symbols.find((s) => s.name === 'handle')
+    expect(handle?.kind).toBe('method')
+    expect(handle?.docstring).toBe('Service')
+    expect(symbols.find((s) => s.name === 'inner')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'LOCAL_THING')).toBeUndefined()
   })
 })
 

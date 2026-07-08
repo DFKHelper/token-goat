@@ -27,9 +27,10 @@ const MAX_OUTPUT_LINES = 60
  * Extract H1-H3 headings from markdown content.
  * Parses ATX headings (# ## ###) only — no setext style.
  * Skips headings inside fenced code blocks (``` or ~~~ fences).
- * Returns up to MAX_HEADINGS headings.
+ * @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display hints.
+ *              Pass Infinity for indexing/embedding to capture all headings.
  */
-export function extractMarkdownHeadings(content: string): MarkdownHeading[] {
+export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   const lines = content.split('\n')
 
@@ -53,7 +54,7 @@ export function extractMarkdownHeadings(content: string): MarkdownHeading[] {
       lineNumber: i + 1,
     })
 
-    if (headings.length >= MAX_HEADINGS) break
+    if (headings.length >= limit) break
   }
 
   return headings
