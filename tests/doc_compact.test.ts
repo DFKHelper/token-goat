@@ -41,6 +41,21 @@ describe('doc_compact', () => {
       expect(content).toContain('Compact body')
     })
 
+    it('preserves full body content on write (atomic write regression)', () => {
+      const sourcePath = path.join(tempDir, 'source.md')
+      const compactPath = path.join(tempDir, 'compact.md')
+      const longBody = 'Line 1\n'.repeat(100) + 'Final critical line'
+      fs.writeFileSync(sourcePath, 'source content')
+
+      writeCompact(compactPath, sourcePath, longBody)
+
+      const content = fs.readFileSync(compactPath, 'utf-8')
+      expect(content).toContain('Final critical line')
+      const lines = content.split('\n')
+      expect(lines.length).toBeGreaterThan(50)
+      expect(lines[lines.length - 1] || lines[lines.length - 2]).toContain('Final critical line')
+    })
+
     it('returns true for fresh compact', () => {
       const sourcePath = path.join(tempDir, 'source.md')
       const compactPath = path.join(tempDir, 'compact.md')
@@ -104,6 +119,20 @@ describe('doc_compact', () => {
 
       const fresh = isCompactFresh(compactPath, sourcePath)
       expect(fresh).toBe(false)
+    })
+
+    it('preserves full body content when marking stale (atomic write regression)', () => {
+      const sourcePath = path.join(tempDir, 'source.md')
+      const compactPath = path.join(tempDir, 'compact.md')
+      const longBody = 'Line 1\n'.repeat(100) + 'Final important line'
+      fs.writeFileSync(sourcePath, 'content')
+      writeCompact(compactPath, sourcePath, longBody)
+
+      markCompactStale(compactPath)
+
+      const content = fs.readFileSync(compactPath, 'utf-8')
+      expect(content).toContain('Final important line')
+      expect(content.split('\n').length).toBeGreaterThan(50)
     })
   })
 

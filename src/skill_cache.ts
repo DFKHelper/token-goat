@@ -238,7 +238,7 @@ export function extractNamedSection(body: string, heading: string): string | nul
 
     if (stripped.startsWith('## ') && stripped.length > 3) {
       const headingText = stripLower(stripped.slice(3))
-      if (headingText.startsWith(headingLower)) {
+      if (headingText === headingLower) {
         matchCount++
         if (matchCount === ordinal) {
           startIdx = i + 1

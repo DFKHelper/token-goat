@@ -263,9 +263,25 @@ describe('extractNamedSection', () => {
     expect(section).not.toContain('Next Section')
   })
 
-  it('is case-insensitive prefix match', () => {
+  it('is case-insensitive exact match (not prefix)', () => {
     const body = '## HELLO WORLD\nContent here'
     const section = extractNamedSection(body, 'hello')
+    expect(section).toBeNull()
+  })
+
+  it('does exact match on the full heading text (not prefix), regression for Setup vs Setup Guide', () => {
+    const body = '## Setup\nSetup content\n## Setup Guide\nGuide content'
+    const setupSection = extractNamedSection(body, 'Setup')
+    const guideSection = extractNamedSection(body, 'Setup Guide')
+    expect(setupSection).toContain('Setup content')
+    expect(setupSection).not.toContain('Guide content')
+    expect(guideSection).toContain('Guide content')
+    expect(guideSection).not.toContain('Setup content')
+  })
+
+  it('matches case-insensitive full text', () => {
+    const body = '## HELLO WORLD\nContent here'
+    const section = extractNamedSection(body, 'hello world')
     expect(section).toContain('Content')
   })
 

@@ -124,7 +124,16 @@ export function stripHashComments(text: string): string {
 
 /** Strip SQL ``-- …`` line comments. */
 export function stripSqlLineComments(text: string): string {
-  return text.replace(/--[^\n]*/g, (m) => ' '.repeat(m.length))
+  return text
+    .split('\n')
+    .map((line) => {
+      let idx = line.indexOf('--')
+      while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+        idx = line.indexOf('--', idx + 1)
+      }
+      return idx === -1 ? line : line.slice(0, idx) + ' '.repeat(line.length - idx)
+    })
+    .join('\n')
 }
 
 /**
@@ -138,15 +147,27 @@ export function stripSqlLineComments(text: string): string {
  */
 function isInsideStringLiteral(line: string, index: number): boolean {
   let openQuote: '"' | "'" | null = null
-  for (let i = 0; i < index; i++) {
+  let i = 0
+  while (i < index) {
     const ch = line[i]
-    if ((ch === '"' || ch === "'") && line[i - 1] !== '\\') {
+    // Only treat backslash as an escape while already inside a string (mirrors
+    // stripStringLiterals below); a bare backslash outside a string can't escape
+    // anything, and this avoids miscounting consecutive backslashes preceding a
+    // real closing quote as escaping it (e.g. an escaped trailing backslash
+    // immediately followed by the actual closing quote, as in a Windows path
+    // literal like "C:\\Users\\").
+    if (openQuote !== null && ch === '\\' && i + 1 < line.length) {
+      i += 2
+      continue
+    }
+    if (ch === '"' || ch === "'") {
       if (openQuote === null) {
         openQuote = ch
       } else if (openQuote === ch) {
         openQuote = null
       }
     }
+    i++
   }
   return openQuote !== null
 }

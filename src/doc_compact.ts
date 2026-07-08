@@ -11,6 +11,7 @@ import * as crypto from 'crypto'
 import * as path from 'path'
 
 import { dataDir } from './constants.js'
+import { atomicWriteText } from './util.js'
 
 const defaultSentencesPerSection = 2
 const headerPrefix = '<!-- token-goat doc-compact source-hash:'
@@ -105,7 +106,7 @@ export function markCompactStale(compactPath: string): boolean {
 
     const oldHash = m[1]
     lines[0] = lines[0].replace(`source-hash:${oldHash}`, 'source-hash:STALE')
-    fs.writeFileSync(compactPath, lines.join('\n'), 'utf-8')
+    atomicWriteText(compactPath, lines.join('\n'))
     return true
   } catch {
     return false
@@ -148,7 +149,7 @@ export function writeCompact(
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
   }
-  fs.writeFileSync(compactPath, fullText, 'utf-8')
+  atomicWriteText(compactPath, fullText)
 }
 
 /**
