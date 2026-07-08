@@ -25,7 +25,7 @@ import { trimToBudget } from './overflow_guard.js'
 import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable } from './csv_query.js'
-import { extractPdfText } from './pdf_extract.js'
+import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 
 // ---- constants --------------------------------------------------------------
@@ -668,13 +668,31 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
  * it through guard() (which supports async actions) rather than runExit
  * (sync-only). Throws on error, matching this file's extractPdfText
  * contract, rather than returning an exit code. */
-export async function runPdfExtractText(file: string, pagesSpec?: string): Promise<string> {
+export async function runPdfExtractText(file: string, pagesSpec?: string, layout = false): Promise<string> {
   if (!fileExists(file)) {
     throw new Error(`Could not read: ${file}`)
   }
   const data = fs.readFileSync(file)
-  const result = await extractPdfText(new Uint8Array(data), pagesSpec)
+  const result = await extractPdfText(new Uint8Array(data), pagesSpec, layout)
   return result.text
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above). */
+export async function runPdfOutline(file: string): Promise<PdfOutlineEntry[]> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  return extractPdfOutline(new Uint8Array(data))
+}
+
+/** Thin async wrapper (same rationale as runPdfExtractText above). */
+export async function runPdfMeta(file: string): Promise<PdfMeta> {
+  if (!fileExists(file)) {
+    throw new Error(`Could not read: ${file}`)
+  }
+  const data = fs.readFileSync(file)
+  return extractPdfMeta(new Uint8Array(data))
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above): drives a real
