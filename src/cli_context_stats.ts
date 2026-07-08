@@ -11,6 +11,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { pruneIndex } from './memory_prune.js'
+
 // ---- helpers ----------------------------------------------------------------
 
 /** Estimate tokens for a file (bytes / 4, matching Python cli_context_stats._tok). */
@@ -178,8 +180,15 @@ export function runContextStats(opts: ContextStatsOptions = {}): void {
   process.stdout.write(`  ${result.total_tokens.toString().padStart(6)} tok\n\n`)
 
   if (opts.fix === true) {
-    process.stdout.write(
-      '[--fix] Automatic memory pruning is not yet implemented in the TypeScript port.\n',
-    )
+    if (result.memory_md_path === null) {
+      process.stdout.write('[--fix] No MEMORY.md found; nothing to prune.\n')
+    } else {
+      const pruneResult = pruneIndex(path.dirname(result.memory_md_path))
+      process.stdout.write('[--fix] Pruned MEMORY.md\n')
+      process.stdout.write(`  removed ${pruneResult.removedDead.length} dead-link entries\n`)
+      process.stdout.write(`  removed ${pruneResult.removedDup.length} duplicate entries\n`)
+      process.stdout.write(`  kept ${pruneResult.kept} entries\n`)
+      process.stdout.write(`  ${pruneResult.tokensSaved} tok saved\n`)
+    }
   }
 }

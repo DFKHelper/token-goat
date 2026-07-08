@@ -445,7 +445,36 @@ export async function storeOutput(
     let storedBody = body
     if (truncated) {
       const buf = Buffer.from(body, 'utf-8')
-      const truncBuf = buf.slice(Math.max(0, buf.length - 262144))
+      let truncStart = Math.max(0, buf.length - 262144)
+
+      // If truncStart is in the middle of a UTF-8 character, find a safe boundary.
+      if (truncStart < buf.length) {
+        const byte = buf[truncStart]!
+
+        // If this is a continuation byte (10xxxxxx), we're in the middle of a character.
+        if ((byte & 0xC0) === 0x80) {
+          // Walk backward to find the start of this character.
+          let charStart = truncStart - 1
+          while (charStart >= 0 && (buf[charStart]! & 0xC0) === 0x80) {
+            charStart--
+          }
+
+          if (charStart >= 0) {
+            // Determine the character length from the leading byte.
+            const leadByte = buf[charStart]!
+            let charLen = 1
+            if ((leadByte & 0x80) === 0) charLen = 1        // 0xxxxxxx (ASCII)
+            else if ((leadByte & 0xE0) === 0xC0) charLen = 2   // 110xxxxx
+            else if ((leadByte & 0xF0) === 0xE0) charLen = 3   // 1110xxxx
+            else if ((leadByte & 0xF8) === 0xF0) charLen = 4   // 11110xxx
+            
+            // Skip this partial character by advancing to the next one.
+            truncStart = charStart + charLen
+          }
+        }
+      }
+
+      const truncBuf = buf.slice(truncStart)
       storedBody = truncBuf.toString('utf-8')
     }
     await atomicWriteText(resolve(dir, `${outId}.txt`), storedBody)
