@@ -133,10 +133,11 @@ function callHook(event: string, payload: Record<string, unknown>): Record<strin
           windowsHide: true,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         })
-      : spawnSync("token-goat", ["hook", event], {
+      : spawnSync('token-goat hook ' + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
           timeout: 5000,
+          shell: true,
           windowsHide: true,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         });
