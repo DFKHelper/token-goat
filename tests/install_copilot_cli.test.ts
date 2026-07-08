@@ -97,6 +97,41 @@ describe('installCopilotCli (user scope)', () => {
     expect(command?.startsWith('node ')).toBe(false)
   })
 
+  it("bakes the running token-goat entry's absolute path (process.argv[1]) as a third arg in the generated hook command, so the shim's own inner call can bypass PATH resolution too", () => {
+    const result = installCopilotCli()
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      hooks: Record<string, Array<{ command: string }>>
+    }
+    const command = config.hooks['preToolUse']?.[0]?.command
+    expect(command).toBeDefined()
+    expect(process.argv[1]).toBeDefined()
+    expect(command).toContain(`"${process.argv[1]}"`)
+    // Ordering: execPath, then scriptPath, then event, then entryPath -- the shim reads the
+    // entry path from argv[3], so it must be the fourth quoted/bare token on the line.
+    expect(command).toBe(`"${process.execPath}" "${result.scriptPath}" preToolUse "${process.argv[1]}"`)
+  })
+
+  it('sets a generous timeoutSec on every generated hook entry', () => {
+    const result = installCopilotCli()
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      hooks: Record<string, Array<{ timeoutSec: number }>>
+    }
+    for (const event of [
+      'preToolUse',
+      'postToolUse',
+      'preCompact',
+      'agentStop',
+      'subagentStop',
+      'userPromptSubmitted',
+    ]) {
+      const timeoutSec = config.hooks[event]?.[0]?.timeoutSec
+      // Copilot's own documented default is 30s; this must be strictly more generous, not
+      // just present, or a slow cold start gains nothing from the override.
+      expect(typeof timeoutSec).toBe('number')
+      expect(timeoutSec).toBeGreaterThan(30)
+    }
+  })
+
   it('is idempotent: a second install reports alreadyInstalled and does not duplicate or alter entries', () => {
     installCopilotCli()
     const second = installCopilotCli()
@@ -286,7 +321,51 @@ function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
 }
 
+/**
+ * Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary --
+ * that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0
+ * with an empty JSON response. Used to prove the shim's inner call, when given a third argv
+ * (the baked entry path), invokes that path directly via process.execPath rather than
+ * shelling out to a PATH-resolved `token-goat` at all.
+ */
+function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string } {
+  const entryPath = path.join(cwd, 'fake-entry.js')
+  const capturePath = path.join(cwd, 'captured-argv.json')
+  const captureLiteral = JSON.stringify(capturePath)
+  fs.writeFileSync(
+    entryPath,
+    `require('fs').writeFileSync(${captureLiteral}, JSON.stringify(process.argv.slice(2)))\nprocess.stdout.write('{}')\n`,
+    'utf8',
+  )
+  return { entryPath, capturePath }
+}
+
 describe('COPILOT_CLI_HOOK_SCRIPT', () => {
+  it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
+    const cwd = mkIsolated()
+    const { entryPath, capturePath } = writeFakeEntry(cwd)
+    // Deliberately no PATH-resolvable `token-goat` anywhere -- if the shim fell back to the
+    // old shell:true PATH lookup instead of using entryPath, this would fail to launch and
+    // captured-argv.json would never be written.
+    const scriptPath = path.join(cwd, 'shim.js')
+    fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const res = spawnSync(
+      process.execPath,
+      [scriptPath, 'preToolUse', entryPath],
+      {
+        cwd,
+        input: JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'view', toolArgs: { path: '/f.txt' } }),
+        encoding: 'utf8',
+        timeout: 15000,
+        env: process.env,
+      },
+    )
+    expect(res.status).toBe(0)
+    expect(fs.existsSync(capturePath)).toBe(true)
+    const capturedArgv = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as string[]
+    expect(capturedArgv).toEqual(['hook', 'pre_tool_use'])
+  })
+
   it('every Copilot event name it maps to a token-goat event resolves to a real HOOK_EVENTS member', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()

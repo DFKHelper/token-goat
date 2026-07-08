@@ -13,6 +13,7 @@ import { isWorkerRunning } from './worker.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
+import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 
 /**
  * Result of a single doctor check.
@@ -175,6 +176,94 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
 }
 
 /**
+ * Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse
+ * entry, the node binary baked into that entry's command still exists on disk (it goes stale
+ * after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger,
+ * since Copilot's command hooks fail closed on a process that never launches), and running
+ * the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path
+ * Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON.
+ *
+ * Returns null (not a result) when Copilot CLI integration isn't installed: this is an
+ * opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is
+ * correct for users who have never touched `--copilot`.
+ */
+export function checkCopilotCli(configPath: string, scriptPath: string): DoctorResult | null {
+  if (!fs.existsSync(configPath) || !fs.existsSync(scriptPath)) {
+    return null
+  }
+
+  let config: { hooks?: Partial<Record<string, Array<{ command?: string }>>> }
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+  } catch (err) {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: `hook config at ${configPath} is not valid JSON: ${extractErrorMessage(err, 'unknown error')}`,
+    }
+  }
+
+  const preToolUseCommand = config.hooks?.['preToolUse']?.[0]?.command
+  if (typeof preToolUseCommand !== 'string' || preToolUseCommand === '') {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: `hook config at ${configPath} has no preToolUse entry; run: token-goat install --copilot`,
+    }
+  }
+
+  // The command string's first quoted segment is the baked process.execPath (see
+  // hookCommandFor in copilot_cli_install.ts).
+  const bakedExecPath = /^"([^"]+)"/.exec(preToolUseCommand)?.[1]
+  if (bakedExecPath !== undefined && !fs.existsSync(bakedExecPath)) {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: `hook points at a node binary that no longer exists (${bakedExecPath}) -- likely stale after an nvm/fnm/volta node upgrade. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI (renaming/reinstalling the hook has no effect on an already-running session -- Copilot caches hook configs at startup).`,
+    }
+  }
+
+  const synthetic = JSON.stringify({
+    sessionId: 'doctor-check',
+    cwd: process.cwd(),
+    toolName: 'view',
+    toolArgs: { path: 'doctor-check.txt' },
+  })
+  const res = spawnSync(preToolUseCommand, {
+    input: synthetic,
+    encoding: 'utf-8',
+    shell: true,
+    windowsHide: true,
+    timeout: 15000,
+  })
+  if (res.error) {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: `hook failed to launch: ${extractErrorMessage(res.error, 'unknown error')}. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI.`,
+    }
+  }
+  if (res.status !== 0) {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: `hook exited with status ${res.status} -- Copilot's preToolUse fails closed on a non-zero exit and denies every tool call for the rest of the session. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI (a live session won't pick up the fix).`,
+    }
+  }
+  try {
+    JSON.parse(res.stdout ?? '')
+  } catch {
+    return {
+      name: 'Copilot CLI',
+      status: 'fail',
+      message: 'hook did not return valid JSON -- Copilot treats this as a hook error and denies every tool call. Recovery: run "token-goat install --copilot", then fully restart Copilot CLI.',
+    }
+  }
+
+  return { name: 'Copilot CLI', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' }
+}
+
+/**
  * Run all doctor checks and return results.
  */
 export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[] {
@@ -192,6 +281,9 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
   results.push(checkConfigValid(actualConfigPath))
 
   results.push(checkDiskSpace(actualDataDir))
+
+  const copilotResult = checkCopilotCli(copilotCliConfigPath(), copilotCliScriptPath())
+  if (copilotResult) results.push(copilotResult)
 
   return results
 }

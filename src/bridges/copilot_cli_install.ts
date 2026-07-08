@@ -16,8 +16,9 @@
  * simpler whole-file overwrite-on-diff pattern rather than Codex's
  * parse/merge pattern -- there is nothing to merge into. It does, however,
  * still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw),
- * because Copilot's hooks schema supports per-entry fields token-goat never
- * writes (`timeoutSec`, `cwd`, `env`, `matcher`, `allowedEnvVars` --
+ * because Copilot's hooks schema supports per-entry fields token-goat writes
+ * only some of (`timeoutSec` -- see HOOK_TIMEOUT_SEC below) and never touches
+ * others of (`cwd`, `env`, `matcher`, `allowedEnvVars` --
  * https://docs.github.com/en/copilot/reference/hooks-reference) that a user
  * could plausibly hand-tune; since install always regenerates the whole file
  * from scratch, a hand-edit would otherwise be silently destroyed with no
@@ -50,6 +51,7 @@ type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number]
 interface CopilotHookEntry {
   type: 'command'
   command: string
+  timeoutSec: number
 }
 
 interface CopilotCliConfig {
@@ -97,13 +99,34 @@ export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string 
 // denies unconditionally. Quoted the same way as scriptPath below since the
 // Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`).
 function hookCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
-  return `"${process.execPath}" "${scriptPath}" ${event}`
+  // process.argv[1] is the absolute path to whichever token-goat entry point launched this
+  // install run (dist/token-goat.mjs when installed via npm, the dev entry under tsx
+  // otherwise). Baked in here as a third CLI arg so the shim's own inner `token-goat hook
+  // <event>` call (copilot_cli.ts) can invoke it directly via process.execPath instead of
+  // depending on PATH/cmd.exe resolution -- same rationale, and same #4001 fail-closed
+  // deny-all class, as process.execPath two lines up. Omitted when unavailable (should never
+  // happen under a real `node <script>` invocation) rather than baking in something wrong;
+  // the shim's inner call falls back to its old PATH-based lookup in that case.
+  const entryPath = process.argv[1]
+  const entryArg = entryPath ? ` "${entryPath}"` : ''
+  return `"${process.execPath}" "${scriptPath}" ${event}${entryArg}`
 }
+
+// Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout
+// preToolUse hook fails *open* (proceeds to normal permission flow), not closed -- so
+// this is not itself a fix for the "(hook errored)" deny-all class (that's exclusively
+// hookCommandFor's PATH hardening above). It exists for a narrower reason: a cold first
+// invocation (bundle load + DB open, or a symlinked dev-clone mid `npm install`/`npm run
+// build`) can plausibly exceed a 30s default, and every non-preToolUse event here (unlike
+// preToolUse) has no documented fail-open timeout carve-out -- so a slow cold start on
+// those still risks a "Killed after timeoutSec" error being logged for no real reason.
+// Double Copilot's own default as cheap, harmless headroom.
+const HOOK_TIMEOUT_SEC = 60
 
 function buildConfig(scriptPath: string): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   for (const event of COPILOT_CLI_HOOK_EVENTS) {
-    hooks[event] = [{ type: 'command', command: hookCommandFor(scriptPath, event) }]
+    hooks[event] = [{ type: 'command', command: hookCommandFor(scriptPath, event), timeoutSec: HOOK_TIMEOUT_SEC }]
   }
   return { version: 1, hooks }
 }
