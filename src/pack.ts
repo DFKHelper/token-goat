@@ -190,6 +190,27 @@ const CSTYLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java'
 const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua'])
 
 /**
+ * Counts unescaped occurrences of a quote character in text. Properly handles
+ * escaped backslashes by accumulating consecutive backslashes and only counting
+ * the quote when preceded by an even number of backslashes (meaning the quote
+ * itself is not escaped). This fixes the lookbehind regex limitation which cannot
+ * distinguish `\\` (escaped backslash) from `\` (escaping backslash).
+ */
+function countUnescapedQuotes(text: string, quoteChar: string): number {
+  let count = 0
+  let backslashes = 0
+  for (const ch of text) {
+    if (ch === '\\') {
+      backslashes++
+      continue
+    }
+    if (ch === quoteChar && backslashes % 2 === 0) count++
+    backslashes = 0
+  }
+  return count
+}
+
+/**
  * True when `index` (an offset into `text`) falls inside an opening quoted
  * string on its line. Mirrors `text_commands.ts`'s `isInsideStringLiteral`:
  * counts unescaped quote characters from the start of the line up to `index`
@@ -202,9 +223,9 @@ const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r',
 function isInsideStringLiteral(text: string, index: number): boolean {
   const lineStart = text.lastIndexOf('\n', index - 1) + 1
   const before = text.slice(lineStart, index)
-  const dqCount = (before.match(/(?<!\\)"/g) ?? []).length
-  const sqCount = (before.match(/(?<!\\)'/g) ?? []).length
-  const btCount = (before.match(/(?<!\\)`/g) ?? []).length
+  const dqCount = countUnescapedQuotes(before, '"')
+  const sqCount = countUnescapedQuotes(before, "'")
+  const btCount = countUnescapedQuotes(before, '`')
   return dqCount % 2 !== 0 || sqCount % 2 !== 0 || btCount % 2 !== 0
 }
 
