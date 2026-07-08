@@ -32,7 +32,7 @@ export function parseShareUrl(url: string): ParsedShareUrl {
   }
 
   if (/^1drv\.ms$/i.test(u.hostname)) {
-    throw new Error(`${url} is a shortened OneDrive link; it needs a network redirect to expand, which this tool doesn't follow -- use the full sharepoint.com/onedrive.live.com URL instead`)
+    throw new Error(`${url} is a shortened OneDrive link; it needs a network redirect to expand, which this tool doesn't follow -- use the full sharepoint.com URL instead`)
   }
 
   const tenantMatch = TENANT_HOST_RE.exec(u.hostname)

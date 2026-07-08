@@ -19,6 +19,10 @@ describe('parseShareUrl', () => {
     expect(() => parseShareUrl('https://1drv.ms/x/s!abc123')).toThrow(/needs a network redirect/)
   })
 
+  it('throws for onedrive.live.com (not supported by the parser)', () => {
+    expect(() => parseShareUrl('https://contoso-my.onedrive.live.com/personal/alice_contoso_com/Documents/notes.docx')).toThrow(/not a SharePoint\/OneDrive URL/)
+  })
+
   it('throws for a non-SharePoint/OneDrive URL', () => {
     expect(() => parseShareUrl('https://example.com/foo')).toThrow(/not a SharePoint\/OneDrive URL/)
   })
