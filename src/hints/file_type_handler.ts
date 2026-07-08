@@ -18,6 +18,7 @@ export const FILE_TYPE_THRESHOLDS = {
   txt: 20_000,
   csv: 10_000,
   tsv: 10_000,
+  transcript: 10_000,
   office: 0,           // always block (.docx etc)
   generic: 100_000,    // catch-all for unrecognized large files
 } as const
@@ -180,6 +181,25 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   }
 }
 
+/** WebVTT/SRT transcript handler — blocks when file exceeds threshold. */
+export function handleTranscript(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.transcript) return { shouldBlock: false, message: '' }
+
+  const speakerMatches = [...content.matchAll(/^<v(?:\.\w+)?\s+([^>]+)>/gm)].map((m) => m[1]?.trim() ?? '')
+  const speakers = [...new Set(speakerMatches)].slice(0, 10)
+  const cueCount = (content.match(/-->/g) ?? []).length
+
+  return {
+    shouldBlock: true,
+    message: [
+      `Transcript file (${formatBytes(length)}, ~${cueCount} cues)${speakers.length > 0 ? `. Speakers: ${speakers.join(', ')}` : ''}.`,
+      `See structure: token-goat transcript-outline "${filePath}"`,
+      `Slice by speaker/time/pattern: token-goat transcript "${filePath}" --speaker "Name" --from 00:05:00 --to 00:10:00 --grep pattern`,
+    ].join('\n'),
+  }
+}
+
 /** Generic catch-all for unrecognized large files. */
 export function handleGenericLarge(filePath: string, contentLength: number): FileTypeResult {
   if (contentLength < FILE_TYPE_THRESHOLDS.generic) return { shouldBlock: false, message: '' }
@@ -219,6 +239,8 @@ export function dispatchFileTypeHandler(
   if (ext === 'docx') return handleDocx(filePath)
   if (['odt', 'ods', 'ott', 'odp'].includes(ext)) return handleOfficeBinary(filePath)
   if (ext === 'csv' || ext === 'tsv') return handleCsv(filePath, content, effectiveLength)
+  if (ext === 'vtt' || ext === 'srt') return handleTranscript(filePath, content, effectiveLength)
+
 
   // Generic catch-all
   return handleGenericLarge(filePath, effectiveLength)
