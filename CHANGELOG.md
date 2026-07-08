@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.6] - 2026-07-07
+
 ### Fixed
 
 - **The GitHub Copilot CLI hook shim denied every single tool call.** The installed hook command invoked a bare `node` on PATH, which real Copilot CLI hook execution environments don't always resolve -- and Copilot CLI fails *closed* on any hook launch/exit failure, so a PATH miss silently denied 100% of tool calls with "(hook errored)". The generated command now embeds the absolute Node binary path (`process.execPath`, captured at install time) instead of relying on PATH resolution, and the shim's `main()` is now wrapped in a hard top-level safety net so it can never exit non-zero for any reason. See [src/bridges/copilot_cli_install.ts](src/bridges/copilot_cli_install.ts) and [src/bridges/copilot_cli.ts](src/bridges/copilot_cli.ts); regression-tested in [tests/install_copilot_cli.test.ts](tests/install_copilot_cli.test.ts).
