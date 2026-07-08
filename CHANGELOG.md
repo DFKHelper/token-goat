@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.7] - 2026-07-07
+
 ### Fixed
 
 - **`token-goat stats` showed events as happening "tomorrow" once UTC crossed midnight, ahead of the local calendar day.** `summarize()`'s day-bucket key and the rich stats renderer's header date were both derived via `toISOString()`, which always renders in UTC -- so any event recorded in the evening in a negative-UTC-offset zone (where UTC has already rolled to the next day) got bucketed and displayed under tomorrow's date. Both now derive the calendar day from local `Date` getters via a shared `toLocalDateKey` helper; `skill-history`'s timestamp column got the same local-time treatment via a new `formatLocalTimestamp` helper. See [src/stats.ts](src/stats.ts), [src/render/stats_renderer.ts](src/render/stats_renderer.ts), and [src/cli.ts](src/cli.ts); regression-tested in [tests/stats.test.ts](tests/stats.test.ts) against a fixed UTC-5 timezone so the day-boundary crossing is deterministic regardless of the host machine's real timezone.
