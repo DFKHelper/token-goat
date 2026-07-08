@@ -1,9 +1,10 @@
 /**
  * Minimal in-memory .pptx/.docx fixture builder for tests, via fflate.zipSync (already a
- * project optionalDependency, so no extra test-only dep). Only includes the ZIP parts the
- * extraction code actually reads (slide/notes/document XML) -- not the full OOXML skeleton
- * (Content_Types.xml, presentation.xml, rels) real PowerPoint/Word would require to open the
- * file, since readOoxmlZip/pptx_extract/docx_extract never look at those parts.
+ * project optionalDependency, so no extra test-only dep). Includes only the ZIP parts the
+ * extraction code actually reads: slide/notes/document XML always, plus presentation.xml
+ * and its rels when `buildPptxFixture`'s optional `order` param is used (to exercise
+ * presentation-display-order resolution) -- not the full OOXML skeleton (Content_Types.xml
+ * etc.) real PowerPoint/Word would require to open the file.
  */
 
 import { strToU8, zipSync } from 'fflate'
@@ -34,7 +35,15 @@ function notesXml(notes: string): string {
   return `<?xml version="1.0"?><p:notes><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody>${runXml(notes)}</p:txBody></p:sp></p:spTree></p:cSld></p:notes>`
 }
 
-export function buildPptxFixture(slides: FixtureSlide[]): Uint8Array {
+/**
+ * `order`: 1-based physical `slideN.xml` indices in display order, e.g. `[3, 1, 2]` means
+ * physical slide 3 displays first. When provided, emits `ppt/presentation.xml` +
+ * `ppt/_rels/presentation.xml.rels` so tests can exercise presentation-order resolution
+ * (`slidePathsInPresentationOrder` in src/pptx_extract.ts) instead of the filename-order
+ * fallback -- a reordered/duplicated/deleted-slide deck is exactly the case filename order
+ * gets wrong, since PowerPoint never renames `slideN.xml` parts to match display order.
+ */
+export function buildPptxFixture(slides: FixtureSlide[], order?: number[]): Uint8Array {
   const files: Record<string, Uint8Array> = {}
   slides.forEach((slide, i) => {
     files[`ppt/slides/slide${i + 1}.xml`] = strToU8(slideXml(slide))
@@ -42,6 +51,14 @@ export function buildPptxFixture(slides: FixtureSlide[]): Uint8Array {
       files[`ppt/notesSlides/notesSlide${i + 1}.xml`] = strToU8(notesXml(slide.notes))
     }
   })
+  if (order !== undefined) {
+    const sldIds = order.map((n, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`).join('')
+    files['ppt/presentation.xml'] =
+      strToU8(`<?xml version="1.0"?><p:presentation xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst>${sldIds}</p:sldIdLst></p:presentation>`)
+    const rels = order.map((n, i) => `<Relationship Id="rId${i + 1}" Type="slide" Target="slides/slide${n}.xml"/>`).join('')
+    files['ppt/_rels/presentation.xml.rels'] =
+      strToU8(`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`)
+  }
   return zipSync(files)
 }
 

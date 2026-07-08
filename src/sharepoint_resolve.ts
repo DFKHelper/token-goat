@@ -63,7 +63,7 @@ export function parseShareUrl(url: string): ParsedShareUrl {
 }
 
 const LIBRARY_ALIASES: Record<string, string> = {
-  'shared documents': 'documents',
+  'shared documents': 'Documents',
 }
 
 function normalizeLibrarySegment(seg: string): string {
@@ -105,7 +105,9 @@ export function resolveLocalPath(
   home: string = os.homedir(),
 ): ResolveResult {
   const roots = candidateRoots(env, home)
-  const libSegments = parsed.libraryPath.split('/').filter(Boolean)
+  // Reject '.'/'..' segments so a crafted URL can't walk the resolved path outside
+  // the sync root (path.join happily collapses '..' across joined segments).
+  const libSegments = parsed.libraryPath.split('/').filter((s) => s.length > 0 && s !== '.' && s !== '..')
   const triedPaths: string[] = []
 
   for (const root of roots) {
@@ -125,10 +127,20 @@ export function resolveLocalPath(
     if (parsed.siteType === 'site' && parsed.siteName.length > 0) {
       try {
         for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-          if (entry.isDirectory() && entry.name.toLowerCase().includes(parsed.siteName.toLowerCase())) {
-            const siteJoined = path.join(root, entry.name, ...libSegments.slice(1))
-            triedPaths.push(siteJoined)
-            if (fs.existsSync(siteJoined)) return { resolvedPath: siteJoined, triedPaths }
+          if (!entry.isDirectory() || !entry.name.toLowerCase().includes(parsed.siteName.toLowerCase())) continue
+          const siteRoot = path.join(root, entry.name)
+
+          const siteJoined = path.join(siteRoot, ...libSegments)
+          triedPaths.push(siteJoined)
+          if (fs.existsSync(siteJoined)) return { resolvedPath: siteJoined, triedPaths }
+
+          if (libSegments.length > 0) {
+            const aliasedFirst = normalizeLibrarySegment(libSegments[0] as string)
+            if (aliasedFirst !== libSegments[0]) {
+              const siteAliasedJoined = path.join(siteRoot, aliasedFirst, ...libSegments.slice(1))
+              triedPaths.push(siteAliasedJoined)
+              if (fs.existsSync(siteAliasedJoined)) return { resolvedPath: siteAliasedJoined, triedPaths }
+            }
           }
         }
       } catch {

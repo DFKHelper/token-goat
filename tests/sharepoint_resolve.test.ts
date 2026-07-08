@@ -58,16 +58,35 @@ describe('resolveLocalPath', () => {
     fs.writeFileSync(path.join(siteRoot, 'Documents', 'Reports', 'budget.xlsx'), '')
     const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Shared%20Documents/Reports/budget.xlsx')
     const result = resolveLocalPath(parsed, { OneDriveCommercial: siteRoot }, root)
-    expect(result.resolvedPath).toBe(path.join(siteRoot, 'documents', 'Reports', 'budget.xlsx'))
+    expect(result.resolvedPath).toBe(path.join(siteRoot, 'Documents', 'Reports', 'budget.xlsx'))
   })
 
   it('resolves a team site nested under a multi-site sync root by matching the site name', () => {
     const multiRoot = path.join(root, 'multi-root')
-    fs.mkdirSync(path.join(multiRoot, 'Contoso - TeamSite', 'Reports'), { recursive: true })
-    fs.writeFileSync(path.join(multiRoot, 'Contoso - TeamSite', 'Reports', 'budget.xlsx'), '')
+    fs.mkdirSync(path.join(multiRoot, 'Contoso - TeamSite', 'Documents', 'Reports'), { recursive: true })
+    fs.writeFileSync(path.join(multiRoot, 'Contoso - TeamSite', 'Documents', 'Reports', 'budget.xlsx'), '')
     const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Shared%20Documents/Reports/budget.xlsx')
     const result = resolveLocalPath(parsed, { OneDriveCommercial: multiRoot }, root)
-    expect(result.resolvedPath).toBe(path.join(multiRoot, 'Contoso - TeamSite', 'Reports', 'budget.xlsx'))
+    expect(result.resolvedPath).toBe(path.join(multiRoot, 'Contoso - TeamSite', 'Documents', 'Reports', 'budget.xlsx'))
+  })
+
+  it("normalizes away '..' segments before new URL() ever hands them to the parser (WHATWG URL spec resolves dot-segments)", () => {
+    // Belt-and-braces: confirms the production entry point (parseShareUrl) can never
+    // actually produce a '..'-bearing libraryPath in the first place, since new URL()
+    // resolves dot-segments (RFC 3986 5.2.4) -- including percent-encoded ones -- before
+    // resolveLocalPath ever sees the value.
+    const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Documents/Reports/foo/../etc/passwd')
+    expect(parsed.libraryPath).not.toContain('..')
+  })
+
+  it("rejects a literal '..'/'.' segment in libraryPath at resolveLocalPath's own boundary, in case a future caller builds ParsedShareUrl directly instead of via parseShareUrl", () => {
+    const siteRoot = path.join(root, 'traversal-root')
+    fs.mkdirSync(siteRoot, { recursive: true })
+    const parsed = { tenant: 'contoso', siteType: 'site' as const, siteName: 'TeamSite', libraryPath: '../../../../../../etc/passwd' }
+    const result = resolveLocalPath(parsed, { OneDriveCommercial: siteRoot }, root)
+    for (const tried of result.triedPaths) {
+      expect(tried.startsWith(siteRoot)).toBe(true)
+    }
   })
 
   it('finds a candidate root via a home-directory scan when no env var is set', () => {

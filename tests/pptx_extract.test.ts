@@ -83,3 +83,42 @@ describe('pptxTextGrep', () => {
     expect(matches).toHaveLength(0)
   })
 })
+
+describe('slide numbering follows presentation display order, not slideN.xml filenames', () => {
+  let reorderedDir: string
+  let reorderedFile: string
+
+  beforeAll(() => {
+    reorderedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-reorder-'))
+    reorderedFile = path.join(reorderedDir, 'reordered.pptx')
+    // Physical files are created in this order: slide1.xml=Intro, slide2.xml=Middle,
+    // slide3.xml=Conclusion. The deck's actual display order (as PowerPoint's "Move Slide"
+    // would produce, without renaming any part) puts physical slide 3 first and slide 1 last.
+    const bytes = buildPptxFixture(
+      [{ title: 'Intro' }, { title: 'Middle' }, { title: 'Conclusion' }],
+      [3, 2, 1],
+    )
+    fs.writeFileSync(reorderedFile, bytes)
+  })
+
+  afterAll(() => {
+    fs.rmSync(reorderedDir, { recursive: true, force: true })
+  })
+
+  it('pptxOutline lists slides in display order', async () => {
+    const slides = await pptxOutline(reorderedFile)
+    expect(slides.map((s) => s.title)).toEqual(['Conclusion', 'Middle', 'Intro'])
+    expect(slides.map((s) => s.slide)).toEqual([1, 2, 3])
+  })
+
+  it('pptxSlideText returns the displayed slide, not the same-numbered physical file', async () => {
+    const text = await pptxSlideText(reorderedFile, 1, false)
+    expect(text).toContain('Conclusion')
+  })
+
+  it('pptxTextGrep reports the display-order slide number', async () => {
+    const matches = await pptxTextGrep(reorderedFile, 'Intro')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]?.slide).toBe(3)
+  })
+})
