@@ -48,8 +48,17 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
 // final report when it CLAIMS to have made changes (e.g. "Fixed the bug
 // and committed the change") — as opposed to inferring intent from the
 // task it was assigned. Handles common inflections (fix/fixed/fixing).
+// Deliberately excludes commit/push verbs: a clean `git status --porcelain`
+// is also the expected, correct outcome after a successful commit, so
+// those verbs cannot be used as hallucination signals on their own — see
+// CLAIMED_COMMIT_VERBS_RE below.
 const CLAIMED_CHANGE_VERBS_RE =
-  /\b(fix(?:ed|es|ing)?|implement(?:ed|s|ing)?|add(?:ed|s|ing)?|creat(?:e|ed|es|ing)|writ(?:e|ten|es|ing)|refactor(?:ed|s|ing)?|updat(?:e|ed|es|ing)|chang(?:e|ed|es|ing)|edit(?:ed|s|ing)?|modif(?:y|ied|ies|ying)|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|patch(?:ed|es|ing)?|resolv(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|improv(?:e|ed|es|ing)|commit(?:ted|s|ting)?|push(?:ed|es|ing)?|appl(?:y|ied|ies|ying))\b/i;
+  /\b(fix(?:ed|es|ing)?|implement(?:ed|s|ing)?|add(?:ed|s|ing)?|creat(?:e|ed|es|ing)|writ(?:e|ten|es|ing)|refactor(?:ed|s|ing)?|updat(?:e|ed|es|ing)|chang(?:e|ed|es|ing)|edit(?:ed|s|ing)?|modif(?:y|ied|ies|ying)|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|patch(?:ed|es|ing)?|resolv(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|improv(?:e|ed|es|ing)|appl(?:y|ied|ies|ying))\b/i;
+
+// Matches claims that the changes were committed/pushed — a legitimate
+// explanation for an empty `git status --porcelain` output, so its
+// presence must suppress the hallucination warning rather than trigger it.
+const CLAIMED_COMMIT_VERBS_RE = /\b(commit(?:ted|s|ting)?|push(?:ed|es|ing)?)\b/i;
 
 function subagentStopHandler(event: HookEvent): HookOutput {
   try {
@@ -73,7 +82,8 @@ function subagentStopHandler(event: HookEvent): HookOutput {
           // whether the assigned task merely asked for changes.
           const lastAssistantMessage = (event.raw['last_assistant_message'] as string) || '';
           const claimsChanges = CLAIMED_CHANGE_VERBS_RE.test(lastAssistantMessage);
-          if (claimsChanges) {
+          const claimsCommitted = CLAIMED_COMMIT_VERBS_RE.test(lastAssistantMessage);
+          if (claimsChanges && !claimsCommitted) {
             console.warn(
               `subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`
             );
