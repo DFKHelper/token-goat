@@ -94,7 +94,10 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
   const ws = requireSheet(xlsx, wb, sheetName)
   const aoa = xlsx.utils.sheet_to_json(ws, { header: 1 }) as unknown[][]
   const header = (aoa[0] ?? []).map((c) => String(c ?? ''))
-  const dataRows = aoa.slice(1, 1 + rows).map((r) => header.map((_, i) => String(r[i] ?? '')))
+  const dataRows = aoa.slice(1, 1 + rows).map((r) => {
+    const cellCount = Math.max(header.length, r.length)
+    return Array.from({ length: cellCount }, (_, i) => String(r[i] ?? ''))
+  })
   const lines = [header.map(quoteCsvCell).join(',')]
   for (const r of dataRows) lines.push(r.map(quoteCsvCell).join(','))
   if (aoa.length - 1 > dataRows.length) {
