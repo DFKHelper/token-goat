@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
 import { shrinkImage } from './image_shrink.js'
+import { atomicWriteBytes } from './util.js'
 
 export interface ScreenshotOptions {
   executablePath?: string
@@ -145,7 +146,7 @@ export async function takeScreenshot(url: string, destPath: string, opts?: Scree
     const buffer = await page.screenshot({ type: 'png', fullPage: opts?.fullPage ?? false })
     const shrunk = await shrinkImage(buffer)
     const finalBuffer = shrunk?.data ?? buffer
-    fs.writeFileSync(destPath, finalBuffer)
+    atomicWriteBytes(destPath, finalBuffer)
     return { path: destPath, originalBytes: buffer.length, finalBytes: finalBuffer.length }
   } finally {
     await browser.close()

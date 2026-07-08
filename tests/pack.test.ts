@@ -91,6 +91,27 @@ describe('stripComments', () => {
     const result = stripComments(code, 'file.css')
     expect(result).toBe(code)
   })
+
+  it('strips a real comment after a string ending in an escaped backslash (Python)', () => {
+    const code = 'path = "C:\\\\\\\\"\n# real comment'
+    const result = stripComments(code, 'file.py')
+    expect(result).not.toContain('real comment')
+    expect(result).toContain('path = "C:\\\\\\\\"')
+  })
+
+  it('strips a real comment after a string ending in an escaped backslash (TypeScript)', () => {
+    const code = 'const path = "C:\\\\\\\\"; // real comment'
+    const result = stripComments(code, 'file.ts')
+    expect(result).not.toContain('real comment')
+    expect(result).toContain('const path = "C:\\\\\\\\"')
+  })
+
+  it('handles multiple escaped backslashes correctly in a Python string', () => {
+    const code = 'path = "a\\\\\\\\\\\\\\\\"  # trailing comment\ncode = 1'
+    const result = stripComments(code, 'file.py')
+    expect(result).not.toContain('trailing comment')
+    expect(result).toContain('code = 1')
+  })
 })
 
 describe('scanSecrets', () => {
