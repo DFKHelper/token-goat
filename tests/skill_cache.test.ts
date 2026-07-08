@@ -410,6 +410,26 @@ describe('storeOutput and getCompact round trip', () => {
     expect(meta!.bodyBytes).toBeGreaterThan(256 * 1024)
   })
 
+  it('does not introduce replacement characters when truncating multi-byte UTF-8 at arbitrary boundaries', async () => {
+    // Regression test: truncation must find valid UTF-8 character boundaries.
+    // Using a 3-byte character (中) repeated such that the truncation point
+    // lands in the middle of a character, not at a boundary.
+    const char = '中' // 3 bytes in UTF-8
+    // Create body of ~300KB. 300*1024 / 3 = 102400, so we get exactly 307200 bytes
+    const largeBody = char.repeat(102400)
+    const meta = await storeOutput('sess123', 'utf8skill', largeBody)
+
+    expect(meta).not.toBeNull()
+    expect(meta!.truncated).toBe(true)
+
+    // Verify the stored body doesn't contain replacement characters (U+FFFD).
+    // If truncation happened at a character boundary, no replacements would appear.
+    const storedPath = path.resolve(tempDir, `${meta!.outputId}.txt`)
+    const stored = await fs.readFile(storedPath, 'utf-8')
+    expect(stored).not.toContain('�')
+    expect(stored.length).toBeGreaterThan(0)
+  })
+
   it('cross-session dedup returns existing entry', async () => {
     const body = 'Shared skill body'
     const meta1 = await storeOutput('sess1', 'skill', body)

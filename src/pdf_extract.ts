@@ -52,7 +52,8 @@ export function parsePageRange(spec: string | undefined, pageCount: number): { s
   const start = parseInt(m[1] as string, 10)
   const end = m[2] ? parseInt(m[2], 10) : start
   if (start < 1 || end < start) throw new Error(`invalid --pages spec: ${spec}`)
-  return { start: Math.min(start, pageCount), end: Math.min(end, pageCount) }
+  if (start > pageCount) throw new Error(`invalid --pages spec: ${spec} (page ${start} is past end of document with ${pageCount} pages)`)
+  return { start, end: Math.min(end, pageCount) }
 }
 
 /**

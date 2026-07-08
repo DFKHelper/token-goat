@@ -211,6 +211,61 @@ describe('cli_context_stats', () => {
       expect(parsed.claude_md_total).toBeGreaterThan(0)
     })
 
+    it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', () => {
+      // runContextStats calls os.homedir() twice (findClaudeMdFiles, then findMemoryMd),
+      // so it needs two queued mock returns.
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValueOnce(tempDir).mockReturnValueOnce(tempDir)
+
+      const projectRoot = path.join(tempDir, 'fix-project')
+      fs.mkdirSync(projectRoot)
+
+      const slug = path.resolve(projectRoot).replace(/[^A-Za-z0-9]/g, '-')
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
+      fs.mkdirSync(memDir, { recursive: true })
+      const memFile = path.join(memDir, 'MEMORY.md')
+      // A dead-link entry (target file does not exist) that pruneIndex should drop.
+      fs.writeFileSync(memFile, '- [Stale entry](missing-target.md)\n')
+
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runContextStats({ project: projectRoot, fix: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+
+      // The bug: --fix used to print a hardcoded "not yet implemented" message and never
+      // touched MEMORY.md. Assert it actually delegated to memory_prune and rewrote the file.
+      expect(output).not.toContain('not yet implemented')
+      expect(output).toContain('[--fix] Pruned MEMORY.md')
+      expect(output).toContain('removed 1 dead-link entries')
+      const rewritten = fs.readFileSync(memFile, 'utf-8')
+      expect(rewritten).not.toContain('Stale entry')
+    })
+
+    it('--fix reports nothing to prune when no MEMORY.md exists', () => {
+      const project = path.join(tempDir, 'fix-no-memory')
+      fs.mkdirSync(project)
+
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runContextStats({ project, fix: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+
+      expect(output).not.toContain('not yet implemented')
+      expect(output).toContain('[--fix] No MEMORY.md found; nothing to prune.')
+    })
+
     it('prints human-readable output by default', () => {
       const project = path.join(tempDir, 'proj3')
       fs.mkdirSync(project)

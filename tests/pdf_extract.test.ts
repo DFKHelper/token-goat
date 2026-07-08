@@ -127,6 +127,14 @@ describe('parsePageRange', () => {
   it('rejects end before start', () => {
     expect(() => parsePageRange('5-2', 10)).toThrow(/invalid --pages spec/);
   });
+
+  it('rejects a start page beyond the document', () => {
+    expect(() => parsePageRange('10', 5)).toThrow(/page 10 is past end of document with 5 pages/);
+  });
+
+  it('rejects a range starting beyond the document', () => {
+    expect(() => parsePageRange('8-12', 5)).toThrow(/page 8 is past end of document with 5 pages/);
+  });
 });
 
 describe('extractPdfText', () => {
