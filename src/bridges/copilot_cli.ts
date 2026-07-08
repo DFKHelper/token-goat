@@ -35,13 +35,15 @@
  * edit->Edit, web_fetch->WebFetch, grep->Grep, glob->Glob); `task`,
  * `ask_user`, `memory`, and MCP tool calls are forwarded with their original
  * name unchanged, which is safe because token-goat's dispatch loop simply
- * no-ops for tool names none of its handlers are registered for. The exact
- * `toolArgs` key names Copilot sends per tool (e.g. whether the bash tool's
- * command key is literally `command`) were NOT enumerated in any fetched
- * doc, so `toolArgs` is forwarded to token-goat verbatim (no key renaming)
- * and any `modifiedArgs` token-goat returns is likewise passed back verbatim
- * -- unconfirmed, flag for follow-up if Copilot's real key names turn out to
- * differ.
+ * no-ops for tool names none of its handlers are registered for. The bash
+ * tool's `toolArgs` command key is confirmed literally `command` (GitHub's
+ * own hooks-reference example: `"toolArgs": "{\"command\":\"rm -rf dist\",
+ * \"description\":\"Clean build\"}"`), matching what hooks_bash.ts reads
+ * (`event.toolInput['command']`), so no remap is needed there. Other tools'
+ * `toolArgs` key names beyond the view/edit/create `path` remap above were
+ * not individually enumerated, so `toolArgs` is otherwise forwarded to
+ * token-goat verbatim (no key renaming) and any `modifiedArgs` token-goat
+ * returns is likewise passed back verbatim.
  *
  * `postToolUse`'s payload also carries `toolResult`, confirmed (same hooks-reference
  * doc above) as an object -- `{ resultType: 'success', textResultForLlm: string }` --
