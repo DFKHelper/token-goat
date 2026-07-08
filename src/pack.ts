@@ -664,7 +664,7 @@ export function formatBudgetText(result: BudgetResult, contextK?: number): strin
   ]
 
   for (const e of result.entries) {
-    lines.push(`  ${e.rel_path.padEnd(colW, ' ')}  ${String(e.lines).padStart(6, ' ')},  ${String(e.tokens).padStart(8, ' ')},`)
+    lines.push(`  ${e.rel_path.padEnd(colW, ' ')}  ${String(e.lines).padStart(6, ' ')}  ${String(e.tokens).padStart(8, ' ')}`)
   }
 
   lines.push(`  ${'-'.repeat(colW)}  ${'-'.repeat(6)}  ${'-'.repeat(8)}`)
@@ -674,7 +674,7 @@ export function formatBudgetText(result: BudgetResult, contextK?: number): strin
     pct = `  (${Math.round((result.total_tokens / (contextK * 1000)) * 100)}% of ${contextK}K)`
   }
   lines.push(
-    `  ${'Total'.padEnd(colW, ' ')}  ${String(result.total_lines).padStart(6, ' ')},  ${String(result.total_tokens).padStart(8, ' ')},${pct}`,
+    `  ${'Total'.padEnd(colW, ' ')}  ${String(result.total_lines).padStart(6, ' ')}  ${String(result.total_tokens).padStart(8, ' ')}${pct}`,
   )
 
   if (result.skipped.length > 0) {
