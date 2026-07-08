@@ -264,7 +264,27 @@ export function extractDocCompact(body: string, heading?: string): string {
       return m !== null && (m[1] ?? '') === heading
     })
     if (compactIdx === -1) return ''
-    return lines.slice(compactIdx).join('\n')
+
+    // Find the level (number of #'s) of the matched heading
+    const matchedHeadingLine = lines[compactIdx]!.trim()
+    const levelMatch = /^(#+)/.exec(matchedHeadingLine)
+    const matchedLevel = levelMatch ? levelMatch[1]!.length : 0
+
+    // Find the end: walk forward until we hit a heading at the same level or higher (fewer #'s)
+    let endIdx = lines.length
+    for (let i = compactIdx + 1; i < lines.length; i++) {
+      const trimmed = lines[i]!.trim()
+      const nextLevelMatch = /^(#+)\s/.exec(trimmed)
+      if (nextLevelMatch) {
+        const nextLevel = nextLevelMatch[1]!.length
+        if (nextLevel <= matchedLevel) {
+          endIdx = i
+          break
+        }
+      }
+    }
+
+    return lines.slice(compactIdx, endIdx).join('\n')
   }
 
   const compactMarker = '<!-- COMPACT_END -->'

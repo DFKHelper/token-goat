@@ -468,6 +468,7 @@ describe('cmdCompactDoc', () => {
     cmdCompactDoc({ filePath: md, heading: 'Install' })
     const out = captured()
     expect(out.toLowerCase()).toContain('install')
+    expect(out.toLowerCase()).not.toContain('usage')
   })
 
   it('--json wraps the compact', () => {

@@ -254,4 +254,17 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(match).not.toBeNull()
     expect(match?.[1]).not.toMatch(/"Glob"/)
   })
+
+  // Regression: the after_tool_call handler built its post_tool_use payload with
+  // session_id/tool_name/tool_input/cwd but never forwarded tool_response, so
+  // extractReadOutput (src/hooks_read.ts) and hooks_bash's truncation-marker/
+  // exit-code extraction always saw undefined tool_response for OpenClaw, even
+  // though the equivalent forwarding works for opencode.ts and pi.ts.
+  it('forwards event.result as tool_response in the post_tool_use payload, mirroring opencode.ts/pi.ts', () => {
+    const match = /api\.on\("after_tool_call",[\s\S]*?\n {4}\}\);/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    expect(match).not.toBeNull()
+    const handlerBody = match?.[0] ?? ''
+    expect(handlerBody).toMatch(/tool_response/)
+    expect(handlerBody).toMatch(/event\.result/)
+  })
 })

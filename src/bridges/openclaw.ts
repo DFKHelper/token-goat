@@ -161,11 +161,21 @@ export default definePluginEntry({
       const tg = TOOL_TO_TG[event.toolName];
       if (!tg) return;
       const sid = (ctx && (ctx.sessionId || ctx.sessionKey)) || sessionId;
+      // event.result's shape is unverified against a live OpenClaw instance
+      // (see module header) -- token-goat's post_tool_use handlers already
+      // accept tool_response as either a raw string or an object keyed by
+      // output/content/text/body, so forward it as-is when it's already an
+      // object, or wrap a bare string/other value as { output } so those
+      // handlers can find it either way, mirroring opencode.ts's and
+      // pi.ts's tool_response: { output } shape.
+      const toolResponse =
+        event.result && typeof event.result === "object" ? event.result : { output: event.result };
       callHook("post_tool_use", {
         session_id: sid,
         tool_name: tg,
         tool_input: event.params || {},
         cwd: process.cwd(),
+        tool_response: toolResponse,
       });
     });
 
