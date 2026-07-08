@@ -32,6 +32,18 @@ describe('pptxOutline', () => {
     expect(slides[1]).toMatchObject({ slide: 2, title: 'Revenue Growth', hasNotes: false })
     expect(slides[2]).toMatchObject({ slide: 3, title: 'Empty slide', bodyChars: 0, hasNotes: false })
   })
+
+  it('reports hasNotes: false for a notesSlideN.xml part with no actual notes text', async () => {
+    // PowerPoint auto-creates a notesSlideN.xml part for every slide on save, whether or not
+    // the user typed anything into the notes pane -- hasNotes must reflect actual content,
+    // not mere presence of the ZIP part.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-emptynotes-'))
+    const file2 = path.join(dir2, 'sample.pptx')
+    fs.writeFileSync(file2, buildPptxFixture([{ title: 'Slide with an empty notes placeholder', notes: '' }]))
+    const slides = await pptxOutline(file2)
+    expect(slides[0]).toMatchObject({ hasNotes: false })
+    fs.rmSync(dir2, { recursive: true, force: true })
+  })
 })
 
 describe('pptxSlideText', () => {

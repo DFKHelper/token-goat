@@ -102,6 +102,22 @@ async function parseSlide(entries: Record<string, Uint8Array>, path: string): Pr
   return parseOoxmlPart(xml)
 }
 
+/**
+ * PowerPoint auto-creates a notesSlideN.xml part for essentially every slide as soon as a
+ * deck is saved, whether or not the user ever typed anything into the notes pane -- so mere
+ * presence of the ZIP part is not a reliable "this slide has notes" signal. Returns the
+ * actual extracted notes body text (empty string if the part is absent or its body
+ * placeholder has no text), so callers can check length instead of presence.
+ */
+async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: string): Promise<string> {
+  const xml = decodeZipEntry(entries, notesPath)
+  if (xml === null) return ''
+  const parsed = await parseOoxmlPart(xml)
+  const shapes = collectElements(parsed, 'p:sp')
+  const bodyShape = shapes.find((s) => shapePlaceholderType(s) === 'body')
+  return bodyShape !== undefined ? shapeText(bodyShape) : collectTextRuns(parsed, 'a:t').join(' ').trim()
+}
+
 export async function pptxOutline(filePath: string): Promise<SlideOutlineEntry[]> {
   const { entries, slidePaths } = await listSlideParts(filePath)
   const out: SlideOutlineEntry[] = []
@@ -116,7 +132,7 @@ export async function pptxOutline(filePath: string): Promise<SlideOutlineEntry[]
     const title = titleShape !== undefined ? shapeText(titleShape) : ''
     const allText = collectTextRuns(parsed, 'a:t').join(' ')
     const bodyChars = Math.max(0, allText.length - title.length)
-    const hasNotes = decodeZipEntry(entries, notesPathFor(path)) !== null
+    const hasNotes = (await notesTextFor(entries, notesPathFor(path))).length > 0
     out.push({ slide: i + 1, title, bodyChars, hasNotes })
   }
   return out
@@ -146,12 +162,7 @@ export async function pptxNotesText(filePath: string, slideNumber?: number): Pro
   for (const n of targets) {
     if (n < 1 || n > slidePaths.length) throw new Error(`slide ${n} out of range (this deck has ${slidePaths.length} slides)`)
     const notesPath = notesPathFor(slidePaths[n - 1] as string)
-    const xml = decodeZipEntry(entries, notesPath)
-    if (xml === null) continue
-    const parsed = await parseOoxmlPart(xml)
-    const shapes = collectElements(parsed, 'p:sp')
-    const bodyShape = shapes.find((s) => shapePlaceholderType(s) === 'body')
-    const text = bodyShape !== undefined ? shapeText(bodyShape) : collectTextRuns(parsed, 'a:t').join(' ').trim()
+    const text = await notesTextFor(entries, notesPath)
     if (text.length > 0) sections.push(`# Slide ${n} notes\n\n${text}`)
   }
   return sections.join('\n\n')
