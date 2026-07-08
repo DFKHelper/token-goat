@@ -849,6 +849,11 @@ export function parseDiffHunks(diffText: string): Map<string, Array<{ start: num
       currentFile = fileMatch[1] ?? null
       continue
     }
+    // Handle deleted files: +++ /dev/null resets currentFile
+    if (line === '+++ /dev/null') {
+      currentFile = null
+      continue
+    }
     const hunkMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
     if (hunkMatch !== null && currentFile !== null) {
       const newStart = parseInt(hunkMatch[1]!, 10)

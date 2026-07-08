@@ -120,7 +120,7 @@ function getHintFor(command?: string): string {
     return "Request a narrower sub-heading, e.g. 'doc.md::Section#2'."
   }
   if (cmd === 'lines') {
-    return "Request a smaller line range, e.g. 'file.py::100-150'."
+    return "Request a smaller line range, e.g. 'file.py@100-150'."
   }
   if (cmd === 'bash-output' || cmd === 'web-output') {
     return "Use --grep PATTERN, --section HEADING, or --tail N to narrow the cached output."

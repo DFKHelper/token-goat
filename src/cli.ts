@@ -1655,7 +1655,7 @@ export function buildProgram(): Command {
           runSkeleton({
             file,
             ...(opts.json === true ? { json: true } : {}),
-            ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+            ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
             ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
             ...(opts.stats === true ? { stats: true } : {}),
           }),
@@ -1675,7 +1675,7 @@ export function buildProgram(): Command {
           runOutline({
             file,
             ...(opts.json === true ? { json: true } : {}),
-            ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+            ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
             ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
             ...(opts.stats === true ? { stats: true } : {}),
           }),
