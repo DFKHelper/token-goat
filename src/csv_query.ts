@@ -153,8 +153,8 @@ export function profileCsv(content: string, opts: { delimiter?: string; noHeader
     if (nonEmpty.length > 0) {
       if (isNumber) {
         const nums = nonEmpty.map(Number)
-        profile.min = String(Math.min(...nums))
-        profile.max = String(Math.max(...nums))
+        profile.min = String(nums.reduce((a, b) => Math.min(a, b)))
+        profile.max = String(nums.reduce((a, b) => Math.max(a, b)))
       } else {
         const sorted = [...nonEmpty].sort()
         profile.min = sorted[0] as string

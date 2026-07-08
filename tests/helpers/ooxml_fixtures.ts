@@ -43,12 +43,22 @@ function notesXml(notes: string): string {
  * fallback -- a reordered/duplicated/deleted-slide deck is exactly the case filename order
  * gets wrong, since PowerPoint never renames `slideN.xml` parts to match display order.
  */
-export function buildPptxFixture(slides: FixtureSlide[], order?: number[]): Uint8Array {
+/**
+ * `notesTargets`: maps a 1-based physical slide index to the physical `notesSlideN.xml`
+ * index its relationship should point at (defaults to the same index). Lets tests simulate
+ * PowerPoint's independent notesSlide numbering counter, e.g. a duplicated slide whose notes
+ * part lands at a non-matching number.
+ */
+export function buildPptxFixture(slides: FixtureSlide[], order?: number[], notesTargets?: Record<number, number>): Uint8Array {
   const files: Record<string, Uint8Array> = {}
   slides.forEach((slide, i) => {
-    files[`ppt/slides/slide${i + 1}.xml`] = strToU8(slideXml(slide))
+    const slideNum = i + 1
+    files[`ppt/slides/slide${slideNum}.xml`] = strToU8(slideXml(slide))
     if (slide.notes !== undefined) {
-      files[`ppt/notesSlides/notesSlide${i + 1}.xml`] = strToU8(notesXml(slide.notes))
+      const notesNum = notesTargets?.[slideNum] ?? slideNum
+      files[`ppt/notesSlides/notesSlide${notesNum}.xml`] = strToU8(notesXml(slide.notes))
+      files[`ppt/slides/_rels/slide${slideNum}.xml.rels`] =
+        strToU8(`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${notesNum}.xml"/></Relationships>`)
     }
   })
   if (order !== undefined) {

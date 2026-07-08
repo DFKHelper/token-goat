@@ -83,6 +83,34 @@ describe('pptxNotesText', () => {
   })
 })
 
+describe('notes are resolved via the slide relationship, not the slideN.xml filename number', () => {
+  // Simulates duplicating slide 2 (which has notes) in PowerPoint: the duplicate becomes
+  // physical slide 3, but PowerPoint allocates a fresh, non-matching notesSlide part (7)
+  // for it rather than reusing/renaming to notesSlide3.xml -- the notesSlide numbering
+  // counter is independent of slide numbering.
+  it('follows the notesSlide relationship target instead of guessing notesSlideN.xml', async () => {
+    const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-notesmismatch-'))
+    const file3 = path.join(dir3, 'sample.pptx')
+    fs.writeFileSync(
+      file3,
+      buildPptxFixture(
+        [
+          { title: 'Intro' },
+          { title: 'Original', notes: 'Original notes.' },
+          { title: 'Duplicate of Original', notes: 'Duplicate notes.' },
+        ],
+        undefined,
+        { 3: 7 },
+      ),
+    )
+    const text = await pptxNotesText(file3, 3)
+    expect(text).toContain('Duplicate notes.')
+    const outline = await pptxOutline(file3)
+    expect(outline[2]).toMatchObject({ slide: 3, hasNotes: true })
+    fs.rmSync(dir3, { recursive: true, force: true })
+  })
+})
+
 describe('pptxTextGrep', () => {
   it('finds slides whose text matches the pattern', async () => {
     const matches = await pptxTextGrep(file, 'enterprise')
