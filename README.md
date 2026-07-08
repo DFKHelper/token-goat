@@ -436,6 +436,8 @@ To upgrade cleanly:
 
 | `token-goat csv-query <file>` | Project columns and/or filter rows from a CSV instead of a raw Read. `--columns <cols>` selects a comma-separated subset; `--where <spec>` is repeatable and ANDed, supporting `col=value`, `col!=value`, `col>value`, `col<value`, and `col~=regex`; `--head <n>` caps rows; `--json` emits rows as a JSON array of objects instead of a formatted table; `--delimiter <char>` and `--no-header` handle non-comma or headerless files. |
 | `token-goat csv-profile <file>` | Per-column type inference (number/date/string), null/distinct counts, and min/max or top values for low-cardinality columns, instead of a raw Read. Same `--delimiter`/`--no-header` flags as `csv-query`. |
+| `token-goat sharepoint-resolve <shareUrl>` | Best-effort resolve a SharePoint/OneDrive sharing URL to a local synced file path, purely from the local filesystem and `OneDrive`/`OneDriveCommercial` env vars -- no network call, no Graph API, no credentials. Prints the resolved path (feed it to `xlsx-sheets`/`pptx-outline`/etc.) or an honest "could not resolve" with the paths it tried. |
+
 
 | `token-goat xlsx-sheets <file>` | List sheet names, used range, and dimensions in an Excel workbook instead of a raw Read. |
 | `token-goat xlsx-head <file> --sheet <name>` | Preview the header + first N rows of one sheet (`--rows`, default 20) instead of a raw Read. |

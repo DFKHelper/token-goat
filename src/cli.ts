@@ -88,6 +88,8 @@ import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
+import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
+
 import { buildTranscriptOutline, formatCues, formatTimestamp, parseSliceOptions, readTranscript, sliceTranscript } from './transcript_extract.js'
 import {
   runCallers,
@@ -718,6 +720,24 @@ async function cmdPdfMeta(file: string) {
     `Author: ${meta.author ?? '(none)'}`,
     `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
   ]
+  out(lines.join('\n'))
+}
+
+function cmdSharepointResolve(url: string) {
+  const parsed = parseShareUrl(url)
+  const result = resolveLocalPath(parsed)
+  if (result.resolvedPath !== null) {
+    out(result.resolvedPath)
+    return
+  }
+  const lines = [
+    `could not resolve a local synced copy for: ${url}`,
+    `tried:`,
+    ...result.triedPaths.map((p) => `  ${p}`),
+    result.triedPaths.length === 0
+      ? '  (no OneDrive sync root found -- OneDrive may not be installed/signed in on this machine)'
+      : '',
+  ].filter((l) => l !== '')
   out(lines.join('\n'))
 }
 
@@ -2480,6 +2500,11 @@ export function buildProgram(): Command {
     .command('pdf-meta <file>')
     .description('page count, title/author, and whether a PDF has an extractable text layer')
     .action(guard(cmdPdfMeta))
+
+  program
+    .command('sharepoint-resolve <shareUrl>')
+    .description('best-effort resolve a SharePoint/OneDrive sharing URL to a local synced file path (no network call)')
+    .action(guard(cmdSharepointResolve))
 
   program
     .command('xlsx-sheets <file>')
