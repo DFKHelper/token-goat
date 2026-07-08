@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { readOoxmlZip } from '../src/ooxml_extract.js'
+import { collectTextRuns, parseOoxmlPart, readOoxmlZip } from '../src/ooxml_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 describe('readOoxmlZip', () => {
@@ -32,5 +32,18 @@ describe('readOoxmlZip', () => {
     fs.ftruncateSync(fd, 51 * 1024 * 1024)
     fs.closeSync(fd)
     await expect(readOoxmlZip(file)).rejects.toThrow(/over the 50MB limit/)
+  })
+})
+
+describe('parseOoxmlPart / collectTextRuns', () => {
+  it('preserves a whitespace-only run split at a formatting boundary instead of collapsing it away', async () => {
+    // Word commonly splits a sentence across multiple <w:r> runs at a bold/italic/hyperlink
+    // boundary, using a standalone xml:space="preserve" run to hold just the inter-word space.
+    // fast-xml-parser's trimValues defaults to true, which would trim that run's text down to
+    // an empty string with no #text key at all, silently gluing "Hello" and "world" together.
+    const xml =
+      '<w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:r><w:t>world</w:t></w:r></w:p>'
+    const parsed = await parseOoxmlPart(xml)
+    expect(collectTextRuns(parsed, 'w:t').join('')).toBe('Hello world')
   })
 })

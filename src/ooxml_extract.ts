@@ -75,7 +75,12 @@ export function decodeZipEntry(entries: Record<string, Uint8Array>, path: string
 export async function parseOoxmlPart(xmlText: string): Promise<unknown> {
   const fxp = await loadXmlParser()
   if (!fxp) throw new Error('fast-xml-parser is not installed; run `npm install fast-xml-parser` to enable this command')
-  const parser = new fxp.XMLParser({ ignoreAttributes: false, preserveOrder: false })
+  // trimValues defaults to true in fast-xml-parser, which collapses a whitespace-only
+  // <w:t xml:space="preserve"> </w:t> run (Word's own way of holding just the space between
+  // two <w:r> runs split at a formatting boundary) down to an empty string with no #text key
+  // at all -- silently gluing the words on either side together. Disable it so inter-run
+  // spaces survive; callers already trim() at the paragraph/title level where it matters.
+  const parser = new fxp.XMLParser({ ignoreAttributes: false, preserveOrder: false, trimValues: false })
   return parser.parse(xmlText)
 }
 
