@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.8] - 2026-07-07
+
 ### Fixed
 
 - **Overflow-guard hint for line-range reads suggested wrong syntax (`::` instead of `@`).** The hint returned by `getHintFor('lines')` was "Request a smaller line range, e.g. 'file.py::100-150'." but token-goat's actual line-range spec uses `@` as the separator (e.g. `file.py@100-150`). The `::` syntax routes through symbol parsing, producing "Symbol '1-5' not found" errors when a user followed the suggestion. Root cause: only this hint was wrong; every other documentation string and docstring in the codebase already used the correct `@` syntax. Fixed by updating the hint text to use the correct separator. See [src/overflow_guard.ts](src/overflow_guard.ts); regression-tested in [tests/overflow_guard.test.ts](tests/overflow_guard.test.ts).
