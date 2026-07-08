@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, runDoctor } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, runDoctor } from '../src/cli_doctor.js'
 
 describe('cli_doctor', () => {
   let tempDir: string
@@ -176,6 +176,94 @@ describe('cli_doctor', () => {
       for (const result of results) {
         expect(['ok', 'warn', 'fail']).toContain(result.status)
       }
+    })
+  })
+
+  describe('checkCopilotCli', () => {
+    function writeConfig(configPath: string, hooks: unknown): void {
+      fs.writeFileSync(configPath, JSON.stringify({ version: 1, hooks }))
+    }
+
+    it('returns null when Copilot CLI integration is not installed', () => {
+      const configPath = path.join(tempDir, 'token-goat.json')
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      expect(checkCopilotCli(configPath, scriptPath)).toBeNull()
+    })
+
+    it('returns fail for a config that is not valid JSON', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, '// shim placeholder')
+      const configPath = path.join(tempDir, 'token-goat.json')
+      fs.writeFileSync(configPath, '{ not valid json')
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('not valid JSON')
+    })
+
+    it('returns fail when the config has no preToolUse entry', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, '// shim placeholder')
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, {})
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('no preToolUse entry')
+    })
+
+    it('returns fail when the baked node binary no longer exists (stale after an nvm/fnm/volta upgrade)', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, '// shim placeholder')
+      const configPath = path.join(tempDir, 'token-goat.json')
+      const staleExecPath = path.join(tempDir, 'does-not-exist-node.exe')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', command: `"${staleExecPath}" "${scriptPath}" preToolUse`, timeoutSec: 60 }],
+      })
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('no longer exists')
+      expect(result?.message).toContain('restart Copilot CLI')
+    })
+
+    it('returns fail when the hook process exits non-zero -- the exact condition that denies every tool call for the rest of the session', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, 'process.exit(1)')
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', command: `"${process.execPath}" "${scriptPath}"`, timeoutSec: 60 }],
+      })
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('status 1')
+      expect(result?.message).toContain('restart Copilot CLI')
+    })
+
+    it('returns fail when the hook does not return valid JSON on stdout', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, "process.stdout.write('not json')")
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', command: `"${process.execPath}" "${scriptPath}"`, timeoutSec: 60 }],
+      })
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('did not return valid JSON')
+    })
+
+    it('returns ok when the installed hook invokes cleanly and returns valid JSON, end-to-end through a shell exactly like Copilot itself would', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, "process.stdout.write('{}')")
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', command: `"${process.execPath}" "${scriptPath}"`, timeoutSec: 60 }],
+      })
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('ok')
     })
   })
 

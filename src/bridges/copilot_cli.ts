@@ -205,19 +205,34 @@ function main() {
     if (typeof text === 'string') canonical.tool_response = text
   }
 
-  // A single command string (not an args array) with shell: true, exactly like
-  // CODEX_HOOK_SCRIPT -- an args array with shell: true triggers Node's DEP0190
-  // deprecation warning (unescaped arg concatenation) on every invocation.
-  // Safe here because tgEvent is only ever one of COPILOT_TO_TG_EVENT's five
-  // fixed values (the lookup above returns undefined, short-circuiting before
-  // this line, for anything else), never raw external input.
-  const res = spawnSync('token-goat hook ' + tgEvent, {
-    input: JSON.stringify(canonical),
-    encoding: 'utf8',
-    shell: true,
-    windowsHide: true,
-    env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
-  })
+  // process.argv[3], when present, is the absolute path to the token-goat CLI entry that ran
+  // \`token-goat install --copilot\` (baked in by hookCommandFor in copilot_cli_install.ts).
+  // Invoking it directly via process.execPath sidesteps PATH/cmd.exe resolution for this
+  // inner call too -- confirmed live-production root cause of an *intermittent* (not the
+  // original, already-fixed github/copilot-cli#4001) "(hook errored)" deny-all: even once the
+  // outer command launches via its own baked process.execPath, this inner call still shelled
+  // out to a bare \`token-goat\`, which depends on the npm global bin being on whatever PATH
+  // Copilot spawns this hook subprocess with. Falls back to the old PATH-based shell:true
+  // invocation when argv[3] is absent (an older cached hook config still pointing at a
+  // freshly-reinstalled shim, or a direct dev/test invocation), so this is a pure hardening,
+  // never a behavior break for configs installed before this fix. An args array (not a
+  // template string) is safe here specifically because entryPath and tgEvent never touch a
+  // shell -- no DEP0190 concern, unlike the shell:true fallback below.
+  const entryPath = process.argv[3]
+  const res = entryPath
+    ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent], {
+        input: JSON.stringify(canonical),
+        encoding: 'utf8',
+        windowsHide: true,
+        env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+      })
+    : spawnSync('token-goat hook ' + tgEvent, {
+        input: JSON.stringify(canonical),
+        encoding: 'utf8',
+        shell: true,
+        windowsHide: true,
+        env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+      })
   if (res.status !== 0 || !res.stdout) {
     process.stdout.write('{}')
     return
