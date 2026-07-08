@@ -21,6 +21,7 @@ import * as os from 'node:os'
 import {
   installPi,
   isPiInstalled,
+  piEntrySidecarPath,
   piGlobalExtensionPath,
   piLocalExtensionPath,
   uninstallPi,
@@ -81,6 +82,40 @@ describe('installPi (global)', () => {
     // No backup file left behind for this single-file artifact.
     const siblings = fs.readdirSync(path.dirname(p))
     expect(siblings.some((f) => f.includes('.bak'))).toBe(false)
+  })
+})
+
+describe('installPi entry-path sidecar (PATH-hardening for the extension\'s inner token-goat call)', () => {
+  it('writes token-goat-entry.json next to the extension file, containing the running entry (process.argv[1])', () => {
+    expect(process.argv[1]).toBeDefined()
+    const result = installPi()
+    const sidecarPath = piEntrySidecarPath()
+    expect(sidecarPath).toBe(path.join(path.dirname(result.extensionPath), 'token-goat-entry.json'))
+    expect(fs.existsSync(sidecarPath)).toBe(true)
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as { entryPath: string }
+    expect(sidecar.entryPath).toBe(process.argv[1])
+  })
+
+  it('writes the sidecar for a --local install too, next to the local extension path', () => {
+    const result = installPi({ local: true })
+    const sidecarPath = piEntrySidecarPath({ local: true })
+    expect(sidecarPath).toBe(path.join(path.dirname(result.extensionPath), 'token-goat-entry.json'))
+    expect(fs.existsSync(sidecarPath)).toBe(true)
+  })
+
+  it('uninstallPi removes the sidecar along with the extension file', () => {
+    installPi()
+    expect(fs.existsSync(piEntrySidecarPath())).toBe(true)
+    uninstallPi()
+    expect(fs.existsSync(piEntrySidecarPath())).toBe(false)
+    expect(fs.existsSync(piGlobalExtensionPath())).toBe(false)
+  })
+
+  it('uninstallPi does not throw when no sidecar was ever written (an install predating this fix)', () => {
+    installPi()
+    fs.unlinkSync(piEntrySidecarPath())
+    expect(() => uninstallPi()).not.toThrow()
+    expect(fs.existsSync(piGlobalExtensionPath())).toBe(false)
   })
 })
 
@@ -199,6 +234,23 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   // detection always saw empty output for files/commands run through pi --
   // silently disabling confirmed re-read denial despite this module's header
   // comment listing it as a working feature.
+  // Regression: callHook's inner spawnSync("token-goat", [...]) depends on PATH
+  // resolution -- the npm global bin being on whatever PATH pi-coding-agent's own
+  // process inherits -- the same single-point-of-failure class fixed for the
+  // Codex/Copilot CLI bridges' hook commands. resolveEntryPath() reads an
+  // install-time sidecar (see installPi in pi_install.ts) so callHook can invoke
+  // the real token-goat entry directly via process.execPath instead.
+  it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
+    expect(PI_EXTENSION_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
+    expect(PI_EXTENSION_SCRIPT).toMatch(/token-goat-entry\.json/)
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    expect(body).toMatch(/resolveEntryPath\(\)/)
+    expect(body).toMatch(/spawnSync\(process\.execPath, \[entryPath, "hook", event\]/)
+    expect(body).toMatch(/spawnSync\("token-goat", \["hook", event\]/)
+  })
+
   it("forwards tool_result's real output (event.content) as tool_response.output in the post_tool_use payload, mirroring opencode.ts's tool_response shape", () => {
     const match = /pi\.on\("tool_result",[\s\S]*?\n {2}\}\);/.exec(PI_EXTENSION_SCRIPT)
     expect(match).not.toBeNull()

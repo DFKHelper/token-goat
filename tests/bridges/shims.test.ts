@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -113,6 +113,55 @@ describe('bridge hook shims', () => {
       const stdout = runShim(script, 'pre_tool_use_extra', cwd)
       expect(stdout.trim()).toBe('{}')
     })
+  })
+})
+
+/**
+ * Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary --
+ * that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0
+ * with an empty JSON response. Used to prove a shim's inner call, when given a third argv
+ * (the baked entry path), invokes that path directly via process.execPath rather than
+ * shelling out to a PATH-resolved `token-goat` at all.
+ */
+function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string } {
+  const entryPath = join(cwd, 'fake-entry.js')
+  const capturePath = join(cwd, 'captured-argv.json')
+  const captureLiteral = JSON.stringify(capturePath)
+  writeFileSync(
+    entryPath,
+    `require('fs').writeFileSync(${captureLiteral}, JSON.stringify(process.argv.slice(2)))\nprocess.stdout.write('{}')\n`,
+    'utf8',
+  )
+  return { entryPath, capturePath }
+}
+
+describe('CODEX_HOOK_SCRIPT inner-call PATH hardening', () => {
+  it('invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one', () => {
+    const cwd = mkIsolated()
+    const { entryPath, capturePath } = writeFakeEntry(cwd)
+    const scriptPath = join(cwd, 'shim.js')
+    writeFileSync(scriptPath, CODEX_HOOK_SCRIPT, 'utf8')
+    // Deliberately no PATH-resolvable `token-goat` anywhere -- if the shim fell back to the
+    // old shell:true PATH lookup instead of using entryPath, this would fail to launch and
+    // captured-argv.json would never be written.
+    const res = spawnSync(process.execPath, [scriptPath, 'pre_tool_use', entryPath], {
+      cwd,
+      input: '{}',
+      encoding: 'utf8',
+      timeout: 15000,
+      env: process.env,
+    })
+    expect(res.status).toBe(0)
+    expect(existsSync(capturePath)).toBe(true)
+    const capturedArgv = JSON.parse(readFileSync(capturePath, 'utf8')) as string[]
+    expect(capturedArgv).toEqual(['hook', 'pre_tool_use'])
+  })
+
+  it('falls back to the old PATH-based shell invocation when no entry path arg is given (backward compatible with an older cached hook config)', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, '{"hookSpecificOutput":{"additionalContext":"via PATH"}}')
+    const stdout = runShim(CODEX_HOOK_SCRIPT, 'pre_tool_use', cwd, env)
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toBe('via PATH')
   })
 })
 

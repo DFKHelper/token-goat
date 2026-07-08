@@ -61,6 +61,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // pi built-in tool names -> token-goat internal tool names
 const TOOL_TO_TG: Record<string, string> = {
@@ -87,18 +88,58 @@ const ARGS_TO_TG: Record<string, Record<string, string>> = {
 // it's excluded here rather than spawning a hook call that always no-ops.
 const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
+// resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
+// installPi next to this extension file) containing the absolute path to the
+// token-goat CLI entry that was running at install time. Unlike Codex/Copilot,
+// this extension has no per-invocation command line to bake a path into (pi
+// loads it once as a module, then calls into it via pi.on(...) handlers), so
+// the sidecar file is the install-time channel for this value instead. Returns
+// undefined (triggering the PATH-based fallback below) if the sidecar is
+// missing, unreadable, or points at a path that no longer exists -- e.g. an
+// older install predating this file, or a moved/removed token-goat install.
+function resolveEntryPath(): string | undefined {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const sidecarPath = path.join(here, "token-goat-entry.json");
+    const parsed = JSON.parse(fs.readFileSync(sidecarPath, "utf8")) as { entryPath?: unknown };
+    if (typeof parsed.entryPath === "string" && parsed.entryPath && fs.existsSync(parsed.entryPath)) {
+      return parsed.entryPath;
+    }
+  } catch {
+    // fall through to undefined
+  }
+  return undefined;
+}
+
 function callHook(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
     // TOKEN_GOAT_HARNESS_OVERRIDE=pi guarantees detectHarness() resolves to
     // 'pi' for every call this bridge makes, instead of relying on a guessed
     // ambient env var pi-coding-agent may or may not set.
-    const r = spawnSync("token-goat", ["hook", event], {
-      input: JSON.stringify(payload),
-      encoding: "utf8",
-      timeout: 5000,
-      windowsHide: true,
-      env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
-    });
+    //
+    // Invoking "token-goat" as a bare command here depends on PATH resolution
+    // (the npm global bin being on whatever PATH pi-coding-agent's own process
+    // inherits) -- the same class of single-point-of-failure fixed for the
+    // Codex/Copilot CLI bridges' hook commands. When resolveEntryPath() finds a
+    // baked install-time path, invoke it directly via process.execPath instead,
+    // sidestepping PATH entirely; otherwise fall back to the old PATH-based
+    // lookup (e.g. an extension installed before this fix).
+    const entryPath = resolveEntryPath();
+    const r = entryPath
+      ? spawnSync(process.execPath, [entryPath, "hook", event], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+          env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
+        })
+      : spawnSync("token-goat", ["hook", event], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+          env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
+        });
     if (r.error) return null;
     const out = r.stdout?.trim();
     if (!out) return null;

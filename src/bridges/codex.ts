@@ -92,11 +92,25 @@ function main() {
     process.stdout.write('{}')
     return
   }
-  const res = spawnSync('token-goat hook ' + eventName, {
-    input,
-    encoding: 'utf8',
-    shell: true,
-  })
+  // process.argv[3], when present, is the absolute path to the token-goat CLI entry
+  // that ran 'token-goat install --codex' (baked in by hookCommandFor in
+  // codex_install.ts). Invoking it directly via process.execPath sidesteps PATH/shell
+  // resolution for this inner call, the same single-point-of-failure class fixed for
+  // the Copilot CLI bridge's inner hook call (a bare 'token-goat' on PATH failing to
+  // resolve crashes this call, and Codex -- like Copilot -- fails closed on a
+  // non-zero-exit hook). Falls back to the old PATH-based shell:true invocation when
+  // argv[3] is absent (an older cached hook config).
+  const entryPath = process.argv[3]
+  const res = entryPath
+    ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
+        input,
+        encoding: 'utf8',
+      })
+    : spawnSync('token-goat hook ' + eventName, {
+        input,
+        encoding: 'utf8',
+        shell: true,
+      })
   if (res.status !== 0 || !res.stdout) {
     process.stdout.write('{}')
     return
