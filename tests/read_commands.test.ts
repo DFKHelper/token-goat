@@ -53,7 +53,9 @@ import {
   runListSections,
   runGrep,
   runConfigGet,
+  runCsvProfile,
   runCsvQuery,
+
   runExports,
   runChanged,
   runRefs,
@@ -1108,7 +1110,7 @@ describe('read_commands', () => {
     it('filters rows via --where col=value', () => {
       const f = path.join(tempDir, 'where.csv')
       fs.writeFileSync(f, CSV)
-      const { stdout } = capture(() => { runCsvQuery({ file: f, where: 'status=active' }) })
+      const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=active'] }) })
       expect(stdout).toContain('Alice')
       expect(stdout).not.toContain('Bob')
     })
@@ -1124,12 +1126,62 @@ describe('read_commands', () => {
     it('returns 1 and reports the error for an unknown --where column', () => {
       const f = path.join(tempDir, 'badwhere.csv')
       fs.writeFileSync(f, CSV)
-      const code = runCsvQuery({ file: f, where: 'nope=x' })
+      const code = runCsvQuery({ file: f, where: ['nope=x'] })
       expect(code).toBe(1)
     })
 
     it('returns 1 when the file does not exist', () => {
       const code = runCsvQuery({ file: path.join(tempDir, 'missing.csv') })
+      expect(code).toBe(1)
+    })
+
+    it('filters rows via multiple ANDed --where operators', () => {
+      const numCsv = 'id,name,age\n1,Alice,30\n2,Bob,25\n3,Carol,40\n'
+      const f = path.join(tempDir, 'wheres.csv')
+      fs.writeFileSync(f, numCsv)
+      const { stdout } = capture(() => {
+        runCsvQuery({ file: f, where: ['age>28', 'name!=Carol'] })
+      })
+      expect(stdout).toContain('Alice')
+      expect(stdout).not.toContain('Bob')
+      expect(stdout).not.toContain('Carol')
+    })
+
+    it('applies a custom --delimiter', () => {
+      const f = path.join(tempDir, 'tab.tsv')
+      fs.writeFileSync(f, 'id\tname\n1\tAlice\n')
+      const { stdout } = capture(() => {
+        runCsvQuery({ file: f, delimiter: '\t' })
+      })
+      expect(stdout).toContain('id,name')
+      expect(stdout).toContain('1,Alice')
+    })
+
+    it('synthesizes column names with --no-header', () => {
+      const f = path.join(tempDir, 'noheader.csv')
+      fs.writeFileSync(f, '1,Alice\n2,Bob\n')
+      const { stdout } = capture(() => {
+        runCsvQuery({ file: f, noHeader: true })
+      })
+      expect(stdout).toContain('col1,col2')
+    })
+  })
+
+  // ---- runCsvProfile ---------------------------------------------------
+
+  describe('runCsvProfile', () => {
+    const CSV = 'id,name,status\n1,Alice,active\n2,Bob,inactive\n'
+
+    it('prints a per-column type/null/distinct/range summary', () => {
+      const f = path.join(tempDir, 'profile.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvProfile({ file: f }) })
+      expect(stdout).toContain('id  (number)')
+      expect(stdout).toContain('status  (string)')
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runCsvProfile({ file: path.join(tempDir, 'missing.csv') })
       expect(code).toBe(1)
     })
   })

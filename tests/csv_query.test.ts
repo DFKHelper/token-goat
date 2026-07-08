@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { queryCsv, formatCsvTable } from '../src/csv_query.js';
+import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from '../src/csv_query.js';
 
 const CSV = `id,name,status
 1,Alice,active
 2,Bob,inactive
 3,Carol,active
 4,Dave,inactive
+`;
+
+const CSV_NUM = `id,name,age
+1,Alice,30
+2,Bob,25
+3,Carol,40
 `;
 
 describe('queryCsv', () => {
@@ -24,9 +30,34 @@ describe('queryCsv', () => {
   });
 
   it('filters rows by equality', () => {
-    const result = queryCsv(CSV, { whereColumn: 'status', whereValue: 'active' });
+    const result = queryCsv(CSV, { wheres: [{ column: 'status', op: '=', value: 'active' }] });
     expect(result.totalRows).toBe(2);
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+  });
+
+  it('filters rows by inequality', () => {
+    const result = queryCsv(CSV, { wheres: [{ column: 'status', op: '!=', value: 'active' }] });
+    expect(result.rows.map((r) => r[1])).toEqual(['Bob', 'Dave']);
+  });
+
+  it('filters rows by numeric comparison', () => {
+    const result = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '>', value: '28' }] });
+    expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+  });
+
+  it('filters rows by regex', () => {
+    const result = queryCsv(CSV, { wheres: [{ column: 'name', op: '~=', value: '^(A|B)' }] });
+    expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Bob']);
+  });
+
+  it('ANDs multiple wheres together', () => {
+    const result = queryCsv(CSV, {
+      wheres: [
+        { column: 'status', op: '=', value: 'active' },
+        { column: 'name', op: '!=', value: 'Alice' },
+      ],
+    });
+    expect(result.rows.map((r) => r[1])).toEqual(['Carol']);
   });
 
   it('limits rows with head while reporting the real total', () => {
@@ -40,7 +71,74 @@ describe('queryCsv', () => {
   });
 
   it('throws on an unknown where column', () => {
-    expect(() => queryCsv(CSV, { whereColumn: 'nope', whereValue: 'x' })).toThrow(/unknown column: nope/);
+    expect(() => queryCsv(CSV, { wheres: [{ column: 'nope', op: '=', value: 'x' }] })).toThrow(/unknown column: nope/);
+  });
+
+  it('supports a custom delimiter', () => {
+    const tsv = 'id\tname\n1\tAlice\n2\tBob\n';
+    const result = queryCsv(tsv, { delimiter: '\t' });
+    expect(result.header).toEqual(['id', 'name']);
+    expect(result.rows[0]).toEqual(['1', 'Alice']);
+  });
+
+  it('supports noHeader, synthesizing col1/col2/... column names', () => {
+    const result = queryCsv('1,Alice\n2,Bob\n', { noHeader: true });
+    expect(result.header).toEqual(['col1', 'col2']);
+    expect(result.rows[0]).toEqual(['1', 'Alice']);
+  });
+});
+
+describe('parseWhereSpecs', () => {
+  it('returns undefined for an empty/unset list', () => {
+    expect(parseWhereSpecs(undefined)).toBeUndefined();
+    expect(parseWhereSpecs([])).toBeUndefined();
+  });
+
+  it('parses each supported operator', () => {
+    expect(parseWhereSpecs(['status=active'])).toEqual([{ column: 'status', op: '=', value: 'active' }]);
+    expect(parseWhereSpecs(['status!=active'])).toEqual([{ column: 'status', op: '!=', value: 'active' }]);
+    expect(parseWhereSpecs(['age>18'])).toEqual([{ column: 'age', op: '>', value: '18' }]);
+    expect(parseWhereSpecs(['age<18'])).toEqual([{ column: 'age', op: '<', value: '18' }]);
+    expect(parseWhereSpecs(['name~=^A'])).toEqual([{ column: 'name', op: '~=', value: '^A' }]);
+  });
+
+  it('throws on a spec with no recognized operator', () => {
+    expect(() => parseWhereSpecs(['nospec'])).toThrow(/invalid --where spec/);
+  });
+});
+
+describe('profileCsv', () => {
+  it('infers number/string types with null and distinct counts', () => {
+    const profiles = profileCsv(CSV_NUM);
+    const age = profiles.find((p) => p.name === 'age');
+    expect(age).toMatchObject({ inferredType: 'number', nullCount: 0, distinctCount: 3, min: '25', max: '40' });
+    const name = profiles.find((p) => p.name === 'name');
+    expect(name?.inferredType).toBe('string');
+  });
+
+  it('counts nulls for empty cells', () => {
+    const profiles = profileCsv('id,name\n1,Alice\n2,\n');
+    const name = profiles.find((p) => p.name === 'name');
+    expect(name?.nullCount).toBe(1);
+  });
+
+  it('reports top values for low-cardinality columns', () => {
+    const profiles = profileCsv(CSV);
+    const status = profiles.find((p) => p.name === 'status');
+    expect(status?.topValues).toEqual(
+      expect.arrayContaining([
+        { value: 'active', count: 2 },
+        { value: 'inactive', count: 2 },
+      ]),
+    );
+  });
+});
+
+describe('formatCsvProfile', () => {
+  it('renders one block per column with type, counts, and range', () => {
+    const text = formatCsvProfile(profileCsv(CSV_NUM));
+    expect(text).toContain('age  (number)');
+    expect(text).toContain('range: 25 .. 40');
   });
 });
 

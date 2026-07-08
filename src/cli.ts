@@ -71,7 +71,9 @@ import {
   runImports,
   runFind,
   runGrep,
+  runCsvProfile,
   runCsvQuery,
+
   runPdfExtractText,
   runPdfMeta,
   runPdfOutline,
@@ -85,7 +87,7 @@ import {
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
-import { formatCsvTable } from './csv_query.js'
+import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { buildTranscriptOutline, formatCues, formatTimestamp, parseSliceOptions, readTranscript, sliceTranscript } from './transcript_extract.js'
 import {
   runCallers,
@@ -735,24 +737,17 @@ async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; 
   out(formatXlsxRange(result))
 }
 
-async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: string; where?: string; head?: string }) {
+async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: string; where?: string[]; head?: string }) {
   const columns = opts.columns
     ? opts.columns
         .split(',')
         .map((c) => c.trim())
         .filter(Boolean)
     : undefined
-  let whereColumn: string | undefined
-  let whereValue: string | undefined
-  if (opts.where !== undefined) {
-    const eq = opts.where.indexOf('=')
-    if (eq === -1) throw new CliError(`invalid --where spec: ${opts.where} (expected col=value)`)
-    whereColumn = opts.where.slice(0, eq).trim()
-    whereValue = opts.where.slice(eq + 1)
-  }
+  const wheres = parseWhereSpecs(opts.where)
   const result = await xlsxQuerySheet(file, opts.sheet, {
     ...(columns !== undefined ? { columns } : {}),
-    ...(whereColumn !== undefined ? { whereColumn, whereValue } : {}),
+    ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
   out(formatCsvTable(result))
@@ -831,9 +826,15 @@ function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to
 
 function cmdCsvQuery(
   file: string,
-  opts: { columns?: string; where?: string; head?: string; json?: boolean },
+  opts: { columns?: string; where?: string[]; head?: string; json?: boolean; delimiter?: string; header?: boolean },
 ) {
-  process.exitCode = runCsvQuery({ file, ...opts })
+  const { header, ...rest } = opts
+  process.exitCode = runCsvQuery({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
+}
+
+function cmdCsvProfile(file: string, opts: { delimiter?: string; header?: boolean }) {
+  const { header, ...rest } = opts
+  process.exitCode = runCsvProfile({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
 }
 
 async function cmdScreenshot(
@@ -2505,7 +2506,12 @@ export function buildProgram(): Command {
     .description('project columns / filter rows from one sheet instead of a raw Read')
     .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
     .option('--columns <a,b,c>', 'comma-separated columns to project (default: all)')
-    .option('--where <col=value>', 'equality filter, e.g. --where status=open')
+    .option(
+      '--where <spec>',
+      'filter, repeatable (ANDed): col=value, col!=value, col>value, col<value, col~=regex',
+      (v: string, prev: string[]) => [...prev, v],
+      [],
+    )
     .option('--head <n>', 'max rows to show')
     .action(guard(cmdXlsxQuery))
 
@@ -2566,10 +2572,24 @@ export function buildProgram(): Command {
     .command('csv-query <file>')
     .description('project columns / filter rows from a CSV instead of a raw Read')
     .option('--columns <cols>', 'comma-separated column names to include (default: all)')
-    .option('--where <spec>', 'equality filter, e.g. status=active')
+    .option(
+      '--where <spec>',
+      'filter, repeatable (ANDed): col=value, col!=value, col>value, col<value, col~=regex',
+      (v: string, prev: string[]) => [...prev, v],
+      [],
+    )
     .option('--head <n>', 'limit to the first N matching rows')
     .option('--json', 'emit rows as a JSON array of objects instead of CSV')
+    .option('--delimiter <char>', 'field delimiter (default: ,)')
+    .option('--no-header', 'treat the first row as data, not a header (columns become col1, col2, ...)')
     .action(guard(cmdCsvQuery))
+
+  program
+    .command('csv-profile <file>')
+    .description('per-column type/null/distinct/range summary of a CSV instead of a raw Read')
+    .option('--delimiter <char>', 'field delimiter (default: ,)')
+    .option('--no-header', 'treat the first row as data, not a header (columns become col1, col2, ...)')
+    .action(guard(cmdCsvProfile))
 
   program
     .command('screenshot <url> <destPath>')

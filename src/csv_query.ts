@@ -7,11 +7,29 @@
 
 import { parse } from 'csv-parse/sync'
 
+export type CsvWhereOp = '=' | '!=' | '>' | '<' | '~='
+
+export interface CsvWhere {
+  column: string
+  op: CsvWhereOp
+  value: string
+}
+
 export interface CsvQueryOptions {
   columns?: string[]
-  whereColumn?: string
-  whereValue?: string | undefined
+  wheres?: CsvWhere[]
   head?: number
+  delimiter?: string
+  noHeader?: boolean
+}
+
+function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
+  const delimiter = opts.delimiter ?? ','
+  if (opts.noHeader === true) {
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter }) as string[][]
+    return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
+  }
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter }) as Array<Record<string, string>>
 }
 
 export interface CsvQueryResult {
@@ -20,8 +38,42 @@ export interface CsvQueryResult {
   totalRows: number
 }
 
+const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|=|>|<)(.*)$/
+
+/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col~=regex` specs from
+ * repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
+export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undefined {
+  if (specs === undefined || specs.length === 0) return undefined
+  return specs.map((spec) => {
+    const m = WHERE_SPEC_RE.exec(spec)
+    if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, or col~=regex)`)
+    return { column: (m[1] as string).trim(), op: m[2] as CsvWhereOp, value: m[3] as string }
+  })
+}
+
+function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
+  const cell = row[where.column] ?? ''
+  switch (where.op) {
+    case '=':
+      return cell === where.value
+    case '!=':
+      return cell !== where.value
+    case '~=':
+      return new RegExp(where.value).test(cell)
+    case '>':
+    case '<': {
+      const cellNum = Number(cell)
+      const valNum = Number(where.value)
+      if (!Number.isNaN(cellNum) && !Number.isNaN(valNum)) {
+        return where.op === '>' ? cellNum > valNum : cellNum < valNum
+      }
+      return where.op === '>' ? cell > where.value : cell < where.value
+    }
+  }
+}
+
 export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult {
-  const records = parse(content, { columns: true, skip_empty_lines: true, trim: true }) as Array<Record<string, string>>
+  const records = parseRecords(content, opts)
 
   const allColumns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
   const columns = opts.columns && opts.columns.length > 0 ? opts.columns : allColumns
@@ -31,15 +83,16 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
       throw new Error(`unknown column: ${c} (available: ${allColumns.join(', ')})`)
     }
   }
-  if (opts.whereColumn !== undefined && !allColumns.includes(opts.whereColumn)) {
-    throw new Error(`unknown column: ${opts.whereColumn} (available: ${allColumns.join(', ')})`)
+  for (const w of opts.wheres ?? []) {
+    if (!allColumns.includes(w.column)) {
+      throw new Error(`unknown column: ${w.column} (available: ${allColumns.join(', ')})`)
+    }
   }
 
   let filtered = records
-  if (opts.whereColumn !== undefined) {
-    const whereColumn = opts.whereColumn
-    const whereValue = opts.whereValue ?? ''
-    filtered = records.filter((r) => r[whereColumn] === whereValue)
+  if (opts.wheres !== undefined && opts.wheres.length > 0) {
+    const wheres = opts.wheres
+    filtered = records.filter((r) => wheres.every((w) => matchesWhere(r, w)))
   }
 
   const totalRows = filtered.length
@@ -67,4 +120,63 @@ export function formatCsvTable(result: CsvQueryResult): string {
     lines.push(`...(${result.totalRows - result.rows.length} more rows elided; use --head to see more)`)
   }
   return lines.join('\n')
+}
+
+export interface CsvColumnProfile {
+  name: string
+  inferredType: 'number' | 'date' | 'string'
+  nullCount: number
+  distinctCount: number
+  min?: string
+  max?: string
+  topValues?: Array<{ value: string; count: number }>
+}
+
+/** Per-column type inference + null/distinct counts + min/max (or top values for
+ * low-cardinality columns), so an agent can understand a CSV's shape without
+ * reading every row. */
+export function profileCsv(content: string, opts: { delimiter?: string; noHeader?: boolean } = {}): CsvColumnProfile[] {
+  const records = parseRecords(content, opts)
+  const columns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
+
+  return columns.map((col) => {
+    const values = records.map((r) => r[col] ?? '')
+    const nullCount = values.filter((v) => v.trim() === '').length
+    const nonEmpty = values.filter((v) => v.trim() !== '')
+    const distinct = new Set(nonEmpty)
+    const isNumber = nonEmpty.length > 0 && nonEmpty.every((v) => v.trim() !== '' && !Number.isNaN(Number(v)))
+    const isDate = !isNumber && nonEmpty.length > 0 && nonEmpty.every((v) => !Number.isNaN(Date.parse(v)))
+    const inferredType: CsvColumnProfile['inferredType'] = isNumber ? 'number' : isDate ? 'date' : 'string'
+
+    const profile: CsvColumnProfile = { name: col, inferredType, nullCount, distinctCount: distinct.size }
+
+    if (nonEmpty.length > 0) {
+      if (isNumber) {
+        const nums = nonEmpty.map(Number)
+        profile.min = String(Math.min(...nums))
+        profile.max = String(Math.max(...nums))
+      } else {
+        const sorted = [...nonEmpty].sort()
+        profile.min = sorted[0] as string
+        profile.max = sorted[sorted.length - 1] as string
+      }
+    }
+    if (distinct.size > 0 && distinct.size <= 10) {
+      const counts = new Map<string, number>()
+      for (const v of nonEmpty) counts.set(v, (counts.get(v) ?? 0) + 1)
+      profile.topValues = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, count }))
+    }
+    return profile
+  })
+}
+
+export function formatCsvProfile(profiles: CsvColumnProfile[]): string {
+  return profiles
+    .map((p) => {
+      const lines = [`${p.name}  (${p.inferredType})`, `  nulls: ${p.nullCount}  distinct: ${p.distinctCount}`]
+      if (p.min !== undefined) lines.push(`  range: ${p.min} .. ${p.max}`)
+      if (p.topValues !== undefined) lines.push(`  values: ${p.topValues.map((t) => `${t.value} (${t.count})`).join(', ')}`)
+      return lines.join('\n')
+    })
+    .join('\n\n')
 }

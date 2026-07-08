@@ -24,7 +24,7 @@ import { loadConfig } from './config.js'
 import { trimToBudget } from './overflow_guard.js'
 import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
-import { queryCsv, formatCsvTable } from './csv_query.js'
+import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 
@@ -611,9 +611,11 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
 interface CsvQueryCliOptions {
   file: string
   columns?: string
-  where?: string
+  where?: string[]
   head?: string
   json?: boolean
+  delimiter?: string
+  noHeader?: boolean
 }
 
 export function runCsvQuery(opts: CsvQueryCliOptions): number {
@@ -630,31 +632,47 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
         .filter(Boolean)
     : undefined
 
-  let whereColumn: string | undefined
-  let whereValue: string | undefined
-  if (opts.where !== undefined) {
-    const eq = opts.where.indexOf('=')
-    if (eq === -1) {
-      emitErr(`invalid --where spec: ${opts.where} (expected col=value)`)
-      return 1
-    }
-    whereColumn = opts.where.slice(0, eq).trim()
-    whereValue = opts.where.slice(eq + 1)
-  }
-
   const head = opts.head !== undefined ? parseInt(opts.head, 10) : undefined
 
   try {
+    const wheres = parseWhereSpecs(opts.where)
     const result = queryCsv(text, {
       ...(columns !== undefined ? { columns } : {}),
-      ...(whereColumn !== undefined ? { whereColumn, whereValue } : {}),
+      ...(wheres !== undefined ? { wheres } : {}),
       ...(head !== undefined ? { head } : {}),
+      ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
+      ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
     if (opts.json === true) {
       emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
     } else {
       emit(formatCsvTable(result))
     }
+    return 0
+  } catch (e) {
+    emitErr(e instanceof Error ? e.message : String(e))
+    return 1
+  }
+}
+
+interface CsvProfileCliOptions {
+  file: string
+  delimiter?: string
+  noHeader?: boolean
+}
+
+export function runCsvProfile(opts: CsvProfileCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+  try {
+    const profiles = profileCsv(text, {
+      ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
+      ...(opts.noHeader === true ? { noHeader: true } : {}),
+    })
+    emit(formatCsvProfile(profiles))
     return 0
   } catch (e) {
     emitErr(e instanceof Error ? e.message : String(e))
