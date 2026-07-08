@@ -398,7 +398,7 @@ describe('read_commands', () => {
         fs.writeFileSync(f, bigLines)
         const { text: stdout } = runRead({ spec: `${f}@1-200` })
         expect(stdout).toContain('output capped at ~50 tokens')
-        expect(stdout).toContain("Request a smaller line range, e.g. 'file.py::100-150'.")
+        expect(stdout).toContain("Request a smaller line range, e.g. 'file.py@100-150'.")
       })
 
       it('uses stale index by default when file is modified externally', () => {
@@ -1527,6 +1527,32 @@ describe('parseDiffHunks (item2)', () => {
     const hunks = parseDiffHunks(diff)
     expect(hunks.get('a.ts')).toEqual([{ start: 1, end: 1 }])
     expect(hunks.get('b.ts')).toEqual([{ start: 41, end: 42 }])
+  })
+
+  it('handles deleted files (with +++ /dev/null) without misattributing hunks', () => {
+    const diff = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,3 +1,3 @@',
+      ' function fooA() {',
+      '-  return 1',
+      '+  return 2',
+      ' }',
+      'diff --git a/z.ts b/z.ts',
+      'deleted file mode 100644',
+      '--- a/z.ts',
+      '+++ /dev/null',
+      '@@ -1,10 +0,0 @@',
+      '-function fooZ() {',
+      '-  return 3',
+      '-}',
+    ].join('\n')
+    const hunks = parseDiffHunks(diff)
+    // a.ts should only have the modification hunk
+    expect(hunks.get('a.ts')).toEqual([{ start: 1, end: 3 }])
+    // z.ts is deleted, so it should not appear in the result
+    expect(hunks.get('z.ts')).toBeUndefined()
   })
 })
 

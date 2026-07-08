@@ -5,6 +5,8 @@
  * and format user-friendly hints suggesting the token-goat section command.
  */
 
+import { eachUnfencedLine } from '../markdown_lines.js'
+
 /** Extract H1-H3 headings from markdown content with their byte offsets */
 export interface MarkdownHeading {
   level: number // 1, 2, or 3
@@ -24,14 +26,14 @@ const MAX_OUTPUT_LINES = 60
 /**
  * Extract H1-H3 headings from markdown content.
  * Parses ATX headings (# ## ###) only — no setext style.
+ * Skips headings inside fenced code blocks (``` or ~~~ fences).
  * Returns up to MAX_HEADINGS headings.
  */
 export function extractMarkdownHeadings(content: string): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   const lines = content.split('\n')
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
+  for (const [i, line] of eachUnfencedLine(lines)) {
     if (!line) continue
     const match = /^(#+)\s+(.+?)\s*$/.exec(line)
     if (!match || match.length < 3) continue

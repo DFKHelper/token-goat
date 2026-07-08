@@ -76,6 +76,13 @@ describe('overflow_guard', () => {
       expect(result).toContain('Request a specific method')
     })
 
+    it('includes correct syntax in hint for lines command', () => {
+      const text = 'a'.repeat(1000)
+      const result = trimToBudget(text, 50, 'lines')
+      expect(result).toContain('file.py@100-150')
+      expect(result).not.toContain('file.py::')
+    })
+
     it('includes default hint for unknown command', () => {
       const text = 'a'.repeat(1000)
       const result = trimToBudget(text, 50, 'unknown')

@@ -182,6 +182,30 @@ describe('non-numeric --budget validation on pack and context-for', () => {
   })
 })
 
+describe('non-numeric --min-lines validation on skeleton and outline', () => {
+  it('rejects a non-numeric --min-lines on `skeleton` with a clean error instead of silently returning zero symbols', async () => {
+    captureStderr()
+    captureStdout()
+    const code = await runCli(['skeleton', 'src/cli.ts', '--min-lines', 'abc'])
+    expect(code).toBe(1)
+    // Pre-fix this would print "# Skeleton: src/cli.ts  (0 symbols, 0 lines)" with exit 0
+    // Post-fix it errors and contains --min-lines in stderr
+    expect(stdout.join('')).not.toContain('symbols')
+    expect(stderr.join('')).toContain('--min-lines')
+  })
+
+  it('rejects a non-numeric --min-lines on `outline` with a clean error instead of silently returning zero symbols', async () => {
+    captureStderr()
+    captureStdout()
+    const code = await runCli(['outline', 'src/cli.ts', '--min-lines', 'abc'])
+    expect(code).toBe(1)
+    // Pre-fix this would print "# Outline: src/cli.ts  (0 symbols)" with exit 0
+    // Post-fix it errors and contains --min-lines in stderr
+    expect(stdout.join('')).not.toContain('symbols')
+    expect(stderr.join('')).toContain('--min-lines')
+  })
+})
+
 // Regression guard: unlike a non-numeric value (caught above), a negative --limit/--top is a
 // *finite* number, so it sailed straight past the NaN-only check the fixes above added. Two
 // different downstream sinks turn that "valid-looking" negative number into a silent cap bypass
