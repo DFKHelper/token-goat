@@ -48,6 +48,16 @@
  * not a bare string. `textResultForLlm` is extracted into `canonical.tool_response` so
  * token-goat's post-read/post-bash stat handlers (which measure `tool_response`) see
  * real content instead of nothing.
+ *
+ * `view`/`edit`/`create`'s file-path argument arrives under the key `path`, not the
+ * `file_path` key every token-goat handler that resolves a path reads (getFilePath in
+ * hooks_common.ts; the only handler any of these three tools reach -- postEditHandler
+ * for edit/create, preReadHandler/preReadImageHandler for view -- and none of them read
+ * any other argument key, so `old_string`/`new_string`/`content`-style remapping is not
+ * needed here). Left unremapped, getFilePath() always returns undefined for these three
+ * tools and no Read/Edit/Write is ever recorded -- token-goat stats and re-read hints
+ * silently never engage for Copilot CLI sessions. This resolves the `toolArgs` key
+ * question the block above previously flagged as unconfirmed.
  */
 export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
@@ -117,6 +127,26 @@ function parseMaybeJsonObject(value) {
   return {}
 }
 
+// view/edit/create send the file path under 'path'; every token-goat handler these
+// three tools reach only ever looks for 'file_path' (getFilePath in hooks_common.ts).
+// Keyed by the ORIGINAL Copilot tool name (before TOOL_TO_TG renames it) since that's
+// the name toolArgs' shape is keyed to, not token-goat's internal tool name.
+const FILE_PATH_ARG_KEY = {
+  view: 'path',
+  edit: 'path',
+  create: 'path',
+}
+
+function remapToolInput(copilotToolName, input) {
+  const pathKey = FILE_PATH_ARG_KEY[copilotToolName]
+  if (pathKey === undefined || !input || typeof input !== 'object' || !(pathKey in input)) {
+    return input
+  }
+  // Add file_path alongside the original key rather than renaming it, so nothing that
+  // might read the original 'path' key elsewhere (e.g. a future handler) loses it.
+  return Object.assign({}, input, { file_path: input[pathKey] })
+}
+
 function main() {
   const copilotEvent = process.argv[2] || ''
 
@@ -154,7 +184,7 @@ function main() {
   }
   if (toolName) {
     canonical.tool_name = TOOL_TO_TG[toolName] || toolName
-    canonical.tool_input = parseMaybeJsonObject(payload && payload.toolArgs)
+    canonical.tool_input = remapToolInput(toolName, parseMaybeJsonObject(payload && payload.toolArgs))
   }
 
   // postToolUse only: confirmed via https://docs.github.com/en/copilot/reference/hooks-reference

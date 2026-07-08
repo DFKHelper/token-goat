@@ -440,6 +440,39 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(captured.tool_response).toBeUndefined()
   })
 
+  it.each([
+    ['view', '/f.txt'],
+    ['edit', '/g.txt'],
+    ['create', '/h.txt'],
+  ])(
+    "remaps %s's 'path' toolArgs key to 'file_path' -- the only key token-goat's Read/Edit/Write handlers read",
+    (copilotTool, filePath) => {
+      const cwd = mkIsolated()
+      const capturePath = path.join(cwd, 'captured.json')
+      const script =
+        process.platform === 'win32'
+          ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+          : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+      const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+      fs.writeFileSync(binPath, script, 'utf8')
+      if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+      const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+
+      runShim(
+        'preToolUse',
+        JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs: { path: filePath } }),
+        cwd,
+        env,
+      )
+
+      const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
+      const toolInput = captured.tool_input as Record<string, unknown>
+      expect(toolInput.file_path).toBe(filePath)
+      // The original 'path' key must survive too -- remap is additive, not a rename.
+      expect(toolInput.path).toBe(filePath)
+    },
+  )
+
   it('preCompact discards any token-goat response and always emits {} -- Copilot treats preCompact as notification-only', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(cwd, JSON.stringify({ systemMessage: 'session manifest here' }))
