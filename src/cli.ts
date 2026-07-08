@@ -89,6 +89,8 @@ import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_
 import { docxOutline, docxText } from './docx_extract.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
+import { extractVideoChapters } from './video_chapters.js'
+
 
 import { buildTranscriptOutline, formatCues, formatTimestamp, parseSliceOptions, readTranscript, sliceTranscript } from './transcript_extract.js'
 import {
@@ -721,6 +723,37 @@ async function cmdPdfMeta(file: string) {
     `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
   ]
   out(lines.join('\n'))
+}
+
+function cmdVideoChapters(file: string) {
+  const { chapters, subtitleStreams } = extractVideoChapters(file)
+  const lines: string[] = []
+  if (chapters.length === 0) {
+    lines.push('(no chapter markers found)')
+  } else {
+    for (const c of chapters) {
+      const title = c.title ?? `Chapter ${c.index}`
+      lines.push(`${formatVideoTimestamp(c.startSeconds)} - ${formatVideoTimestamp(c.endSeconds)}  ${title}`)
+    }
+  }
+  if (subtitleStreams.length > 0) {
+    lines.push('')
+    lines.push('Subtitle/caption streams:')
+    for (const s of subtitleStreams) {
+      const parts = [s.codec ?? 'unknown codec', s.language ?? 'unknown language', s.title ?? null].filter((p) => p !== null)
+      lines.push(`  stream #${s.index}: ${parts.join(', ')}`)
+    }
+    lines.push('(extract a subtitle stream to .vtt/.srt with ffmpeg, then use transcript/transcript-outline on it)')
+  }
+  out(lines.join('\n'))
+}
+
+function formatVideoTimestamp(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = Math.floor(totalSeconds % 60)
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
 }
 
 function cmdSharepointResolve(url: string) {
@@ -2505,6 +2538,11 @@ export function buildProgram(): Command {
     .command('sharepoint-resolve <shareUrl>')
     .description('best-effort resolve a SharePoint/OneDrive sharing URL to a local synced file path (no network call)')
     .action(guard(cmdSharepointResolve))
+
+  program
+    .command('video-chapters <file>')
+    .description('list a video\'s embedded chapter markers and subtitle streams via ffprobe, instead of downloading/transcoding it')
+    .action(guard(cmdVideoChapters))
 
   program
     .command('xlsx-sheets <file>')
