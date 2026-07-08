@@ -74,6 +74,19 @@ export function piExtensionPath(opts: PiScopeOptions = {}): string {
   return opts.local === true ? piLocalExtensionPath() : piGlobalExtensionPath()
 }
 
+/**
+ * Sidecar JSON file, written next to the extension, carrying the absolute path
+ * to the token-goat CLI entry that was running at install time (`process.argv[1]`).
+ * The extension has no per-invocation command line to bake this into the way
+ * Codex/Copilot's generated hook commands do (pi loads it once as a module), so
+ * `callHook`'s `resolveEntryPath()` reads this file at runtime instead, to
+ * invoke that entry directly via `process.execPath` rather than depending on
+ * PATH resolution for a bare `token-goat` lookup.
+ */
+export function piEntrySidecarPath(opts: PiScopeOptions = {}): string {
+  return path.join(path.dirname(piExtensionPath(opts)), 'token-goat-entry.json')
+}
+
 /** Outcome of an {@link installPi} call. */
 export interface PiInstallResult {
   readonly extensionPath: string
@@ -101,6 +114,16 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
     existing = undefined
   }
 
+  // process.argv[1] is the absolute path to whichever token-goat entry point
+  // launched this install run. Written unconditionally (even when the
+  // extension itself is already up to date) so re-running install after
+  // moving/upgrading the token-goat install refreshes a stale sidecar too.
+  const entryPath = process.argv[1]
+  if (entryPath) {
+    ensureDirSync(path.dirname(extensionPath))
+    atomicWriteText(piEntrySidecarPath(opts), JSON.stringify({ entryPath }))
+  }
+
   if (existing === PI_EXTENSION_SCRIPT) {
     return { extensionPath, alreadyInstalled: true }
   }
@@ -117,6 +140,11 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
  */
 export function uninstallPi(opts: PiScopeOptions = {}): boolean {
   const extensionPath = piExtensionPath(opts)
+  try {
+    fs.unlinkSync(piEntrySidecarPath(opts))
+  } catch {
+    // no sidecar to remove -- fine, e.g. an install predating this fix
+  }
   try {
     fs.unlinkSync(extensionPath)
     return true

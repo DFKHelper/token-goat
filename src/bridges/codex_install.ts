@@ -9,12 +9,18 @@
  *
  * Three artifacts are installed:
  * - `~/.codex/hooks/token-goat-shim.js` -- {@link CODEX_HOOK_SCRIPT} written to
- *   disk. Codex's `command` hook field just invokes `node "<this path>" <event>`;
- *   the shim itself forwards stdin to `token-goat hook <event>` and massages the
- *   JSON response to satisfy Codex's strict (`additionalProperties: false`)
- *   output schemas. Rewritten unconditionally on every install so an upgraded
- *   token-goat version's shim logic always reaches disk, even when the
- *   config.toml hooks block itself needed no changes.
+ *   disk. Codex's `command` hook field invokes it via `hookCommandFor` below as
+ *   `"<process.execPath>" "<this path>" <event> "<token-goat entry path>"` --
+ *   the absolute Node binary and a baked token-goat entry path, not a bare
+ *   `node`/`token-goat` depending on PATH resolution (github/copilot-cli#4001
+ *   class of failure, fixed here the same way as the Copilot CLI bridge). The
+ *   shim itself forwards stdin to that baked entry (`token-goat hook <event>`,
+ *   falling back to a PATH-based lookup when the entry arg is absent) and
+ *   massages the JSON response to satisfy Codex's strict
+ *   (`additionalProperties: false`) output schemas. Rewritten unconditionally
+ *   on every install so an upgraded token-goat version's shim logic always
+ *   reaches disk, even when the config.toml hooks block itself needed no
+ *   changes.
  * - `~/.codex/config.toml` -- a `[[hooks.<Event>]]` / `[[hooks.<Event>.hooks]]`
  *   array-of-tables block (Codex's real hook config shape; verified against
  *   OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for
@@ -161,9 +167,24 @@ function groupHasTokenGoat(groups: CodexMatcherGroup[] | undefined, matcher: str
 }
 
 
-/** Build the shell command Codex should run for one hook entry. */
+/**
+ * Build the shell command Codex should run for one hook entry.
+ *
+ * Uses the absolute Node binary path (`process.execPath`), not a bare `node`, since a
+ * bare `node` depends on PATH resolution in whatever environment Codex spawns the hook
+ * subprocess with -- the same github/copilot-cli#4001-class single point of failure
+ * already fixed for the Copilot CLI bridge's outer hook command. `process.argv[1]`
+ * (the absolute path to whichever token-goat entry launched this install run) is baked
+ * in as a third CLI arg so the shim's own inner `token-goat hook <event>` call
+ * (codex.ts) can invoke it directly via `process.execPath` too, instead of depending on
+ * PATH for that inner call as well. Omitted when unavailable (should never happen under
+ * a real `node <script>` invocation) rather than baking in something wrong; the shim's
+ * inner call falls back to its old PATH-based lookup in that case.
+ */
 function hookCommandFor(scriptPath: string, eventArg: string): string {
-  return `node "${scriptPath}" ${eventArg}`
+  const entryPath = process.argv[1]
+  const entryArg = entryPath ? ` "${entryPath}"` : ''
+  return `"${process.execPath}" "${scriptPath}" ${eventArg}${entryArg}`
 }
 
 /** Outcome of an {@link installCodex} call. */

@@ -164,6 +164,20 @@ describe('installCodex', () => {
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
   })
 
+  it('uses the absolute Node binary path (process.execPath) and bakes the running token-goat entry as a trailing arg, not a bare `node`, in every generated hook command', () => {
+    installCodex()
+    const config = readConfig()
+    expect(process.argv[1]).toBeDefined()
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      for (const command of commandsFor(config, event)) {
+        if (!command.includes('token-goat-shim')) continue
+        expect(command).toContain(`"${process.execPath}"`)
+        expect(command.startsWith('node ')).toBe(false)
+        expect(command).toContain(`"${process.argv[1]}"`)
+      }
+    }
+  })
+
   it('writes a timestamped .bak of config.toml before an in-place edit', () => {
     const p = codexConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })

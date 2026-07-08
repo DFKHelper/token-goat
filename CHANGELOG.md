@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Codex CLI and pi bridges had the same bare-PATH single-point-of-failure the Copilot CLI bridge was fixed for.** Codex's outer hook command still invoked a bare `node` (never hardened to `process.execPath` in the first place), and its shim's inner `token-goat hook <event>` call shelled out to a bare `token-goat` on PATH -- both now resolved via `process.execPath` plus a token-goat entry path baked into the generated hook command at install time, mirroring the Copilot fix. pi has no per-invocation command line to bake a path into (its extension is loaded once as a module, not spawned with fresh argv per event), so `installPi` now writes a small `token-goat-entry.json` sidecar next to the extension file, and the extension reads it at runtime (`resolveEntryPath()`) to invoke the baked entry directly instead of depending on PATH; `uninstallPi` removes the sidecar too. Both fall back to the old PATH-based lookup when no baked value is available (an older cached install).
+  See [src/bridges/codex.ts](src/bridges/codex.ts), [src/bridges/codex_install.ts](src/bridges/codex_install.ts), [src/bridges/pi.ts](src/bridges/pi.ts), and [src/bridges/pi_install.ts](src/bridges/pi_install.ts); regression-tested in [tests/install_codex.test.ts](tests/install_codex.test.ts), [tests/install_pi.test.ts](tests/install_pi.test.ts), and [tests/bridges/shims.test.ts](tests/bridges/shims.test.ts).
+
 ## [2.6.7] - 2026-07-07
 
 ### Fixed
