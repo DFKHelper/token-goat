@@ -49,7 +49,7 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
   return { header: columns, rows, totalRows }
 }
 
-function quoteCsvCell(cell: string): string {
+export function quoteCsvCell(cell: string): string {
   // RFC 4180: quote cells containing comma, double quote, or newline.
   // Escape embedded quotes by doubling them.
   if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {

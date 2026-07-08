@@ -28,6 +28,7 @@ import sharp from 'sharp'
 import { allCommandNames } from './registry.js'
 
 import { BUNDLE, ROOT } from './helpers/bundle.js'
+import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 let repo: string // indexed fixture; default cwd for read commands
 let dataBase: string // isolated data dir holding the shared index
@@ -229,6 +230,111 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['pdf-extract', pdfPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Hello PDF')
+  },
+  'xlsx-sheets': () => {
+    const dir = mkIsolated('tg-matrix-xlsx-')
+    const xlsxPath = path.join(dir, 'book.xlsx')
+    execFileSync(process.execPath, ['-e', `
+      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
+      XLSX.utils.book_append_sheet(wb, ws, 'People');
+      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+    `])
+    const r = run(['xlsx-sheets', xlsxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('People')
+  },
+  'xlsx-head': () => {
+    const dir = mkIsolated('tg-matrix-xlsxh-')
+    const xlsxPath = path.join(dir, 'book.xlsx')
+    execFileSync(process.execPath, ['-e', `
+      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
+      XLSX.utils.book_append_sheet(wb, ws, 'People');
+      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+    `])
+    const r = run(['xlsx-head', xlsxPath, '--sheet', 'People'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+  },
+  'xlsx-range': () => {
+    const dir = mkIsolated('tg-matrix-xlsxr-')
+    const xlsxPath = path.join(dir, 'book.xlsx')
+    execFileSync(process.execPath, ['-e', `
+      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
+      XLSX.utils.book_append_sheet(wb, ws, 'People');
+      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+    `])
+    const r = run(['xlsx-range', xlsxPath, '--sheet', 'People', '--range', 'A1:B2'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+  },
+  'xlsx-query': () => {
+    const dir = mkIsolated('tg-matrix-xlsxq-')
+    const xlsxPath = path.join(dir, 'book.xlsx')
+    execFileSync(process.execPath, ['-e', `
+      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([['name','status'],['Alice','active'],['Bob','inactive']]);
+      XLSX.utils.book_append_sheet(wb, ws, 'People');
+      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+    `])
+    const r = run(['xlsx-query', xlsxPath, '--sheet', 'People', '--where', 'status=active'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).not.toContain('Bob')
+  },
+  'pptx-outline': () => {
+    const dir = mkIsolated('tg-matrix-pptxo-')
+    const pptxPath = path.join(dir, 'deck.pptx')
+    fs.writeFileSync(pptxPath, buildPptxFixture([{ title: 'Intro', body: ['Welcome'] }]))
+    const r = run(['pptx-outline', pptxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Intro')
+  },
+  'pptx-slide': () => {
+    const dir = mkIsolated('tg-matrix-pptxs-')
+    const pptxPath = path.join(dir, 'deck.pptx')
+    fs.writeFileSync(pptxPath, buildPptxFixture([{ title: 'Intro', body: ['Welcome'] }]))
+    const r = run(['pptx-slide', pptxPath, '--slide', '1'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Welcome')
+  },
+  'pptx-notes': () => {
+    const dir = mkIsolated('tg-matrix-pptxn-')
+    const pptxPath = path.join(dir, 'deck.pptx')
+    fs.writeFileSync(pptxPath, buildPptxFixture([{ title: 'Intro', notes: 'Say hello warmly' }]))
+    const r = run(['pptx-notes', pptxPath, '--slide', '1'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Say hello warmly')
+  },
+  'pptx-text': () => {
+    const dir = mkIsolated('tg-matrix-pptxt-')
+    const pptxPath = path.join(dir, 'deck.pptx')
+    fs.writeFileSync(pptxPath, buildPptxFixture([{ title: 'Intro', body: ['Welcome to the annual meeting'] }]))
+    const r = run(['pptx-text', pptxPath, '--grep', 'annual'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Slide 1')
+  },
+  'docx-outline': () => {
+    const dir = mkIsolated('tg-matrix-docxo-')
+    const docxPath = path.join(dir, 'doc.docx')
+    fs.writeFileSync(docxPath, buildDocxFixture([{ text: 'Overview', headingLevel: 1 }, { text: 'Some body text.' }]))
+    const r = run(['docx-outline', docxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Overview')
+  },
+  'docx-text': () => {
+    const dir = mkIsolated('tg-matrix-docxt-')
+    const docxPath = path.join(dir, 'doc.docx')
+    fs.writeFileSync(docxPath, buildDocxFixture([{ text: 'Overview', headingLevel: 1 }, { text: 'Some body text.' }]))
+    const r = run(['docx-text', docxPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Some body text.')
   },
   screenshot: () => {
     // Real behavior needs a real browser (present on dev machines, not guaranteed in CI) and
