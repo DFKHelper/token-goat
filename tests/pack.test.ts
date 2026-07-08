@@ -2,7 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget } from '../src/pack.js'
+import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget, formatBudgetText } from '../src/pack.js'
 
 // Capability probe: creating a real symlink on Windows requires either an
 // elevated shell or Developer Mode. Run it once at module load so the suite
@@ -282,5 +282,44 @@ describe('symlink escape guard', () => {
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('formatBudgetText', () => {
+  it('formats budget output with proper column alignment (no stray commas)', () => {
+    const result = {
+      entries: [
+        { rel_path: 'file1.ts', lines: 100, tokens: 500, size_bytes: 2000 },
+        { rel_path: 'file2.py', lines: 200, tokens: 1000, size_bytes: 4000 },
+      ],
+      skipped: [],
+      total_lines: 300,
+      total_tokens: 1500,
+    }
+    const output = formatBudgetText(result)
+    const lines = output.split('\n')
+    
+    // Header row should have no commas
+    expect(lines[0]).not.toContain(',')
+    expect(lines[0]).toContain('Lines')
+    expect(lines[0]).toContain('~Tokens')
+    
+    // Separator row should have no commas
+    expect(lines[1]).not.toContain(',')
+    
+    // Data rows should have no stray commas after numeric columns
+    expect(lines[2]).not.toMatch(/\s\d+,\s+\d+,/)
+    expect(lines[3]).not.toMatch(/\s\d+,\s+\d+,/)
+    
+    // Total row should have no stray commas after numeric columns
+    const totalLine = lines.find((l) => l.includes('Total'))
+    expect(totalLine).toBeDefined()
+    expect(totalLine).not.toMatch(/\s\d+,\s+\d+,/)
+    
+    // Verify numeric values are right-aligned and line up properly
+    expect(lines[2]).toContain('100')
+    expect(lines[2]).toContain('500')
+    expect(lines[3]).toContain('200')
+    expect(lines[3]).toContain('1000')
   })
 })
