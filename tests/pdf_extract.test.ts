@@ -64,6 +64,45 @@ function layoutPdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(LAYOUT_PDF, 'latin1'));
 }
 
+// Two-page PDF where page 1 has an empty content stream (a blank cover page) and page 2
+// has real text -- exercises extractPdfMeta's multi-page text-layer sample, which must
+// not conclude "no text layer" from page 1 alone.
+const BLANK_FIRST_PAGE_PDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 6 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 6 0 R >> >> /MediaBox [0 0 200 200] /Contents 7 0 R >>
+endobj
+5 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+7 0 obj
+<< /Length 46 >>
+stream
+BT /F1 24 Tf 20 100 Td (Page two text) Tj ET
+endstream
+endobj
+trailer
+<< /Size 8 /Root 1 0 R >>
+%%EOF
+`;
+
+function blankFirstPagePdfBytes(): Uint8Array {
+  return new Uint8Array(Buffer.from(BLANK_FIRST_PAGE_PDF, 'latin1'));
+}
+
 describe('parsePageRange', () => {
   it('returns null for an unset spec (all pages)', () => {
     expect(parsePageRange(undefined, 10)).toBeNull();
@@ -126,6 +165,12 @@ describe('extractPdfMeta', () => {
     expect(meta.pageCount).toBe(1);
     expect(meta.title).toBeNull();
     expect(meta.author).toBeNull();
+    expect(meta.hasTextLayer).toBe(true);
+  });
+
+  it('detects a text layer from a later page when the first page is blank', async () => {
+    const meta = await extractPdfMeta(blankFirstPagePdfBytes());
+    expect(meta.pageCount).toBe(2);
     expect(meta.hasTextLayer).toBe(true);
   });
 });

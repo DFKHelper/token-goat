@@ -277,7 +277,7 @@ const cases: Record<string, () => void | Promise<void>> = {
       { env: envFound },
     )
     expect(rFound.status, rFound.stderr).toBe(0)
-    expect(rFound.stdout).toContain(path.join(syncRoot, 'documents', 'Reports', 'budget.xlsx'))
+    expect(rFound.stdout).toContain(path.join(syncRoot, 'Documents', 'Reports', 'budget.xlsx'))
 
     const emptyHome = mkIsolated('tg-matrix-spempty-')
     const envEmpty = { ...tgEnv(dataBase), HOME: emptyHome, USERPROFILE: emptyHome }

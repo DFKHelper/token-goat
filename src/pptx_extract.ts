@@ -33,12 +33,59 @@ function shapeText(shape: unknown): string {
   return collectTextRuns(shape, 'a:t').join(' ').trim()
 }
 
+interface RelationshipLike {
+  '@_Id'?: string
+  '@_Target'?: string
+}
+
+interface SldIdLike {
+  '@_r:id'?: string
+}
+
+/**
+ * Resolves the deck's actual display order (`ppt/presentation.xml`'s `<p:sldIdLst>`,
+ * a list of `r:id` references, resolved to file paths via `ppt/_rels/presentation.xml.rels`)
+ * rather than trusting `slideN.xml` filenames, which reflect insertion order and go stale
+ * the moment a slide is reordered, duplicated, or deleted -- both very common PowerPoint
+ * operations. Returns null when either part is missing/unparseable so the caller can fall
+ * back to filename order (e.g. a hand-built or non-standard .pptx).
+ */
+async function slidePathsInPresentationOrder(entries: Record<string, Uint8Array>): Promise<string[] | null> {
+  const presXml = decodeZipEntry(entries, 'ppt/presentation.xml')
+  const relsXml = decodeZipEntry(entries, 'ppt/_rels/presentation.xml.rels')
+  if (presXml === null || relsXml === null) return null
+
+  const presParsed = await parseOoxmlPart(presXml)
+  const relsParsed = await parseOoxmlPart(relsXml)
+
+  const ridToTarget = new Map<string, string>()
+  for (const rel of collectElements(relsParsed, 'Relationship') as RelationshipLike[]) {
+    if (rel['@_Id'] !== undefined && rel['@_Target'] !== undefined) {
+      ridToTarget.set(rel['@_Id'], rel['@_Target'])
+    }
+  }
+
+  const ordered: string[] = []
+  for (const sldId of collectElements(presParsed, 'p:sldId') as SldIdLike[]) {
+    const rid = sldId['@_r:id']
+    if (rid === undefined) continue
+    const target = ridToTarget.get(rid)
+    if (target === undefined) continue
+    const normalized = target.startsWith('slides/') ? `ppt/${target}` : `ppt/slides/${target}`
+    if (entries[normalized] !== undefined) ordered.push(normalized)
+  }
+
+  return ordered.length > 0 ? ordered : null
+}
+
 async function listSlideParts(filePath: string): Promise<{ entries: Record<string, Uint8Array>; slidePaths: string[] }> {
   const entries = await readOoxmlZip(filePath)
-  const slidePaths = sortNumberedParts(
-    Object.keys(entries).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)),
-    /slide(\d+)\.xml$/,
-  )
+  const slidePaths =
+    (await slidePathsInPresentationOrder(entries)) ??
+    sortNumberedParts(
+      Object.keys(entries).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)),
+      /slide(\d+)\.xml$/,
+    )
   if (slidePaths.length === 0) throw new Error(`no slides found in ${filePath} (not a valid .pptx?)`)
   return { entries, slidePaths }
 }

@@ -183,6 +183,12 @@ export interface PdfMeta {
   hasTextLayer: boolean
 }
 
+async function pageHasText(doc: pdfjsTypes.PDFDocumentProxy, pageNum: number): Promise<boolean> {
+  const page = await doc.getPage(pageNum)
+  const content = await page.getTextContent()
+  return content.items.some((item) => 'str' in item && item.str.trim().length > 0)
+}
+
 export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-meta')
@@ -192,9 +198,19 @@ export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
     const doc = await loadingTask.promise
     const { info } = await doc.getMetadata()
     const infoDict = info as Record<string, unknown>
-    const page = await doc.getPage(1)
-    const content = await page.getTextContent()
-    const hasTextLayer = content.items.some((item) => 'str' in item && item.str.trim().length > 0)
+
+    // Page 1 alone is a weak signal -- a blank/scanned cover page with real searchable
+    // text later in the document would otherwise be misreported as "likely scanned/
+    // image-only". Sample a few pages (first, middle, last) instead of the whole
+    // document, to keep pdf-meta cheap on large PDFs while cutting false negatives.
+    const sampleNums = Array.from(new Set([1, Math.ceil(doc.numPages / 2), doc.numPages].filter((n) => n >= 1 && n <= doc.numPages)))
+    let hasTextLayer = false
+    for (const n of sampleNums) {
+      if (await pageHasText(doc, n)) {
+        hasTextLayer = true
+        break
+      }
+    }
 
     return {
       pageCount: doc.numPages,

@@ -45,10 +45,21 @@ async function loadXmlParser(): Promise<FastXmlParserModule | null> {
   return _fxpCache
 }
 
+// DEFLATE's worst-case compression ratio is ~1032:1, so capping the compressed input
+// bounds unzipSync's eager, unstreamed decompression to a worst case of tens of GB
+// instead of fully unbounded -- a sanity cap against a malformed/crafted file, not a
+// hardened defense (a genuine zip bomb near this ratio would still be large; full
+// protection needs streaming decompression with an abort threshold, out of scope here).
+const MAX_OOXML_INPUT_BYTES = 50 * 1024 * 1024
+
 /** Reads a .pptx/.docx file and returns its ZIP entries as path -> decompressed bytes. */
 export async function readOoxmlZip(filePath: string): Promise<Record<string, Uint8Array>> {
   const fflate = await loadFflate()
   if (!fflate) throw new Error('fflate is not installed; run `npm install fflate` to enable this command')
+  const size = fs.statSync(filePath).size
+  if (size > MAX_OOXML_INPUT_BYTES) {
+    throw new Error(`${filePath} is ${Math.round(size / (1024 * 1024))}MB, over the ${MAX_OOXML_INPUT_BYTES / (1024 * 1024)}MB limit for OOXML files`)
+  }
   const data = fs.readFileSync(filePath)
   return fflate.unzipSync(new Uint8Array(data))
 }
