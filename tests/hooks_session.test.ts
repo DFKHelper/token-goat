@@ -93,7 +93,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('warns when the report claims a fix and commit but git status is clean', () => {
+    it('does not warn when the report claims a fix AND a commit and git status is clean (legitimate success, not a hallucination)', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -115,9 +115,33 @@ describe('hooks_session', () => {
 
       subagentStopHandler(event);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('subagent-stop')
-      );
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when the report claims work was pushed and git status is clean', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: {
+          cwd: '/tmp/repo',
+          last_assistant_message: 'Implemented the feature, committed, and pushed to origin',
+        },
+      };
+
+      subagentStopHandler(event);
+
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 

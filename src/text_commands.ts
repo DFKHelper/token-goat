@@ -447,7 +447,7 @@ function parsePackageLockJson(content: string): DepEntry[] {
   const deps: DepEntry[] = []
   for (const [key, val] of Object.entries(pkgs)) {
     if (key === '') continue
-    const name = key.startsWith('node_modules/') ? key.slice('node_modules/'.length) : key
+    const name = key.split('node_modules/').pop() ?? key
     const version = (val as { version?: string }).version ?? ''
     deps.push({ name, version, kind: allDirect.has(name) ? 'direct' : 'transitive' })
   }

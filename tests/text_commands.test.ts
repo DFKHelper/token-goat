@@ -380,6 +380,41 @@ describe('lockdeps command', () => {
     fs.rmSync(v1Dir, { recursive: true, force: true })
   })
 
+  it('parses npm v2/v3 lockfile with nested dependencies (regression: nested node_modules paths like node_modules/parent/node_modules/child were incorrectly parsed as parent/node_modules/child instead of child)', () => {
+    const v2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v2-lock-'))
+    const lockPath = path.join(v2Dir, 'package-lock.json')
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        name: 'v2-fixture',
+        version: '1.0.0',
+        lockfileVersion: 2,
+        packages: {
+          '': { dependencies: { parent: '1.0.0', direct: '2.0.0' } },
+          'node_modules/parent': { version: '1.0.0' },
+          'node_modules/parent/node_modules/child': { version: '1.5.0' },
+          'node_modules/direct': { version: '2.0.0' },
+          'node_modules/transitive': { version: '3.0.0' },
+        },
+      }),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      total: number
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('npm')
+    expect(parsed.total).toBe(4)
+    expect(parsed.deps).toContainEqual({ name: 'parent', version: '1.0.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: 'child', version: '1.5.0', kind: 'transitive' })
+    expect(parsed.deps).toContainEqual({ name: 'direct', version: '2.0.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: 'transitive', version: '3.0.0', kind: 'transitive' })
+    fs.rmSync(v2Dir, { recursive: true, force: true })
+  })
+
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))
     const r = run(['lockdeps', emptyDir])
