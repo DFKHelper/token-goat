@@ -289,6 +289,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.status, rMissing.stderr).toBe(0)
     expect(rMissing.stdout).toContain('could not resolve a local synced copy')
   },
+  'video-chapters': () => {
+    // ffprobe's presence/version varies by machine and CI image — verify dispatch via
+    // --help reachability rather than full behavioral output (same pattern as fetch-image).
+    const r = run(['video-chapters', '--help'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/chapter|ffprobe|video/i)
+  },
   'xlsx-sheets': () => {
     const dir = mkIsolated('tg-matrix-xlsx-')
     const xlsxPath = path.join(dir, 'book.xlsx')
