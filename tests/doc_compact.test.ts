@@ -230,6 +230,31 @@ describe('doc_compact', () => {
       expect(compact).not.toContain('## Setup Guide')
     })
 
+    it('matches exact heading, not a longer heading that contains it as substring', () => {
+      const body = '## Setup Guide\nSetup Guide content\n## Setup\nSetup content'
+      const compact = extractDocCompact(body, 'Setup')
+      // Should match "## Setup" exactly, not "## Setup Guide" which merely contains "Setup"
+      expect(compact).toContain('## Setup')
+      expect(compact).not.toContain('## Setup Guide')
+    })
+
+    it('stops at next heading of equal or shallower depth (regression: was dumping all following sections)', () => {
+      const body = 'Intro\n## Summary\nSummary content here\n## Next\nNext section content'
+      const compact = extractDocCompact(body, 'Summary')
+      expect(compact).toContain('## Summary')
+      expect(compact).toContain('Summary content here')
+      expect(compact).not.toContain('## Next')
+      expect(compact).not.toContain('Next section content')
+    })
+
+    it('includes nested headings under the matched section (deeper than matched heading)', () => {
+      const body = '## Section\nSection intro\n### Subsection\nSub content\n## Next\nNext content'
+      const compact = extractDocCompact(body, 'Section')
+      expect(compact).toContain('### Subsection')
+      expect(compact).toContain('Sub content')
+      expect(compact).not.toContain('## Next')
+    })
+
     it('returns empty string when marker not found', () => {
       const body = 'Content without marker'
       const compact = extractDocCompact(body)
