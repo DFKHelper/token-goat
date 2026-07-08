@@ -36,6 +36,7 @@ function shapeText(shape: unknown): string {
 interface RelationshipLike {
   '@_Id'?: string
   '@_Target'?: string
+  '@_Type'?: string
 }
 
 interface SldIdLike {
@@ -90,10 +91,41 @@ async function listSlideParts(filePath: string): Promise<{ entries: Record<strin
   return { entries, slidePaths }
 }
 
-function notesPathFor(slidePath: string): string {
-  const m = /slide(\d+)\.xml$/.exec(slidePath)
-  const n = m?.[1] ?? '1'
-  return `ppt/notesSlides/notesSlide${n}.xml`
+function relsPathFor(slidePath: string): string {
+  const idx = slidePath.lastIndexOf('/')
+  return `${slidePath.slice(0, idx)}/_rels/${slidePath.slice(idx + 1)}.rels`
+}
+
+function resolveRelativeTarget(basePath: string, target: string): string {
+  const baseDir = basePath.slice(0, basePath.lastIndexOf('/'))
+  const segments = `${baseDir}/${target}`.split('/')
+  const resolved: string[] = []
+  for (const segment of segments) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') resolved.pop()
+    else resolved.push(segment)
+  }
+  return resolved.join('/')
+}
+
+/**
+ * Resolves a slide's notes part via its own relationship file
+ * (`ppt/slides/_rels/slideN.xml.rels`, a `notesSlide` relationship pointing at the actual
+ * notes target) rather than assuming `slideN.xml` pairs with `notesSlideN.xml` -- notes-slide
+ * numbering is a separate counter from slide numbering, so duplicating, deleting, or
+ * reordering slides can decouple the two. Returns null when the slide has no notesSlide
+ * relationship (no notes part exists for it).
+ */
+async function notesPathFor(entries: Record<string, Uint8Array>, slidePath: string): Promise<string | null> {
+  const relsXml = decodeZipEntry(entries, relsPathFor(slidePath))
+  if (relsXml === null) return null
+  const relsParsed = await parseOoxmlPart(relsXml)
+  for (const rel of collectElements(relsParsed, 'Relationship') as RelationshipLike[]) {
+    if (rel['@_Target'] !== undefined && rel['@_Type']?.endsWith('/notesSlide') === true) {
+      return resolveRelativeTarget(slidePath, rel['@_Target'])
+    }
+  }
+  return null
 }
 
 async function parseSlide(entries: Record<string, Uint8Array>, path: string): Promise<unknown> {
@@ -109,7 +141,8 @@ async function parseSlide(entries: Record<string, Uint8Array>, path: string): Pr
  * actual extracted notes body text (empty string if the part is absent or its body
  * placeholder has no text), so callers can check length instead of presence.
  */
-async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: string): Promise<string> {
+async function notesTextFor(entries: Record<string, Uint8Array>, notesPath: string | null): Promise<string> {
+  if (notesPath === null) return ''
   const xml = decodeZipEntry(entries, notesPath)
   if (xml === null) return ''
   const parsed = await parseOoxmlPart(xml)
@@ -132,7 +165,7 @@ export async function pptxOutline(filePath: string): Promise<SlideOutlineEntry[]
     const title = titleShape !== undefined ? shapeText(titleShape) : ''
     const allText = collectTextRuns(parsed, 'a:t').join(' ')
     const bodyChars = Math.max(0, allText.length - title.length)
-    const hasNotes = (await notesTextFor(entries, notesPathFor(path))).length > 0
+    const hasNotes = (await notesTextFor(entries, await notesPathFor(entries, path))).length > 0
     out.push({ slide: i + 1, title, bodyChars, hasNotes })
   }
   return out
@@ -161,7 +194,7 @@ export async function pptxNotesText(filePath: string, slideNumber?: number): Pro
   const sections: string[] = []
   for (const n of targets) {
     if (n < 1 || n > slidePaths.length) throw new Error(`slide ${n} out of range (this deck has ${slidePaths.length} slides)`)
-    const notesPath = notesPathFor(slidePaths[n - 1] as string)
+    const notesPath = await notesPathFor(entries, slidePaths[n - 1] as string)
     const text = await notesTextFor(entries, notesPath)
     if (text.length > 0) sections.push(`# Slide ${n} notes\n\n${text}`)
   }

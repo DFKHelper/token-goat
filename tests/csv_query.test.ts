@@ -132,6 +132,24 @@ describe('profileCsv', () => {
       ]),
     );
   });
+
+  it('computes min/max for numeric columns with >65k rows without RangeError', () => {
+    const rows: string[] = ['id,value'];
+    for (let i = 0; i < 70000; i++) {
+      rows.push(`${i},${Math.floor(Math.random() * 10000)}`);
+    }
+    const csv = rows.join('\n');
+    const profiles = profileCsv(csv);
+    const valueCol = profiles.find((p) => p.name === 'value');
+    expect(valueCol?.inferredType).toBe('number');
+    expect(valueCol?.min).toBeDefined();
+    expect(valueCol?.max).toBeDefined();
+    const minNum = Number(valueCol?.min);
+    const maxNum = Number(valueCol?.max);
+    expect(minNum).toBeLessThanOrEqual(maxNum);
+    expect(minNum).toBeGreaterThanOrEqual(0);
+    expect(maxNum).toBeLessThan(10000);
+  });
 });
 
 describe('formatCsvProfile', () => {
