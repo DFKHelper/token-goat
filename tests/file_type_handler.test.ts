@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest'
 import {
   dispatchFileTypeHandler,
   handleCsv,
+  handleDocx,
   handleGenericLarge,
   handleHtml,
   handleOfficeBinary,
   handlePdf,
+  handlePptx,
   handleTxt,
+  handleXlsx,
   FILE_TYPE_THRESHOLDS,
 } from '../src/hints/file_type_handler.js'
 
@@ -162,27 +165,34 @@ describe('handleTxt', () => {
   })
 })
 
+describe('handleXlsx', () => {
+  it('blocks .xlsx and redirects to xlsx-sheets', () => {
+    const result = handleXlsx('/path/to/sheet.xlsx')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('xlsx-sheets')
+    expect(result.message).toContain('xlsx-query')
+  })
+})
+
+describe('handlePptx', () => {
+  it('blocks .pptx and redirects to pptx-outline', () => {
+    const result = handlePptx('/path/to/slides.pptx')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('pptx-outline')
+    expect(result.message).toContain('pptx-slide')
+  })
+})
+
+describe('handleDocx', () => {
+  it('blocks .docx and redirects to docx-outline/docx-text', () => {
+    const result = handleDocx('/path/to/doc.docx')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('docx-outline')
+    expect(result.message).toContain('docx-text')
+  })
+})
+
 describe('handleOfficeBinary', () => {
-  it('blocks .docx with pandoc hint', () => {
-    const result = handleOfficeBinary('/path/to/doc.docx')
-    expect(result.shouldBlock).toBe(true)
-    expect(result.message).toContain('pandoc')
-    expect(result.message).toContain('.docx')
-  })
-
-  it('blocks .xlsx with pandoc hint', () => {
-    const result = handleOfficeBinary('/path/to/sheet.xlsx')
-    expect(result.shouldBlock).toBe(true)
-    expect(result.message).toContain('pandoc')
-    expect(result.message).toContain('.xlsx')
-  })
-
-  it('blocks .pptx', () => {
-    const result = handleOfficeBinary('/path/to/slides.pptx')
-    expect(result.shouldBlock).toBe(true)
-    expect(result.message).toContain('.pptx')
-  })
-
   it('blocks .odt', () => {
     const result = handleOfficeBinary('/path/to/doc.odt')
     expect(result.shouldBlock).toBe(true)
@@ -312,21 +322,22 @@ describe('dispatchFileTypeHandler', () => {
     expect(result?.message).toContain('--tail')
   })
 
-  it('dispatches .docx as office binary', () => {
+  it('dispatches .docx to the docx handler', () => {
     const result = dispatchFileTypeHandler('/path/to/doc.docx', '')
     expect(result?.shouldBlock).toBe(true)
-    expect(result?.message).toContain('pandoc')
+    expect(result?.message).toContain('docx-outline')
   })
 
-  it('dispatches .xlsx as office binary', () => {
+  it('dispatches .xlsx to the xlsx handler', () => {
     const result = dispatchFileTypeHandler('/path/to/sheet.xlsx', '')
     expect(result?.shouldBlock).toBe(true)
-    expect(result?.message).toContain('pandoc')
+    expect(result?.message).toContain('xlsx-sheets')
   })
 
-  it('dispatches .pptx as office binary', () => {
+  it('dispatches .pptx to the pptx handler', () => {
     const result = dispatchFileTypeHandler('/path/to/slides.pptx', '')
     expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('pptx-outline')
   })
 
   it('dispatches .odt as office binary', () => {

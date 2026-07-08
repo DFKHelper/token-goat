@@ -79,6 +79,10 @@ import {
   findSpecSeparator,
   runSemantic,
 } from './read_commands.js'
+import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
+import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
+import { docxOutline, docxText } from './docx_extract.js'
+import { formatCsvTable } from './csv_query.js'
 import {
   runCallers,
   runCallChain,
@@ -688,6 +692,90 @@ async function cmdPdfExtract(
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ) {
   const text = await runPdfExtractText(file, opts.pages)
+  _applyFiltersAndPrint(text, opts)
+}
+
+async function cmdXlsxSheets(file: string) {
+  const sheets = await xlsxListSheets(file)
+  const lines = sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`)
+  out(lines.join('\n'))
+}
+
+async function cmdXlsxHead(file: string, opts: { sheet: string; rows?: string }) {
+  const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
+  out(await xlsxHeadSheet(file, opts.sheet, rows))
+}
+
+async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; formulas?: boolean }) {
+  const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
+  out(formatXlsxRange(result))
+}
+
+async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: string; where?: string; head?: string }) {
+  const columns = opts.columns
+    ? opts.columns
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean)
+    : undefined
+  let whereColumn: string | undefined
+  let whereValue: string | undefined
+  if (opts.where !== undefined) {
+    const eq = opts.where.indexOf('=')
+    if (eq === -1) throw new CliError(`invalid --where spec: ${opts.where} (expected col=value)`)
+    whereColumn = opts.where.slice(0, eq).trim()
+    whereValue = opts.where.slice(eq + 1)
+  }
+  const result = await xlsxQuerySheet(file, opts.sheet, {
+    ...(columns !== undefined ? { columns } : {}),
+    ...(whereColumn !== undefined ? { whereColumn, whereValue } : {}),
+    ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
+  })
+  out(formatCsvTable(result))
+}
+
+async function cmdPptxOutline(file: string) {
+  const slides = await pptxOutline(file)
+  const lines = slides.map(
+    (s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`,
+  )
+  out(lines.join('\n'))
+}
+
+async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }) {
+  const n = requireNonNegativeInt('--slide', opts.slide)
+  out(await pptxSlideText(file, n, opts.notes === true))
+}
+
+async function cmdPptxNotes(file: string, opts: { slide?: string }) {
+  const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
+  const text = await pptxNotesText(file, n)
+  out(text.length > 0 ? text : 'no speaker notes found')
+}
+
+async function cmdPptxText(file: string, opts: { grep: string }) {
+  const matches = await pptxTextGrep(file, opts.grep)
+  if (matches.length === 0) {
+    out('no matches')
+    return
+  }
+  out(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
+}
+
+async function cmdDocxOutline(file: string) {
+  const headings = await docxOutline(file)
+  if (headings.length === 0) {
+    out('no headings found (try docx-text for full body text)')
+    return
+  }
+  out(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
+}
+
+async function cmdDocxText(
+  file: string,
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+) {
+  const text = await docxText(file)
   _applyFiltersAndPrint(text, opts)
 }
 
@@ -2330,6 +2418,74 @@ export function buildProgram(): Command {
     .option('--section <heading>', 'extract one markdown section by heading')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
     .action(guard(cmdPdfExtract))
+
+  program
+    .command('xlsx-sheets <file>')
+    .description('list sheet names + used range/dimensions in an Excel workbook instead of a raw Read')
+    .action(guard(cmdXlsxSheets))
+
+  program
+    .command('xlsx-head <file>')
+    .description('preview the header + first N rows of one sheet instead of a raw Read')
+    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .option('--rows <n>', 'number of data rows to show (default 20)')
+    .action(guard(cmdXlsxHead))
+
+  program
+    .command('xlsx-range <file>')
+    .description('extract one cell range (e.g. A1:D50) from a sheet instead of a raw Read')
+    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .requiredOption('--range <a1-notation>', 'cell range, e.g. A1:D50')
+    .option('--formulas', 'show formulas instead of computed values where present')
+    .action(guard(cmdXlsxRange))
+
+  program
+    .command('xlsx-query <file>')
+    .description('project columns / filter rows from one sheet instead of a raw Read')
+    .requiredOption('--sheet <name>', 'sheet name (see xlsx-sheets)')
+    .option('--columns <a,b,c>', 'comma-separated columns to project (default: all)')
+    .option('--where <col=value>', 'equality filter, e.g. --where status=open')
+    .option('--head <n>', 'max rows to show')
+    .action(guard(cmdXlsxQuery))
+
+  program
+    .command('pptx-outline <file>')
+    .description('per-slide title + body size + notes flag instead of a raw Read')
+    .action(guard(cmdPptxOutline))
+
+  program
+    .command('pptx-slide <file>')
+    .description('full text of one slide instead of a raw Read')
+    .requiredOption('--slide <n>', 'slide number (see pptx-outline)')
+    .option('--notes', 'include this slide\'s speaker notes')
+    .action(guard(cmdPptxSlide))
+
+  program
+    .command('pptx-notes <file>')
+    .description('speaker notes for one slide, or all slides, instead of a raw Read')
+    .option('--slide <n>', 'slide number (default: all slides)')
+    .action(guard(cmdPptxNotes))
+
+  program
+    .command('pptx-text <file>')
+    .description('find slides whose text matches a pattern instead of a raw Read')
+    .requiredOption('--grep <pattern>', 'regex to search slide text for')
+    .action(guard(cmdPptxText))
+
+  program
+    .command('docx-outline <file>')
+    .description('heading tree of a Word document instead of a raw Read')
+    .action(guard(cmdDocxOutline))
+
+  program
+    .command('docx-text <file>')
+    .description('full body text of a Word document instead of a raw Read')
+    .option('--head <n>', 'show only the first N lines')
+    .option('--tail <n>', 'show only the last N lines')
+    .option('--grep <pattern>', 'filter to lines matching this regex')
+    .option('--section <heading>', 'extract one markdown section by heading')
+    .option('--max-matches <n>', 'cap the number of --grep matches shown')
+    .action(guard(cmdDocxText))
 
   program
     .command('csv-query <file>')

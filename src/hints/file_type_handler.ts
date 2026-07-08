@@ -107,7 +107,7 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
   }
 }
 
-/** Office binary handler — always blocks. */
+/** Office binary handler — always blocks. Covers formats with no dedicated reader (odt/ods/ott/odp). */
 export function handleOfficeBinary(filePath: string): FileTypeResult {
   const filename = filePath.split(/[\\/]/).pop() || '';
   const parts = filename.split('.');
@@ -119,6 +119,42 @@ export function handleOfficeBinary(filePath: string): FileTypeResult {
       `Binary Office file (.${ext}) — cannot be read as text.`,
       `Extract content first: pandoc "${filePath}" -t plain > "${filePath}.txt"`,
       `Then read the extracted .txt file.`,
+    ].join('\n'),
+  }
+}
+
+/** Excel handler — always blocks, redirects to the xlsx-* command family. */
+export function handleXlsx(filePath: string): FileTypeResult {
+  return {
+    shouldBlock: true,
+    message: [
+      `Excel file — Read cannot return spreadsheet content; this is not retryable with different Read parameters.`,
+      `List sheets: token-goat xlsx-sheets "${filePath}"`,
+      `Then preview a sheet: token-goat xlsx-head "${filePath}" --sheet <name>, or filter rows: token-goat xlsx-query "${filePath}" --sheet <name> --where col=value`,
+    ].join('\n'),
+  }
+}
+
+/** PowerPoint handler — always blocks, redirects to the pptx-* command family. */
+export function handlePptx(filePath: string): FileTypeResult {
+  return {
+    shouldBlock: true,
+    message: [
+      `PowerPoint file — Read cannot return slide content; this is not retryable with different Read parameters.`,
+      `List slides: token-goat pptx-outline "${filePath}"`,
+      `Then read one slide: token-goat pptx-slide "${filePath}" --slide <n>`,
+    ].join('\n'),
+  }
+}
+
+/** Word handler — always blocks, redirects to the docx-* command family. */
+export function handleDocx(filePath: string): FileTypeResult {
+  return {
+    shouldBlock: true,
+    message: [
+      `Word file — Read cannot return document content; this is not retryable with different Read parameters.`,
+      `See headings: token-goat docx-outline "${filePath}"`,
+      `Read full text: token-goat docx-text "${filePath}"`,
     ].join('\n'),
   }
 }
@@ -178,7 +214,10 @@ export function dispatchFileTypeHandler(
   if (ext === 'pdf') return handlePdf(filePath, effectiveLength)
   if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
   if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
-  if (['docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'].includes(ext)) return handleOfficeBinary(filePath)
+  if (ext === 'xlsx') return handleXlsx(filePath)
+  if (ext === 'pptx') return handlePptx(filePath)
+  if (ext === 'docx') return handleDocx(filePath)
+  if (['odt', 'ods', 'ott', 'odp'].includes(ext)) return handleOfficeBinary(filePath)
   if (ext === 'csv' || ext === 'tsv') return handleCsv(filePath, content, effectiveLength)
 
   // Generic catch-all
