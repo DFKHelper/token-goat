@@ -23,6 +23,7 @@
 import { RESET, C, fg, lerpRgb, padL, padR, stripAnsi, vlen } from './ansi.js'
 import type { RGB } from './ansi.js'
 import type { CommandStat, DayStat, KindStat, ProjectStat, SourceStat, StatsData } from './types.js'
+import { toLocalDateKey } from '../stats.js'
 
 // Statistics messages for insights section
 interface StatsMessages {
@@ -151,7 +152,7 @@ function _fmtDelta(delta: number | null | undefined): string {
 }
 
 function _fmtDate(d: Date): string {
-  return d.toISOString().split('T')[0] ?? d.toISOString()
+  return toLocalDateKey(d)
 }
 
 // Bar renderer

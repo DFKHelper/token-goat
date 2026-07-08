@@ -17,6 +17,7 @@ import * as path from 'path'
 import { homedir } from 'os'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { formatLocalTimestamp } from './stats.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
@@ -932,7 +933,7 @@ async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
     out(JSON.stringify(json, null, 2))
   } else {
     const lines = metas.map((m) => {
-      const timeStr = new Date(m.ts).toISOString().slice(0, 19)
+      const timeStr = formatLocalTimestamp(new Date(m.ts))
       const truncMarker = m.truncated ? ' [truncated]' : ''
       return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
     })

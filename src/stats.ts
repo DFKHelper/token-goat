@@ -140,6 +140,25 @@ export function kindToSource(kind: string): string {
   return SOURCE_OTHER
 }
 
+// Formats a Date's local (not UTC) calendar day as YYYY-MM-DD. Stats are bucketed and
+// displayed by the user's wall-clock day, so a UTC-based toISOString() split would push
+// any event recorded after local midnight-minus-UTC-offset into the next day's bucket.
+export function toLocalDateKey(d: Date): string {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+// Same local-timezone rationale as toLocalDateKey, extended with a wall-clock time-of-day
+// (HH:MM:SS) for timestamp displays that need more than just the calendar day.
+export function formatLocalTimestamp(d: Date): string {
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  const seconds = String(d.getSeconds()).padStart(2, '0')
+  return `${toLocalDateKey(d)}T${hours}:${minutes}:${seconds}`
+}
+
 function zeroBucket(): StatsBucket {
   return { events: 0, bytes_saved: 0, tokens_saved: 0 }
 }
@@ -238,7 +257,7 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database): 
     }
     incBucket(byKind[kind], bytesSaved, tokensSaved)
 
-    const dateKey = tsToDateCache[ts] || new Date(ts * 1000).toISOString().split('T')[0]!
+    const dateKey = tsToDateCache[ts] || toLocalDateKey(new Date(ts * 1000))
     tsToDateCache[ts] = dateKey
 
     if (!byDay[dateKey]) {

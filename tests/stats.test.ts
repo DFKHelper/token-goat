@@ -8,6 +8,8 @@ import {
   renderStats as _renderStats,
   kindToSource,
   recordStat,
+  toLocalDateKey,
+  formatLocalTimestamp,
   SOURCE_IMAGE,
   SOURCE_HINT,
   SOURCE_READ,
@@ -27,6 +29,27 @@ describe('stats', () => {
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  describe('toLocalDateKey / formatLocalTimestamp', () => {
+    const originalTz = process.env['TZ']
+
+    afterEach(() => {
+      if (originalTz === undefined) delete process.env['TZ']
+      else process.env['TZ'] = originalTz
+    })
+
+    it('renders the local calendar day, not the UTC day, near a UTC day-boundary crossing', () => {
+      process.env['TZ'] = 'Etc/GMT+5' // fixed UTC-5, no DST
+      const d = new Date(Date.UTC(2026, 0, 16, 3, 0, 0)) // 2026-01-15T22:00:00 local
+      expect(toLocalDateKey(d)).toBe('2026-01-15')
+    })
+
+    it('renders local wall-clock time in formatLocalTimestamp, matching toLocalDateKey plus HH:MM:SS', () => {
+      process.env['TZ'] = 'Etc/GMT+5'
+      const d = new Date(Date.UTC(2026, 0, 16, 3, 30, 15))
+      expect(formatLocalTimestamp(d)).toBe('2026-01-15T22:30:15')
+    })
   })
 
   describe('kindToSource', () => {
@@ -200,12 +223,60 @@ describe('stats', () => {
       db.close()
 
       expect(summary.by_day.length).toBeGreaterThanOrEqual(2)
-      const todayRow = summary.by_day.find((row) => row.date.includes(new Date().toISOString().split('T')[0]!))
+      const todayRow = summary.by_day.find((row) => row.date.includes(toLocalDateKey(new Date())))
       expect(todayRow).toBeDefined()
       if (todayRow) {
         expect(todayRow.events).toBe(2)
         expect(todayRow.bytes_saved).toBe(750)
         expect(todayRow.tokens_saved).toBe(150)
+      }
+    })
+
+    it('buckets an evening-local timestamp into the local day, not the later UTC day it rolls into', () => {
+      // Regression test for a bug where stats appeared to happen "tomorrow": summarize() used
+      // to derive dateKey via toISOString() (always UTC), so any event recorded in the evening
+      // in a negative UTC-offset zone (UTC is already past local midnight) got bucketed into
+      // the next calendar day. Etc/GMT+5 is a fixed UTC-5 zone with no DST, so this is
+      // deterministic regardless of the host machine's real timezone.
+      const originalTz = process.env['TZ']
+      process.env['TZ'] = 'Etc/GMT+5'
+      try {
+        // 2026-01-16T03:00:00Z == 2026-01-15T22:00:00 local (UTC-5): local day is the 15th,
+        // UTC day is already the 16th.
+        const ts = Math.floor(Date.UTC(2026, 0, 16, 3, 0, 0) / 1000)
+
+        const dbPath = path.join(tempDir, 'test.db')
+        const db = new Database(dbPath)
+        db.exec(`
+          CREATE TABLE stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            tokens_saved INTEGER NOT NULL DEFAULT 0,
+            bytes_saved INTEGER NOT NULL DEFAULT 0,
+            detail TEXT
+          );
+          CREATE INDEX idx_stats_ts ON stats(ts);
+          CREATE INDEX idx_stats_kind ON stats(kind);
+        `)
+        db.prepare('INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)').run(
+          ts,
+          'image_shrink',
+          100,
+          500,
+        )
+
+        const summary = summarize(0, db)
+        db.close()
+
+        const localRow = summary.by_day.find((row) => row.date === '2026-01-15')
+        const utcRow = summary.by_day.find((row) => row.date === '2026-01-16')
+        expect(localRow).toBeDefined()
+        expect(localRow?.events).toBe(1)
+        expect(utcRow).toBeUndefined()
+      } finally {
+        if (originalTz === undefined) delete process.env['TZ']
+        else process.env['TZ'] = originalTz
       }
     })
 
