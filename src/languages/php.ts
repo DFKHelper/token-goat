@@ -25,7 +25,8 @@ const CONST_RE = /^(?:(?:public|protected|private|static)\s+)?const\s+([A-Za-z_]
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
 const PROP_RE = new RegExp(
   '^(?:(?:public|protected|private|static|readonly)\\s+)+' +
-  '\\??[A-Za-z_][A-Za-z0-9_|\\\\]*\\s+\\$([A-Za-z_][A-Za-z0-9_]*)',
+  '(?:\\??[A-Za-z_][A-Za-z0-9_|\\\\]*\\s+)?' +
+  '\\$([A-Za-z_][A-Za-z0-9_]*)',
 )
 const USE_RE = /^use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/
 const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/

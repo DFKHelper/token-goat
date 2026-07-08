@@ -10,7 +10,6 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import * as os from 'node:os'
 import { summarize, renderStats } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
@@ -122,7 +121,7 @@ export interface StatsOptions {
 /** Run the ``token-goat stats`` command. */
 export function runStats(opts: StatsOptions = {}): void {
   const window = opts.windowDays ?? 30
-  const summary = summarize(window)
+  const summary = summarize(window, undefined, opts.homeDir)
 
   if (opts.json === true) {
     const out = {
@@ -146,6 +145,3 @@ export function runStats(opts: StatsOptions = {}): void {
     writeRaw(topFilesText)
   }
 }
-
-// Ensure homeDir param is not unused when we use it in future expansions.
-void (os.homedir)

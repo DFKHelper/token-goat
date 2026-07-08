@@ -6,7 +6,7 @@ import { writeRaw, renderTopSessionFiles, renderTopSessionFilesFromDisk, runStat
 
 // Stub stats module so runStats never touches the real on-disk DB
 vi.mock('../src/stats.js', () => ({
-  summarize: (_windowDays?: number) => ({
+  summarize: (_windowDays?: number, _testDb?: unknown, _homeDir?: string) => ({
     total_events: 0,
     total_bytes_saved: 0,
     total_tokens_saved: 0,
@@ -207,6 +207,22 @@ describe('cli_stats', () => {
       }
       const parsed = JSON.parse(output) as { window_days: number }
       expect(parsed.window_days).toBe(7)
+    })
+
+    it('accepts homeDir option (passed through to summarize)', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        // Should not throw when homeDir is provided
+        runStats({ json: true, homeDir: path.join(tempDir, 'custom-home') })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+      const parsed = JSON.parse(output) as { total_events: number }
+      expect(typeof parsed.total_events).toBe('number')
     })
   })
 })
