@@ -95,6 +95,26 @@ describe('env parsers', () => {
       process.env[KEY] = '42'
       expect(envInt(KEY, 10, 1, 3600)).toBe(42)
     })
+
+    it('clamps a value below min when only min is supplied', () => {
+      process.env[KEY] = '-5'
+      expect(envInt(KEY, 10, 1)).toBe(1)
+    })
+
+    it('does not clamp a value above min when only min is supplied', () => {
+      process.env[KEY] = '99999999'
+      expect(envInt(KEY, 10, 1)).toBe(99999999)
+    })
+
+    it('clamps a value above max when only max is supplied', () => {
+      process.env[KEY] = '99999999'
+      expect(envInt(KEY, 10, undefined, 3600)).toBe(3600)
+    })
+
+    it('does not clamp a value below max when only max is supplied', () => {
+      process.env[KEY] = '-5'
+      expect(envInt(KEY, 10, undefined, 3600)).toBe(-5)
+    })
   })
 
   describe('envStr', () => {

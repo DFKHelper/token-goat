@@ -22,6 +22,13 @@ beforeAll(async () => {
   XLSX.utils.book_append_sheet(wb, ws, 'Employees')
   const ws2 = XLSX.utils.aoa_to_sheet([['q', 'revenue']])
   XLSX.utils.book_append_sheet(wb, ws2, 'Empty')
+  // Create a sheet with header narrower than some data rows (regression test for cell truncation)
+  const ws3 = XLSX.utils.aoa_to_sheet([
+    ['col1', 'col2'],
+    ['a', 'b', 'c', 'd'],
+    ['x', 'y', 'z'],
+  ])
+  XLSX.utils.book_append_sheet(wb, ws3, 'WideData')
   XLSX.writeFile(wb, file)
 })
 
@@ -32,7 +39,7 @@ afterAll(() => {
 describe('listSheets', () => {
   it('lists sheet names with dimensions', async () => {
     const sheets = await listSheets(file)
-    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty'])
+    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData'])
     const employees = sheets.find((s) => s.name === 'Employees')
     expect(employees?.rows).toBe(4)
     expect(employees?.cols).toBe(3)
@@ -51,6 +58,17 @@ describe('headSheet', () => {
 
   it('throws a clear error for an unknown sheet', async () => {
     await expect(headSheet(file, 'Nope', 10)).rejects.toThrow(/unknown sheet/)
+  })
+
+  it('preserves data cells beyond the header column count', async () => {
+    const text = await headSheet(file, 'WideData', 10)
+    const lines = text.split('\n')
+    // Header has 2 columns
+    expect(lines[0]).toBe('col1,col2')
+    // First data row has 4 columns: should not truncate to 2
+    expect(lines[1]).toBe('a,b,c,d')
+    // Second data row has 3 columns: should preserve all 3
+    expect(lines[2]).toBe('x,y,z')
   })
 })
 

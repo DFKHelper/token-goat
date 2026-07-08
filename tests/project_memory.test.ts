@@ -301,4 +301,35 @@ describe('project_memory', () => {
       expect(renamedFrom[0]).not.toBe(renamedFrom[1]);
     });
   });
+
+  describe('MAX_ENTRIES enforcement (regression test for bug: setEntry never enforces MAX_ENTRIES)', () => {
+    it('should keep file size at most MAX_ENTRIES by evicting old entries when adding beyond the cap', () => {
+      // Add entries with late-sorting keys to expose the bug: if MAX_ENTRIES is not enforced
+      // at write time, entries with late-sorting keys would be silently dropped by
+      // buildInjection's slice(0, MAX_ENTRIES) even though they were recently added.
+      for (let i = 0; i < 35; i++) {
+        setEntry('test-max', `entry_${String(i).padStart(3, '0')}`, `value${i}`);
+      }
+      // Load the file: it should have at most 30 entries
+      const entries = loadEntries('test-max');
+      expect(Object.keys(entries).length).toBeLessThanOrEqual(30);
+      // Build injection: it should include all stored entries, not silently drop late-sorting ones
+      const injection = buildInjection('test-max');
+      expect(injection).not.toBeNull();
+      // Count the number of list items in the injection (exclude the header and summary line)
+      const lines = injection!.split('\n');
+      const entryLines = lines.filter(line => line.startsWith('- **'));
+      expect(entryLines.length).toBeLessThanOrEqual(30);
+      // Verify that the most recently added entries are present (even if they sort late)
+      // Entry 34 should be in the result since we only keep 30 and it was added last
+      if (entryLines.length >= 1) {
+        const latestEntryKey = `entry_034`;
+        const hasLatestEntry = injection!.includes(`**${latestEntryKey}**`);
+        // With correct enforcement, recently-added late-sorting entries should be kept
+        // (The exact behavior depends on the eviction policy, but at least it shouldn't
+        // silently drop all entries that sort after position 30.)
+        expect(hasLatestEntry).toBe(true);
+      }
+    });
+  });
 });

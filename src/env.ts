@@ -70,6 +70,8 @@ export function envInt(key: string, defaultVal: number, min?: number, max?: numb
   if (!/^[+-]?\d+$/.test(raw)) return defaultVal
   const val = parseInt(raw, 10)
   if (!Number.isFinite(val)) return defaultVal
-  if (min !== undefined && max !== undefined) return Math.max(min, Math.min(max, val))
-  return val
+  let clamped = val
+  if (min !== undefined) clamped = Math.max(min, clamped)
+  if (max !== undefined) clamped = Math.min(max, clamped)
+  return clamped
 }

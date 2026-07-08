@@ -114,6 +114,7 @@ export function loadEntries(projectHash: string): Record<string, string> {
 
 /**
  * Set key to value in this project's memory.
+ * Enforces MAX_ENTRIES by evicting alphabetically-last entries to make room for new entries.
  */
 export function setEntry(projectHash: string, key: string, value: string): void {
   validateKey(key);
@@ -121,6 +122,19 @@ export function setEntry(projectHash: string, key: string, value: string): void 
   const dir = path.dirname(p);
   ensureDirSync(dir);
   const entries = loadRaw(p);
+
+  // If this is a new key and we're at capacity, evict alphabetically-last entries to make room.
+  // This ensures that newly-added entries are never silently dropped by buildInjection's
+  // alphabetical truncation.
+  const isNewKey = !(key in entries);
+  if (isNewKey && Object.keys(entries).length >= MAX_ENTRIES) {
+    const keysToKeep = MAX_ENTRIES - 1;
+    const allKeys = Object.keys(entries).sort((a, b) => a.localeCompare(b));
+    for (const k of allKeys.slice(keysToKeep)) {
+      delete entries[k];
+    }
+  }
+
   entries[key] = value;
   save(p, entries);
 }
