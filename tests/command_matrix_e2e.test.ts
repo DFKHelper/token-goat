@@ -264,6 +264,31 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Pages: 1')
     expect(r.stdout).toContain('Text layer: yes')
   },
+  'sharepoint-resolve': () => {
+    const home = mkIsolated('tg-matrix-sphome-')
+    const syncRoot = path.join(home, 'OneDrive - Contoso')
+    fs.mkdirSync(path.join(syncRoot, 'Documents', 'Reports'), { recursive: true })
+    fs.writeFileSync(path.join(syncRoot, 'Documents', 'Reports', 'budget.xlsx'), '')
+    const envFound = { ...tgEnv(dataBase), HOME: home, USERPROFILE: home }
+    delete envFound.OneDriveCommercial
+    delete envFound.OneDrive
+    const rFound = run(
+      ['sharepoint-resolve', 'https://contoso.sharepoint.com/sites/TeamSite/Shared%20Documents/Reports/budget.xlsx'],
+      { env: envFound },
+    )
+    expect(rFound.status, rFound.stderr).toBe(0)
+    expect(rFound.stdout).toContain(path.join(syncRoot, 'documents', 'Reports', 'budget.xlsx'))
+
+    const emptyHome = mkIsolated('tg-matrix-spempty-')
+    const envEmpty = { ...tgEnv(dataBase), HOME: emptyHome, USERPROFILE: emptyHome }
+    delete envEmpty.OneDriveCommercial
+    delete envEmpty.OneDrive
+    const rMissing = run(['sharepoint-resolve', 'https://contoso.sharepoint.com/sites/OtherTeam/Shared%20Documents/missing.docx'], {
+      env: envEmpty,
+    })
+    expect(rMissing.status, rMissing.stderr).toBe(0)
+    expect(rMissing.stdout).toContain('could not resolve a local synced copy')
+  },
   'xlsx-sheets': () => {
     const dir = mkIsolated('tg-matrix-xlsx-')
     const xlsxPath = path.join(dir, 'book.xlsx')
