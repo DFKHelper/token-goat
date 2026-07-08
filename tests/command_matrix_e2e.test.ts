@@ -336,6 +336,22 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Some body text.')
   },
+  'transcript-outline': () => {
+    const dir = mkIsolated('tg-matrix-transo-')
+    const vttPath = path.join(dir, 'meeting.vtt')
+    fs.writeFileSync(vttPath, 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:05.000\n<v Alice>Welcome to the meeting.\n')
+    const r = run(['transcript-outline', vttPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+  },
+  transcript: () => {
+    const dir = mkIsolated('tg-matrix-trans-')
+    const vttPath = path.join(dir, 'meeting.vtt')
+    fs.writeFileSync(vttPath, 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:05.000\n<v Alice>Welcome to the meeting.\n')
+    const r = run(['transcript', vttPath, '--speaker', 'Alice'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Welcome to the meeting.')
+  },
   screenshot: () => {
     // Real behavior needs a real browser (present on dev machines, not guaranteed in CI) and
     // network access -- same constraint 'fetch-image' below hits, same fix: verify dispatch

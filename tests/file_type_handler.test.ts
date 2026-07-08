@@ -9,6 +9,7 @@ import {
   handleOfficeBinary,
   handlePdf,
   handlePptx,
+  handleTranscript,
   handleTxt,
   handleXlsx,
   FILE_TYPE_THRESHOLDS,
@@ -257,6 +258,33 @@ describe('handleCsv', () => {
   })
 })
 
+describe('handleTranscript', () => {
+  it('returns shouldBlock false below threshold', () => {
+    const content = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHi\n'
+    const result = handleTranscript('/path/to/short.vtt', content)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks a large transcript and lists detected speakers', () => {
+    const cues = Array.from(
+      { length: 500 },
+      (_, i) => `${i + 1}\n00:${String(i % 60).padStart(2, '0')}:00.000 --> 00:${String(i % 60).padStart(2, '0')}:01.000\n<v Speaker${i % 3}>Line ${i}`,
+    ).join('\n\n')
+    const content = `WEBVTT\n\n${cues}` + makeStr(FILE_TYPE_THRESHOLDS.transcript)
+    const result = handleTranscript('/path/to/long.vtt', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('Speaker0')
+    expect(result.message).toContain('transcript-outline')
+    expect(result.message).toContain('transcript ')
+  })
+
+  it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
+    const content = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHi\n' + makeStr(FILE_TYPE_THRESHOLDS.transcript * 2)
+    const result = handleTranscript('/path/to/short.vtt', content, 50)
+    expect(result.shouldBlock).toBe(false)
+  })
+})
+
 describe('handleGenericLarge', () => {
   it('blocks files above threshold', () => {
     const result = handleGenericLarge('/path/to/file.bin', FILE_TYPE_THRESHOLDS.generic + 1)
@@ -353,6 +381,24 @@ describe('dispatchFileTypeHandler', () => {
 
   it('small CSV passes through', () => {
     const result = dispatchFileTypeHandler('/path/to/data.csv', 'col1,col2\nval1,val2')
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('dispatches large VTT transcript', () => {
+    const content = `WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHi\n` + makeStr(FILE_TYPE_THRESHOLDS.transcript)
+    const result = dispatchFileTypeHandler('/path/to/meeting.vtt', content)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('transcript-outline')
+  })
+
+  it('dispatches large SRT transcript', () => {
+    const content = `1\n00:00:01,000 --> 00:00:02,000\nHi\n` + makeStr(FILE_TYPE_THRESHOLDS.transcript)
+    const result = dispatchFileTypeHandler('/path/to/captions.srt', content)
+    expect(result?.shouldBlock).toBe(true)
+  })
+
+  it('small VTT passes through', () => {
+    const result = dispatchFileTypeHandler('/path/to/meeting.vtt', 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHi')
     expect(result?.shouldBlock).toBe(false)
   })
 

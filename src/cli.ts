@@ -83,6 +83,7 @@ import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
 import { formatCsvTable } from './csv_query.js'
+import { buildTranscriptOutline, formatCues, formatTimestamp, parseSliceOptions, readTranscript, sliceTranscript } from './transcript_extract.js'
 import {
   runCallers,
   runCallChain,
@@ -777,6 +778,32 @@ async function cmdDocxText(
 ) {
   const text = await docxText(file)
   _applyFiltersAndPrint(text, opts)
+}
+
+function cmdTranscriptOutline(file: string) {
+  const cues = readTranscript(file)
+  if (cues.length === 0) {
+    out('no cues found (not a valid .vtt/.srt file?)')
+    return
+  }
+  const outline = buildTranscriptOutline(cues)
+  const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
+  if (outline.speakers.length > 0) {
+    lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
+  }
+  lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
+  out(lines.join('\n'))
+}
+
+function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }) {
+  const cues = readTranscript(file)
+  const sliceOpts = parseSliceOptions(opts)
+  const sliced = sliceTranscript(cues, sliceOpts)
+  if (sliced.length === 0) {
+    out('no cues match')
+    return
+  }
+  out(formatCues(sliced))
 }
 
 function cmdCsvQuery(
@@ -2486,6 +2513,20 @@ export function buildProgram(): Command {
     .option('--section <heading>', 'extract one markdown section by heading')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
     .action(guard(cmdDocxText))
+
+  program
+    .command('transcript-outline <file>')
+    .description('speaker list, duration, and time-bucketed markers for a WebVTT/SRT transcript instead of a raw Read')
+    .action(guard(cmdTranscriptOutline))
+
+  program
+    .command('transcript <file>')
+    .description('slice a WebVTT/SRT transcript by speaker/time range/pattern instead of a raw Read')
+    .option('--speaker <name>', 'only cues from this speaker')
+    .option('--from <hh:mm:ss>', 'only cues starting at or after this time')
+    .option('--to <hh:mm:ss>', 'only cues starting at or before this time')
+    .option('--grep <pattern>', 'only cues whose text matches this regex')
+    .action(guard(cmdTranscript))
 
   program
     .command('csv-query <file>')
