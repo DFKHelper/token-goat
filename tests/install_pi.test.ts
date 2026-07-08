@@ -248,7 +248,26 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     const body = callHookMatch?.[0] ?? ''
     expect(body).toMatch(/resolveEntryPath\(\)/)
     expect(body).toMatch(/spawnSync\(process\.execPath, \[entryPath, "hook", event\]/)
-    expect(body).toMatch(/spawnSync\("token-goat", \["hook", event\]/)
+    expect(body).toMatch(/spawnSync\('token-goat hook '/)
+  })
+
+  it('fallback spawnSync uses shell:true so it resolves .cmd shims on Windows', () => {
+    // Regression: pi.ts's fallback branch (when resolveEntryPath returns undefined)
+    // ran spawnSync("token-goat", ["hook", event]) without shell:true, causing ENOENT
+    // on Windows where "token-goat" is a .cmd shim and Node doesn't resolve PATHEXT
+    // extensions without shell:true. This made every hook call silently fail when the
+    // entry-path sidecar was missing/stale, defeating the whole PATH-hardening this
+    // commit added. Fix: use string concatenation + shell:true like the Codex/Copilot
+    // CLI bridges already do.
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    // Find the fallback spawnSync block (the : branch of a ternary)
+    const fallbackMatch = /: spawnSync\('token-goat hook '[\s\S]*?\}\);/.exec(body)
+    expect(fallbackMatch).not.toBeNull()
+    const fallbackBlock = fallbackMatch?.[0] ?? ''
+    expect(fallbackBlock).toContain('shell: true')
+    expect(fallbackBlock).toContain('token-goat hook')
   })
 
   it("forwards tool_result's real output (event.content) as tool_response.output in the post_tool_use payload, mirroring opencode.ts's tool_response shape", () => {

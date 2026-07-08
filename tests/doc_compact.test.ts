@@ -193,6 +193,14 @@ describe('doc_compact', () => {
       expect(compact).not.toContain('See the Setup guide below')
     })
 
+    it('matches exact heading, not a longer heading that contains it as substring', () => {
+      const body = '## Setup Guide\nSetup Guide content\n## Setup\nSetup content'
+      const compact = extractDocCompact(body, 'Setup')
+      // Should match "## Setup" exactly, not "## Setup Guide" which merely contains "Setup"
+      expect(compact).toContain('## Setup')
+      expect(compact).not.toContain('## Setup Guide')
+    })
+
     it('returns empty string when marker not found', () => {
       const body = 'Content without marker'
       const compact = extractDocCompact(body)
