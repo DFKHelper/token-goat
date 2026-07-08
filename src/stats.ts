@@ -185,8 +185,24 @@ CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
 
-function getGlobalDb(): Database.Database {
-  const dbPath = path.join(dataDir(), 'global.db')
+/**
+ * Compute the data directory path for a given home directory.
+ * Replicates the logic from constants.ts::defaultDataDir but uses the provided homeDir.
+ */
+function computeDataDir(homeDir: string): string {
+  const platform = process.platform
+  if (platform === 'win32') {
+    return path.join(homeDir, 'dfk-helper', 'token-goat')
+  }
+  if (platform === 'darwin') {
+    return path.join(homeDir, 'Library', 'Application Support', 'token-goat')
+  }
+  return path.join(homeDir, '.local', 'share', 'token-goat')
+}
+
+function getGlobalDb(homeDir?: string): Database.Database {
+  const basePath = homeDir ? computeDataDir(homeDir) : dataDir()
+  const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
   if (!_globalSchemaApplied.has(dbPath)) {
     db.exec(GLOBAL_SCHEMA_SQL)
@@ -218,7 +234,7 @@ export function recordStat(
   }
 }
 
-export function summarize(windowDays: number = 30, testDb?: Database.Database): StatsSummary {
+export function summarize(windowDays: number = 30, testDb?: Database.Database, homeDir?: string): StatsSummary {
   const t0 = Date.now()
   const sinceTs =
     windowDays > 0 ? Math.floor((Date.now() - windowDays * 24 * 60 * 60 * 1000) / 1000) : null
@@ -229,7 +245,7 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database): 
   let totalBytes = 0
   let totalTokens = 0
 
-  const db = testDb ?? getGlobalDb()
+  const db = testDb ?? getGlobalDb(homeDir)
   const query =
     sinceTs !== null
       ? 'SELECT ts, kind, bytes_saved, tokens_saved FROM stats WHERE ts >= ? ORDER BY ts DESC'
