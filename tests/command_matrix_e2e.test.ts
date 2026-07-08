@@ -222,6 +222,19 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
+    const rMulti = run(['csv-query', csvPath, '--where', 'status!=active', '--where', 'name=Bob'])
+    expect(rMulti.status, rMulti.stderr).toBe(0)
+    expect(rMulti.stdout).toContain('Bob')
+    expect(rMulti.stdout).not.toContain('Alice')
+  },
+  'csv-profile': () => {
+    const dir = mkIsolated('tg-matrix-csvprof-')
+    const csvPath = path.join(dir, 'people.csv')
+    fs.writeFileSync(csvPath, 'id,name,status\n1,Alice,active\n2,Bob,inactive\n')
+    const r = run(['csv-profile', csvPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('id  (number)')
+    expect(r.stdout).toContain('status  (string)')
   },
   'pdf-extract': () => {
     const dir = mkIsolated('tg-matrix-pdf-')

@@ -68,7 +68,7 @@ describe('rangeSheet', () => {
 
 describe('querySheet', () => {
   it('filters rows via the shared queryCsv equality filter', async () => {
-    const result = await querySheet(file, 'Employees', { whereColumn: 'dept', whereValue: 'Eng' })
+    const result = await querySheet(file, 'Employees', { wheres: [{ column: 'dept', op: '=', value: 'Eng' }] })
     expect(result.rows).toEqual([
       ['Alice', '30', 'Eng'],
       ['Carol', '40', 'Eng'],
