@@ -5,6 +5,7 @@
  * rejection at the heart of `safe_join`. No imports from other local modules.
  */
 
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully.
@@ -17,6 +18,30 @@ const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 // segment is captured; everything beyond it is left untouched, matching how the drive-letter
 // fold below only lowercases the drive letter itself.
 const UNC_HOST_SHARE_RE = /^\/\/([^/]+)\/([^/]+)/
+
+// Cheap heuristic for a Windows 8.3 short-name path segment (e.g. `JOHNDO~1.ACM`): a tilde followed by a digit. Used to skip the syscall in expandShortPath for the overwhelming majority of paths that don't contain one.
+const SHORT_NAME_RE = /~\d/
+
+// Expands a Windows 8.3 short-name path segment to its long form. `%TEMP%`/`%USERPROFILE%` can be pinned to the short 8.3 form on Windows, so every `os.tmpdir()`-based path -- including every test fixture directory `fs.mkdtempSync` creates -- inherits that short form and a child process spawned with it as `cwd` preserves it verbatim, while `git` always normalizes its own output paths to long form; without this expansion the same physical directory normalizes to two different index keys depending on whether the path came from `process.cwd()` or from `git diff --name-only`, so writes and lookups silently disagree. `fs.realpathSync` (the POSIX-style implementation) does NOT resolve 8.3 short names on Windows; only `fs.realpathSync.native` does. Guarded so it's a no-op off Windows, a no-op when the path doesn't look like it contains a short name, and falls back to the original string if the path doesn't exist yet (e.g. a file about to be created) or the native call throws for any other reason.
+export function expandShortPath(p: string): string {
+  if (process.platform !== 'win32') return p
+  const segments = p.split('/')
+  // Find the last path segment that looks like an 8.3 short name and resolve only the prefix through it via the filesystem, leaving everything after it byte-for-byte as-is: fs.realpathSync.native returns on-disk casing regardless of query casing, so running it over the *whole* path would silently case-fold every segment, collapsing two deliberately differently-cased paths (see tests/session.test.ts's case-sensitive-FS control case) into one.
+  let lastShortIdx = -1
+  for (let i = 0; i < segments.length; i++) {
+    if (SHORT_NAME_RE.test(segments[i] as string)) lastShortIdx = i
+  }
+  if (lastShortIdx === -1) return p
+  const prefix = segments.slice(0, lastShortIdx + 1).join('/')
+  const suffix = segments.slice(lastShortIdx + 1).join('/')
+  try {
+    const expandedPrefix = fs.realpathSync.native(prefix).replace(/\\/g, '/')
+    return suffix ? `${expandedPrefix}/${suffix}` : expandedPrefix
+  } catch {
+    // Fall back unchanged: the short-named directory itself doesn't exist (unusual, but possible for a path built purely as a string in a test).
+    return p
+  }
+}
 
 /**
  * Lowercases a Windows drive-letter prefix (e.g. "C:" -> "c:") or a UNC path's host+share
@@ -77,6 +102,9 @@ export function normalizePath(p: string): string {
     const g = /^\/([a-zA-Z])(\/.*)?$/.exec(s)
     if (g) s = `${(g[1] as string).toLowerCase()}:${g[2] ?? '/'}`
   }
+
+  // Step 2c: expand a Windows 8.3 short-name segment (e.g. `JOHNDO~1.ACM`) to its long form, so a path where %TEMP% is pinned to short form normalizes identically to git's always-long-form output. Must run after steps 1-2b so `s` is already in drive-letter/forward-slash form (the native fs call needs a real Windows-shaped path, not a WSL mount path).
+  s = expandShortPath(s)
 
   // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms. WSL processes emit Windows-format paths on Linux; both must produce the same cache key, so lowercasing is unconditional.
   s = lowercaseDriveLetter(s)

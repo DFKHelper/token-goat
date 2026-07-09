@@ -175,3 +175,5 @@ coverage/
 .temp-skill-stale-test/
 .temp-hooks-skill-cache/
 .temp-hooks-skill-source/
+
+.zelys/
