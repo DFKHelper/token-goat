@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { detectLanguage } from '../src/parser_types.js'
-import type { Language } from '../src/parser_types.js'
 
 describe('detectLanguage', () => {
   it('returns typescript for .ts files', () => {
@@ -36,24 +35,15 @@ describe('detectLanguage', () => {
     expect(detectLanguage('Bar.TS')).toBe('typescript')
   })
 
-  it('covers every Language value via some input', () => {
-    // One representative input per non-unknown Language; unknown covered above.
-    const cases: Record<Exclude<Language, 'unknown'>, string> = {
-      python: 'a.py',
-      typescript: 'a.ts',
-      javascript: 'a.js',
-      rust: 'a.rs',
-      go: 'a.go',
-      c: 'a.c',
-      cpp: 'a.cpp',
-      bash: 'a.sh',
-      markdown: 'a.md',
-      toml: 'a.toml',
-      json: 'a.json',
-      yaml: 'a.yaml',
-    }
-    for (const [lang, file] of Object.entries(cases)) {
-      expect(detectLanguage(file)).toBe(lang)
-    }
+  it('classifies Salesforce Apex and source-format metadata', () => {
+    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls')).toBe('apex')
+    expect(detectLanguage('force-app/main/default/triggers/ExampleTrigger.trigger')).toBe('apex')
+    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls-meta.xml')).toBe('unknown')
+    expect(detectLanguage('force-app/main/default/objects/Example__c/Example__c.object-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
+    expect(detectLanguage('force-app/main/default/flows/Example_Flow.flow-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
   })
 })

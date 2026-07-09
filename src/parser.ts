@@ -21,7 +21,7 @@ import * as path from 'node:path'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
-import { indexFile as embedIndexFile } from './embeddings.js'
+import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
@@ -43,6 +43,8 @@ import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
 
 import { extractPowershell } from './languages/powershell_idx.js'
+import { extractApex } from './languages/apex.js'
+import { extractSalesforceMetadata } from './languages/salesforce_metadata.js'
 import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
@@ -1309,6 +1311,8 @@ function extractSymbolsNoTreeSitter(
   if (language === 'makefile') return extractMakefile(content, filePath)
   if (language === 'proto') return extractProto(content, filePath).symbols
   if (language === 'powershell') return extractPowershell(content, filePath).symbols
+  if (language === 'apex') return extractApex(content, filePath).symbols
+  if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath).symbols
   if (language === 'env_file') return extractEnv(content, filePath)
 
   if (language === 'unknown') return []
@@ -1468,10 +1472,21 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
 
 export async function indexFileEmbeddings(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) return
+  if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
+    // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding
+    // them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
+    deleteFileEmbeddings(getDb(dbPath), filePath)
+    return
+  }
   let content: string
   try {
     content = await fs.promises.readFile(filePath, 'utf8')
   } catch {
+    return
+  }
+  if (detectLanguage(filePath) === 'salesforce_metadata' && content.length > 512 * 1024) {
+    // Keep unusually large generated metadata from producing thousands of low-signal chunks.
+    deleteFileEmbeddings(getDb(dbPath), filePath)
     return
   }
   try {

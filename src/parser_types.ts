@@ -71,6 +71,8 @@ export type Language =
   | 'proto'
   | 'env_file'
   | 'powershell'
+  | 'apex'
+  | 'salesforce_metadata'
   | 'unknown'
 
 /**
@@ -131,7 +133,32 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.ps1', 'powershell'],
   ['.psm1', 'powershell'],
   ['.env', 'env_file'],
+  ['.cls', 'apex'],
+  ['.trigger', 'apex'],
 ])
+
+const SALESFORCE_METADATA_SUFFIXES = [
+  '.object-meta.xml',
+  '.field-meta.xml',
+  '.validationrule-meta.xml',
+  '.flow-meta.xml',
+  '.permissionset-meta.xml',
+  '.permissionsetgroup-meta.xml',
+  '.profile-meta.xml',
+  '.md-meta.xml',
+  '.layout-meta.xml',
+  '.flexipage-meta.xml',
+  '.app-meta.xml',
+  '.tab-meta.xml',
+  '.labels-meta.xml',
+  '.globalvalueset-meta.xml',
+  '.standardvalueset-meta.xml',
+  '.custompermission-meta.xml',
+  '.recordtype-meta.xml',
+  '.sharingrules-meta.xml',
+  '.workflow-meta.xml',
+  '.duplicaterule-meta.xml',
+]
 
 /**
  * Filenames (no extension or special name) that map directly to a language.
@@ -168,6 +195,10 @@ export function detectLanguage(filePath: string): Language {
   const base = path.basename(filePath).toLowerCase()
   const byName = FILENAME_LANGUAGE.get(base)
   if (byName !== undefined) return byName
+
+  if (SALESFORCE_METADATA_SUFFIXES.some((suffix) => base.endsWith(suffix))) {
+    return 'salesforce_metadata'
+  }
 
   const ext = path.extname(base).toLowerCase()
   return EXTENSION_LANGUAGE.get(ext) ?? 'unknown'

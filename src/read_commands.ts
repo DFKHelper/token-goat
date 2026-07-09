@@ -445,10 +445,21 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text: JSON.stringify(match, null, 2), code: 0 }
   }
 
+  let body = match.body
+  if (body === '') {
+    const source = readFileText(match.filePath)
+    if (source !== null) {
+      body = source
+        .split(/\r?\n/)
+        .slice(Math.max(0, match.lineStart - 1), match.lineEnd)
+        .join('\n')
+    }
+  }
+
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
-    `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
-    match.body,
+    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
+    body,
   ]
   return { text: guardText(trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
 }
