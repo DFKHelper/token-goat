@@ -22,6 +22,10 @@ const ENV_KEYS = [
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY',
   'TOKEN_GOAT_HARNESS_OVERRIDE',
+  'ANTHROPIC_BASE_URL',
+  'OLLAMA_HOST',
+  'OLLAMA_MODEL',
+  'OLLAMA_KEEP_ALIVE',
 ] as const
 
 describe('harness detection', () => {
@@ -127,6 +131,19 @@ describe('harness detection', () => {
     })
 
     it('returns generic as fallback', () => {
+      expect(detectHarness()).toBe('generic')
+    })
+
+    it('returns claudecode for an ollama launch claude session (ANTHROPIC_BASE_URL pointed at localhost:11434, no ANTHROPIC_API_KEY)', () => {
+      process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-ollama'
+      process.env['ANTHROPIC_BASE_URL'] = 'http://localhost:11434'
+      expect(detectHarness()).toBe('claudecode')
+    })
+
+    it('ignores ambient OLLAMA_* env vars when detecting the harness', () => {
+      process.env['OLLAMA_HOST'] = '127.0.0.1:11434'
+      process.env['OLLAMA_MODEL'] = 'qwen2.5-coder:14b'
+      process.env['OLLAMA_KEEP_ALIVE'] = '30m'
       expect(detectHarness()).toBe('generic')
     })
 
