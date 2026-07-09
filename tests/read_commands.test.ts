@@ -224,6 +224,28 @@ describe('read_commands', () => {
       expect(stdout).toContain('myFn')
     })
 
+    it('reconstructs an empty indexed body from its source span', () => {
+      const filePath = path.join(tempDir, 'Example.profile-meta.xml')
+      fs.writeFileSync(filePath, '<Profile>\n  <label>Example</label>\n</Profile>\n')
+      const sym: MockSymbol = {
+        name: 'Example',
+        kind: 'sf_profile',
+        filePath,
+        lineStart: 1,
+        lineEnd: 3,
+        body: '',
+        docstring: '',
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+
+      const { text: stdout } = runRead({ spec: `${filePath}::Example` })
+
+      expect(stdout).toContain('<Profile>')
+      expect(stdout).toContain('<label>Example</label>')
+      expect(stdout).toContain('</Profile>')
+    })
+
     it('caps an oversized symbol body and tags the truncation hint for "symbol" (#52)', () => {
       mockLoadConfig.mockReturnValue({
         overflow_guard: { enabled: true, max_tokens: 50 },

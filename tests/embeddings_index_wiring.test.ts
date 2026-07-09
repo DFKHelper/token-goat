@@ -137,6 +137,56 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     expect(chunkRow.c).toBe(0)
   })
 
+  it('keeps Salesforce profiles out of the semantic index and removes stale chunks', async () => {
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+    const dbPath = path.join(TMP, 'index.db')
+    const filePath = path.join(TMP, 'Example.profile-meta.xml')
+    fs.writeFileSync(
+      filePath,
+      '<Profile>\n  <userPermissions><name>ExamplePermission</name></userPermissions>\n</Profile>\n',
+    )
+
+    indexFileSync(filePath, dbPath)
+    const db = getDb(dbPath)
+    db.prepare(
+      "INSERT INTO chunks(file_path, start_line, end_line, text, kind) VALUES (?, 1, 1, 'stale', 'symbol')",
+    ).run(filePath)
+
+    await indexFileEmbeddings(filePath, dbPath)
+
+    const symbolRow = db
+      .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND kind = 'sf_profile'")
+      .get(filePath) as { c: number }
+    expect(symbolRow.c).toBe(1)
+    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+      c: number
+    }
+    expect(chunkRow.c).toBe(0)
+  })
+
+  it('keeps oversized Salesforce metadata out of the semantic index', async () => {
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+    const dbPath = path.join(TMP, 'index.db')
+    const filePath = path.join(TMP, 'Example.permissionset-meta.xml')
+    fs.writeFileSync(
+      filePath,
+      `<PermissionSet><description>${'x'.repeat(600 * 1024)}</description></PermissionSet>`,
+    )
+
+    indexFileSync(filePath, dbPath)
+    await indexFileEmbeddings(filePath, dbPath)
+
+    const db = getDb(dbPath)
+    const symbolRow = db
+      .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND kind = 'sf_permission_set'")
+      .get(filePath) as { c: number }
+    expect(symbolRow.c).toBe(1)
+    const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+      c: number
+    }
+    expect(chunkRow.c).toBe(0)
+  })
+
   it('degrades gracefully - symbols still index - when chunk_vectors is unavailable (sqlite-vec-absent simulation)', async () => {
     // Drop the real table rather than mocking isAvailable(): this is exactly what
     // chunkVectorsTableExists() sees on an install where sqlite-vec never loaded, matching
