@@ -682,11 +682,12 @@ class PylintFilter extends ToolFilter {
     const lines = merged.split('\n')
     const kept: string[] = []
     const codeCounts = new Map<string, number>()
-    const pendingPlaceholders: { index: number; code: string; codeName: string }[] = []
+    const pendingPlaceholders: { index: number; code: string; codeName: string; key: string }[] = []
     let deduplicated = 0
     let droppedSeparators = 0
     let droppedConfig = 0
     let pendingModule: string | null = null
+    let currentModule: string | null = null
     let moduleHasKeptIssue = false
 
     for (const line of lines) {
@@ -697,6 +698,7 @@ class PylintFilter extends ToolFilter {
         // Flush previous pending header only if it had kept issues
         if (pendingModule !== null && moduleHasKeptIssue) kept.push(pendingModule)
         pendingModule = line
+        currentModule = line
         moduleHasKeptIssue = false
         continue
       }
@@ -704,8 +706,9 @@ class PylintFilter extends ToolFilter {
         const m = _PYLINT_CODE_RE.exec(line)
         const code = m ? m[1]! : '__unknown__'
         const severity = code[0] ?? '?'
-        const count = codeCounts.get(code) ?? 0
-        codeCounts.set(code, count + 1)
+        const key = `${currentModule ?? ''}\x00${code}`
+        const count = codeCounts.get(key) ?? 0
+        codeCounts.set(key, count + 1)
         const alwaysKeep = severity === 'E' || severity === 'F'
         if (alwaysKeep || count < PylintFilter._KEEP_PER_CODE) {
           // Flush pending module header before first kept issue
@@ -718,8 +721,15 @@ class PylintFilter extends ToolFilter {
         } else {
           if (count === PylintFilter._KEEP_PER_CODE) {
             const codeName = code.slice(1)
-            pendingPlaceholders.push({ index: kept.length, code, codeName })
+            // Flush pending module header before the over-cap placeholder too,
+            // otherwise a module whose issues are entirely over-cap vanishes.
+            if (pendingModule !== null) {
+              kept.push(pendingModule)
+              pendingModule = null
+            }
+            pendingPlaceholders.push({ index: kept.length, code, codeName, key })
             kept.push('')
+            moduleHasKeptIssue = true
           }
           deduplicated++
         }
@@ -736,8 +746,8 @@ class PylintFilter extends ToolFilter {
 
     // Patch placeholders now that codeCounts holds each code's final total,
     // so the elided count reflects reality instead of a literal "+?".
-    for (const { index, code, codeName } of pendingPlaceholders) {
-      const elided = (codeCounts.get(code) ?? 0) - PylintFilter._KEEP_PER_CODE
+    for (const { index, code, codeName, key } of pendingPlaceholders) {
+      const elided = (codeCounts.get(key) ?? 0) - PylintFilter._KEEP_PER_CODE
       kept[index] =
         `[token-goat: +${elided} more ${code} (${codeName}); disable via TOKEN_GOAT_BASH_COMPRESS]`
     }

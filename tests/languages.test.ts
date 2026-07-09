@@ -348,7 +348,29 @@ class Bar {
     expect(a?.docstring).toBe('Foo')
   })
 
+  it('does not misclassify a function nested inside a method body as a class method', () => {
+    const content = `<?php
+class Foo {
+    public function bar() {
+        function baz() { return 1; }
+    }
+}
+`
+    const { symbols } = extractPhp(content, 'nested.php')
+    const baz = symbols.find((s) => s.name === 'baz')
+    expect(baz).toBeDefined()
+    // baz is nested two brace-levels inside Foo (inside bar's body), not directly in Foo's
+    // own body, so it must not be classified as a method of Foo.
+    expect(baz?.kind).toBe('function')
+    expect(baz?.docstring).toBe('')
+    // bar is directly in Foo's body (one brace level in) and must still be a real method.
+    const bar = symbols.find((s) => s.name === 'bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+  })
+
   it('parses declarations and braces that share a line with a block comment', () => {
+
     const content = `<?php
 class Foo {
   public function methodA() {}
@@ -1167,7 +1189,27 @@ clean::
     expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
   })
 
+  it('does not emit a spurious target for a colon-bearing line inside a define...endef block', () => {
+    const content = `define PRINT_HELP_PYSCRIPT
+import re, sys
+for line in sys.stdin:
+	match = re.match(r'^([a-zA-Z_-]+):.*?## (.*)$', line)
+endef
+
+test:
+	go test ./...
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(symbols.filter((s) => s.kind === 'makefile_target')).toHaveLength(1)
+    expect(names).toContain('test')
+    expect(symbols.find((s) => s.name === 'test')?.kind).toBe('makefile_target')
+    expect(names).toContain('PRINT_HELP_PYSCRIPT')
+    expect(symbols.find((s) => s.name === 'PRINT_HELP_PYSCRIPT')?.kind).toBe('makefile_define')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
+
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
 `
@@ -1526,7 +1568,29 @@ function AfterClass {
     expect(names).toContain('AfterClass')
   })
 
+  it('classifies a class whose name contains the substring "enum" as class, not enum', () => {
+    const content = `class EnumHelper {
+    [void] DoWork() {}
+}
+`
+    const { symbols } = extractPowershell(content, 'enum_substring_class.ps1')
+    const sym = symbols.find((s) => s.name === 'EnumHelper')
+    expect(sym?.kind).toBe('class')
+  })
+
+  it('still classifies a real enum declaration as enum', () => {
+    const content = `enum Color {
+    Red
+    Blue
+}
+`
+    const { symbols } = extractPowershell(content, 'real_enum.ps1')
+    const sym = symbols.find((s) => s.name === 'Color')
+    expect(sym?.kind).toBe('enum')
+  })
+
   it('does not let braces inside a # comment desync the brace-depth counter', () => {
+
     const content = `function Outer {
   # TODO: handle { edge case
   Write-Host "x"

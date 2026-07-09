@@ -731,7 +731,7 @@ export class GitStatusVerboseFilter extends GitBaseFilter {
 // GitBlameFilter — "git blame"
 // ---------------------------------------------------------------------------
 
-const _GIT_BLAME_AUTHOR_RE = /^\^?([0-9a-f]{7,40})\s+\(([^)]+?)\s+\d{4}-\d\d-\d\d/
+const _GIT_BLAME_AUTHOR_RE = /^\^?([0-9a-f]{7,40})\s+(?:\S+\s+)?\(([^)]+?)\s+\d{4}-\d\d-\d\d/
 const _GIT_BLAME_PORCELAIN_RE = /^[0-9a-f]{40} \d+ \d+/
 const _GIT_BLAME_PORCELAIN_HEADER_RE = /^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$/
 const _GIT_BLAME_AUTHOR_LINE_RE = /^author (.+)/
@@ -1138,9 +1138,27 @@ function _compressGitPush(stdout: string, stderr: string): string {
     let inError = false
     let errorLinesKept = 0
     let capReached = false
+    let omittedCount = 0
     const MAX_ERROR_LINES = 30
+    const flushCapMarker = () => {
+      if (capReached) {
+        kept.push(`[token-goat: +${omittedCount} more error lines omitted]`)
+      }
+    }
+    const resetBlock = () => {
+      inError = false
+      errorLinesKept = 0
+      capReached = false
+      omittedCount = 0
+    }
     for (const ln of lines) {
       if (_PYTEST_DOT_LINE_RE.test(ln)) continue
+      if (!ln.trim()) {
+        flushCapMarker()
+        resetBlock()
+        kept.push(ln)
+        continue
+      }
       if (ln.includes('FAILED') || ln.includes('ERROR') || ERROR_SIGNAL_RE.test(ln)) {
         inError = true
       }
@@ -1149,11 +1167,12 @@ function _compressGitPush(stdout: string, stderr: string): string {
         errorLinesKept++
       } else if (!inError) {
         kept.push(ln)
-      } else if (inError && errorLinesKept >= MAX_ERROR_LINES && !capReached) {
-        kept.push(`[token-goat: +${lines.length - errorLinesKept} more error lines omitted]`)
+      } else {
         capReached = true
+        omittedCount++
       }
     }
+    flushCapMarker()
     const prefix = pytestSummary ? `pre-push FAILED: ${pytestSummary}` : 'pre-push FAILED'
     return prefix + '\n' + kept.join('\n')
   }

@@ -10,6 +10,7 @@ import {
   getDirtyPathsFor,
   isWorkerRunning,
   processDirtyBatch,
+  resetTransientRetryCount,
   runWorkerLoop,
   stopWorker,
   workerPidPath,
@@ -280,6 +281,46 @@ describe('processDirtyBatch', () => {
       .split('\n')
       .filter((l) => l.includes('giving up on') && l.includes(lockedPath))
     expect(giveUpLines.length).toBe(1)
+  })
+
+  // Regression: transientRetryCounts was only ever cleared on a *successful* read
+  // (processDirtyBatch), never on a fresh edit re-dirtying the path -- so a path that once
+  // exhausted its retry budget during a transient lock episode stayed permanently exhausted
+  // for the rest of the daemon's lifetime, even after the file was edited again. The fix is
+  // resetTransientRetryCount, called from appendDirtyPath (hooks_index.ts) whenever a path is
+  // freshly dirtied by an edit. Simulate that call directly and confirm the path gets a full
+  // new retry budget -- five more failed cycles before it gives up again, with a second,
+  // distinct "giving up" log line -- rather than instantly giving up with zero new log output.
+  it('gives a fresh retry budget to a path re-dirtied after exhausting its retry cap', () => {
+    const lockedPath = path.join(DIR, 'stuck2.ts')
+    fs.mkdirSync(lockedPath)
+    writeQueue(DIR, [lockedPath])
+
+    for (let cycle = 0; cycle < 10; cycle++) {
+      drainOnce(DIR)
+    }
+    expect(getDirtyPathsFor(DIR)).toEqual([])
+    const logAfterFirstExhaustion = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
+    const firstGiveUpCount = logAfterFirstExhaustion
+      .split('\n')
+      .filter((l) => l.includes('giving up on') && l.includes(lockedPath)).length
+    expect(firstGiveUpCount).toBe(1)
+
+    // Simulate the edit-driven re-dirty path: reset the retry count (what appendDirtyPath now
+    // does) and re-queue the still-stuck path, as a fresh edit to it would.
+    resetTransientRetryCount(lockedPath)
+    writeQueue(DIR, [lockedPath])
+
+    for (let cycle = 0; cycle < 10; cycle++) {
+      drainOnce(DIR)
+    }
+    expect(getDirtyPathsFor(DIR)).toEqual([])
+
+    const logAfterSecondExhaustion = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
+    const secondGiveUpCount = logAfterSecondExhaustion
+      .split('\n')
+      .filter((l) => l.includes('giving up on') && l.includes(lockedPath)).length
+    expect(secondGiveUpCount).toBe(2)
   })
 })
 

@@ -925,7 +925,7 @@ function _extractQueryTokens(query: string): Set<string> {
 function _isGeneratedPath(filePath: string): boolean {
   const segments = filePath.split(/[/\\]+/)
   for (const seg of segments) {
-    if (_GENERATED_PATH_SEGMENTS.has(seg)) {
+    if (_GENERATED_PATH_SEGMENTS.has(seg.toLowerCase())) {
       return true
     }
   }

@@ -158,13 +158,14 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
  * Map the env-detected harness ({@link detectHarness}) onto {@link Harness}, the
  * narrower harness identifier {@link normalizePayload} understands.
  *
- * Codex and Gemini both need tool-name remapping (their harness-native
- * snake_case names never match the canonical names registerHook(...,
- * { toolName }) filters on); 'claudecode' / 'opencode' / 'generic' payloads
- * already use canonical tool names and pass through unchanged. Uses
- * detectHarness() (uncached) rather than getHarnessName(): each hook
- * invocation is a fresh, short-lived process, so there is no benefit to
- * memoizing and no stale-cache risk to worry about.
+ * Codex, Gemini, and Grok all need tool-name remapping (their harness-native
+ * names never match the canonical names registerHook(..., { toolName })
+ * filters on -- Grok's entire wire payload is also camelCase rather than
+ * snake_case, handled in hooks_cli.ts's grok branch); 'claudecode' /
+ * 'opencode' / 'generic' payloads already use canonical tool names and pass
+ * through unchanged. Uses detectHarness() (uncached) rather than
+ * getHarnessName(): each hook invocation is a fresh, short-lived process, so
+ * there is no benefit to memoizing and no stale-cache risk to worry about.
  */
 function harnessForNormalization(): Harness {
   // detectHarness() (bridges/registry.ts) can return 'gemini' (or 'hermes' /
@@ -181,6 +182,7 @@ function harnessForNormalization(): Harness {
   const detected = detectHarness()
   if (detected === 'codex') return 'codex'
   if (detected === 'gemini') return 'gemini'
+  if (detected === 'grok') return 'grok'
   return 'claude'
 }
 

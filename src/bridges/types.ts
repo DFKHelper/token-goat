@@ -24,6 +24,7 @@ export type HarnessName =
   | 'openclaw'
   | 'pi'
   | 'copilot_cli'
+  | 'grok'
   | 'generic'
 
 /** Static description of how one harness's hooks are wired. */

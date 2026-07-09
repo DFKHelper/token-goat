@@ -16,7 +16,8 @@ vi.mock('../src/stats.js', () => ({
     by_command: {},
     window_days: _windowDays ?? 30,
   }),
-  renderStats: () => { process.stdout.write('No stats recorded yet.\n') },
+  renderStats: () => { process.stdout.write('MOCK_FULL_STATS\n') },
+  renderShortStats: () => { process.stdout.write('MOCK_SHORT_STATS\n') },
 }))
 
 // Stub session module so renderTopSessionFiles is deterministic
@@ -207,6 +208,36 @@ describe('cli_stats', () => {
       }
       const parsed = JSON.parse(output) as { window_days: number }
       expect(parsed.window_days).toBe(7)
+    })
+
+    it('calls renderShortStats (not renderStats) when full is not set', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({})
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+      expect(output).toContain('MOCK_SHORT_STATS')
+      expect(output).not.toContain('MOCK_FULL_STATS')
+    })
+
+    it('calls renderStats (full breakdown) when full is true', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({ full: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+      expect(output).toContain('MOCK_FULL_STATS')
+      expect(output).not.toContain('MOCK_SHORT_STATS')
     })
 
     it('accepts homeDir option (passed through to summarize)', () => {

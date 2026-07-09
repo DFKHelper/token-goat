@@ -156,7 +156,13 @@ export function extractPhp(
     const methM = METHOD_RE.exec(stripped)
     if (methM) {
       const name = methM[1] ?? ''
-      const parent = currentClass()
+      // Depth of this line before its own brace delta is applied (matches the "start depth"
+      // convention used when pushing a class frame): a method is directly in the class body
+      // only when that pre-line depth is exactly one level deeper than the class frame's own
+      // entry depth, not merely nested somewhere inside the class at large.
+      const preLineDepth = braceDepth - openB + closeB
+      const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+      const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
       const kind = parent ? 'method' : 'function'
       const sigEnd = stripped.indexOf(')')
       const sig = sigEnd >= 0 ? stripped.slice(0, sigEnd + 1) : stripped

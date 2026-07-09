@@ -399,6 +399,39 @@ describe('PylintFilter', () => {
     expect(result.text).toContain('+3 more C0114')
     expect(result.text).not.toContain('+? more')
   })
+
+  it('per-code cap is scoped per-module, not global across the whole run', () => {
+    // Module A exhausts the C0301 cap on its own (4 issues -> 3 kept + placeholder).
+    // Module B comes after A and has its own C0301 issues, fewer than the cap.
+    // A global (unscoped) cap would treat B's issues as already over-cap and B's
+    // header would never flush, silently dropping B's entire section.
+    const input = [
+      '************* Module a',
+      'a.py:1:0: C0301 (C0301): Line too long (90/88)',
+      'a.py:2:0: C0301 (C0301): Line too long (90/88)',
+      'a.py:3:0: C0301 (C0301): Line too long (90/88)',
+      'a.py:4:0: C0301 (C0301): Line too long (90/88)',
+      '************* Module b',
+      'b.py:1:0: C0301 (C0301): Line too long (90/88)',
+      'b.py:2:0: C0301 (C0301): Line too long (90/88)',
+      'Your code has been rated at 7.00/10',
+    ].join('\n')
+    const result = pylintFilter.apply(input, '', 4, ['pylint', 'src/'])
+
+    // Module A: header, first 3 kept issues, and its own placeholder.
+    expect(result.text).toContain('Module a')
+    expect(result.text).toContain('a.py:1:')
+    expect(result.text).toContain('a.py:2:')
+    expect(result.text).toContain('a.py:3:')
+    expect(result.text).not.toContain('a.py:4:')
+    expect(result.text).toContain('+1 more C0301')
+
+    // Module B must not vanish: its header and both issues must appear,
+    // since neither is over B's own per-module cap.
+    expect(result.text).toContain('Module b')
+    expect(result.text).toContain('b.py:1:')
+    expect(result.text).toContain('b.py:2:')
+  })
 })
 
 // ---------------------------------------------------------------------------

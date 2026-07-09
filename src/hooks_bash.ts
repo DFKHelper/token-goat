@@ -1066,6 +1066,11 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
 
     // Check for heredoc syntax: <<[-~]?WORD or <<[-~]?'WORD' or <<[-~]?"WORD"
     if (ch === '<' && i + 1 < cmd.length && cmd[i + 1] === '<') {
+      // Check for here-string (<<<) and skip it as bare code
+      if (i + 2 < cmd.length && cmd[i + 2] === '<') {
+        i += 3
+        continue
+      }
       let j = i + 2
       // Optional - or ~ modifier for indented heredoc
       let hasIndentModifier = false

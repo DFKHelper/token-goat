@@ -293,6 +293,34 @@ describe('preBashHandler — unbalanced shell quoting false positives (detectUnb
     const result = preBashHandler(makeBashEvent(crlfCommand))
     expect(result.hookType).toBe('pass')
   })
+
+  it('does not false-positive on a here-string with double quotes', () => {
+    const result = preBashHandler(makeBashEvent('cat <<< "hello world"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not false-positive on a here-string with variable', () => {
+    const result = preBashHandler(makeBashEvent('cat <<< "$var"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not false-positive on a here-string with bare text', () => {
+    const result = preBashHandler(makeBashEvent('python3 -c "print(1)" <<< "input"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still detects unterminated real heredocs', () => {
+    const result = preBashHandler(makeBashEvent('cat <<EOF\nhello\nworld'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('unterminated heredoc')
+    }
+  })
+
+  it('still detects terminated real heredocs correctly', () => {
+    const result = preBashHandler(makeBashEvent('cat <<EOF\nhello\nworld\nEOF'))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('preBashHandler — cd-prefix stripping', () => {

@@ -144,7 +144,7 @@ export class TerraformFilter extends ToolFilter {
 
       // Resource block with (known after apply) attributes
       if (
-        ((/^\s+resource\s+"/.test(line)) ||
+        ((/^\s+[+~-]?\s+resource\s+"/.test(line)) ||
           (/^\s{2,6}[a-z][a-z0-9_]*\.[a-zA-Z0-9_.[\]-]+\s+\{/.test(line))) &&
         i + 1 < lines.length
       ) {

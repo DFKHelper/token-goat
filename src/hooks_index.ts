@@ -20,6 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { atomicWriteBytes } from './util.js'
+import { resetTransientRetryCount } from './worker.js'
 import type { HookOutput } from './types.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
@@ -53,6 +54,7 @@ export function appendDirtyPath(normalizedPath: string): void {
     // File doesn't exist yet (first append) -- nothing to guard against.
   }
   fs.appendFileSync(queuePath, `${leadingNewline}${normalizedPath}\n`)
+  resetTransientRetryCount(normalizedPath)
 }
 
 /**

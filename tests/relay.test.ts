@@ -195,6 +195,7 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
     'CODEX_SESSION',
     'OPENCODE_SESSION_ID',
     'OPENCODE_SESSION',
+    'GROK_SESSION_ID',
     'OPENCLAW_SESSION_ID',
     'HERMES_SESSION_ID',
     'HERMES_HOME',
@@ -285,6 +286,39 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
     // never matched a real Gemini CLI invocation.
     io.emit(
       JSON.stringify({ tool_name: 'run_shell_command', tool_input: { command: 'echo hi' }, session_id: 's' }),
+    )
+    await relay('pre_tool_use')
+
+    expect(observedToolName).toBe('Bash')
+  })
+
+  it('normalizes a raw grok tool_name/camelCase payload through the real relay() path so a toolName-filtered handler actually matches', async () => {
+    // Confirmed empirically (2026-07-09) against grok 0.2.93: grok invokes
+    // the same `token-goat hook pre_tool_use` command Claude Code's own
+    // ~/.claude/settings.json already registers, but sends an entirely
+    // camelCase payload (toolName/toolInput/sessionId, not
+    // tool_name/tool_input/session_id) with its own tool-name vocabulary
+    // ('run_terminal_command', not 'Bash') -- see hooks_cli.ts's grok branch.
+    // GROK_SESSION_ID is set on every hook subprocess grok spawns.
+    process.env['GROK_SESSION_ID'] = 'grok-test-session'
+
+    let observedToolName: string | undefined
+    registerHook(
+      'pre_tool_use',
+      (event) => {
+        observedToolName = event.toolName
+        return { hookType: 'pass' }
+      },
+      { toolName: 'Bash' },
+    )
+
+    io.emit(
+      JSON.stringify({
+        hookEventName: 'pre_tool_use',
+        sessionId: 'grok-sess',
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'echo hi' },
+      }),
     )
     await relay('pre_tool_use')
 
