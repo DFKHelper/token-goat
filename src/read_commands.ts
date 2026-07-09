@@ -151,7 +151,17 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
     const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
-    const preview = sym.body.split(/\r?\n/).slice(0, 5).join('\n')
+    let body = sym.body
+    if (body === '') {
+      const source = readFileText(sym.filePath)
+      if (source !== null) {
+        body = source
+          .split(/\r?\n/)
+          .slice(Math.max(0, sym.lineStart - 1), sym.lineEnd)
+          .join('\n')
+      }
+    }
+    const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
   return { text: blocks.join('\n\n'), code: 0 }

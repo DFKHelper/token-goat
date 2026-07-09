@@ -155,6 +155,27 @@ describe('read_commands', () => {
       expect(Array.isArray(parsed)).toBe(true)
     })
 
+    it('reconstructs an empty indexed body from its source span for the preview', () => {
+      const filePath = path.join(tempDir, 'Example.profile-meta.xml')
+      fs.writeFileSync(filePath, '<Profile>\n  <label>Example</label>\n</Profile>\n')
+      const sym: MockSymbol = {
+        name: 'Example',
+        kind: 'sf_profile',
+        filePath,
+        lineStart: 1,
+        lineEnd: 3,
+        body: '',
+        docstring: '',
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+
+      const { text: stdout } = runSymbol({ name: 'Example' })
+
+      expect(stdout).toContain('<Profile>')
+      expect(stdout).toContain('<label>Example</label>')
+    })
+
     it('resolves the filePath filter to the index key before querying', () => {
       mockQuerySymbols.mockReturnValue([])
       runSymbol({ name: 'x', file: 'src/bar.ts' })
