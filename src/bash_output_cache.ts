@@ -377,8 +377,52 @@ export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: s
   return false
 }
 
+/**
+ * Split a command string into argv-like tokens, quote-aware: whitespace inside a single- or
+ * double-quoted span does not split a token, and the surrounding quote characters are stripped
+ * from the result. Used by {@link extractLsTarget}/{@link extractCatTarget} so a quoted path
+ * with a space (e.g. `cat "release notes.txt"`) resolves to the real path instead of a garbage
+ * partial token like `"release`.
+ */
+function tokenizeShellArgs(cmd: string): string[] {
+  const trimmed = cmd.trim()
+  const tokens: string[] = []
+  let current = ''
+  let quoteChar: string | null = null
+  let hasToken = false
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i]!
+    if (quoteChar !== null) {
+      if (ch === quoteChar) {
+        quoteChar = null
+      } else {
+        current += ch
+      }
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quoteChar = ch
+      hasToken = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken) {
+        tokens.push(current)
+        current = ''
+        hasToken = false
+      }
+      continue
+    }
+    current += ch
+    hasToken = true
+  }
+  if (hasToken) tokens.push(current)
+  return tokens
+}
+
 function extractLsTarget(cmd: string, cwd: string): string | null {
-  const tokens = cmd.trim().split(/\s+/)
+  const tokens = tokenizeShellArgs(cmd)
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i]!
     if (!token.startsWith('-')) {
@@ -393,7 +437,7 @@ function extractLsTarget(cmd: string, cwd: string): string | null {
 
 /** Same shape as {@link extractLsTarget}, but `cat` with no file argument (reads stdin) has no sensible default target. */
 function extractCatTarget(cmd: string, cwd: string): string | null {
-  const tokens = cmd.trim().split(/\s+/)
+  const tokens = tokenizeShellArgs(cmd)
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i]!
     if (!token.startsWith('-')) {

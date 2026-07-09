@@ -463,6 +463,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.length).toBeGreaterThan(0)
+    // Bare `stats` is totals-only now; it must never show the full breakdown.
+    expect(r.stdout).not.toContain('## By Source')
+    expect(r.stdout).not.toContain('## By Command')
+    expect(r.stdout).not.toContain('## Last 7 Days')
+
+    const rFull = run(['stats', '--full'])
+    expect(rFull.status, rFull.stderr).toBe(0)
+    expect(rFull.stdout.length).toBeGreaterThan(0)
   },
   doctor: () => {
     const r = run(['doctor'])

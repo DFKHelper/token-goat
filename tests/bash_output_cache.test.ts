@@ -456,6 +456,47 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
     }
   })
 
+  // Regression: extractCatTarget/extractLsTarget naively split on whitespace, so a quoted
+  // path with a space (e.g. `cat "release notes.txt"`) resolved to the literal token
+  // `"release` -- a nonexistent path. Fingerprinting that bogus path fails silently, leaving
+  // the entry with NO file fingerprint at all, and isBashEntryStale treats a fingerprint-less
+  // entry as unconditionally fresh -- so the stale pre-edit content would be served forever.
+  it('computes a file fingerprint for `cat "<quoted path with a space>"` and flags it stale once the file changes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-cat-quoted-'))
+    try {
+      const target = path.join(tmpDir, 'release notes.txt')
+      fs.writeFileSync(target, 'v1\n')
+      const id = await storeBashOutput('cat "release notes.txt"', 'v1\n', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.file).toBeDefined()
+      expect(isBashEntryStale(entry!, 'cat "release notes.txt"', tmpDir)).toBe(false)
+
+      fs.writeFileSync(target, 'v2\n')
+
+      expect(isBashEntryStale(entry!, 'cat "release notes.txt"', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('computes a dir fingerprint for `ls "<quoted dir with a space>"` and flags it stale once the dir changes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-ls-quoted-'))
+    try {
+      const target = path.join(tmpDir, 'my stuff')
+      fs.mkdirSync(target)
+      const id = await storeBashOutput('ls "my stuff"', '', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.dir).toBeDefined()
+      expect(isBashEntryStale(entry!, 'ls "my stuff"', tmpDir)).toBe(false)
+
+      fs.writeFileSync(path.join(target, 'new-file.txt'), 'new\n')
+
+      expect(isBashEntryStale(entry!, 'ls "my stuff"', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('detects the new command classes', () => {
     expect(isTestRunnerCommand('pytest')).toBe(true)
     expect(isTestRunnerCommand('vitest run')).toBe(true)

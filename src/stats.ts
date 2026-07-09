@@ -8,7 +8,8 @@
  * Public API:
  * - summarize(windowDays?) — load all stat rows from the global DB and return a
  *   StatsSummary with aggregations by kind, day, project, source, and command.
- * - renderStats(opts?) — compute and print formatted stats to stdout.
+ * - renderShortStats(opts?) — print just the totals block + a hint to run --full.
+ * - renderStats(opts?) — compute and print the full formatted breakdown to stdout.
  */
 
 import * as path from 'node:path'
@@ -331,20 +332,39 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database, h
   }
 }
 
-function _plainTextStats(summary: StatsSummary): void {
-  const fmtBytes = (n: number): string => {
-    if (n < 1024) return `${n}B`
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
-    return `${(n / (1024 * 1024)).toFixed(1)}MB`
-  }
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`
+}
 
-  const lines: string[] = [
+/** The short totals block shared by the plain-text and short-default renderers. */
+function _totalsLines(summary: StatsSummary): string[] {
+  return [
     '# token-goat stats',
     `Total events:   ${summary.total_events}`,
     `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
     `Tokens saved:   ${summary.total_tokens_saved}`,
     `Window:         ${summary.window_days} days`,
   ]
+}
+
+/**
+ * Print only the totals block plus hints pointing at ``--full`` for the
+ * fuller breakdowns. This is the bare ``token-goat stats`` default (both TTY
+ * and non-TTY use this -- the short output needs no rich-TUI treatment).
+ */
+function _renderShortTotals(summary: StatsSummary): void {
+  const lines = [
+    ..._totalsLines(summary),
+    '',
+    "Run 'token-goat stats --full' for the full breakdown (by source, by command, by day).",
+  ]
+  console.log(lines.join('\n'))
+}
+
+function _plainTextStats(summary: StatsSummary): void {
+  const lines: string[] = _totalsLines(summary)
 
   if (Object.keys(summary.by_source).length > 0) {
     lines.push('', '## By Source')
@@ -377,6 +397,23 @@ function _plainTextStats(summary: StatsSummary): void {
   }
 
   console.log(lines.join('\n'))
+}
+
+/**
+ * Bare ``token-goat stats`` default: totals + hints only, no by-source/
+ * by-command/by-day breakdown and no rich TTY rendering. Same output on a
+ * TTY or a pipe -- the short block needs no sparklines/KPI treatment.
+ */
+export function renderShortStats(opts?: { windowDays?: number; homeDir?: string }): void {
+  const windowDays = opts?.windowDays ?? 30
+  const summary = summarize(windowDays, undefined, opts?.homeDir)
+
+  if (summary.total_events === 0) {
+    console.log('No stats recorded yet.')
+    return
+  }
+
+  _renderShortTotals(summary)
 }
 
 export function renderStats(opts?: { windowDays?: number; homeDir?: string }): void {

@@ -10,7 +10,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { summarize, renderStats } from './stats.js'
+import { summarize, renderStats, renderShortStats } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
@@ -110,6 +110,8 @@ export interface StatsOptions {
   json?: boolean
   /** Home directory (injectable for tests). */
   homeDir?: string
+  /** Show the full breakdown (by source/command/day) instead of just totals. */
+  full?: boolean
 }
 
 /** Run the ``token-goat stats`` command. */
@@ -136,7 +138,12 @@ export function runStats(opts: StatsOptions = {}): void {
   if (opts.homeDir !== undefined) {
     renderOpts.homeDir = opts.homeDir
   }
-  renderStats(renderOpts)
+  // Bare `stats` shows totals only; `--full` gates the existing rich/plain breakdown.
+  if (opts.full === true) {
+    renderStats(renderOpts)
+  } else {
+    renderShortStats(renderOpts)
+  }
 
   const topFilesText = renderTopSessionFiles(5) || renderTopSessionFilesFromDisk(5)
   if (topFilesText) {

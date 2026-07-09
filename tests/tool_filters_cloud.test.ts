@@ -1040,3 +1040,30 @@ describe('ForgeFilter', () => {
     expect(typeof text).toBe('string')
   })
 })
+
+// TerraformFilter regex fix for change markers
+describe('TerraformFilter change markers in resource blocks', () => {
+  const f = new TerraformFilter()
+
+  it('recognizes resource blocks with +/~/- change markers', () => {
+    // The regex now allows optional change markers (+/~/-) before "resource"
+    const stdout = [
+      'Plan: 2 to add, 1 to change, 1 to destroy.',
+      '  + resource "aws_instance" "new" {',
+      '      + id = (known after apply)',
+      '    }',
+      '  ~ resource "aws_s3_bucket" "existing" {',
+      '      ~ acl = "private" -> "public"',
+      '    }',
+      '  - resource "aws_lb" "old" {',
+      '      - dns_name = (known after apply)',
+      '    }',
+    ].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['terraform', 'plan'])
+    // Should keep the plan summary and resource blocks
+    expect(text).toContain('Plan: 2 to add, 1 to change, 1 to destroy.')
+    expect(text).toContain('aws_instance')
+    expect(text).toContain('aws_s3_bucket')
+    expect(text).toContain('aws_lb')
+  })
+})

@@ -7,6 +7,7 @@ import { closeAllDbs } from '../src/db.js'
 import {
   summarize,
   renderStats as _renderStats,
+  renderShortStats as _renderShortStats,
   kindToSource,
   recordStat,
   toLocalDateKey,
@@ -538,6 +539,78 @@ describe('stats', () => {
       expect(output).not.toContain('No stats recorded yet')
       expect(output).toContain('Total events:   1')
       expect(output).toContain('Tokens saved:   1000')
+    })
+  })
+
+  describe('renderShortStats', () => {
+    it('prints only the totals block plus a --full hint, no breakdown sections', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'image_shrink', 1000, 5000)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderShortStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      expect(output).toContain('Total events:   1')
+      expect(output).toContain('Bytes saved:')
+      expect(output).toContain('Tokens saved:   1000')
+      expect(output).toContain('Window:         30 days')
+      expect(output).toContain('--full')
+      expect(output).not.toContain('## By Source')
+      expect(output).not.toContain('## By Command')
+      expect(output).not.toContain('## Last 7 Days')
+    })
+
+    it('prints "No stats recorded yet" when empty', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-empty-'))
+      let output = ''
+      const originalLog = console.log
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderShortStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+      expect(output).toContain('No stats recorded yet')
     })
   })
 

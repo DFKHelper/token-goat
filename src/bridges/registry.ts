@@ -32,6 +32,7 @@ const KNOWN_HARNESS_NAMES = new Set<string>([
   'openclaw',
   'pi',
   'copilot_cli',
+  'grok',
   'generic',
 ])
 
@@ -49,16 +50,19 @@ const KNOWN_HARNESS_NAMES = new Set<string>([
  *  4. Codex -- `CODEX_SESSION_ID` or `CODEX_SESSION` (both spellings; the two
  *     prior detectHarness() copies each only checked one of them).
  *  5. opencode -- `OPENCODE_SESSION_ID` or `OPENCODE_SESSION` (same reason).
- *  6. OpenClaw -- `OPENCLAW_SESSION_ID`. No install-writer exists for
+ *  6. Grok CLI -- `GROK_SESSION_ID`, confirmed (not guessed) by capturing a
+ *     real hook invocation from grok 0.2.93 -- see the note at that branch
+ *     below for how it was verified.
+ *  7. OpenClaw -- `OPENCLAW_SESSION_ID`. No install-writer exists for
  *     OpenClaw yet, and no OpenClaw env var turned up anywhere in this
  *     codebase or its docs, so this is a best-effort guess following the
  *     `*_SESSION_ID` convention the harnesses above use -- revisit if
  *     OpenClaw's actual signal turns out to differ.
- *  7. Codex, API-key fallback -- `OPENAI_API_KEY` set and no
+ *  8. Codex, API-key fallback -- `OPENAI_API_KEY` set and no
  *     `ANTHROPIC_API_KEY`.
- *  8. Gemini -- `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and no
+ *  9. Gemini -- `GEMINI_API_KEY` or `GOOGLE_API_KEY`, and no
  *     `ANTHROPIC_API_KEY`.
- *  9. `generic` -- no signal matched.
+ *  10. `generic` -- no signal matched.
  *
  * `copilot_cli` (GitHub Copilot CLI) has no branch here: its documentation
  * (hooks reference / use-hooks guide) lists `COPILOT_HOME` and
@@ -97,6 +101,17 @@ export function detectHarness(): HarnessName {
 
   if (env['OPENCODE_SESSION_ID'] !== undefined || env['OPENCODE_SESSION']) {
     return 'opencode'
+  }
+
+  // Grok CLI -- `GROK_SESSION_ID`. Confirmed empirically (2026-07-09): grok
+  // 0.2.93 executes the *global* `~/.claude/settings.json` hooks config
+  // unmodified (it does not read a project-local .claude/settings.json --
+  // `grok inspect` reported "Project: (none)" even with one present) and
+  // sets GROK_SESSION_ID/GROK_HOOK_EVENT/GROK_HOOK_NAME/GROK_WORKSPACE_ROOT
+  // on every hook subprocess it spawns, so this is a real ambient signal,
+  // not a guess.
+  if (env['GROK_SESSION_ID'] !== undefined) {
+    return 'grok'
   }
 
   if (env['OPENCLAW_SESSION_ID'] !== undefined) {

@@ -130,6 +130,99 @@ describe('normalizePayload', () => {
     expect(result).not.toHaveProperty('functionCallId')
   })
 
+  describe('grok harness', () => {
+    // Confirmed empirically (2026-07-09) against grok 0.2.93: unlike Codex/
+    // Gemini, grok's entire wire payload is camelCase (toolName/toolInput/
+    // sessionId), not just its tool-name vocabulary. See the live-capture
+    // notes on GROK_TOOL_NAME_MAP / grokToCanonicalWire in hooks_cli.ts.
+
+    it('translates camelCase wire keys to snake_case and remaps read_file to Read', () => {
+      const payload: HookPayload = {
+        hookEventName: 'pre_tool_use',
+        sessionId: 'g-sess-1',
+        toolName: 'read_file',
+        toolInput: { target_file: 'C:\\proj\\package.json' },
+      }
+      const result = normalizePayload(payload, 'grok')
+      expect(result['tool_name']).toBe('Read')
+      expect(result['tool_input']).toEqual({ file_path: 'C:\\proj\\package.json' })
+      expect(result['session_id']).toBe('g-sess-1')
+      expect(result['_tg_harness']).toBe('grok')
+    })
+
+    it('remaps run_terminal_command to Bash, leaving its command key untouched', () => {
+      const payload: HookPayload = {
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'echo hi', description: 'say hi' },
+        sessionId: 'g-sess-2',
+      }
+      const result = normalizePayload(payload, 'grok')
+      expect(result['tool_name']).toBe('Bash')
+      expect(result['tool_input']).toEqual({ command: 'echo hi', description: 'say hi' })
+    })
+
+    it('remaps write and search_replace to Write/Edit, leaving their keys untouched (already token-goat-shaped)', () => {
+      const writeResult = normalizePayload(
+        { toolName: 'write', toolInput: { file_path: 'notes.txt', content: 'hi' } },
+        'grok',
+      )
+      expect(writeResult['tool_name']).toBe('Write')
+      expect(writeResult['tool_input']).toEqual({ file_path: 'notes.txt', content: 'hi' })
+
+      const editResult = normalizePayload(
+        {
+          toolName: 'search_replace',
+          toolInput: { file_path: 'notes.txt', old_string: 'a', new_string: 'b' },
+        },
+        'grok',
+      )
+      expect(editResult['tool_name']).toBe('Edit')
+      expect(editResult['tool_input']).toEqual({ file_path: 'notes.txt', old_string: 'a', new_string: 'b' })
+    })
+
+    it('remaps grep and list_dir to Grep/Glob', () => {
+      const grepResult = normalizePayload({ toolName: 'grep', toolInput: { pattern: 'foo', path: '.' } }, 'grok')
+      expect(grepResult['tool_name']).toBe('Grep')
+      expect(grepResult['tool_input']).toEqual({ pattern: 'foo', path: '.' })
+
+      const globResult = normalizePayload(
+        { toolName: 'list_dir', toolInput: { target_directory: '.' } },
+        'grok',
+      )
+      expect(globResult['tool_name']).toBe('Glob')
+    })
+
+    it('returns empty dict when toolName is missing (mirrors the tool_name-missing contract for other harnesses)', () => {
+      expect(normalizePayload({ toolInput: { command: 'ls' } }, 'grok')).toEqual({})
+    })
+
+    it('unwraps run_terminal_command\'s tagged toolResult into tool_response with content + exit_code (post_tool_use)', () => {
+      // Confirmed shape from a live grok run_terminal_command postToolUse
+      // capture: { type: "Bash", output: [...bytes], output_for_prompt:
+      // "exit: 0\n<stdout>\n", exit_code: 0, command, ... }.
+      const payload: HookPayload = {
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'echo hi' },
+        toolResult: { type: 'Bash', output_for_prompt: 'exit: 0\nhi\n', exit_code: 0, command: 'echo hi' },
+      }
+      const result = normalizePayload(payload, 'grok')
+      expect(result['tool_response']).toEqual({ content: 'exit: 0\nhi\n', exit_code: 0 })
+    })
+
+    it('falls back to the first string field (other than type) for tools whose toolResult shape is not the Bash one', () => {
+      // Confirmed shapes from live captures: list_dir -> { type, Content },
+      // read_file -> { type, FileContent }, search_replace -> { type, EditsApplied }.
+      // The exact key name is tool-specific and not otherwise enumerated here.
+      const payload: HookPayload = {
+        toolName: 'read_file',
+        toolInput: { target_file: 'notes.txt' },
+        toolResult: { type: 'FileContent', FileContent: 'hello world' },
+      }
+      const result = normalizePayload(payload, 'grok')
+      expect(result['tool_response']).toEqual({ content: 'hello world' })
+    })
+  })
+
   it('round-trip: normalizePayload then back works for Claude', () => {
     const original: HookPayload = {
       tool_name: 'Bash',

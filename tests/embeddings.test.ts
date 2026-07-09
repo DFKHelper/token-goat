@@ -519,6 +519,17 @@ describe('embeddings module', () => {
       expect(out.map((h) => h.distance)).toContain(0.4) // hit is reordered, not dropped; raw distance preserved
     })
 
+    it('demotes hits under capitalized generated/build directories the same as lowercase', () => {
+      // 'authenticate' appears in neither text, so boost is 0 on both — pure penalty test.
+      const hits = [mk('Dist/bundle.js', 0.4, 'some code'), mk('src/auth.ts', 0.5, 'other code')]
+      const out = embeddings.rerankHits(hits, 'authenticate', 8)
+      // Dist/ (capitalized) hit has the lower raw distance but must still be demoted, matching
+      // the lowercase dist/ case above — segment matching against _GENERATED_PATH_SEGMENTS is
+      // case-insensitive.
+      expect(out[0].filePath).toBe('src/auth.ts')
+      expect(out.map((h) => h.distance)).toContain(0.4)
+    })
+
     it('boosts hits whose text contains verbatim query tokens above closer non-matches', () => {
       const hits = [
         mk('src/b.ts', 0.55, 'totally unrelated code'),

@@ -88,6 +88,18 @@ const MAX_TRANSIENT_RETRIES = 5
  */
 const transientRetryCounts = new Map<string, number>()
 
+/**
+ * Clear any transient-retry count for `absPath`, giving it a fresh retry budget.
+ *
+ * Called from {@link appendDirtyPath} (`hooks_index.ts`) whenever an edit freshly dirties a
+ * path, so a path that previously exhausted {@link MAX_TRANSIENT_RETRIES} (e.g. during a long
+ * antivirus/OneDrive lock episode) does not inherit that exhausted counter on its next,
+ * unrelated failure streak after the file is edited again.
+ */
+export function resetTransientRetryCount(absPath: string): void {
+  transientRetryCounts.delete(foldPath(normalizePath(absPath)))
+}
+
 /** Absolute path to the dirty queue file for `dir`. */
 function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')

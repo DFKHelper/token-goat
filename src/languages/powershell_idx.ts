@@ -148,10 +148,10 @@ export function extractPowershell(
 
     // CLASS or ENUM (top-level)
     if (braceDepth === 0) {
-      const classMatch = /^\s*(?:class|enum)\s+([A-Za-z_]\w*)/i.exec(line)
+      const classMatch = /^\s*(class|enum)\s+([A-Za-z_]\w*)/i.exec(line)
       if (classMatch) {
-        const cname = classMatch[1] ?? ''
-        const kind = /enum/i.test(line) ? 'enum' : 'class'
+        const cname = classMatch[2] ?? ''
+        const kind = (classMatch[1] ?? '').toLowerCase() === 'enum' ? 'enum' : 'class'
         if (symbols.length < MAX_SYMBOLS) {
           symbols.push(makeSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
         }

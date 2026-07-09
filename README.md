@@ -409,7 +409,7 @@ To upgrade cleanly:
 | `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
 | `token-goat ignores` | List active skip patterns for the current project — built-in skip dirs and suffixes, plus any patterns from `.tokengoatignore`. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
-| `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
+| `token-goat stats` | See how many tokens you have saved. Shows total events / bytes saved / tokens saved. Add `--full` for the per-source, per-command, and per-day breakdown. |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
 | `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` is not yet implemented. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |

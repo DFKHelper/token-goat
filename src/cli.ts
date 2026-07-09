@@ -536,7 +536,7 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string } = {}): void {
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean } = {}): void {
   const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
   if (!Number.isFinite(windowDays) || windowDays < 0) {
     throw new CliError('--window-days must be a non-negative number')
@@ -544,6 +544,7 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string 
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
     windowDays,
+    full: opts.full === true,
   }
   if (opts.homeDir !== undefined) {
     statsOpts.homeDir = opts.homeDir
@@ -1938,8 +1939,9 @@ export function buildProgram(): Command {
 
   program
     .command('stats')
-    .description('show session statistics')
+    .description('show session statistics (bare = totals only; --full for the breakdown)')
     .option('--json', 'output JSON')
+    .option('--full', 'show the full breakdown (by source, by command, by day)')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))

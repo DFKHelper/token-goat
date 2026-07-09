@@ -992,6 +992,70 @@ describe('GitPushFilter failing tests', () => {
 })
 
 // ---------------------------------------------------------------------------
+// GitPushFilter — per-error-block truncation cap
+// ---------------------------------------------------------------------------
+
+function _tracebackLines(label: string, count: number): string {
+  return Array.from({ length: count }, (_, i) => `    traceback line ${i} for ${label}`).join('\n')
+}
+
+const _PYTEST_DOTS_SINGLE_BLOCK_OVERFLOW =
+  '.'.repeat(40) + 'F' + '.'.repeat(9) + ' [ 10%]\n' +
+  'FAILED tests/test_foo.py::test_bar - AssertionError: expected 1 got 2\n' +
+  _tracebackLines('foo', 40) + '\n' +
+  '\n' +
+  '1 failed, 8330 passed in 9m 45s\n' +
+  '   abc123..def456  main -> origin/main'
+
+const _PYTEST_DOTS_TWO_BLOCKS_OVERFLOW =
+  '.'.repeat(40) + 'F' + '.'.repeat(9) + ' [ 10%]\n' +
+  'FAILED tests/test_foo.py::test_bar - AssertionError: expected 1 got 2\n' +
+  _tracebackLines('foo', 40) + '\n' +
+  '\n' +
+  'FAILED tests/test_baz.py::test_qux - ValueError: bad value\n' +
+  _tracebackLines('baz', 40) + '\n' +
+  '\n' +
+  '2 failed, 8330 passed in 9m 45s\n' +
+  '   abc123..def456  main -> origin/main'
+
+describe('GitPushFilter single failure block overflow', () => {
+  it('emits exactly one omission marker with the correct count', () => {
+    const result = apply(gitPushFilter, _PYTEST_DOTS_SINGLE_BLOCK_OVERFLOW, ['git', 'push'], {
+      exitCode: 1,
+    })
+    const markers = result.match(/\[token-goat: \+(\d+) more error lines omitted\]/g) ?? []
+    expect(markers).toHaveLength(1)
+    expect(result).toContain('[token-goat: +11 more error lines omitted]')
+    expect(result).toContain('traceback line 0 for foo')
+    expect(result).toContain('traceback line 28 for foo')
+    expect(result).not.toContain('traceback line 30 for foo')
+  })
+})
+
+describe('GitPushFilter two failure blocks each overflowing', () => {
+  it('keeps both blocks and gives each its own accurate omission marker', () => {
+    const result = apply(gitPushFilter, _PYTEST_DOTS_TWO_BLOCKS_OVERFLOW, ['git', 'push'], {
+      exitCode: 1,
+    })
+
+    expect(result).toContain('test_bar')
+    expect(result).toContain('test_qux')
+
+    const markers = result.match(/\[token-goat: \+(\d+) more error lines omitted\]/g) ?? []
+    expect(markers).toHaveLength(2)
+    expect(result).toContain('[token-goat: +11 more error lines omitted]')
+
+    expect(result).toContain('traceback line 0 for foo')
+    expect(result).toContain('traceback line 28 for foo')
+    expect(result).not.toContain('traceback line 30 for foo')
+
+    expect(result).toContain('traceback line 0 for baz')
+    expect(result).toContain('traceback line 28 for baz')
+    expect(result).not.toContain('traceback line 30 for baz')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GitPushFilter — remote/local progress
 // ---------------------------------------------------------------------------
 
@@ -1118,5 +1182,37 @@ describe('GitCommitFilter CRLF warning stripping', () => {
     expect(result).not.toContain('will be replaced')
     expect(result).not.toContain('original line endings')
     expect(result).toContain('abc1234')
+  })
+})
+
+// GitBlameFilter regex fix for filename column (-C/-M)
+describe('GitBlameFilter with filename column', () => {
+  it('matches blame lines with optional filename between hash and author', () => {
+    // The regex now allows an optional filename column (e.g., from git blame -C/-M)
+    // before the (Author Name date) parenthesis
+    const text = [
+      'abc1234a src/module.py (Alice 2025-01-01 10:00:00 +0000  1)    def function_1(): pass',
+      'abc1234a src/module.py (Alice 2025-01-01 10:00:00 +0000  2)    def function_2(): pass',
+      'abc1234a src/module.py (Alice 2025-01-01 10:00:00 +0000  3)    def function_3(): pass',
+      'def5678b src/other.py   (Bob   2025-01-02 10:00:00 +0000  4)    def function_4(): pass',
+    ].join('\n')
+    const result = apply(gitBlameFilter, text, ['git', 'blame'])
+    // Should properly collapse Alice's 3 consecutive lines
+    expect(result).toContain('more lines by Alice')
+    expect(result).toContain('abc1234')
+    expect(result).toContain('Bob')
+  })
+
+  it('still handles normal blame without filename column', () => {
+    // Verify the regex change doesn't break normal (no filename) blame output
+    const text =
+      '^abc1234 (Alice 2025-01-01 10:00:00 +0000  1)    line1\n' +
+      '^abc1234 (Alice 2025-01-01 10:00:00 +0000  2)    line2\n' +
+      '^abc1234 (Alice 2025-01-01 10:00:00 +0000  3)    line3\n' +
+      '^def5678 (Bob   2025-01-02 10:00:00 +0000  4)    line4\n'
+    const result = apply(gitBlameFilter, text, ['git', 'blame'])
+    expect(result).toContain('Alice')
+    expect(result).toContain('Bob')
+    expect(result).toContain('more lines by Alice')
   })
 })

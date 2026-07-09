@@ -82,7 +82,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
-| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \| `codex` \| `opencode` \| `generic`), `BridgeConfig` |
+| [`src/bridges/types.ts`](src/bridges/types.ts) | `HarnessName` (`claudecode` \| `codex` \| `opencode` \| `gemini` \| `hermes` \| `openclaw` \| `pi` \| `copilot_cli` \| `grok` \| `generic`), `BridgeConfig` |
 | [`src/bridges/registry.ts`](src/bridges/registry.ts) | `detectHarness()` / `getHarnessName()` — env-variable-based harness detection |
 | [`src/bridges/claudecode.ts`](src/bridges/claudecode.ts) | Claude Code hook script template and install config |
 | [`src/bridges/codex.ts`](src/bridges/codex.ts) | Codex hook script template; `hookSpecificOutput: true` (Codex schemas use `additionalProperties: false`) |

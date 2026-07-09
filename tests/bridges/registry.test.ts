@@ -15,6 +15,7 @@ const ENV_KEYS = [
   'CODEX_SESSION',
   'OPENCODE_SESSION_ID',
   'OPENCODE_SESSION',
+  'GROK_SESSION_ID',
   'OPENCLAW_SESSION_ID',
   'HERMES_SESSION_ID',
   'HERMES_HOME',
@@ -91,6 +92,14 @@ describe('harness detection', () => {
     it('returns openclaw when OPENCLAW_SESSION_ID is set', () => {
       process.env['OPENCLAW_SESSION_ID'] = 'oc-1'
       expect(detectHarness()).toBe('openclaw')
+    })
+
+    it('returns grok when GROK_SESSION_ID is set', () => {
+      // Confirmed empirically (2026-07-09): grok 0.2.93 sets GROK_SESSION_ID
+      // on every hook subprocess it spawns (see registry.ts for the live
+      // capture this was verified against).
+      process.env['GROK_SESSION_ID'] = 'g-1'
+      expect(detectHarness()).toBe('grok')
     })
 
     it('returns hermes when HERMES_SESSION_ID is set', () => {
@@ -172,8 +181,8 @@ describe('harness detection', () => {
         expect(detectHarness()).toBe('openclaw')
       })
 
-      it('accepts every canonical harness name, including openclaw, pi, copilot_cli, and hermes', () => {
-        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'copilot_cli', 'generic']) {
+      it('accepts every canonical harness name, including openclaw, pi, copilot_cli, grok, and hermes', () => {
+        for (const name of ['claudecode', 'codex', 'opencode', 'gemini', 'hermes', 'openclaw', 'pi', 'copilot_cli', 'grok', 'generic']) {
           process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = name
           expect(detectHarness()).toBe(name)
         }
