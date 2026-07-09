@@ -89,7 +89,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 **Language adapters (`src/languages/`)**
 
-The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inline extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++ live in `src/parser.ts`; inline regex extractors for Markdown, JSON, YAML, TOML, CSS, and Dockerfile also live there.
+The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inline extractors for TypeScript/JavaScript, Python, Go, Rust, Ruby, Java, and C/C++ live in `src/parser.ts`; inline regex extractors for Markdown, JSON, YAML, TOML, CSS, and Dockerfile also live there. Adding a new regex adapter also means adding one entry to `NO_TREE_SITTER_EXTRACTORS` (`src/parser.ts`), the dispatch table for `extractSymbolsNoTreeSitter()`.
 
 | Module | Role |
 |--------|------|
@@ -105,6 +105,8 @@ The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inli
 | [`src/languages/makefile_idx.ts`](src/languages/makefile_idx.ts) | Makefile extractor (`extractMakefile`) |
 | [`src/languages/proto_idx.ts`](src/languages/proto_idx.ts) | Protobuf extractor (`extractProto`) |
 | [`src/languages/env_idx.ts`](src/languages/env_idx.ts) | `.env` extractor (`extractEnv`) |
+| [`src/languages/apex.ts`](src/languages/apex.ts) | Salesforce Apex extractor (`extractApex`) — class, interface, trigger, method |
+| [`src/languages/salesforce_metadata.ts`](src/languages/salesforce_metadata.ts) | Salesforce metadata XML extractor (`extractSalesforceMetadata`) — CustomObject, CustomField, ValidationRule, PermissionSet, Profile, CustomMetadata; detected by `SALESFORCE_METADATA_SUFFIXES` filename-suffix match (`src/parser_types.ts`) |
 
 **Output rendering**
 
