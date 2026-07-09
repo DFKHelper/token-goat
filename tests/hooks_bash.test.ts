@@ -18,7 +18,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
 
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
 import { getBashOutputId, recordFileRead } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -887,10 +887,10 @@ describe('preBashHandler — PowerShell read commands', () => {
   it('Get-Content src/auth.ts -Tail 50 → suggests surgical read', () => {
     const event = makeBashEvent('Get-Content src/auth.ts -Tail 50')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('Get-Content -Tail')
-      expect(result.context).toContain('token-goat')
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Get-Content')
+      expect(result.message).toContain('token-goat')
     }
   })
 
@@ -906,7 +906,7 @@ describe('preBashHandler — PowerShell read commands', () => {
   it('Get-Content foo.ts -Tail 5 (N <= 10) → passes through', () => {
     const event = makeBashEvent('Get-Content foo.ts -Tail 5')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    expect(result.hookType).toBe('deny')
   })
 
   it('Get-Content src/auth.ts | Select-Object -First 50 → suggests surgical read', () => {
@@ -2335,6 +2335,68 @@ describe('gh api recall (F4)', () => {
     const cmd = 'gh api repos/octocat/hello/contents/tiny.txt'
     await postBashHandler(makePostBashEvent(cmd, '{"a":1}'))
     expect(ghRecalled(cmd)).toBe(false)
+  })
+})
+
+describe('extractCatFile', () => {
+  it('extracts file path from a simple cat command', () => {
+    const result = extractCatFile('cat src/auth.ts')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('src/auth.ts')
+    expect(result?.cmd0).toBe('cat')
+  })
+
+  it('extracts file path from Get-Content with quoted path', () => {
+    const result = extractCatFile('Get-Content "src/config.json"')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('src/config.json')
+    expect(result?.isConfig).toBe(true)
+  })
+
+  it('extracts file path from Get-Content with -Raw flag (trailing flag tolerance)', () => {
+    const result = extractCatFile('Get-Content "src/auth.ts" -Raw')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('src/auth.ts')
+    expect(result?.cmd0).toBe('Get-Content')
+  })
+
+  it('extracts file path from Get-Content with -Encoding flag', () => {
+    const result = extractCatFile('Get-Content "src/auth.ts" -Encoding utf8')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('src/auth.ts')
+  })
+
+  it('extracts file path from Get-Content with multiple trailing flags', () => {
+    const result = extractCatFile('Get-Content "README.md" -Raw -Encoding utf8')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('README.md')
+    expect(result?.isDoc).toBe(true)
+  })
+
+  it('extracts file path from type command', () => {
+    const result = extractCatFile('type config.yaml')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('config.yaml')
+  })
+
+  it('classifies a markdown file as doc', () => {
+    const result = extractCatFile('cat README.md')
+    expect(result?.isDoc).toBe(true)
+  })
+
+  it('classifies a JSON file as config', () => {
+    const result = extractCatFile('cat package.json')
+    expect(result?.isConfig).toBe(true)
+  })
+
+  it('classifies a SQL file as sql', () => {
+    const result = extractCatFile('cat schema.sql')
+    expect(result?.isSql).toBe(true)
+  })
+
+  it('returns null for unknown file extension', () => {
+    const result = extractCatFile('cat blob.b64')
+    expect(result).toBeNull()
   })
 })
 

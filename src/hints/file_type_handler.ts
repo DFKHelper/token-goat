@@ -88,6 +88,12 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
 export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
 
+
+  // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to handleHtml
+  const contentSniff = content.slice(0, 1000)
+  if (/^\s*<!DOCTYPE\s+html|^\s*<html[\s>]/i.test(contentSniff)) {
+    return handleHtml(filePath, content, contentLengthHint)
+  }
   const lines = content.split('\n')
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || filePath.includes('/logs/')
   const preview = [
