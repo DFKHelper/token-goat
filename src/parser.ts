@@ -1477,8 +1477,7 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
 export async function indexFileEmbeddings(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) return
   if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
-    // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding
-    // them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
+    // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
     deleteFileEmbeddings(getDb(dbPath), filePath)
     return
   }
