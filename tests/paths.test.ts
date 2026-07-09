@@ -1,3 +1,4 @@
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -100,6 +101,49 @@ describe('normalizePath', () => {
     it('leaves /c/foo unchanged on non-win32 (a real POSIX path)', () => {
       setPlatform('linux')
       expect(normalizePath('/c/foo')).toBe('/c/foo')
+    })
+  })
+
+  // Regression: %TEMP% (and every os.tmpdir()-based test fixture dir with it) can be pinned to the 8.3 short form (e.g. `JOHNDO~1.ACM`) on Windows, while git always emits long-form paths, so the same physical directory normalized to two different index keys depending on its source. fs.realpathSync (the POSIX-style implementation) does not resolve 8.3 short names on Windows; only fs.realpathSync.native does, hence the dedicated mock.
+  describe('8.3 short-name expansion (win32-gated)', () => {
+    const realPlatform = process.platform
+    const setPlatform = (p: string): void => {
+      Object.defineProperty(process, 'platform', { value: p, configurable: true })
+    }
+    afterEach(() => {
+      setPlatform(realPlatform)
+      vi.restoreAllMocks()
+    })
+
+    it('expands a short-name segment to its long form via fs.realpathSync.native', () => {
+      setPlatform('win32')
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockReturnValue('C:\\Users\\John.Doe')
+      expect(normalizePath('C:\\Users\\JOHNDO~1.ACM\\AppData\\Local\\Temp')).toBe(
+        'c:/Users/John.Doe/AppData/Local/Temp',
+      )
+      expect(spy).toHaveBeenCalledWith('C:/Users/JOHNDO~1.ACM')
+    })
+
+    it('does not touch a path with no short-name segment', () => {
+      setPlatform('win32')
+      const spy = vi.spyOn(fs.realpathSync, 'native')
+      expect(normalizePath('C:\\Users\\John.Doe\\project')).toBe('c:/Users/John.Doe/project')
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('is a no-op on non-win32 even with a short-name-shaped segment', () => {
+      setPlatform('linux')
+      const spy = vi.spyOn(fs.realpathSync, 'native')
+      expect(normalizePath('/home/user/JOHNDO~1.ACM/foo')).toBe('/home/user/JOHNDO~1.ACM/foo')
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the original path when the native lookup throws (path does not exist)', () => {
+      setPlatform('win32')
+      vi.spyOn(fs.realpathSync, 'native').mockImplementation(() => {
+        throw new Error('ENOENT')
+      })
+      expect(normalizePath('c:/Users/JOHNDO~1.ACM/AppData')).toBe('c:/Users/JOHNDO~1.ACM/AppData')
     })
   })
 })

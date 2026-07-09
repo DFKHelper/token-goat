@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { extractErrorMessage, foldPath } from './util.js';
-import { lowercaseDriveLetter } from './paths.js';
+import { lowercaseDriveLetter, expandShortPath } from './paths.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
@@ -89,6 +89,9 @@ export function canonicalize(inputPath: string | URL, baseDir?: string): string 
   if (isWin32) {
     normalized = normalizeShellDrivePrefix(normalized);
   }
+
+  // Expand a Windows 8.3 short-name segment (e.g. `JOHNDO~1.ACM`) to its long form: %TEMP%/%USERPROFILE% can be pinned to short form, which every os.tmpdir()-based path inherits, while git always emits long form, so without this the same physical path canonicalizes two different ways depending on its source. Shared with normalizePath (paths.ts) via expandShortPath so the rule can't drift between the two call sites.
+  normalized = expandShortPath(normalized);
 
   // Lowercase drive letter on Windows (e.g., "C:/foo" → "c:/foo"). Shared with
   // normalizePath (paths.ts) via lowercaseDriveLetter so the rule can't drift.

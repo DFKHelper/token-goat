@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows paths with `%TEMP%` pinned to its 8.3 short-name form (e.g. `JOHNDO~1.ACM`) got two different index/cache keys for the same physical directory.** Every `os.tmpdir()`-based path inherited the short form, while `git` always emits long-form paths, so `changed --symbol` and any other path-keyed lookup (worker `blocked_roots`, doc-compact sidecars, project canonicalization) silently missed matches depending on which side the path came from. `fs.realpathSync` (the POSIX-style implementation) does not resolve 8.3 short names on Windows; only `fs.realpathSync.native` does. Added `expandShortPath`, scoped to just the path segment that looks like a short name so the OS lookup can't silently case-fold the rest of the path (which would otherwise break case-sensitivity behavior), and wired it into `normalizePath` and `project.ts`'s `canonicalize`. Also routed `doc_compact.ts`'s `compactPathFor` through `normalizePath` so its sidecar key stays consistent whether the caller passes a raw or pre-normalized path. See [src/paths.ts](src/paths.ts), [src/project.ts](src/project.ts), [src/doc_compact.ts](src/doc_compact.ts); regression-tested in [tests/paths.test.ts](tests/paths.test.ts).
+
 ## [2.6.10] - 2026-07-09
 
 ### Added

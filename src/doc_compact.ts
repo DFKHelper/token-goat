@@ -12,6 +12,7 @@ import * as path from 'path'
 
 import { dataDir } from './constants.js'
 import { atomicWriteText } from './util.js'
+import { normalizePath } from './paths.js'
 
 const defaultSentencesPerSection = 2
 const headerPrefix = '<!-- token-goat doc-compact source-hash:'
@@ -55,7 +56,8 @@ function _compactSlug(absPathStr: string): string {
  * so same-named docs in different projects never collide.
  */
 export function compactPathFor(sourcePath: string): string {
-  const abs = path.resolve(sourcePath)
+  // Route through normalizePath (not just path.resolve) so the sidecar key is identical whether the caller passes a raw path (cmdCompactDoc) or one already normalized upstream (preReadHandler) -- notably including 8.3 short-name expansion, which path.resolve alone does not perform.
+  const abs = normalizePath(path.resolve(sourcePath))
   return path.join(dataDir(), compactSubdir, `${_compactSlug(abs)}.md`)
 }
 
