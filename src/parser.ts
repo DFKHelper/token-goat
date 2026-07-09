@@ -1281,42 +1281,46 @@ function sectionsToHeadingSymbols(
   }))
 }
 
+type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
+
+// One entry per non-tree-sitter Language. Adding a new adapter is one map entry rather than
+// a new `if` branch; html/liquid keep their extra sectionsToHeadingSymbols composition inline.
+const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
+  markdown: extractMarkdownSymbols,
+  json: extractJsonSymbols,
+  yaml: extractYamlSymbols,
+  toml: extractTomlSymbols,
+  css: extractCssSymbols,
+  dockerfile: extractDockerfileSymbols,
+  csharp: (content, filePath) => extractCsharp(content, filePath).symbols,
+  php: (content, filePath) => extractPhp(content, filePath).symbols,
+  html: (content, filePath) => {
+    const r = extractHtml(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  liquid: (content, filePath) => {
+    const r = extractLiquid(content, filePath)
+    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
+  },
+  kotlin: (content, filePath) => extractKotlin(content, filePath).symbols,
+  graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
+  sql: extractSql,
+  ini: extractIni,
+  makefile: extractMakefile,
+  proto: (content, filePath) => extractProto(content, filePath).symbols,
+  powershell: (content, filePath) => extractPowershell(content, filePath).symbols,
+  apex: (content, filePath) => extractApex(content, filePath).symbols,
+  salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
+  env_file: extractEnv,
+}
+
 function extractSymbolsNoTreeSitter(
   content: string,
   filePath: string,
   language: Language,
 ): SymbolEntry[] {
-  if (language === 'markdown') return extractMarkdownSymbols(content, filePath)
-  if (language === 'json') return extractJsonSymbols(content, filePath)
-  if (language === 'yaml') return extractYamlSymbols(content, filePath)
-  if (language === 'toml') return extractTomlSymbols(content, filePath)
-  if (language === 'css') return extractCssSymbols(content, filePath)
-  if (language === 'dockerfile') return extractDockerfileSymbols(content, filePath)
-
-  // New language adapters from ./languages/
-  if (language === 'csharp') return extractCsharp(content, filePath).symbols
-  if (language === 'php') return extractPhp(content, filePath).symbols
-  if (language === 'html') {
-    const r = extractHtml(content, filePath)
-    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
-  }
-  if (language === 'liquid') {
-    const r = extractLiquid(content, filePath)
-    return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
-  }
-  if (language === 'kotlin') return extractKotlin(content, filePath).symbols
-  if (language === 'graphql') return extractGraphql(content, filePath).symbols
-  if (language === 'sql') return extractSql(content, filePath)
-  if (language === 'ini') return extractIni(content, filePath)
-  if (language === 'makefile') return extractMakefile(content, filePath)
-  if (language === 'proto') return extractProto(content, filePath).symbols
-  if (language === 'powershell') return extractPowershell(content, filePath).symbols
-  if (language === 'apex') return extractApex(content, filePath).symbols
-  if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath).symbols
-  if (language === 'env_file') return extractEnv(content, filePath)
-
   if (language === 'unknown') return []
-  return extractWithRegex(content, filePath)
+  return (NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)
 }
 
 /**
