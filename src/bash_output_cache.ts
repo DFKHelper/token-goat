@@ -57,8 +57,6 @@ export interface BashOutputEntry {
 
 // id -> entry.
 let _byId = new Map<string, BashOutputEntry>()
-let _globsByKey = new Map<string, string>()
-let _grepsByKey = new Map<string, string>()
 
 
 const COMMAND_PATTERNS: Record<string, RegExp> = {
@@ -421,18 +419,6 @@ export function globHash(pattern: string, path: string | null): string {
   return shortFingerprint(canonical)
 }
 
-export function storeGlobResult(sessionId: string, pattern: string, path: string | null, resultText: string): string {
-  const hash = globHash(pattern, path)
-  const key = `${sessionId}:${hash}`
-  _globsByKey.set(key, resultText)
-  return hash
-}
-
-export function getBashGlobResult(sessionId: string, pattern: string, path: string | null): string | null {
-  const hash = globHash(pattern, path)
-  const key = `${sessionId}:${hash}`
-  return _globsByKey.get(key) ?? null
-}
 
 /**
  * Store a command's `output` and `exitCode`, returning its id.
@@ -521,6 +507,5 @@ export function getBashOutputByCommandHash(commandHash: string): BashOutputEntry
 
 registerReset(() => {
   _byId = new Map()
-  _globsByKey = new Map()
-  _grepsByKey = new Map()
+
 })

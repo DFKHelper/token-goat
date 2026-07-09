@@ -643,6 +643,24 @@ describe('DiffFilter compression', () => {
     expect(out).toContain(`large diff (${fileCount} files)`)
     expect(out).not.toContain(`large diff (${fileCount * 2} files)`)
   })
+
+  it('does not treat a removed line starting with "-- " as a spurious file boundary', () => {
+    // A removed SQL/Lua/Haskell comment (or markdown horizontal rule) renders
+    // as a bare `--- `-prefixed line with no following `+++ ` line — it must
+    // not be misdetected as a second file's header.
+    const lines: string[] = ['--- a/file.sql', '+++ b/file.sql', '@@ -1,6 +1,6 @@']
+    for (let j = 0; j < 4; j++) lines.push(' context line')
+    lines.push('-- removed comment line')
+    lines.push('+kept line')
+    // Pad past the 50-line passthrough threshold so compression actually runs.
+    for (let j = 0; j < 50; j++) lines.push(' more context line')
+    const out = compress(f, lines.join('\n'), argv)
+    // A spurious split would report 2 files in the stat-only/large-diff path,
+    // or otherwise duplicate/mislabel the `file.sql` header.
+    expect(out).not.toContain('large diff')
+    expect(out.match(/--- a\/file\.sql/g)?.length ?? 0).toBe(1)
+    expect(out).toContain('-- removed comment line')
+  })
 })
 
 // ---------------------------------------------------------------------------

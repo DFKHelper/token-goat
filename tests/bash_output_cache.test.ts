@@ -23,8 +23,6 @@ import {
   isCatCommand,
   normalizeCommandForCacheKey,
   globHash,
-  storeGlobResult,
-  getBashGlobResult,
   commandHash,
   depLockfileFingerprint,
   computeBashFingerprints,
@@ -180,19 +178,6 @@ describe('globHash', () => {
     const hash1 = globHash('**/*.ts', null)
     const hash2 = globHash('**/*.ts', '')
     expect(hash1).toBe(hash2)
-  })
-})
-
-describe('glob result caching', () => {
-  it('stores and retrieves', () => {
-    storeGlobResult('session1', '**/*.ts', '/src', 'file1\nfile2\n')
-    const result = getBashGlobResult('session1', '**/*.ts', '/src')
-    expect(result).toBe('file1\nfile2\n')
-  })
-
-  it('returns null for missing', () => {
-    const result = getBashGlobResult('nonexistent', 'pattern', '/path')
-    expect(result).toBeNull()
   })
 })
 

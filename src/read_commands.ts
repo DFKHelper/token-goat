@@ -223,13 +223,116 @@ function runLineRange(
 // Resolves a `file::symbol` spec to its indexed SymbolEntry, including dotted-path ("Class.method")
 // disambiguation and the partial-path fallback for an index keyed by a longer relative path.
 // Shared by `runRead` and `runBrief` -- do not reimplement this resolution elsewhere.
-function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | null {
+/**
+ * Outcome of resolving a `file::symbol` (or qualified `file::Parent.symbol`) spec:
+ *  - `ok`        exactly one distinct definition matched (or a Parent qualifier narrowed
+ *                the field to one) — the common, unchanged path.
+ *  - `ambiguous` the bare name matched several distinct definitions in the file and no
+ *                Parent qualifier disambiguated them. Callers MUST surface an error that
+ *                lists every candidate rather than silently return the first row.
+ *  - `none`      nothing matched.
+ */
+type SymbolResolution =
+  | { kind: 'ok'; entry: SymbolEntry }
+  | { kind: 'ambiguous'; symbol: string; file: string; candidates: SymbolEntry[] }
+  | { kind: 'none' }
+
+// Container kinds whose docstring may hold a real doc comment rather than a parent name.
+const PARENT_IDENTIFIER_RE = /^[\w$]+$/
+
+/**
+ * Best-effort name of the symbol that lexically encloses `entry`, used only to label a
+ * candidate in an ambiguity error. Tree-sitter/flat-emitter adapters record the parent via
+ * line-containment (the class symbol's range spans the method body), so the tightest
+ * enclosing symbol is the parent. Regex-parsed adapters (php/csharp/kotlin/powershell)
+ * store the parent class name directly in the method's `docstring` field because their
+ * class symbol is a single-line span at the header that never contains the body — fall back
+ * to that when it is a bare identifier and no enclosing symbol was found. Returns null for a
+ * genuine top-level definition.
+ */
+function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string | null {
+  let best: SymbolEntry | null = null
+  for (const s of fileSymbols) {
+    const sameSpan = s.lineStart === entry.lineStart && s.lineEnd === entry.lineEnd
+    if (sameSpan) continue
+    if (s.lineStart <= entry.lineStart && s.lineEnd >= entry.lineEnd) {
+      if (best === null || s.lineStart > best.lineStart) best = s
+    }
+  }
+  if (best !== null) return best.name
+  const doc = entry.docstring.trim()
+  if (doc !== '' && PARENT_IDENTIFIER_RE.test(doc)) return doc
+  return null
+}
+
+/**
+ * Render the hard error shown when a bare `file::symbol` lookup matches multiple distinct
+ * definitions. Two shapes are handled:
+ *  - same-file ambiguity (several classes in one file each defining `compress`): labels stay
+ *    bare `Parent.symbol (line N)` and the retry re-targets the original `file` spec, byte-for-
+ *    byte unchanged from the pre-fix same-file behavior.
+ *  - cross-file ambiguity (two different files each defining a same-named top-level symbol,
+ *    where `findParentName` has no cross-file concept of "parent" and returns null for both):
+ *    labels are prefixed with the candidate's own indexed file path so the candidates are
+ *    visually distinguishable, and the retry targets that candidate's own file path instead of
+ *    re-echoing the original ambiguous `file` string (which would just re-enter this same
+ *    ambiguous resolution path).
+ * A mixed list (some candidates share a same-file parent, others don't, across multiple files)
+ * gets file-prefixed labels for every candidate, each with its own working, distinct retry.
+ */
+function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]): string {
+  const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
+  const lines = [
+    `Ambiguous symbol '${symbol}' in '${file}': ${candidates.length} definitions match. ` +
+      `Retry with one of the qualified commands below to pick one:`,
+  ]
+  const fileSymCache = new Map<string, SymbolEntry[]>()
+  for (const c of candidates) {
+    let fileSyms = fileSymCache.get(c.filePath)
+    if (fileSyms === undefined) {
+      fileSyms = querySymbols({ filePath: c.filePath, limit: 1000 })
+      fileSymCache.set(c.filePath, fileSyms)
+    }
+    const parent = findParentName(c, fileSyms)
+    const qualifier = parent !== null ? `${parent}.${symbol}` : symbol
+    // Cross-file ambiguity can't be resolved by re-typing the original (still-ambiguous) `file`
+    // spec -- retarget the retry at this candidate's own indexed file path so it resolves to
+    // exactly this candidate. Same-file ambiguity keeps retrying against the original `file`
+    // string, unchanged from the pre-fix behavior.
+    const retryFile = multiFile ? c.filePath : file
+    const label = multiFile ? `${c.filePath}::${qualifier}` : qualifier
+    lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat read "${retryFile}::${qualifier}"`)
+  }
+  return lines.join('\n')
+}
+
+function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResolution {
   const { file, symbol } = parseReadSpec(spec)
-  if (symbol === undefined || symbol === '') return null
+  if (symbol === undefined || symbol === '') return { kind: 'none' }
 
   const resolved = resolveIndexPath(file)
   if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
+  }
+
+  // Collapse a raw candidate list into a final resolution. Distinct definitions are keyed by
+  // their (file,line) span, so a symbol accidentally indexed twice collapses to one row and
+  // does not read as ambiguous. Exactly one distinct match -> ok (this preserves the
+  // unambiguous single-match behavior byte-for-byte). More than one distinct match -> the
+  // hard `ambiguous` error, which is the fix: never silently return candidates[0] when the
+  // caller's name genuinely picks out several different definitions.
+  const finalize = (cands: SymbolEntry[], displaySymbol: string): SymbolResolution => {
+    const seen = new Set<string>()
+    const distinct: SymbolEntry[] = []
+    for (const c of cands) {
+      const key = `${c.filePath}|${c.lineStart}|${c.lineEnd}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      distinct.push(c)
+    }
+    if (distinct.length === 0) return { kind: 'none' }
+    if (distinct.length === 1) return { kind: 'ok', entry: distinct[0]! }
+    return { kind: 'ambiguous', symbol: displaySymbol, file, candidates: distinct }
   }
 
   // Some indexed symbol names legitimately contain dots (TOML sections like "tool.poetry", CSS
@@ -239,7 +342,7 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
   if (symbol.includes('.')) {
     const exactMatch = querySymbols({ name: symbol, filePath: resolved, limit: 10 })
     if (exactMatch.length > 0) {
-      return exactMatch[0] ?? null
+      return finalize(exactMatch, symbol)
     }
   }
 
@@ -295,7 +398,10 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolEntry | 
     if (scoped.length > 0) candidates = scoped
   }
 
-  return candidates[0] ?? null
+  // A bare name that still matches several distinct definitions (no Parent qualifier, or a
+  // qualifier that failed to narrow) resolves to `ambiguous` here — the leaf name is what the
+  // user must re-qualify, so it is the display symbol for the error's `Parent.<leaf>` labels.
+  return finalize(candidates, lookupName)
 }
 
 /** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
@@ -313,15 +419,27 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text: guardText(text, 'symbol'), code: 0 }
   }
 
-  const match = resolveSymbolSpec(opts.spec, opts.forceRefresh)
+  const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh)
 
-  if (match === null) {
+  if (resolution.kind === 'ambiguous') {
+    // Genuine same-file ambiguity (a bare name matching several classes' methods, or a
+    // qualifier that failed to narrow): refuse to guess. The error lists every candidate and
+    // the qualified retry syntax instead of silently returning the first-ordered row.
+    return {
+      text: formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates),
+      code: 1,
+    }
+  }
+
+  if (resolution.kind === 'none') {
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
     const resolved = resolveIndexPath(file)
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
     return { text: messages.join('\n'), code: 1 }
   }
+
+  const match = resolution.entry
 
   if (opts.json === true) {
     return { text: JSON.stringify(match, null, 2), code: 0 }
@@ -748,11 +866,16 @@ interface BriefResult {
  * and its containing doc section (if the file has heading structure) into one response --
  * cutting the common "understand this function" pattern from 2-3 round-trips to 1. */
 export function runBrief(opts: BriefOptions): number {
-  const match = resolveSymbolSpec(opts.spec)
-  if (match === null) {
+  const resolution = resolveSymbolSpec(opts.spec)
+  if (resolution.kind === 'ambiguous') {
+    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
+    return 1
+  }
+  if (resolution.kind === 'none') {
     emitErr(`Symbol not found: ${opts.spec}`)
     return 1
   }
+  const match = resolution.entry
 
   // Query with resolveCallers's own (much larger) default limit so we learn the true
   // caller count, then apply the display limit ourselves — otherwise the DB query and

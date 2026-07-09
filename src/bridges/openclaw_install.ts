@@ -68,6 +68,20 @@ export function openclawPluginPath(): string {
   return path.join(openclawHomeDir(), 'plugins', 'token-goat.ts')
 }
 
+/**
+ * Sidecar JSON file, written next to the plugin, carrying the absolute path
+ * to the token-goat CLI entry that was running at install time (`process.argv[1]`).
+ * The plugin has no per-invocation command line to bake this into the way
+ * Codex/Copilot's generated hook commands do (OpenClaw loads it once as a
+ * module), so `callHook`'s `resolveEntryPath()` reads this file at runtime
+ * instead, to invoke that entry directly via `process.execPath` rather than
+ * depending on PATH resolution for a bare `token-goat` lookup (mirrors
+ * `piEntrySidecarPath` in `./pi_install.js`).
+ */
+export function openclawEntrySidecarPath(): string {
+  return path.join(path.dirname(openclawPluginPath()), 'token-goat-entry.json')
+}
+
 function readOpenclawConfig(p: string, opts: { strict?: boolean } = {}): OpenclawSettings {
   let raw: string
   try {
@@ -119,8 +133,23 @@ export function installOpenclaw(): OpenclawInstallResult {
 
   // strict: true -- a config file that exists but fails to parse must abort
   // before any write, not silently proceed as if it were empty and get
-  // clobbered below.
+  // clobbered below. Must run before the sidecar write below: writing the
+  // sidecar unconditionally, then aborting on a corrupt config, would leave
+  // a stray token-goat-entry.json behind despite the install as a whole
+  // having failed and the plugin config never having been touched.
   const settings = readOpenclawConfig(configPath, { strict: true })
+
+  // process.argv[1] is the absolute path to whichever token-goat entry point
+  // launched this install run. Written unconditionally on every successful
+  // run past the strict parse above (even when the plugin itself is already
+  // up to date) so re-running install after moving/upgrading the token-goat
+  // install refreshes a stale sidecar too.
+  const entryPath = process.argv[1]
+  if (entryPath) {
+    ensureDirSync(path.dirname(pluginPath))
+    atomicWriteText(openclawEntrySidecarPath(), JSON.stringify({ entryPath }))
+  }
+
   const plugins: OpenclawPlugins = settings.plugins ?? {}
   const loadPaths = [...(plugins.load?.paths ?? [])]
   const entries = { ...(plugins.entries ?? {}) }
@@ -163,6 +192,12 @@ export function uninstallOpenclaw(): boolean {
   try {
     fs.unlinkSync(pluginPath)
     removed = true
+  } catch {
+    // nothing to remove
+  }
+
+  try {
+    fs.unlinkSync(openclawEntrySidecarPath())
   } catch {
     // nothing to remove
   }

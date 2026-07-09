@@ -58,8 +58,8 @@ export function extractPhp(
   const imports: PhpImport[] = []
   const lines = content.split(/\r?\n/)
 
-  // Stack of (className, braceDepthAtEntry)
-  const contextStack: Array<[string, number]> = []
+  // Stack of (className, braceDepthAtEntry, bodyEntered)
+  const contextStack: Array<[string, number, boolean]> = []
   let braceDepth = 0
   let inComment = false
 
@@ -87,10 +87,20 @@ export function extractPhp(
     const closeB = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openB - closeB
 
-    // Pop context when we close the class brace
+    // Mark the current frame's body as entered once brace depth has actually risen above its
+    // start depth, so a header line with zero net braces (e.g. a multi-line `implements`
+    // clause) can't be mistaken for "back down to start" before the class body is ever opened.
+    const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+    if (topFrame !== undefined && braceDepth > topFrame[1]) {
+      topFrame[2] = true
+    }
+
+    // Pop context when we close the class brace. Only pop once bodyEntered is true - this
+    // guards multi-line class headers (`class Foo`, `implements Bar, Baz`, `{` each on their
+    // own line), where brace depth still equals the frame's start depth on the header line.
     while (contextStack.length > 0) {
       const top = contextStack[contextStack.length - 1]
-      if (top !== undefined && braceDepth <= top[1]) {
+      if (top !== undefined && top[2] && braceDepth <= top[1]) {
         contextStack.pop()
       } else {
         break
@@ -129,7 +139,13 @@ export function extractPhp(
         : 'class'
       const parent = currentClass()
       symbols.push(makeSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
-      contextStack.push([name, braceDepth - openB + closeB])
+      contextStack.push([name, braceDepth - openB + closeB, false])
+      if (openB > 0 && openB === closeB) {
+        // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration
+        // line itself, so braceDepth never rises above the frame's start depth and the
+        // bodyEntered-gated pop above would never fire. Pop it immediately instead.
+        contextStack.pop()
+      }
       continue
     }
 

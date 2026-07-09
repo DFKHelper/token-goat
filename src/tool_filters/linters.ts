@@ -16,7 +16,7 @@ import { ERROR_SIGNAL_RE, maybeNote, pathStem, positionalArgs, squeezeBlankLines
 const _ESLINT_LOC_RE = /^\s+\d+:\d+\s+(error|warning|info)\s/
 
 // ESLint / stylelint file header: starts with abs-path or known JS extension
-const _ESLINT_FILE_RE = /^(?:\/|[A-Z]:|[a-zA-Z0-9_./-]+\.(?:js|jsx|ts|tsx|mjs|cjs|vue))/
+const _ESLINT_FILE_RE = /^(?:\/|[A-Za-z]:|[a-zA-Z0-9_./-]+\.(?:js|jsx|ts|tsx|mjs|cjs|vue))/
 
 // ESLint summary footer: "✖ 47 problems …"
 const _ESLINT_SUMMARY_RE = /^[✖✗✘x×]\s+\d+\s+problem/

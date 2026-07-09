@@ -265,6 +265,25 @@ public class Foo {
     expect(after?.kind).toBe('method')
     expect(after?.docstring).toBe('Foo')
   })
+
+  it('detects an Allman-style auto-property with get/set on their own line', () => {
+    const content = `public class Foo
+{
+    public int Bar
+    {
+        get; set;
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: PROPERTY_RE requires the '{'/get/set tokens on the same line as the property
+    // declaration. Standard Allman brace style puts the brace (and get/set) on their own
+    // following lines, so the property was silently omitted from the index entirely - not
+    // mis-parented, just absent.
+    const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
+    expect(bar).toBeDefined()
+    expect(bar?.docstring).toBe('Foo')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -422,6 +441,24 @@ class A {
     const method1 = symbols.find((s) => s.name === 'method1')
     expect(method1?.kind).toBe('method')
     expect(method1?.docstring).toBe('A')
+  })
+
+  it('does not pop a class context on a multi-line header before its body brace is reached', () => {
+    const content = `<?php
+class Foo
+implements Bar, Baz
+{
+    public function method1() {}
+}
+`
+    const { symbols } = extractPhp(content, 'Foo.php')
+    // Regression: the 'implements Bar, Baz' line has zero net braces, so braceDepth still
+    // equals the just-pushed Foo frame's start depth. Without a bodyEntered gate, the class
+    // context popped immediately on that line - before the '{' on the next line was even
+    // seen - and method1 was mis-parented as a top-level function instead of Foo's method.
+    const method1 = symbols.find((s) => s.name === 'method1')
+    expect(method1?.kind).toBe('method')
+    expect(method1?.docstring).toBe('Foo')
   })
 })
 

@@ -1137,6 +1137,7 @@ function _compressGitPush(stdout: string, stderr: string): string {
     const kept: string[] = []
     let inError = false
     let errorLinesKept = 0
+    let capReached = false
     const MAX_ERROR_LINES = 30
     for (const ln of lines) {
       if (_PYTEST_DOT_LINE_RE.test(ln)) continue
@@ -1148,6 +1149,9 @@ function _compressGitPush(stdout: string, stderr: string): string {
         errorLinesKept++
       } else if (!inError) {
         kept.push(ln)
+      } else if (inError && errorLinesKept >= MAX_ERROR_LINES && !capReached) {
+        kept.push(`[token-goat: +${lines.length - errorLinesKept} more error lines omitted]`)
+        capReached = true
       }
     }
     const prefix = pytestSummary ? `pre-push FAILED: ${pytestSummary}` : 'pre-push FAILED'

@@ -70,6 +70,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 // opencode built-in tool id -> token-goat canonical tool name.
 const TOOL_TO_TG = {
@@ -115,14 +116,57 @@ function toToolInput(tool, args) {
   return out
 }
 
+// resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
+// installOpencode next to this plugin file) containing the absolute path to
+// the token-goat CLI entry that was running at install time. Unlike
+// Codex/Copilot's generated hook commands, this plugin has no per-invocation
+// command line to bake a path into (opencode loads it once as a module), so
+// callHook reads this sidecar at runtime instead, to invoke that entry
+// directly via process.execPath rather than depending on PATH resolution for
+// a bare "token-goat" lookup -- the same single-point-of-failure class fixed
+// for the Codex/Copilot CLI bridges' hook commands and pi's extension
+// (resolveEntryPath). Returns undefined (triggering the PATH-based
+// shell:true fallback below) if the sidecar is missing, unreadable, or
+// points at a path that no longer exists.
+function resolveEntryPath() {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    const sidecarPath = path.join(here, "token-goat-entry.json")
+    const parsed = JSON.parse(fs.readFileSync(sidecarPath, "utf8"))
+    if (typeof parsed.entryPath === "string" && parsed.entryPath && fs.existsSync(parsed.entryPath)) {
+      return parsed.entryPath
+    }
+  } catch {
+    // fall through to undefined
+  }
+  return undefined
+}
+
 function callHook(event, payload) {
   try {
-    const r = spawnSync("token-goat", ["hook", event], {
-      input: JSON.stringify(payload),
-      encoding: "utf8",
-      timeout: 5000,
-      windowsHide: true,
-    })
+    // Invoking "token-goat" as a bare command here depends on PATH resolution
+    // (the npm global bin being on whatever PATH the opencode process
+    // inherits) -- on Windows a global npm install resolves "token-goat" to a
+    // .cmd/.ps1 shim, which spawnSync cannot exec without shell: true. When
+    // resolveEntryPath() finds a baked install-time path, invoke it directly
+    // via process.execPath instead, sidestepping PATH entirely; otherwise
+    // fall back to the old PATH-based lookup with shell: true so a .cmd/.ps1
+    // shim still resolves (e.g. an install predating this fix).
+    const entryPath = resolveEntryPath()
+    const r = entryPath
+      ? spawnSync(process.execPath, [entryPath, "hook", event], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+        })
+      : spawnSync("token-goat hook " + event, {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 5000,
+          shell: true,
+          windowsHide: true,
+        })
     if (r.error) return null
     const out = r.stdout ? r.stdout.trim() : ""
     if (!out) return null

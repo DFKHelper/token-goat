@@ -536,26 +536,14 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; byProject?: boolean; byCommand?: boolean; top?: string; homeDir?: string } = {}): void {
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string } = {}): void {
   const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
   if (!Number.isFinite(windowDays) || windowDays < 0) {
     throw new CliError('--window-days must be a non-negative number')
   }
-  let topNum: number | undefined
-  if (opts.top !== undefined) {
-    topNum = parseInt(opts.top, 10)
-    if (!Number.isFinite(topNum) || topNum < 1) {
-      throw new CliError('--top must be a positive number')
-    }
-  }
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
     windowDays,
-    byProject: opts.byProject === true,
-    byCommand: opts.byCommand === true,
-  }
-  if (topNum !== undefined) {
-    statsOpts.top = topNum
   }
   if (opts.homeDir !== undefined) {
     statsOpts.homeDir = opts.homeDir
@@ -1795,7 +1783,9 @@ export function buildProgram(): Command {
 
   program
     .command('read <spec>')
-    .description("read one symbol's full body (spec: file::symbol)")
+    .description(
+      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol)",
+    )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean }) =>
@@ -1951,9 +1941,6 @@ export function buildProgram(): Command {
     .description('show session statistics')
     .option('--json', 'output JSON')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
-    .option('--by-project', 'show breakdown by project')
-    .option('--by-command', 'show breakdown by command')
-    .option('--top <n>', 'number of top entries to show in project view')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))
 

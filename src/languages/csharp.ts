@@ -32,6 +32,15 @@ const PROPERTY_RE = new RegExp(
   '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
   '([A-Z][A-Za-z0-9_]*)\\s*\\{[^}]*(?:get|set)',
 )
+// Allman-style auto-property header (`public int Foo` with the `{ get; set; }` block on the
+// following lines rather than trailing this line) - same shape as PROPERTY_RE but anchored to
+// end-of-line instead of requiring a same-line `{`.
+const PROPERTY_HEADER_RE = new RegExp(
+  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*' +
+  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
+  '([A-Z][A-Za-z0-9_]*)\\s*$',
+)
+const ALLMAN_ACCESSOR_RE = /^(?:get\s*;\s*set\s*;|set\s*;\s*get\s*;|get\s*;|set\s*;)$/
 const CONSTRUCTOR_RE = new RegExp(
   '^\\s+(?:(?:public|protected|private|internal|static)\\s+)*' +
   '([A-Z][A-Za-z0-9_]*)\\s*\\(',
@@ -140,6 +149,18 @@ export function extractCsharp(
         const propM = PROPERTY_RE.exec(line)
         if (propM) {
           symbols.push(makeSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+        } else {
+          // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
+          // following lines rather than trailing the header line, so PROPERTY_RE (which
+          // requires a same-line `{`) never matches. Peek the next two lines for that shape.
+          const headerM = PROPERTY_HEADER_RE.exec(line)
+          if (headerM) {
+            const braceLineNext = (lines[i + 1] ?? '').trim()
+            const accessorLine = (lines[i + 2] ?? '').trim()
+            if (braceLineNext === '{' && ALLMAN_ACCESSOR_RE.test(accessorLine)) {
+              symbols.push(makeSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+            }
+          }
         }
         // method
         const methM = METHOD_RE.exec(line)

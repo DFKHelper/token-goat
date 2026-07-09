@@ -43,6 +43,7 @@ import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
 
 import { extractPowershell } from './languages/powershell_idx.js'
+import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
 /** Result of parsing one file: extracted symbols, refs, language, timing. */
@@ -1329,9 +1330,10 @@ function extractSymbolsNoTreeSitter(
  * prior reindex are removed rather than orphaned as case-variant duplicates.
  */
 export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): void {
-  db.prepare(`DELETE FROM symbols WHERE ${pathEqClause('file_path')}`).run(filePath)
-  db.prepare(`DELETE FROM refs WHERE ${pathEqClause('file_path')}`).run(filePath)
-  db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(filePath)
+  const folded = foldPath(filePath)
+  db.prepare(`DELETE FROM symbols WHERE ${pathEqClause('file_path')}`).run(folded)
+  db.prepare(`DELETE FROM refs WHERE ${pathEqClause('file_path')}`).run(folded)
+  db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(folded)
 }
 
 function writeParseResult(
