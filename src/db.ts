@@ -18,6 +18,7 @@ import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
 import { dataDir } from './constants.js'
 import { safeJoin } from './paths.js'
+import { foldCase } from './util.js'
 import { registerReset } from './reset.js'
 
 // ESM has no `require`; build one so we can probe for the optional sqlite-vec package without making it a hard module-resolution dependency.
@@ -150,6 +151,17 @@ function initConnection(conn: BetterSqlite3Database): void {
   conn.pragma('synchronous = NORMAL')
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
   conn.pragma('busy_timeout = 15000')
+
+  // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for
+  // case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds
+  // ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware
+  // toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same
+  // foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte
+  // consistent. Registered once per connection (not per-query) and marked deterministic
+  // so SQLite can use it in query planning the same way it would a built-in function.
+  conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>
+    value === null ? null : foldCase(String(value)),
+  )
 
   // A single cheap read on every open -- this runs on the hot path (every hook call, every CLI
   // invocation), so no schema work happens here beyond one PRAGMA read. Anything ABOVE

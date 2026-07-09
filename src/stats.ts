@@ -379,9 +379,9 @@ function _plainTextStats(summary: StatsSummary): void {
   console.log(lines.join('\n'))
 }
 
-export function renderStats(opts?: { windowDays?: number }): void {
+export function renderStats(opts?: { windowDays?: number; homeDir?: string }): void {
   const windowDays = opts?.windowDays ?? 30
-  const summary = summarize(windowDays)
+  const summary = summarize(windowDays, undefined, opts?.homeDir)
 
   if (summary.total_events === 0) {
     console.log('No stats recorded yet.')

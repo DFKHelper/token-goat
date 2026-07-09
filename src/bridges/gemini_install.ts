@@ -16,9 +16,15 @@
  * Expressions" for `BeforeTool`/`AfterTool`; the lifecycle event
  * `PreCompress` takes no matcher and fires on every occurrence).
  * No shim script is needed the way Codex's strict `additionalProperties: false`
- * schemas require one: Gemini's hook command is invoked directly
- * (`token-goat hook <event>`), exactly as Claude Code's own `hookCommand` in
- * `../install.ts` does. `relay.ts`'s `harnessForNormalization()` routes the
+ * schemas require one: Gemini's hook command invokes `token-goat hook <event>`
+ * directly, without any response reshaping. It is invoked via the absolute
+ * Node binary (`process.execPath`) and the running token-goat entry path
+ * (`process.argv[1]`), not a bare `token-goat` command -- {@link geminiHookCommand}
+ * -- for the same reason `hookCommandFor` in `./codex_install.ts` and
+ * `./copilot_cli_install.ts` do: a global npm install on Windows resolves
+ * `token-goat` to a `.cmd`/`.ps1` shim, which a `command`-type hook spawned
+ * without `shell: true` cannot exec, and Gemini's own hook runner is not
+ * documented to set that. `relay.ts`'s `harnessForNormalization()` routes the
  * resulting `token-goat hook` subprocess to `normalizePayload(..., 'gemini')`
  * whenever it inherits Gemini CLI's own environment (`GEMINI_API_KEY` /
  * `GOOGLE_API_KEY`, via `detectHarness()`), which is what actually translates
@@ -55,8 +61,12 @@ import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from '../util.js'
 
-/** Marker substring identifying a token-goat-authored Gemini hook command. */
-const GEMINI_COMMAND_MARKER = 'token-goat hook'
+/**
+ * Marker substring identifying a legacy (pre exec-path-hardening) bare
+ * `token-goat hook <event>` command -- still recognized so an older install
+ * remains detectable/removable, but no longer written by {@link geminiHookCommand}.
+ */
+const GEMINI_LEGACY_COMMAND_MARKER = 'token-goat hook'
 
 /** Gemini CLI's own hook event keys that token-goat wires (README "Gemini CLI users"). */
 const GEMINI_HOOK_EVENTS = ['BeforeTool', 'AfterTool', 'PreCompress'] as const
@@ -159,12 +169,43 @@ function readGeminiSettings(p: string, opts: { strict?: boolean } = {}): GeminiS
   return {}
 }
 
-/** True when `command` is a token-goat-authored Gemini hook invocation. */
-const GEMINI_MARKER_PATTERN = anchoredMarkerPattern(GEMINI_COMMAND_MARKER)
+/** True when `command` is the legacy bare `token-goat hook <event>` invocation. */
+const GEMINI_LEGACY_MARKER_PATTERN = anchoredMarkerPattern(GEMINI_LEGACY_COMMAND_MARKER)
 
-/** True when `command` invokes token-goat's Gemini hook -- anchored so a marker embedded as a substring inside an unrelated command can't false-positive. */
+/**
+ * Shape of the current exec-path-hardened invocation {@link geminiHookCommand}
+ * writes: a quoted absolute Node binary, a quoted absolute token-goat entry
+ * path (captured), and a trailing `hook <event>` call for one of the events
+ * this bridge wires. Matching this shape alone is NOT sufficient to identify
+ * the command as token-goat's own -- see {@link GEMINI_ENTRY_PATH_MARKER_PATTERN}.
+ */
+const GEMINI_COMMAND_PATTERN = /^"[^"]+"\s+"([^"]+)"\s+hook\s+(?:pre_tool_use|post_tool_use|pre_compact)$/
+
+/**
+ * Literal marker identifying token-goat's own entry path: this package's name
+ * (`package.json`'s `name`/`bin` key, e.g. `dist/token-goat.mjs`). Any install
+ * layout -- a local dev checkout, a global `npm install -g`, or an install as
+ * another project's dependency -- places the entry script under an npm
+ * `node_modules/token-goat/...` directory (or, in this repo's own checkout, a
+ * path that itself contains a `token-goat` segment), so requiring this
+ * substring in the captured entry-path segment (anchored the same way
+ * {@link GEMINI_LEGACY_MARKER_PATTERN} is, so it can't match as part of a
+ * longer unrelated word) distinguishes our own hook command from an unrelated
+ * tool's same-shape command -- e.g. `"C:/some/other/node.exe" "C:/some/other/tool.js"
+ * hook pre_tool_use` has the identical shape but no `token-goat` path segment
+ * and correctly does not match.
+ */
+const GEMINI_ENTRY_PATH_MARKER_PATTERN = anchoredMarkerPattern('token-goat')
+
+/** True when `command` invokes token-goat's Gemini hook (current or legacy format) -- shape-matched AND, for the current format, checked for a token-goat-identifying entry-path segment, so a same-shape command from an unrelated tool can't false-positive. */
 function isGeminiTokenGoatCommand(command: string): boolean {
-  return typeof command === 'string' && GEMINI_MARKER_PATTERN.test(command)
+  if (typeof command !== 'string') return false
+  const match = GEMINI_COMMAND_PATTERN.exec(command)
+  if (match) {
+    const entryPath = match[1] ?? ''
+    return GEMINI_ENTRY_PATH_MARKER_PATTERN.test(entryPath)
+  }
+  return GEMINI_LEGACY_MARKER_PATTERN.test(command)
 }
 
 /** True when `groups` already has a token-goat hook entry under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */
@@ -180,9 +221,20 @@ function groupHasTokenGoat(groups: GeminiMatcherGroup[] | undefined, matcher: st
 }
 
 
-/** Build the shell command Gemini should run for one hook entry. */
+/**
+ * Build the shell command Gemini should run for one hook entry.
+ *
+ * Invoked via the absolute Node binary (`process.execPath`) and the running
+ * token-goat entry path (`process.argv[1]`), not a bare `token-goat` command
+ * -- see the module doc comment and `hookCommandFor` in `./codex_install.ts`
+ * / `./copilot_cli_install.ts` for the Windows global-install rationale.
+ * Falls back to the old PATH-based bare command when `process.argv[1]` is
+ * unavailable (should never happen under a real `node <script>` invocation).
+ */
 function geminiHookCommand(eventArg: string): string {
-  return `token-goat hook ${eventArg}`
+  const entryPath = process.argv[1]
+  if (!entryPath) return `token-goat hook ${eventArg}`
+  return `"${process.execPath}" "${entryPath}" hook ${eventArg}`
 }
 
 /**

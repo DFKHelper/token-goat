@@ -19,7 +19,28 @@ import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
 
-const MUTABLE_VERBS_RE = /^request(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit)(?=_|$)/i
+// Allowlist, not a blocklist: any method that doesn't match a known-safe read
+// verb defaults to NOT read-only. A blocklist of mutating verbs can never be
+// exhaustive (e.g. `finalize_plan`, `approve`, `cancel`, `deploy`, `toggle`,
+// `pin`, `grant`, `sync`, `commit`, `apply`, `trigger` are all state-changing
+// but contain none of the old blocklist's verbs), so an unclassified/unknown
+// method must fail safe as mutating rather than silently being cached/deduped.
+const READ_VERBS_RE =
+  /(?:^|_)(?:get|list|search|read|view|fetch|describe|export|download|find|show|query|resolve|context)(?=_|$)/i
+
+// Second guard layer, not a return to blocklist-only: a compound method name can carry a
+// read-verb token (matching READ_VERBS_RE above) alongside a mutating-verb token, e.g.
+// `get_or_create`, `search_and_update`, `view_and_delete` -- READ_VERBS_RE alone only checks
+// that ONE token is a read verb, not that every token is read-safe, so those three would
+// otherwise be misclassified as read-only. A method is only read-only when it matches the
+// read-verb allowlist AND contains none of these mutating-verb tokens.
+// `request` is anchored to the START of the method only (not any underscore token), same as
+// the old blocklist: a leading `request_*` (e.g. `request_copilot_review`) is a mutating verb,
+// but `request` also shows up as a trailing noun in genuinely read-only names like
+// `get_network_request` / `get_console_message`'s siblings -- matching it as a normal token
+// would misclassify those as mutating.
+const MUTATING_VERBS_RE =
+  /^request(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit|apply|commit|grant|deploy|toggle|pin|trigger|finalize|approve|cancel|sync)(?=_|$)/i
 
 /**
  * Input keys that make an otherwise read-verb MCP call state-changing
@@ -34,7 +55,9 @@ const STATE_CHANGING_INPUT_KEYS = ['createIfEmpty', 'clear', 'save_to_disk']
 /**
  * Return true when *toolName* is a read-only MCP tool safe to cache.
  * Only `mcp__`-prefixed tools are considered; the trailing method segment is
- * matched against a verb blocklist so mutating calls are never deduped.
+ * matched against an ALLOWLIST of known-safe read verbs, so any mutating or
+ * unrecognized verb fails safe as NOT read-only (never deduped) instead of
+ * requiring every mutating verb to be enumerated up front.
  * *toolInput* is also inspected: a truthy `STATE_CHANGING_INPUT_KEYS` flag
  * overrides the name-based verdict, since it makes the specific call mutate
  * state even though the tool name itself reads as read-only.
@@ -47,7 +70,7 @@ export function isMcpReadOnly(toolName: string, toolInput: Record<string, unknow
   // Screenshots are not idempotent: page content can change between calls,
   // so they must never be cached/dedup'd.
   if (/screenshot/i.test(method)) return false
-  if (!MUTABLE_VERBS_RE.test(method)) {
+  if (READ_VERBS_RE.test(method) && !MUTATING_VERBS_RE.test(method)) {
     return !STATE_CHANGING_INPUT_KEYS.some((key) => toolInput[key])
   }
   return false

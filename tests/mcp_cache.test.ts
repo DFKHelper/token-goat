@@ -79,6 +79,61 @@ describe('isMcpReadOnly', () => {
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__resize_page', {})).toBe(false)
   })
 
+  it('returns false for mutating verbs not covered by the old blocklist', () => {
+    // These verbs (finalize_plan, approve, cancel, deploy, toggle, pin, grant,
+    // sync, commit, apply, trigger) are all state-changing but contained none
+    // of the old MUTABLE_VERBS_RE blocklist entries, so the pre-fix classifier
+    // silently miscategorized them as read-only/cacheable. The allowlist
+    // redesign fixes this by defaulting anything not a known-safe read verb
+    // to NOT read-only, so no enumeration of every mutating verb is needed.
+    expect(isMcpReadOnly('mcp__design_sync__finalize_plan', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__approve', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__cancel', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__deploy', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__toggle', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__pin', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__grant', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__sync', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__commit', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__apply', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__trigger', {})).toBe(false)
+  })
+
+  it('returns false for an unrecognized/unknown verb (fail-safe default)', () => {
+    // The allowlist's core invariant: anything NOT matching a known-safe read
+    // verb defaults to mutating, even a made-up verb no one has classified.
+    expect(isMcpReadOnly('mcp__test__frobnicate', {})).toBe(false)
+  })
+
+  it('returns true for common read verbs beyond get/list', () => {
+    expect(isMcpReadOnly('mcp__test__search_code', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__view_file', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__fetch_data', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__describe_thing', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__export_data', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__download_file', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__find_item', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__show_status', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__query_records', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__test__resolve_ref', {})).toBe(true)
+  })
+
+  it('returns false for compound names carrying a read-verb token alongside a mutating one', () => {
+    // READ_VERBS_RE alone would match on the read-verb token present in each of these
+    // (get / search / view) and misclassify them as read-only, even though the full name is
+    // a mutating operation (create / update / delete respectively). MUTATING_VERBS_RE closes
+    // that gap.
+    expect(isMcpReadOnly('mcp__test__get_or_create', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__search_and_update', {})).toBe(false)
+    expect(isMcpReadOnly('mcp__test__view_and_delete', {})).toBe(false)
+  })
+
+  it('still classifies genuinely read-only compound names as read-only (no regression)', () => {
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_file_contents', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__list_repository_collaborators', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__search_pull_requests', {})).toBe(true)
+  })
+
   it('returns true for genuinely read-only chrome-devtools tools, borderline ones excluded', () => {
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_pages', {})).toBe(true)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_console_message', {})).toBe(true)

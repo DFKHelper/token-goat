@@ -74,6 +74,29 @@ beforeAll(() => {
     'export function refHelper(): number {\n  return 1\n}\n' +
       'export function refDriver(): number {\n  return refHelper() + refHelper()\n}\n',
   )
+  // Two classes each defining a `compress` method, plus one uniquely-named method. The bare
+  // `read ambig.ts::compress` ambiguity regression and the qualified `AlphaLinter.compress`
+  // disambiguation both run against the REAL indexed DB and the shipped resolver here, not a
+  // mocked querySymbols seam (the injected-seam trap CLAUDE.md warns against).
+  fs.writeFileSync(
+    path.join(repo, 'ambig.ts'),
+    [
+      'export class AlphaLinter {',
+      '  compress(text: string): string {',
+      "    return 'alpha:' + text",
+      '  }',
+      '  alphaOnly(): number {',
+      '    return 1',
+      '  }',
+      '}',
+      'export class BetaLinter {',
+      '  compress(text: string): string {',
+      "    return 'beta:' + text",
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -117,6 +140,54 @@ describe('built bundle end-to-end indexing', () => {
     expect(refs.stdout).toContain('refDriver')
     expect(refs.stdout).toContain('caller.ts')
   }, 60000)
+})
+
+/**
+ * Regression for the silent same-file ambiguity bug: `read file::name` used to return
+ * candidates[0] (whichever ORDER BY placed first) with no warning when several classes in one
+ * file each defined a method of that name. These run the SHIPPED bundle against a real indexed
+ * fixture (ambig.ts, two classes each with `compress`), so they exercise the production
+ * resolver path end-to-end, not an injected querySymbols mock.
+ */
+describe('built bundle rejects ambiguous file::symbol lookups (regression)', () => {
+  beforeAll(() => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+  }, 60000)
+
+  it('errors, listing every candidate, when a bare name matches multiple classes', () => {
+    const res = runBundle(['read', 'ambig.ts::compress'])
+    const out = res.stdout + res.stderr
+    // Must NOT silently return one body: exit 1, and the message names both parents + lines.
+    expect(res.status).toBe(1)
+    expect(out).toMatch(/Ambiguous symbol 'compress'/)
+    expect(out).toContain('AlphaLinter.compress')
+    expect(out).toContain('BetaLinter.compress')
+    // The two bodies must never leak -- an ambiguity error is a candidate list, not a body dump.
+    expect(out).not.toContain("return 'alpha:'")
+    expect(out).not.toContain("return 'beta:'")
+    // It must show the exact qualified retry syntax the user should re-type.
+    expect(out).toMatch(/token-goat read "ambig\.ts::\w+\.compress"/)
+  }, 30000)
+
+  it('resolves the qualified Parent.method form to that exact class body', () => {
+    const alpha = runBundle(['read', 'ambig.ts::AlphaLinter.compress'])
+    expect(alpha.status).toBe(0)
+    expect(alpha.stdout).toContain("return 'alpha:' + text")
+    expect(alpha.stdout).not.toContain("return 'beta:'")
+
+    const beta = runBundle(['read', 'ambig.ts::BetaLinter.compress'])
+    expect(beta.status).toBe(0)
+    expect(beta.stdout).toContain("return 'beta:' + text")
+    expect(beta.stdout).not.toContain("return 'alpha:'")
+  }, 30000)
+
+  it('still resolves an unambiguous single-match name with zero behavior change', () => {
+    const res = runBundle(['read', 'ambig.ts::alphaOnly'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('alphaOnly(): number')
+    expect(res.stdout).not.toMatch(/Ambiguous/)
+  }, 30000)
 })
 
 describe('built bundle non-git walk-index (--walk)', () => {

@@ -11,6 +11,7 @@ import { createRequire } from 'node:module'
 import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
 
 import { pathEqClause } from './sql_path.js'
+import { foldPath } from './util.js'
 
 const _require = createRequire(import.meta.url)
 
@@ -885,11 +886,12 @@ export function deleteFileEmbeddings(
   db: BetterSqlite3Database,
   filePath: string,
 ): void {
-  // Skip the vector delete when chunk_vectors is absent (sqlite-vec not installed): the table never exists on such installs, so an unconditional DELETE FROM chunk_vectors throws "no such table" and the chunks delete below would never run, leaking the file's chunk rows. The chunks table always exists and must always be cleared. When the vector table IS present, delete its rows first via a correlated subquery (binds zero id params, avoiding the 32766 SQL-variable limit) - the subquery reads chunks, so vectors must go before chunks.
+  const folded = foldPath(filePath)
+  // Skip the vector delete when chunk_vectors is absent (sqlite-vec not installed): the table never exists on such installs, so an unconditional DELETE FROM chunk_vectors throws \"no such table\" and the chunks delete below would never run, leaking the file's chunk rows. The chunks table always exists and must always be cleared. When the vector table IS present, delete its rows first via a correlated subquery (binds zero id params, avoiding the 32766 SQL-variable limit) - the subquery reads chunks, so vectors must go before chunks.
   if (chunkVectorsTableExists(db)) {
-    db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE ${pathEqClause('file_path')})`).run(filePath)
+    db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE ${pathEqClause('file_path')})`).run(folded)
   }
-  db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(filePath)
+  db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(folded)
 }
 
 // ============================================================================

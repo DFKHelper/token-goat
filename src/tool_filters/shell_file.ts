@@ -9,7 +9,6 @@ import {
   normalise,
   pathStem,
   positionalArgs,
-  splitBlocks,
   compressTestOutput,
 } from './helpers.js'
 import { stripAnsiCodes } from '../bash_compress.js'
@@ -31,7 +30,7 @@ export class GrepFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    const stem = pathStem(argv[0] ?? '')
+    const stem = pathStem(argv[0] ?? '').toLowerCase()
     if (this.binaries.has(stem)) return true
     // git grep (two-token form)
     if (stem === 'git') {
@@ -371,7 +370,7 @@ export class EzaFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -511,7 +510,7 @@ export class FdFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -576,7 +575,7 @@ export class BatFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -613,7 +612,7 @@ export class DeltaFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -688,7 +687,7 @@ export class JqFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -716,7 +715,7 @@ export class YqFilter extends ToolFilter {
 
   override matches(argv: string[]): boolean {
     if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? ''))
+    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
   }
 
   protected override compressBody(
@@ -759,7 +758,7 @@ export class CurlFilter extends ToolFilter {
     _exitCode: number,
     argv: string[],
   ): string {
-    const binary = argv.length ? pathStem(argv[0] ?? '') : 'curl'
+    const binary = argv.length ? pathStem(argv[0] ?? '').toLowerCase() : 'curl'
     const combined = this.combineOutput(stdout, stderr)
     const lines = combined.split('\n')
     const kept: string[] = []
@@ -911,6 +910,37 @@ function _mergeDiffEchoBlocks(rawBlocks: string[]): string[] {
   return merged
 }
 
+// A bare `--- ` line is only a real unified-diff file-header boundary when it
+// is immediately followed by a `+++ ` line (the old-file/new-file header
+// pair). Without that lookahead, a removed line whose original content
+// happens to start with `-- ` (SQL/Lua/Haskell comments, a markdown `---`
+// rule, etc.) renders as a line matching `_DIFF_FILE_HEADER_RE` in isolation
+// and would be misdetected as a new file boundary, splitting one file's diff
+// into spurious blocks. `diff `-prefixed lines (git's extended header) are
+// unambiguous and always start a new block.
+function _isDiffFileHeaderLine(line: string, nextLine: string | undefined): boolean {
+  if (/^diff\s/.test(line)) return true
+  if (/^---\s/.test(line) && nextLine !== undefined && /^\+\+\+\s/.test(nextLine)) return true
+  return false
+}
+
+function _splitDiffFileBlocks(text: string): string[] {
+  const lines = text.split('\n')
+  const blocks: string[] = []
+  let current: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (_isDiffFileHeaderLine(line, lines[i + 1])) {
+      if (current.length) blocks.push(current.join('\n'))
+      current = [line]
+    } else {
+      current.push(line)
+    }
+  }
+  if (current.length) blocks.push(current.join('\n'))
+  return blocks
+}
+
 function _splitIntoHunks(block: string[]): string[][] {
   const hunks: string[][] = []
   let current: string[] = []
@@ -984,7 +1014,7 @@ export class DiffFilter extends ToolFilter {
 
   private _compressUnified(lines: string[]): string {
     const text = lines.join('\n')
-    const rawBlocks = _mergeDiffEchoBlocks(splitBlocks(text, _DIFF_FILE_HEADER_RE))
+    const rawBlocks = _mergeDiffEchoBlocks(_splitDiffFileBlocks(text))
     const realFiles = rawBlocks.filter(b => _DIFF_FILE_HEADER_RE.test(b.split('\n')[0] ?? ''))
 
     if (realFiles.length > _DIFF_MAX_FULL_FILES) {

@@ -16,6 +16,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { pathEqClause as pathEq } from './sql_path.js'
+import { foldPath } from './util.js'
 
 /** Raw `symbols` row as returned by better-sqlite3 (snake_case columns). */
 interface SymbolRow {
@@ -93,7 +94,7 @@ export function querySymbols(
   }
   if (opts.filePath !== undefined) {
     where.push(pathEq('file_path'))
-    params.push(opts.filePath)
+    params.push(foldPath(opts.filePath))
   }
   if (opts.kind !== undefined) {
     where.push('kind = ?')
@@ -130,7 +131,7 @@ export function queryRefs(
 
   if (opts.filePath !== undefined) {
     where.push(pathEq('file_path'))
-    params.push(opts.filePath)
+    params.push(foldPath(opts.filePath))
   }
 
   const limit = opts.limit ?? 100
@@ -174,7 +175,7 @@ export function getFileEntry(
   const db = getDb(dbPath)
   const row = db
     .prepare(`SELECT path, sha, mtime, language, indexed_at FROM files WHERE ${pathEq('path')}`)
-    .get(filePath) as FileRow | undefined
+    .get(foldPath(filePath)) as FileRow | undefined
 
   if (row === undefined) return null
   return {

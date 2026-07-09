@@ -49,7 +49,19 @@ export function isCaseInsensitiveFs(): boolean {
 }
 
 export function foldPath(p: string): string {
-  return isCaseInsensitiveFs() ? p.toLowerCase() : p
+  return isCaseInsensitiveFs() ? foldCase(p) : p
+}
+
+/**
+ * Unicode-aware case folding primitive. This is the SINGLE source of truth for how
+ * token-goat folds case: `foldPath()` uses it on the JS side, and `db.ts` registers it
+ * verbatim as a SQL scalar function (see `TG_LOWER` in `initConnection`) so `pathEqClause`'s
+ * SQL-side folding stays byte-for-byte consistent with the JS side. SQLite's built-in
+ * `LOWER()` only folds ASCII A-Z, which would silently diverge from this for non-ASCII
+ * casing (e.g. `Ä` vs `ä`) — never use `LOWER()` for path comparisons, use `TG_LOWER`.
+ */
+export function foldCase(s: string): string {
+  return s.toLowerCase()
 }
 
 /**

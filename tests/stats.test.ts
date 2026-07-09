@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import Database from 'better-sqlite3'
+import { closeAllDbs } from '../src/db.js'
 import {
   summarize,
   renderStats as _renderStats,
@@ -487,6 +488,56 @@ describe('stats', () => {
       expect(output).toContain('Tokens saved:   1500')
       expect(output).toContain('## By Source')
       expect(output).toContain('## By Command')
+    })
+
+    it('threads a custom homeDir through the human-readable output (not the default global DB)', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'image_shrink', 1000, 5000)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      // Without homeDir threading, this would read the (empty, isolated) default
+      // global DB and print "No stats recorded yet." instead of the seeded row.
+      expect(output).not.toContain('No stats recorded yet')
+      expect(output).toContain('Total events:   1')
+      expect(output).toContain('Tokens saved:   1000')
     })
   })
 

@@ -108,12 +108,6 @@ export interface StatsOptions {
   windowDays?: number
   /** Emit JSON instead of human-readable output. */
   json?: boolean
-  /** Show breakdown by project. */
-  byProject?: boolean
-  /** Show breakdown by command. */
-  byCommand?: boolean
-  /** Number of top entries to show in project view. */
-  top?: number
   /** Home directory (injectable for tests). */
   homeDir?: string
 }
@@ -138,7 +132,11 @@ export function runStats(opts: StatsOptions = {}): void {
     return
   }
 
-  renderStats({ windowDays: window })
+  const renderOpts: Parameters<typeof renderStats>[0] = { windowDays: window }
+  if (opts.homeDir !== undefined) {
+    renderOpts.homeDir = opts.homeDir
+  }
+  renderStats(renderOpts)
 
   const topFilesText = renderTopSessionFiles(5) || renderTopSessionFilesFromDisk(5)
   if (topFilesText) {

@@ -491,6 +491,8 @@ export async function storeOutput(
 
     await atomicWriteText(resolve(dir, `${outId}.meta`), JSON.stringify(meta, null, 2))
 
+    pruneSkillOutputs()
+
     return meta
   } catch {
     return null

@@ -332,6 +332,120 @@ describe('read_commands', () => {
       expect(stdout).not.toContain('A.foo body')
     })
 
+    describe('ambiguous resolution (formatAmbiguity)', () => {
+      // Generic pool-filter mock: matches real querySymbols' AND-of-provided-fields semantics
+      // (unlike other tests in this file, which special-case each expected call by hand) so a
+      // spec resolved through the ambiguity path and then fed back in via a suggested retry
+      // both go through the exact same filtering logic.
+      function poolMock(pool: MockSymbol[]): void {
+        mockQuerySymbols.mockImplementation((opts: { name?: string; filePath?: string }) => {
+          let rows = pool
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+      }
+
+      it('same-file ambiguity: labels stay unprefixed by file, retry re-targets the original file spec (M35 regression, format unchanged)', () => {
+        const classA: MockSymbol = { name: 'ClassA', kind: 'class', filePath: 'src/comp.ts', lineStart: 1, lineEnd: 10, body: 'class ClassA {}', docstring: '' }
+        const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: 'src/comp.ts', lineStart: 20, lineEnd: 30, body: 'class ClassB {}', docstring: '' }
+        const renderInA: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 3, lineEnd: 5, body: 'ClassA.render body', docstring: '' }
+        const renderInB: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 22, lineEnd: 24, body: 'ClassB.render body', docstring: '' }
+        poolMock([classA, classB, renderInA, renderInB])
+
+        const { text: stdout, code } = runRead({ spec: 'src/comp.ts::render' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'render'")
+        expect(stdout).toContain('  - ClassA.render (line 3)')
+        expect(stdout).toContain('  - ClassB.render (line 22)')
+        // Same-file candidates: the label itself (before the arrow) carries no file-path prefix.
+        expect(stdout).not.toContain('src/comp.ts::ClassA.render (line')
+        expect(stdout).not.toContain('src/comp.ts::ClassB.render (line')
+        // Retry re-targets the original (already-unambiguous-per-file) spec, byte-for-byte
+        // unchanged from the pre-fix same-file suggestion.
+        expect(stdout).toContain('token-goat read "src/comp.ts::ClassA.render"')
+        expect(stdout).toContain('token-goat read "src/comp.ts::ClassB.render"')
+
+        // The suggested retries must actually resolve, unambiguously, to the right body.
+        const a = runRead({ spec: 'src/comp.ts::ClassA.render' })
+        expect(a.text).toContain('ClassA.render body')
+        expect(a.text).not.toContain('ClassB.render body')
+        const b = runRead({ spec: 'src/comp.ts::ClassB.render' })
+        expect(b.text).toContain('ClassB.render body')
+        expect(b.text).not.toContain('ClassA.render body')
+      })
+
+      it('cross-file ambiguity: two different files each defining a same-named top-level symbol get distinguishable labels and per-file working retries', () => {
+        // findParentName has no cross-file concept of "parent" -- both candidates are genuine
+        // top-level definitions in different files, so it returns null for both. Before the
+        // fix both rendered as the identical "- helper (line N)" with no file shown.
+        const fileA = resolveIndexPath('src/utils.ts')
+        const fileB = resolveIndexPath('lib/utils.ts')
+        const helperInA: MockSymbol = { name: 'helper', kind: 'function', filePath: fileA, lineStart: 3, lineEnd: 5, body: 'function helper() { return 1 }', docstring: '' }
+        const helperInB: MockSymbol = { name: 'helper', kind: 'function', filePath: fileB, lineStart: 7, lineEnd: 9, body: 'function helper() { return 2 }', docstring: '' }
+        poolMock([helperInA, helperInB])
+
+        const { text: stdout, code } = runRead({ spec: 'utils.ts::helper' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'helper'")
+        // Distinguishable: each label carries its own file path, not an identical bare "helper (line N)".
+        expect(stdout).toContain(`  - ${fileA}::helper (line 3)`)
+        expect(stdout).toContain(`  - ${fileB}::helper (line 7)`)
+        // Each retry targets that candidate's own file -- not the original ambiguous "utils.ts" spec,
+        // which would just re-enter this same ambiguous resolution path.
+        expect(stdout).toContain(`token-goat read "${fileA}::helper"`)
+        expect(stdout).toContain(`token-goat read "${fileB}::helper"`)
+        expect(stdout).not.toMatch(/token-goat read "utils\.ts::/)
+
+        // Feed the exact printed retry specs back in and confirm each resolves to exactly one,
+        // correct, distinct candidate -- not just that the text looks right.
+        const retries = [...stdout.matchAll(/token-goat read "([^"]+)"/g)].map((m) => m[1] ?? '')
+        expect(retries).toHaveLength(2)
+        const a = runRead({ spec: retries[0]! })
+        expect(a.code).toBe(0)
+        expect(a.text).toContain('return 1')
+        expect(a.text).not.toContain('return 2')
+        const b = runRead({ spec: retries[1]! })
+        expect(b.code).toBe(0)
+        expect(b.text).toContain('return 2')
+        expect(b.text).not.toContain('return 1')
+      })
+
+      it('mixed ambiguity: same-file-with-parent and cross-file-without-parent candidates in one list all get distinct, working retries', () => {
+        const fileA = resolveIndexPath('src/compress.ts')
+        const fileB = resolveIndexPath('lib/compress.ts')
+        const classA: MockSymbol = { name: 'ClassA', kind: 'class', filePath: fileA, lineStart: 1, lineEnd: 10, body: '', docstring: '' }
+        const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: fileA, lineStart: 20, lineEnd: 30, body: '', docstring: '' }
+        const compressInA: MockSymbol = { name: 'compress', kind: 'method', filePath: fileA, lineStart: 3, lineEnd: 5, body: 'A:compress', docstring: '' }
+        const compressInB: MockSymbol = { name: 'compress', kind: 'method', filePath: fileA, lineStart: 22, lineEnd: 24, body: 'B:compress', docstring: '' }
+        const compressTop: MockSymbol = { name: 'compress', kind: 'function', filePath: fileB, lineStart: 7, lineEnd: 9, body: 'top:compress', docstring: '' }
+        poolMock([classA, classB, compressInA, compressInB, compressTop])
+
+        const { text: stdout, code } = runRead({ spec: 'compress.ts::compress' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'compress'")
+        // Cross-file span -> every label is file-prefixed, even the ones with a same-file parent.
+        expect(stdout).toContain(`  - ${fileA}::ClassA.compress (line 3)`)
+        expect(stdout).toContain(`  - ${fileA}::ClassB.compress (line 22)`)
+        expect(stdout).toContain(`  - ${fileB}::compress (line 7)`)
+
+        const retries = [...stdout.matchAll(/token-goat read "([^"]+)"/g)].map((m) => m[1] ?? '')
+        expect(retries).toHaveLength(3)
+        const results = retries.map((spec) => runRead({ spec }))
+        for (const r of results) expect(r.code).toBe(0)
+        expect(results.map((r) => r.text.includes('A:compress'))).toContain(true)
+        expect(results.map((r) => r.text.includes('B:compress'))).toContain(true)
+        expect(results.map((r) => r.text.includes('top:compress'))).toContain(true)
+        // Each retry must resolve to exactly its own candidate, not leak a sibling's body.
+        expect(results[0]!.text).not.toContain('B:compress')
+        expect(results[0]!.text).not.toContain('top:compress')
+        expect(results[1]!.text).not.toContain('A:compress')
+        expect(results[1]!.text).not.toContain('top:compress')
+        expect(results[2]!.text).not.toContain('A:compress')
+        expect(results[2]!.text).not.toContain('B:compress')
+      })
+    })
+
     it('splits on the LAST :: so a file path containing a literal :: still resolves the correct symbol (#m2)', () => {
       mockQuerySymbols.mockReturnValue([])
       runRead({ spec: 'a::b::mySymbol' })

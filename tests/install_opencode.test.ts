@@ -22,6 +22,7 @@ import * as os from 'node:os'
 import {
   installOpencode,
   isOpencodeInstalled,
+  opencodeEntrySidecarPath,
   opencodePluginPath,
   uninstallOpencode,
 } from '../src/bridges/opencode_install.js'
@@ -143,6 +144,33 @@ describe('isOpencodeInstalled / uninstallOpencode', () => {
   })
 })
 
+describe("installOpencode entry-path sidecar (PATH-hardening for the plugin's inner token-goat call)", () => {
+  it('writes token-goat-entry.json next to the plugin file, containing the running entry (process.argv[1])', () => {
+    expect(process.argv[1]).toBeDefined()
+    const result = installOpencode()
+    const sidecarPath = opencodeEntrySidecarPath()
+    expect(sidecarPath).toBe(path.join(path.dirname(result.pluginPath), 'token-goat-entry.json'))
+    expect(fs.existsSync(sidecarPath)).toBe(true)
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as { entryPath: string }
+    expect(sidecar.entryPath).toBe(process.argv[1])
+  })
+
+  it('uninstallOpencode removes the sidecar along with the plugin file', () => {
+    installOpencode()
+    expect(fs.existsSync(opencodeEntrySidecarPath())).toBe(true)
+    uninstallOpencode()
+    expect(fs.existsSync(opencodeEntrySidecarPath())).toBe(false)
+    expect(fs.existsSync(opencodePluginPath())).toBe(false)
+  })
+
+  it('uninstallOpencode does not throw when no sidecar was ever written (an install predating this fix)', () => {
+    installOpencode()
+    fs.unlinkSync(opencodeEntrySidecarPath())
+    expect(() => uninstallOpencode()).not.toThrow()
+    expect(fs.existsSync(opencodePluginPath())).toBe(false)
+  })
+})
+
 describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...OPENCODE_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
@@ -156,5 +184,35 @@ describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     const match = /const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)/.exec(OPENCODE_PLUGIN_SCRIPT)
     expect(match).not.toBeNull()
     expect(match?.[1]).not.toMatch(/"glob"/)
+  })
+
+  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH
+  // resolution with no shell:true -- on Windows, a global npm install resolves
+  // "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without
+  // shell: true, so every hook call silently failed (r.error set, callHook
+  // returning null). resolveEntryPath() reads an install-time sidecar (see
+  // installOpencode in opencode_install.ts) so callHook can invoke the real
+  // token-goat entry directly via process.execPath instead, mirroring pi.ts's
+  // identical fix.
+  it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
+    expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
+    expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/token-goat-entry\.json/)
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCODE_PLUGIN_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    expect(body).toMatch(/resolveEntryPath\(\)/)
+    expect(body).toMatch(/spawnSync\(process\.execPath, \[entryPath, "hook", event\]/)
+    expect(body).toMatch(/spawnSync\("token-goat hook "/)
+  })
+
+  it('fallback spawnSync uses shell:true so it resolves .cmd shims on Windows', () => {
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCODE_PLUGIN_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    const fallbackMatch = /: spawnSync\("token-goat hook "[\s\S]*?\}\)/.exec(body)
+    expect(fallbackMatch).not.toBeNull()
+    const fallbackBlock = fallbackMatch?.[0] ?? ''
+    expect(fallbackBlock).toContain('shell: true')
+    expect(fallbackBlock).toContain('token-goat hook')
   })
 })

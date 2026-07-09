@@ -23,6 +23,7 @@ import {
   installOpenclaw,
   isOpenclawInstalled,
   openclawConfigPath,
+  openclawEntrySidecarPath,
   openclawPluginPath,
   uninstallOpenclaw,
 } from '../src/bridges/openclaw_install.js'
@@ -145,6 +146,12 @@ describe('installOpenclaw', () => {
     // left exactly as the user left it, not silently clobbered.
     expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
     expect(fs.existsSync(openclawPluginPath())).toBe(false)
+    // Regression: the entry-path sidecar used to be written unconditionally
+    // BEFORE the strict config parse, so a corrupt openclaw.json still left
+    // a stray token-goat-entry.json behind even though the install as a
+    // whole aborted and the plugin config was never touched. The sidecar
+    // write must now happen only after the strict parse succeeds.
+    expect(fs.existsSync(openclawEntrySidecarPath())).toBe(false)
   })
 
   it('throws on an existing openclaw.json whose top-level value is not an object, and leaves the file untouched', () => {
@@ -240,6 +247,44 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
   })
 })
 
+describe("installOpenclaw entry-path sidecar (PATH-hardening for the plugin's inner token-goat call)", () => {
+  it('writes token-goat-entry.json next to the plugin file, containing the running entry (process.argv[1])', () => {
+    expect(process.argv[1]).toBeDefined()
+    const result = installOpenclaw()
+    const sidecarPath = openclawEntrySidecarPath()
+    expect(sidecarPath).toBe(path.join(path.dirname(result.pluginPath), 'token-goat-entry.json'))
+    expect(fs.existsSync(sidecarPath)).toBe(true)
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as { entryPath: string }
+    expect(sidecar.entryPath).toBe(process.argv[1])
+  })
+
+  it('uninstallOpenclaw removes the sidecar along with the plugin file', () => {
+    installOpenclaw()
+    expect(fs.existsSync(openclawEntrySidecarPath())).toBe(true)
+    uninstallOpenclaw()
+    expect(fs.existsSync(openclawEntrySidecarPath())).toBe(false)
+    expect(fs.existsSync(openclawPluginPath())).toBe(false)
+  })
+
+  it('uninstallOpenclaw does not throw when no sidecar was ever written (an install predating this fix)', () => {
+    installOpenclaw()
+    fs.unlinkSync(openclawEntrySidecarPath())
+    expect(() => uninstallOpenclaw()).not.toThrow()
+    expect(fs.existsSync(openclawPluginPath())).toBe(false)
+  })
+
+  it('does not write the sidecar when openclaw.json exists but fails the strict parse (regression: the sidecar used to be written unconditionally before the strict config parse, so a corrupt config still left a stray token-goat-entry.json on disk even though installOpenclaw() aborted before touching the plugin config)', () => {
+    const p = openclawConfigPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const corrupt = '{ "gateway": { "port": 4141 }, }'
+    fs.writeFileSync(p, corrupt)
+
+    expect(() => installOpenclaw()).toThrow(OpenclawConfigParseError)
+    expect(fs.existsSync(openclawEntrySidecarPath())).toBe(false)
+    expect(fs.existsSync(openclawPluginPath())).toBe(false)
+  })
+})
+
 describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...OPENCLAW_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
@@ -266,5 +311,35 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     const handlerBody = match?.[0] ?? ''
     expect(handlerBody).toMatch(/tool_response/)
     expect(handlerBody).toMatch(/event\.result/)
+  })
+
+  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH
+  // resolution with no shell:true -- on Windows, a global npm install resolves
+  // "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without
+  // shell: true, so every hook call silently failed (r.error set, callHook
+  // returning null). resolveEntryPath() reads an install-time sidecar (see
+  // installOpenclaw in openclaw_install.ts) so callHook can invoke the real
+  // token-goat entry directly via process.execPath instead, mirroring pi.ts's
+  // identical fix.
+  it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
+    expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
+    expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/token-goat-entry\.json/)
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    expect(body).toMatch(/resolveEntryPath\(\)/)
+    expect(body).toMatch(/spawnSync\(process\.execPath, \[entryPath, "hook", event\]/)
+    expect(body).toMatch(/spawnSync\("token-goat hook "/)
+  })
+
+  it('fallback spawnSync uses shell:true so it resolves .cmd shims on Windows', () => {
+    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    const fallbackMatch = /: spawnSync\("token-goat hook "[\s\S]*?\}\)/.exec(body)
+    expect(fallbackMatch).not.toBeNull()
+    const fallbackBlock = fallbackMatch?.[0] ?? ''
+    expect(fallbackBlock).toContain('shell: true')
+    expect(fallbackBlock).toContain('token-goat hook')
   })
 })

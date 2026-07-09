@@ -60,6 +60,20 @@ export function opencodePluginPath(): string {
   return path.join(opencodeGlobalConfigDir(), 'opencode', 'plugins', 'token-goat.ts')
 }
 
+/**
+ * Sidecar JSON file, written next to the plugin, carrying the absolute path
+ * to the token-goat CLI entry that was running at install time (`process.argv[1]`).
+ * The plugin has no per-invocation command line to bake this into the way
+ * Codex/Copilot's generated hook commands do (opencode loads it once as a
+ * module), so `callHook`'s `resolveEntryPath()` reads this file at runtime
+ * instead, to invoke that entry directly via `process.execPath` rather than
+ * depending on PATH resolution for a bare `token-goat` lookup (mirrors
+ * `piEntrySidecarPath` in `./pi_install.js`).
+ */
+export function opencodeEntrySidecarPath(): string {
+  return path.join(path.dirname(opencodePluginPath()), 'token-goat-entry.json')
+}
+
 export interface OpencodeInstallResult {
   readonly pluginPath: string
   /** True when the file on disk was already byte-identical to the current template (no write needed). */
@@ -76,6 +90,16 @@ export function installOpencode(): OpencodeInstallResult {
     existing = undefined
   }
 
+  // process.argv[1] is the absolute path to whichever token-goat entry point
+  // launched this install run. Written unconditionally (even when the plugin
+  // itself is already up to date) so re-running install after
+  // moving/upgrading the token-goat install refreshes a stale sidecar too.
+  const entryPath = process.argv[1]
+  if (entryPath) {
+    ensureDirSync(path.dirname(pluginPath))
+    atomicWriteText(opencodeEntrySidecarPath(), JSON.stringify({ entryPath }))
+  }
+
   if (existing === OPENCODE_PLUGIN_SCRIPT) {
     return { pluginPath, alreadyInstalled: true }
   }
@@ -87,6 +111,11 @@ export function installOpencode(): OpencodeInstallResult {
 
 export function uninstallOpencode(): boolean {
   const pluginPath = opencodePluginPath()
+  try {
+    fs.unlinkSync(opencodeEntrySidecarPath())
+  } catch {
+    // nothing to remove
+  }
   try {
     fs.unlinkSync(pluginPath)
     return true
