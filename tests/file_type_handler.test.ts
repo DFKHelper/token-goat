@@ -164,6 +164,60 @@ describe('handleTxt', () => {
     expect(result.message).toContain('500')
     expect(result.message).toContain('Line 1')
   })
+
+  it('large .txt file with HTML DOCTYPE is treated as HTML and includes headings', () => {
+    // Create HTML content with DOCTYPE and headings
+    const lines = [
+      '<!DOCTYPE html>',
+      '<html><head><title>API Documentation</title></head><body>',
+      '<h1>Getting Started</h1>',
+      '<h2>Installation</h2>',
+      ...Array.from({ length: 100 }, (_, i) => `<p>Paragraph ${i}</p>`),
+      '</body></html>',
+    ]
+    // Need to exceed both txt and html thresholds to trigger handleHtml blocking
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.html)
+    const result = handleTxt('/var/log/export.txt', content)
+    expect(result.shouldBlock).toBe(true)
+    // Should include heading-aware content like handleHtml does
+    expect(result.message).toContain('h1')
+    expect(result.message).toContain('Getting Started')
+    expect(result.message).toContain('h2')
+    expect(result.message).toContain('Installation')
+  })
+
+  it('large .log file with HTML <html> tag is treated as HTML', () => {
+    // HTML content starting with <html tag instead of DOCTYPE
+    const lines = [
+      '<html>',
+      '<head><title>Event Log</title></head>',
+      '<body>',
+      '<h1>Log Entry</h1>',
+      ...Array.from({ length: 100 }, (_, i) => `<p>Event ${i}</p>`),
+      '</body></html>',
+    ]
+    // Need to exceed both txt and html thresholds to trigger handleHtml blocking
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.html)
+    const result = handleTxt('/var/log/app.log', content)
+    expect(result.shouldBlock).toBe(true)
+    // Should be delegated to handleHtml and show headings, not the log-file first/last lines message
+    expect(result.message).toContain('h1')
+    expect(result.message).toContain('Log Entry')
+    expect(result.message).not.toContain('--tail')
+  })
+
+  it('large plain text .txt file still gets first/last lines treatment', () => {
+    // Genuine plain text, not HTML
+    const lines = Array.from({ length: 100 }, (_, i) => `Plain line ${i + 1}`)
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.txt)
+    const result = handleTxt('/path/to/notes.txt', content)
+    expect(result.shouldBlock).toBe(true)
+    // Should use the original handleTxt logic, not delegate to handleHtml
+    expect(result.message).toContain('first 5 lines')
+    expect(result.message).toContain('last 5 lines')
+    expect(result.message).toContain('offset')
+    expect(result.message).not.toContain('h1')
+  })
 })
 
 describe('handleXlsx', () => {

@@ -51,6 +51,8 @@ type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number]
 interface CopilotHookEntry {
   type: 'command'
   command: string
+  bash: string
+  powershell: string
   timeoutSec: number
 }
 
@@ -112,6 +114,26 @@ function hookCommandFor(scriptPath: string, event: CopilotCliHookEvent): string 
   return `"${process.execPath}" "${scriptPath}" ${event}${entryArg}`
 }
 
+// The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference)
+// confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and
+// 'powershell' when those fields are absent, and Copilot CLI runs 'powershell' by feeding the
+// string directly to PowerShell as a script -- not via cmd.exe. hookCommandFor()'s output
+// (a bare quoted-exe-then-quoted-args string, e.g. `"C:\...\node.exe" "...\shim.js" preToolUse
+// ...`) is valid cmd.exe command-line syntax but is NOT valid PowerShell: two adjacent quoted
+// string literals with no call operator is a parse error in PowerShell ("Unexpected token
+// '"...\token-goat-shim.js"' in expression or statement"), confirmed live via Copilot CLI's own
+// logged ParserError. Relying on 'command' alone meant every Windows install was silently
+// broken -- the hook process never even started, Copilot's preToolUse fails *closed*, and every
+// tool call got denied with "(hook errored)" regardless of PATH/absolute-path correctness (a
+// distinct bug from the PATH-resolution class github/copilot-cli#4001 already fixed). Emitting
+// an explicit 'powershell' entry prefixed with '&' (PowerShell's call operator, required to
+// invoke a quoted path as a command rather than evaluate it as a string expression) fixes this;
+// 'bash' gets the same command text since POSIX shells don't need a call operator for a quoted
+// path. 'command' is kept for older Copilot CLI builds that might not read 'bash'/'powershell'.
+function hookPowershellCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
+  return `& ${hookCommandFor(scriptPath, event)}`
+}
+
 // Copilot's own default (per its hooks reference doc) is 30s, and a killed-on-timeout
 // preToolUse hook fails *open* (proceeds to normal permission flow), not closed -- so
 // this is not itself a fix for the "(hook errored)" deny-all class (that's exclusively
@@ -126,7 +148,15 @@ const HOOK_TIMEOUT_SEC = 60
 function buildConfig(scriptPath: string): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   for (const event of COPILOT_CLI_HOOK_EVENTS) {
-    hooks[event] = [{ type: 'command', command: hookCommandFor(scriptPath, event), timeoutSec: HOOK_TIMEOUT_SEC }]
+    hooks[event] = [
+      {
+        type: 'command',
+        command: hookCommandFor(scriptPath, event),
+        bash: hookCommandFor(scriptPath, event),
+        powershell: hookPowershellCommandFor(scriptPath, event),
+        timeoutSec: HOOK_TIMEOUT_SEC,
+      },
+    ]
   }
   return { version: 1, hooks }
 }

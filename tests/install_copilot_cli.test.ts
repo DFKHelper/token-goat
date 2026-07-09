@@ -111,6 +111,23 @@ describe('installCopilotCli (user scope)', () => {
     expect(command).toBe(`"${process.execPath}" "${result.scriptPath}" preToolUse "${process.argv[1]}"`)
   })
 
+  it('emits a separate powershell field prefixed with the call operator (&), since Copilot CLI feeds it directly to PowerShell on Windows, not cmd.exe (github/copilot-cli hooks-reference: command is only copied to bash/powershell as a fallback)', () => {
+    const result = installCopilotCli()
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      hooks: Record<string, Array<{ command: string; bash: string; powershell: string }>>
+    }
+    const entry = config.hooks['preToolUse']?.[0]
+    expect(entry).toBeDefined()
+    // A bare quoted-exe-then-quoted-args string (valid cmd.exe syntax) is a PowerShell parse
+    // error without a leading call operator -- two adjacent quoted string literals are not a
+    // valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged
+    // ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement."
+    expect(entry?.powershell.startsWith('& "')).toBe(true)
+    expect(entry?.powershell).toBe(`& ${entry?.command}`)
+    // bash doesn't need a call operator for a quoted path, so it matches command verbatim.
+    expect(entry?.bash).toBe(entry?.command)
+  })
+
   it('sets a generous timeoutSec on every generated hook entry', () => {
     const result = installCopilotCli()
     const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {

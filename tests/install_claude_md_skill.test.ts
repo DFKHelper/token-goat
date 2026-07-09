@@ -50,6 +50,9 @@ describe('installClaudeMd', () => {
     expect(content).toContain('<!-- token-goat-begin -->')
     expect(content).toContain('<!-- token-goat-end -->')
     expect(content).toContain('token-goat symbol NAME')
+    expect(content).toContain('token-goat map --compact')
+    expect(content).toContain('token-goat refs')
+    expect(content).toContain('token-goat changed --symbol')
   })
 
   it('is idempotent (second call reports alreadyInstalled and does not duplicate the block)', () => {
@@ -131,6 +134,9 @@ describe('installSkill', () => {
     const content = fs.readFileSync(result.path, 'utf8')
     expect(content).toContain('name: token-goat')
     expect(content).toContain('token-goat symbol NAME')
+    expect(content).toContain('token-goat map --compact')
+    expect(content).toContain('token-goat refs')
+    expect(content).toContain('token-goat changed --symbol')
   })
 
   it('is idempotent (second call reports alreadyInstalled)', () => {

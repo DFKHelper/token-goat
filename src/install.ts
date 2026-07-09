@@ -335,6 +335,12 @@ function buildClaudeMdBlock(): string {
     '- `token-goat section "file::Heading"` -- one doc or config section',
     '- `token-goat semantic "description"` -- find code by meaning',
     '- `token-goat outline file` / `token-goat skeleton file` -- signatures without bodies',
+    '- `token-goat map --compact` -- project overview (low-token summary)',
+    '- `token-goat refs file::symbol --callers` -- find callers of a symbol',
+    '- `token-goat changed --symbol` -- symbols changed since a git ref',
+    '- `token-goat config-get file KEY` -- read one config value',
+    '- `token-goat bash-output` / `token-goat web-output` -- re-inspect cached output by ID',
+    '- `token-goat gdrive-sections <file-id>` -- outline a Google Doc by ID',
     '',
     'Use this before a full-file `Read` or wide `Grep`, and before opening a large image',
     '(token-goat hooks shrink oversized images automatically). token-goat commands return',
@@ -429,7 +435,7 @@ export function uninstallClaudeMd(): boolean {
 
 const SKILL_MD_CONTENT = `---
 name: token-goat
-description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton) return narrow slices of code and docs at a fraction of the token cost.
+description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output, gdrive-sections) return narrow slices of code and docs at a fraction of the token cost.
 ---
 
 # token-goat
@@ -440,6 +446,12 @@ Prefer token-goat commands over reading whole files:
 - \`token-goat section "file::Heading"\` -- one doc or config section
 - \`token-goat semantic "description"\` -- find code by meaning
 - \`token-goat outline file\` / \`token-goat skeleton file\` -- signatures without bodies
+- \`token-goat map --compact\` -- project overview (low-token summary)
+- \`token-goat refs file::symbol --callers\` -- find callers of a symbol
+- \`token-goat changed --symbol\` -- symbols changed since a git ref
+- \`token-goat config-get file KEY\` -- read one config value
+- \`token-goat bash-output\` / \`token-goat web-output\` -- re-inspect cached output by ID
+- \`token-goat gdrive-sections <file-id>\` -- outline a Google Doc by ID
 
 Read is the right call when the file is under about 200 lines, was never indexed (new or
 untracked), or is an image (token-goat's hooks shrink oversized images automatically).
