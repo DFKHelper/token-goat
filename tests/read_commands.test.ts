@@ -1460,6 +1460,28 @@ describe('read_commands', () => {
       })
       expect(stdout).toContain('col1,col2')
     })
+
+    // Regression: an empty or header-only CSV silently produced zero stdout output (just a
+    // blank/empty header line from formatCsvTable) instead of a clear message, unlike every
+    // other format handler's "not found"/no-match miss (section, read, symbol, xlsx-sheets,
+    // pdf-meta).
+    it('prints a clear message instead of silent empty output for a fully empty CSV', () => {
+      const f = path.join(tempDir, 'empty.csv')
+      fs.writeFileSync(f, '')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvQuery({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
+
+    it('prints a clear message instead of silent empty output for a header-only CSV', () => {
+      const f = path.join(tempDir, 'headeronly.csv')
+      fs.writeFileSync(f, 'id,name,status\n')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvQuery({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
   })
 
   // ---- runCsvProfile ---------------------------------------------------
@@ -1478,6 +1500,24 @@ describe('read_commands', () => {
     it('returns 1 when the file does not exist', () => {
       const code = runCsvProfile({ file: path.join(tempDir, 'missing.csv') })
       expect(code).toBe(1)
+    })
+
+    it('prints a clear message instead of silent empty output for a fully empty CSV', () => {
+      const f = path.join(tempDir, 'profile-empty.csv')
+      fs.writeFileSync(f, '')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvProfile({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
+
+    it('prints a clear message instead of silent empty output for a header-only CSV', () => {
+      const f = path.join(tempDir, 'profile-headeronly.csv')
+      fs.writeFileSync(f, 'id,name,status\n')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvProfile({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
     })
   })
 

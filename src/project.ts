@@ -6,7 +6,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { extractErrorMessage, foldPath } from './util.js';
+import { extractErrorMessage, foldPath, runGit } from './util.js';
 import { lowercaseDriveLetter, expandShortPath } from './paths.js';
 
 /**
@@ -265,4 +265,41 @@ export function findProject(cwd: string): Project | null {
   }
 
   return null;
+}
+
+/**
+ * Resolve "the current project root" using one shared precedence, replacing three
+ * previously-divergent conventions that had drifted apart across the codebase:
+ *   - read_commands.ts's `runChanged` used `opts.projectRoot ?? process.cwd()`, then
+ *     unconditionally tried to override that with `git rev-parse --show-toplevel`.
+ *   - resume.ts used `findProject(process.cwd())?.root ?? process.cwd()`, with no git
+ *     step at all.
+ *   - cli_context_stats.ts used a bare `path.resolve(opts.project ?? process.cwd())`,
+ *     with neither a git nor a findProject step.
+ *
+ * Resolution starts from a base directory -- `opts.project` if given (resolved to an
+ * absolute path), else `process.cwd()` -- and then, from that base:
+ *   1. `git rev-parse --show-toplevel`, if the base directory is inside a git repo. This
+ *      matters because callers that pass changed-file paths through (e.g. `git diff
+ *      --name-only`) always get them relative to the repo top-level, regardless of which
+ *      subdirectory git was invoked from; resolving to the top-level keeps those relative
+ *      paths correct even when the base directory is a subdirectory of the repo.
+ *   2. Else, {@link findProject}'s marker-based project root (package.json, .git, etc.),
+ *      walking up from the base directory -- this covers non-git projects.
+ *   3. Else, the base directory itself.
+ */
+export function resolveProjectRoot(opts?: { project?: string }): string {
+  const base = opts?.project !== undefined ? path.resolve(opts.project) : process.cwd();
+  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: base });
+  if (toplevel.exitCode === 0) {
+    const trimmed = toplevel.stdout.trim();
+    // `git rev-parse` echoes back whatever drive-letter casing the OS reports (often uppercase
+    // on Windows), unlike every other project-root source in this module (findProject,
+    // makeProjectAt), which is always canonicalize()'d. Canonicalizing here too keeps the
+    // return value consistent regardless of which resolution step produced it.
+    if (trimmed.length > 0) return canonicalize(trimmed);
+  }
+  const project = findProject(base);
+  if (project !== null) return project.root;
+  return canonicalize(base);
 }
