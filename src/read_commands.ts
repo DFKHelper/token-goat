@@ -1733,7 +1733,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const blocks = hits.map(
       (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
     )
-    return { text: guardText(blocks.join('\n\n'), 'symbol'), code: 0 }
+    return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
   }
 
   // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
@@ -1744,7 +1744,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
   }
   const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
-  return { text: guardText(blocks.join('\n\n'), 'symbol'), code: 0 }
+  return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
 }
 
 export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections, runSemantic }

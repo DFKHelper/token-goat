@@ -156,5 +156,8 @@ function getHintFor(command?: string): string {
   if (cmd === 'bash-output' || cmd === 'web-output') {
     return "Use --grep PATTERN, --section HEADING, or --tail N to narrow the cached output."
   }
+  if (cmd === 'semantic') {
+    return 'Narrow your query text or pass --limit to reduce the number of matches returned.'
+  }
   return 'Narrow your query or raise overflow_guard max_tokens in config.'
 }
