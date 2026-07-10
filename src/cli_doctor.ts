@@ -10,6 +10,7 @@ import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage } from './util.js'
 import { isWorkerRunning } from './worker.js'
+import { getDb } from './db.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
@@ -69,6 +70,49 @@ export function checkDbExists(dataDir: string): DoctorResult {
     name: 'Database',
     status: 'ok',
     message: `global.db exists (${Math.round(sizeBytes / 1024)} KB)`,
+  }
+}
+
+/**
+ * Check that the index actually contains symbols when it has indexed files.
+ *
+ * Guards against the worker-draining-to-a-stub-callback failure mode (see
+ * CLAUDE.md's "Critical path" section): a release once shipped with the queue
+ * drain wired to a default stub, so files were marked indexed in the `files`
+ * table while the parser never ran and `symbols` stayed permanently empty —
+ * every surgical-read command (`symbol`, `read`, `skeleton`, `outline`,
+ * `semantic`) silently returned nothing, and the test suite stayed green
+ * because every worker test injected its own callback. Caller passes the same
+ * `dbPath` `checkDbExists` validated; if the database doesn't exist yet (or
+ * isn't openable), this check quietly no-ops rather than duplicating that
+ * failure.
+ */
+export function checkSymbolCount(dbPath: string): DoctorResult {
+  if (!fs.existsSync(dbPath)) {
+    return { name: 'Symbols', status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const db = getDb(dbPath)
+    const fileCount = (db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }).c
+    const symbolCount = (db.prepare('SELECT COUNT(*) as c FROM symbols').get() as { c: number }).c
+    if (fileCount > 0 && symbolCount === 0) {
+      return {
+        name: 'Symbols',
+        status: 'warn',
+        message: `${fileCount} file(s) indexed but 0 symbols extracted — the parser may not be running (check the worker log); try 'token-goat index --force'`,
+      }
+    }
+    return {
+      name: 'Symbols',
+      status: 'ok',
+      message: `${symbolCount} symbol(s) across ${fileCount} indexed file(s)`,
+    }
+  } catch (err) {
+    return {
+      name: 'Symbols',
+      status: 'warn',
+      message: `could not query symbol count: ${extractErrorMessage(err)}`,
+    }
   }
 }
 
@@ -276,6 +320,7 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
   // File checks
   const actualDataDir = dataDir || defaultDataDir()
   results.push(checkDbExists(actualDataDir))
+  results.push(checkSymbolCount(path.join(actualDataDir, 'global.db')))
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))

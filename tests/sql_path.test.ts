@@ -18,7 +18,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 const { deleteFileEmbeddings } = await import('../src/embeddings.js')
 const { getDb, closeAllDbs } = await import('../src/db.js')
 const { isCaseInsensitiveFs } = await import('../src/util.js')
-const { pathEqClause } = await import('../src/sql_path.js')
+const { pathEqClause, projectScopeClause } = await import('../src/sql_path.js')
 
 let TMP: string
 
@@ -106,5 +106,69 @@ describe('pathEqClause query plan (full table scan fix)', () => {
   it('case-sensitive FS: pathEqClause builds a plain raw-column comparison, already covered by the ordinary column index', () => {
     vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
     expect(pathEqClause('file_path')).toBe('file_path = ?')
+  })
+})
+
+describe('projectScopeClause', () => {
+  function matches(dbPath: string, root: string, file: string): boolean {
+    const db = getDb(dbPath)
+    const { clause, param } = projectScopeClause('file_path')
+    const row = db.prepare(`SELECT 1 v FROM chunks WHERE ${clause} AND file_path = ?`).get(param(root), file) as
+      | { v: number }
+      | undefined
+    return row !== undefined
+  }
+
+  beforeEach(() => {
+    vi.mocked(isCaseInsensitiveFs).mockReturnValue(true)
+  })
+
+  it('boundary correctness: root /proj does NOT match /proj-other/file.ts', () => {
+    const db = path.join(TMP, 'boundary.db')
+    seed(db, 'c:/proj-other/file.ts')
+    expect(matches(db, 'c:/proj', 'c:/proj-other/file.ts')).toBe(false)
+  })
+
+  it('boundary correctness: root /proj matches /proj/file.ts', () => {
+    const db = path.join(TMP, 'boundary2.db')
+    seed(db, 'c:/proj/file.ts')
+    expect(matches(db, 'c:/proj', 'c:/proj/file.ts')).toBe(true)
+  })
+
+  it('boundary correctness: root /proj matches /proj/sub/file.ts', () => {
+    const db = path.join(TMP, 'boundary3.db')
+    seed(db, 'c:/proj/sub/file.ts')
+    expect(matches(db, 'c:/proj', 'c:/proj/sub/file.ts')).toBe(true)
+  })
+
+  it('case-insensitive FS: root differing only by case still matches', () => {
+    const db = path.join(TMP, 'case.db')
+    seed(db, 'c:/Proj/File.ts')
+    expect(matches(db, 'c:/proj', 'c:/Proj/File.ts')).toBe(true)
+  })
+
+  it('case-sensitive FS: builds a plain (non-TG_LOWER) LIKE clause', () => {
+    vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
+    const { clause } = projectScopeClause('file_path')
+    expect(clause).toBe("file_path LIKE ? ESCAPE '\\'")
+  })
+
+  it('wildcard escaping: a literal % in the root does not wildcard-match unrelated paths', () => {
+    const db = path.join(TMP, 'escape-pct.db')
+    seed(db, 'c:/proj%weird/other/file.ts') // unrelated path that a naive LIKE '%...' would wildcard-match
+    seed(db, 'c:/projXweird/sub/file.ts') // if '%' in root were treated as a live wildcard, this would match too
+    expect(matches(db, 'c:/proj%weird', 'c:/projXweird/sub/file.ts')).toBe(false)
+  })
+
+  it('wildcard escaping: a literal _ in the root does not wildcard-match unrelated paths', () => {
+    const db = path.join(TMP, 'escape-us.db')
+    seed(db, 'c:/projXweird/sub/file.ts') // if '_' in root were a live single-char wildcard, this would match
+    expect(matches(db, 'c:/proj_weird', 'c:/projXweird/sub/file.ts')).toBe(false)
+  })
+
+  it('wildcard escaping: a literal % in the root still matches its own real files', () => {
+    const db = path.join(TMP, 'escape-pct-positive.db')
+    seed(db, 'c:/proj%weird/file.ts')
+    expect(matches(db, 'c:/proj%weird', 'c:/proj%weird/file.ts')).toBe(true)
   })
 })

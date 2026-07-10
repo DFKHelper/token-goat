@@ -15,7 +15,7 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
-import { pathEqClause as pathEq } from './sql_path.js'
+import { pathEqClause as pathEq, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 
 /** Raw `symbols` row as returned by better-sqlite3 (snake_case columns). */
@@ -76,6 +76,11 @@ function toRefEntry(row: RefRow): RefEntry {
  * All filters are optional and AND-combined; an empty `opts` returns every
  * symbol (bounded by `limit`, default 100). Results are ordered by file then
  * starting line for stable output.
+ *
+ * `rootDir`, when provided, scopes the query to files under that project root
+ * via {@link projectScopeClause} -- required whenever a caller means "symbols
+ * in the current project", since `dbPath` (typically `global.db`) is a single
+ * machine-wide index shared across every project ever indexed (constants.ts).
  */
 export function querySymbols(
   opts: {
@@ -83,6 +88,7 @@ export function querySymbols(
     filePath?: string
     kind?: string
     limit?: number
+    rootDir?: string
   } = {},
   dbPath: string = globalDbPath(),
 ): SymbolEntry[] {
@@ -101,6 +107,11 @@ export function querySymbols(
     where.push('kind = ?')
     params.push(opts.kind)
   }
+  if (opts.rootDir !== undefined) {
+    const { clause, param } = projectScopeClause('file_path')
+    where.push(clause)
+    params.push(param(opts.rootDir))
+  }
 
   const limit = opts.limit ?? 100
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
@@ -118,12 +129,17 @@ export function querySymbols(
  *
  * `name` is required (callers always know which symbol's uses they want).
  * Results are ordered by file then line; `limit` defaults to 100.
+ *
+ * `rootDir`, when provided, scopes the query to references in files under that
+ * project root (see {@link querySymbols} for why this matters against the
+ * machine-wide `global.db`).
  */
 export function queryRefs(
   opts: {
     name: string
     filePath?: string
     limit?: number
+    rootDir?: string
   },
   dbPath: string = globalDbPath(),
 ): RefEntry[] {
@@ -133,6 +149,11 @@ export function queryRefs(
   if (opts.filePath !== undefined) {
     where.push(pathEq('file_path'))
     params.push(foldPath(opts.filePath))
+  }
+  if (opts.rootDir !== undefined) {
+    const { clause, param } = projectScopeClause('file_path')
+    where.push(clause)
+    params.push(param(opts.rootDir))
   }
 
   const limit = opts.limit ?? 100
@@ -150,15 +171,30 @@ export function queryRefs(
  * `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1
  * queries when a file has many symbols. Names with zero references are simply absent from
  * the returned map (callers should default to 0).
+ *
+ * `rootDir`, when provided, counts only references in files under that project root (see
+ * {@link querySymbols} for why this matters against the machine-wide `global.db`) -- without
+ * it, a symbol name shared with an unrelated project on the same machine inflates the count.
  */
-export function queryRefCounts(names: string[], dbPath: string = globalDbPath()): Map<string, number> {
+export function queryRefCounts(
+  names: string[],
+  dbPath: string = globalDbPath(),
+  rootDir?: string,
+): Map<string, number> {
   const counts = new Map<string, number>()
   if (names.length === 0) return counts
 
   const db = getDb(dbPath)
   const placeholders = names.map(() => '?').join(', ')
-  const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${placeholders}) GROUP BY name`
-  const rows = db.prepare(sql).all(...names) as Array<{ name: string; c: number }>
+  const params: (string | number)[] = [...names]
+  let scopeSql = ''
+  if (rootDir !== undefined) {
+    const { clause, param } = projectScopeClause('file_path')
+    scopeSql = ` AND ${clause}`
+    params.push(param(rootDir))
+  }
+  const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${placeholders})${scopeSql} GROUP BY name`
+  const rows = db.prepare(sql).all(...params) as Array<{ name: string; c: number }>
   for (const row of rows) {
     counts.set(row.name, row.c)
   }

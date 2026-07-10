@@ -7,9 +7,9 @@
  * - ``pad_r`` / ``pad_l``: Pad ANSI-coded strings to a fixed visible width.
  * - ``lerp_rgb``: Linear interpolation between two RGB colours.
  * - ``C``: Shared colour palette (GitHub dark-inspired, green accent).
- * - ``USE_COLOR``: ``True`` when the terminal supports 24-bit colour and
- *   ``NO_COLOR`` is not set. Callers should check this before building
- *   ANSI sequences.
+ * - ``colorStdout`` / ``colorStderr``: whether the given stream supports 24-bit
+ *   colour and ``NO_COLOR`` is not set. Callers should check one of these before
+ *   building ANSI sequences.
  */
 
 /**
@@ -38,8 +38,6 @@ export function colorStdout(): boolean {
 export function colorStderr(): boolean {
   return _colorStream(process.stderr.isTTY === true)
 }
-
-export const USE_COLOR = colorStdout()
 
 export type RGB = [number, number, number]
 

@@ -10,7 +10,7 @@ import { createRequire } from 'node:module'
 
 import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
 
-import { pathEqClause } from './sql_path.js'
+import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
 
@@ -43,6 +43,13 @@ function ensureTransformerLoaded(): void {
 // BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval. The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM without re-creating all chunk_vectors tables.
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
+
+// BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric
+// instruction prefix on the QUERY side only -- passages/documents are embedded plain.
+// See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query
+// text only (never to chunk/document text, which would just add noise) to improve
+// retrieval quality for this model family.
+export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '
 
 // pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights +
 // tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in
@@ -664,6 +671,74 @@ export async function upsertChunks(
   tx()
 }
 
+// sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no
+// file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan
+// against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch
+// candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata
+// (joined by rowid) against the project root. If a caller-provided rootDir filters out too
+// many candidates to satisfy topK, we retry once with a larger k (BACKFILL_MULTIPLIER, capped
+// at MAX_OVER_FETCH) -- this trades a bounded amount of extra query latency (at most one retry)
+// for correctness: without it, `token-goat semantic` from project A silently returns chunks
+// from unrelated project B sharing the same machine-wide global.db (see constants.ts).
+const BACKFILL_MULTIPLIER = 3
+
+/** One over-fetch-and-filter pass: KNN-search `k` candidates, then keep only those within `maxDistance` and (when `rootDir` is set) under that project root. Returns the surviving hits plus how many raw candidates the ANN scan returned, so the caller can tell whether growing `k` further could possibly help (or if the vector index is simply exhausted). Exported (not just used internally by searchSemantic) so tests can exercise the project-scoping/backfill SQL directly with a hand-built query vector, without needing a real embedding-model inference call. */
+export function fetchScopedHits(
+  db: BetterSqlite3Database,
+  queryVec: number[],
+  k: number,
+  maxDistance: number,
+  rootDir: string | undefined,
+): { hits: SearchHit[]; candidateCount: number } {
+  // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit) must appear as WHERE constraints for the virtual table to run an ANN scan. Omitting either causes a full-table scan or an error.
+  const stmt = db.prepare(`
+    SELECT rowid, distance FROM chunk_vectors
+    WHERE embedding MATCH ?
+    AND k = ?
+    ORDER BY distance ASC
+  `)
+
+  const rows = stmt.all(packVec(queryVec), k) as Array<{ rowid: number; distance: number } | undefined>
+
+  if (!rows || rows.length === 0) {
+    return { hits: [], candidateCount: 0 }
+  }
+
+  // Fetch chunk metadata from the chunks table, scoped to rootDir when provided.
+  const scope = rootDir !== undefined ? projectScopeClause('file_path') : undefined
+  const chunkSql =
+    scope !== undefined
+      ? `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ? AND ${scope.clause}`
+      : `SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ?`
+  const chunkStmt = db.prepare(chunkSql)
+  const scopeParam = scope !== undefined && rootDir !== undefined ? scope.param(rootDir) : undefined
+
+  // Build hits from rows.
+  const hits: SearchHit[] = []
+  for (const row of rows) {
+    if (!row) {
+      continue
+    }
+    if (row.distance <= maxDistance) {
+      const chunk = (
+        scopeParam !== undefined ? chunkStmt.get(row.rowid, scopeParam) : chunkStmt.get(row.rowid)
+      ) as { file_path: string; start_line: number; end_line: number; text: string; kind: string } | null | undefined
+      if (chunk) {
+        hits.push({
+          filePath: chunk.file_path,
+          startLine: chunk.start_line,
+          endLine: chunk.end_line,
+          kind: chunk.kind,
+          distance: row.distance,
+          text: chunk.text,
+        })
+      }
+    }
+  }
+
+  return { hits, candidateCount: rows.length }
+}
+
 /**
  * Search for semantically similar chunks using vector similarity.
  *
@@ -675,6 +750,11 @@ export async function upsertChunks(
  * @param topK - Number of results to return (default: 8).
  * @param modelName - Model to use for embedding (default: bge-small-en-v1.5).
  * @param maxDistance - Distance threshold; results above this are dropped (default: 1.2).
+ * @param rootDir - When provided, scope results to chunks whose file_path lives under this
+ *   project root (see {@link BACKFILL_MULTIPLIER} for how this is enforced against sqlite-vec's
+ *   partition-less `chunk_vectors` table). `global.db` is a single machine-wide index shared
+ *   across every project ever indexed (constants.ts), so callers that mean "search the current
+ *   project" MUST pass this.
  * @returns Array of SearchHit objects, sorted by distance (best first).
  */
 export async function searchSemantic(
@@ -683,6 +763,7 @@ export async function searchSemantic(
   topK: number = 8,
   modelName: string = DEFAULT_MODEL,
   maxDistance: number = DEFAULT_DISTANCE_THRESHOLD,
+  rootDir?: string,
 ): Promise<SearchHit[]> {
   if (!isAvailable()) {
     console.warn('Embeddings not available; semantic search disabled')
@@ -698,8 +779,10 @@ export async function searchSemantic(
     return []
   }
 
-  // Embed the query.
-  const queryEmbeddings = await embedTexts([query], modelName)
+  // Embed the query. BGE models are asymmetric: only the query side gets the
+  // retrieval-instruction prefix (see QUERY_INSTRUCTION_PREFIX) -- document/chunk
+  // embedding (the embedTexts call in chunk indexing) must stay unprefixed.
+  const queryEmbeddings = await embedTexts([`${QUERY_INSTRUCTION_PREFIX}${query}`], modelName)
   if (queryEmbeddings.length === 0) {
     return []
   }
@@ -715,43 +798,18 @@ export async function searchSemantic(
     Math.ceil(topK * OVER_FETCH_FACTOR),
   )
 
-  // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit) must appear as WHERE constraints for the virtual table to run an ANN scan. Omitting either causes a full-table scan or an error.
-  const stmt = db.prepare(`
-    SELECT rowid, distance FROM chunk_vectors
-    WHERE embedding MATCH ?
-    AND k = ?
-    ORDER BY distance ASC
-  `)
+  const first = fetchScopedHits(db, queryVec, overFetchK, maxDistance, rootDir)
+  let hits = first.hits
+  const candidateCount = first.candidateCount
 
-  const rows = stmt.all(packVec(queryVec), overFetchK) as Array<{ rowid: number; distance: number } | undefined>
-
-  if (!rows || rows.length === 0) {
-    return []
-  }
-
-  // Fetch chunk metadata from the chunks table.
-  const chunkStmt = db.prepare(`
-    SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ?
-  `)
-
-  // Build hits from rows and apply re-ranking.
-  const hits: SearchHit[] = []
-  for (const row of rows) {
-    if (!row) {
-      continue
-    }
-    if (row.distance <= maxDistance) {
-      const chunk = chunkStmt.get(row.rowid) as { file_path: string; start_line: number; end_line: number; text: string; kind: string } | null | undefined
-      if (chunk) {
-        hits.push({
-          filePath: chunk.file_path,
-          startLine: chunk.start_line,
-          endLine: chunk.end_line,
-          kind: chunk.kind,
-          distance: row.distance,
-          text: chunk.text,
-        })
-      }
+  // Backfill: when scoped and the first pass didn't surface enough hits, retry once with a
+  // larger k -- but only if the ANN scan actually returned as many candidates as requested
+  // (candidateCount === overFetchK); if it returned fewer, the vector index is exhausted and a
+  // bigger k would return the exact same rows, so retrying would just cost latency for nothing.
+  if (rootDir !== undefined && hits.length < topK && candidateCount === overFetchK && overFetchK < MAX_OVER_FETCH) {
+    const biggerK = Math.min(MAX_OVER_FETCH, overFetchK * BACKFILL_MULTIPLIER)
+    if (biggerK > overFetchK) {
+      hits = fetchScopedHits(db, queryVec, biggerK, maxDistance, rootDir).hits
     }
   }
 

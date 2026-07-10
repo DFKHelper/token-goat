@@ -298,13 +298,18 @@ export interface DeadOptions {
 
 export function runDead(opts: DeadOptions): number {
   const kind = opts.kind ?? 'function'
-  const syms = querySymbols({ kind, limit: 5000 })
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts) -- both the symbol scan and the per-symbol ref-count lookup must be scoped
+  // to the current project root, or a function dead in this project but referenced by a
+  // same-named symbol in an unrelated project on the same machine is wrongly scored ALIVE.
+  const rootDir = process.cwd()
+  const syms = querySymbols({ kind, limit: 5000, rootDir })
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
 
   for (const sym of syms) {
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
-    const refs = queryRefs({ name: sym.name, limit: 1 })
+    const refs = queryRefs({ name: sym.name, limit: 1, rootDir })
     if (isDeadSymbol(sym.name, refs.length)) {
       results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
     }
@@ -416,15 +421,19 @@ export function runTypes(opts: TypesOptions): number {
   const limit = opts.limit ?? 500
   const filePath = opts.file !== undefined ? resolveIndexPath(opts.file) : undefined
   const fpOpt = filePath !== undefined ? { filePath } : {}
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope every kind-scan to the current project root so `types` doesn't mix in
+  // type/interface/enum/class symbols from an unrelated project on the same machine.
+  const rootDir = process.cwd()
 
   const results: SymbolEntry[] = []
 
   for (const k of TYPE_KINDS) {
-    const syms = querySymbols({ kind: k, ...fpOpt, limit })
+    const syms = querySymbols({ kind: k, ...fpOpt, limit, rootDir })
     results.push(...syms)
   }
 
-  const classes = querySymbols({ kind: 'class', ...fpOpt, limit })
+  const classes = querySymbols({ kind: 'class', ...fpOpt, limit, rootDir })
   for (const cls of classes) {
     if (looksLikeTypeClass(cls.body)) results.push(cls)
   }
@@ -661,8 +670,13 @@ export interface CoverageGapsOptions {
 
 export function runCoverageGaps(opts: CoverageGapsOptions): number {
   const top = opts.top ?? 50
-  const allFns = querySymbols({ kind: 'function', limit: 2000 })
-  const allMethods = querySymbols({ kind: 'method', limit: 2000 })
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope the kind-scan and each ref lookup to the current project root so a
+  // function untested here isn't hidden by a same-named symbol's test reference in an unrelated
+  // project on the same machine.
+  const rootDir = process.cwd()
+  const allFns = querySymbols({ kind: 'function', limit: 2000, rootDir })
+  const allMethods = querySymbols({ kind: 'method', limit: 2000, rootDir })
   const candidates = [...allFns, ...allMethods]
 
   const gaps: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -670,7 +684,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   for (const sym of candidates) {
     if (!opts.includePrivate && sym.name.startsWith('_')) continue
     if (ENTRY_NAMES.has(sym.name)) continue
-    const refs = queryRefs({ name: sym.name, limit: 500 })
+    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
     const hasTestRef = refs.some((r) => isTestFile(r.filePath))
     if (!hasTestRef) gaps.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
