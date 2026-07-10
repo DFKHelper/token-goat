@@ -17,7 +17,17 @@
  * `PreCompress` takes no matcher and fires on every occurrence).
  * No shim script is needed the way Codex's strict `additionalProperties: false`
  * schemas require one: Gemini's hook command invokes `token-goat hook <event>`
- * directly, without any response reshaping. It is invoked via the absolute
+ * directly, without any response reshaping. This was re-verified directly
+ * against the raw `docs/hooks/reference.md` in google-gemini/gemini-cli on
+ * GitHub (2026-07-09, gemini CLI itself not installed on this machine): a
+ * `BeforeTool` deny accepts `{"decision":"deny"|"block","reason":"..."}` at
+ * the top level with no `hookSpecificOutput` wrapper -- exactly what
+ * `serializeOutput` (`../hook_registry.ts`) already emits for every deny on
+ * every harness, "block" being a documented alias for "deny". See
+ * `tests/relay.test.ts`'s "relay Gemini deny wire format" suite, which
+ * exercises this against a real production deny handler (hooks_mcp.ts's
+ * MCP-call dedup) through the real `relay()` path rather than assuming it.
+ * It is invoked via the absolute
  * Node binary (`process.execPath`) and the running token-goat entry path
  * (`process.argv[1]`), not a bare `token-goat` command -- {@link geminiHookCommand}
  * -- for the same reason `hookCommandFor` in `./codex_install.ts` and

@@ -7,7 +7,13 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan, stripLineComment, stripStringLiterals } from './common.js'
+import {
+  stripBlockCommentSpan,
+  stripLineComment,
+  stripMultilineStringSpan,
+  stripStringLiterals,
+  type MultilineStringState,
+} from './common.js'
 
 export interface KotlinImport {
   readonly kind: string
@@ -77,15 +83,27 @@ export function extractKotlin(
   const classStack: ClassFrame[] = []
   let braceDepth = 0
   let inComment = false
+  let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
+    // Mask multi-line Kotlin `"""..."""` raw string spans first, state carried across lines, so
+    // braces inside one of those can never desync braceDepth. Skipped on lines that start
+    // already inside a block comment (mlState null) to avoid misreading comment prose that
+    // happens to contain opener-shaped text.
+    let mlLine = rawLine
+    if (mlState !== null || !inComment) {
+      const masked = stripMultilineStringSpan(rawLine, mlState, 'kotlin')
+      mlLine = masked.code
+      mlState = masked.state
+    }
+
     // Strip /* */ block-comment spans (state carried across lines via inComment) so braces
     // inside commented-out code are not counted toward braceDepth. A `/*` inside an open quote
     // is not treated as a comment opener.
-    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
 
     // Strip a trailing `//` line comment (quote-aware) so braces/text after it are ignored.

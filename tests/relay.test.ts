@@ -99,6 +99,39 @@ describe('buildEvent', () => {
     expect(ev.toolInput).toEqual({})
     expect(ev.sessionId).toBe('')
   })
+
+  it('resolves the session id from a grok-shaped camelCase pre_compact payload (sessionId, not session_id)', () => {
+    // Grok inherits claudecode's full 7-event hook wiring but sends camelCase
+    // payloads. On non-tool events (pre_compact/stop/notification/...) there is
+    // no session_id key, so without a sessionId fallback the state loads/saves
+    // under an empty string.
+    const ev = buildEvent('pre_compact', { sessionId: 'grok-sess-1' })
+    expect(ev.sessionId).toBe('grok-sess-1')
+  })
+
+  it('prefers snake_case session_id over camelCase sessionId when both are present', () => {
+    const ev = buildEvent('stop', { session_id: 'snake', sessionId: 'camel' })
+    expect(ev.sessionId).toBe('snake')
+  })
+
+  it('extracts agent_id when present (subagent hook invocation)', () => {
+    const ev = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/x.ts' },
+      session_id: 's1',
+      agent_id: 'agent-42',
+    })
+    expect(ev.agentId).toBe('agent-42')
+  })
+
+  it('leaves agentId undefined on a main-thread payload (no agent_id)', () => {
+    const ev = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/x.ts' },
+      session_id: 's1',
+    })
+    expect(ev.agentId).toBeUndefined()
+  })
 })
 
 describe('readStdinJson', () => {
@@ -323,5 +356,127 @@ describe('relay tool-name normalization (regression: M49 — toolName filters in
     await relay('pre_tool_use')
 
     expect(observedToolName).toBe('Bash')
+  })
+})
+
+describe('relay Gemini deny wire format (regression: Gemini CLI has no output-reshaping bridge -- gemini_install.ts wires `token-goat hook <event>` directly into ~/.gemini/settings.json, with no shim script the way Codex/Copilot CLI have, so serializeOutput\'s wire JSON is exactly what a real Gemini CLI process reads from stdout -- this suite verifies token-goat\'s deny shape against Gemini CLI\'s documented BeforeTool contract instead of merely assuming compatibility, since a plausible fail-open regression here would mean a real Gemini user\'s dangerous-command/confirmed-re-read/dedup denials silently proceed)', () => {
+  // Verified against docs/hooks/reference.md in google-gemini/gemini-cli (raw
+  // GitHub source fetched directly, 2026-07-09) -- gemini CLI itself is not
+  // installed on this machine (checked: `gemini --version`/`where gemini`/npm
+  // global list/a recursive $env:USERPROFILE search all came up empty), so
+  // this is documentation-verified, not live-dogfooded against a real gemini
+  // binary. Relevant excerpts from that doc:
+  //   "Common output fields" table: `decision` (string) -- "allow" or "deny"
+  //   (alias "block")"; `reason` (string) -- "The feedback/error message
+  //   provided when a decision is deny."
+  //   "BeforeTool" section, "Relevant Output Fields": `decision`: Set to
+  //   "deny" (or "block") to prevent the tool from executing. `reason`:
+  //   Required if denied. This text is sent to the agent as a tool error.
+  //   BeforeTool has no additionalContext/hookSpecificOutput-wrapped output
+  //   field at all (that only exists on AfterTool/SessionStart/BeforeAgent).
+  // token-goat's serializeOutput (src/hook_registry.ts) emits exactly
+  // {"decision":"block","reason":"<message>"} for every deny, on every
+  // harness -- there is no per-harness output branch anywhere in the
+  // relay()/hook_registry.ts pipeline. "block" is a documented Gemini alias
+  // for "deny", so this already is Gemini's own native BeforeTool shape,
+  // with zero translation code required -- the real bug being verified here
+  // was that this compatibility was previously assumed, never actually
+  // checked against Gemini's real contract or exercised by a test.
+  const ENV_KEYS = [
+    'TERM_PROGRAM',
+    'CLAUDE_CODE_VERSION',
+    'CLAUDE_CODE_SESSION_ID',
+    'ANTHROPIC_API_KEY',
+    'CODEX_SESSION_ID',
+    'CODEX_SESSION',
+    'OPENCODE_SESSION_ID',
+    'OPENCODE_SESSION',
+    'GROK_SESSION_ID',
+    'OPENCLAW_SESSION_ID',
+    'HERMES_SESSION_ID',
+    'HERMES_HOME',
+    'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'TOKEN_GOAT_HARNESS_OVERRIDE',
+  ] as const
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      savedEnv[k] = process.env[k]
+      delete process.env[k]
+    }
+    // A real Gemini CLI hook subprocess inherits Gemini CLI's own ambient
+    // environment (GEMINI_API_KEY / GOOGLE_API_KEY) -- see
+    // harnessForNormalization()'s doc comment in src/relay.ts. Setting this
+    // is what makes detectHarness() resolve to 'gemini' for these tests,
+    // exactly as it would for a real installed Gemini CLI.
+    process.env['GEMINI_API_KEY'] = 'gemini-test-key'
+  })
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k]
+      else process.env[k] = savedEnv[k]
+    }
+  })
+
+  it('serializes a pre_tool_use deny into Gemini BeforeTool\'s documented {decision:"deny"|"block", reason} shape, with no unsupported wrapper fields', async () => {
+    registerHook(
+      'pre_tool_use',
+      () => ({ hookType: 'deny', message: 'blocked by test policy' }),
+      { toolName: 'GeminiDenyProbe' },
+    )
+
+    io.emit(JSON.stringify({ tool_name: 'GeminiDenyProbe', tool_input: {}, session_id: 'gemini-deny-test' }))
+    await relay('pre_tool_use')
+
+    const parsed = JSON.parse(io.written()) as Record<string, unknown>
+    // Gemini's BeforeTool schema accepts "deny" or its documented alias "block".
+    expect(['deny', 'block']).toContain(parsed['decision'])
+    expect(parsed['reason']).toBe('blocked by test policy')
+    // BeforeTool has no hookSpecificOutput-wrapped field in its schema at
+    // all -- confirm the response is the flat shape Gemini actually parses,
+    // not Claude Code's hookSpecificOutput-nested additionalContext shape
+    // (used by other hookType variants) leaking into a deny response.
+    expect(parsed['hookSpecificOutput']).toBeUndefined()
+    expect(Object.keys(parsed).sort()).toEqual(['decision', 'reason'])
+  })
+
+  it('actually blocks a real shipping-path deny (hooks_mcp.ts\'s repeated read-only MCP call dedup handler, not a synthetic probe) under Gemini harness detection', async () => {
+    const toolName = 'mcp__github__get_file_contents'
+    const toolInput = { owner: 'octo', repo: 'demo', path: 'README.md' }
+    const sessionId = 'gemini-mcp-dedup-test'
+
+    // First pre_tool_use: nothing cached yet, must pass through untouched.
+    io.emit(JSON.stringify({ tool_name: toolName, tool_input: toolInput, session_id: sessionId }))
+    await relay('pre_tool_use')
+    expect(JSON.parse(io.written())).toEqual({})
+    io.restore()
+    io = withFakeIo()
+
+    // post_tool_use records the (fake) result so the dedup cache has something to key on.
+    io.emit(
+      JSON.stringify({
+        tool_name: toolName,
+        tool_input: toolInput,
+        session_id: sessionId,
+        tool_response: { output: '# README' },
+      }),
+    )
+    await relay('post_tool_use')
+    io.restore()
+    io = withFakeIo()
+
+    // Second identical pre_tool_use call: the real production handler must now deny it.
+    io.emit(JSON.stringify({ tool_name: toolName, tool_input: toolInput, session_id: sessionId }))
+    await relay('pre_tool_use')
+
+    const parsed = JSON.parse(io.written()) as Record<string, unknown>
+    expect(['deny', 'block']).toContain(parsed['decision'])
+    expect(typeof parsed['reason']).toBe('string')
+    expect(parsed['reason'] as string).toContain('already cached this session')
+    expect(parsed['hookSpecificOutput']).toBeUndefined()
   })
 })

@@ -65,6 +65,16 @@ const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 const REREAD_DENY_BYTES = 50 * 1024
 
 /**
+ * Size gate for the *first* read of a tasks/<id>.output file. Unlike the markdown
+ * intercept (MARKDOWN_SIZE_THRESHOLD) and the generic large-file gate (LARGE_FILE_BYTES)
+ * in this same function, the tasks/*.output first-read branch used to let any size
+ * through unconditionally with only an advisory hint -- a real session showed a
+ * 57,920-byte first read going through unsized. Small task outputs stay a cheap
+ * advisory pass; anything at or above this is denied outright, same as a re-read.
+ */
+const TASK_OUTPUT_DENY_BYTES = 20 * 1024
+
+/**
  * Multiplies `hints.large_read_redirect_bytes` down as context pressure rises, so a first read
  * that's fine when the session is cool gets redirected to a surgical read sooner once the window
  * is nearly full. Mirrors the pre-TS-port pressure-scaling design (commit 66a25e88): cool keeps the
@@ -695,9 +705,19 @@ export function preReadHandler(event: HookEvent): HookOutput {
         normalized + ' was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
-    // First read of tasks/*.output — allow but emit a proactive hint
+    // First read of tasks/*.output — size-gated like every other first-read intercept in
+    // this function. A small task output is a cheap advisory pass; at/above
+    // TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through
+    // bash-output --file/--tail instead of one free unsized full dump.
     if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)) {
+      const outputSize = statSize(normalized)
       recordActualRead(event, normalized)
+      if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
+        recordStat('session_hint', outputSize, Math.round(outputSize / 4))
+        return denyOutput(
+          'Session transcript is large (' + Math.round(outputSize / 1024) + 'KB). ' + sessionArtifactRecall(normalized),
+        )
+      }
       return contextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
     }
     // First read of tool-results/*.txt — fall through to normal handling

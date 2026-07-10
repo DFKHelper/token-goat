@@ -18,6 +18,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 const { deleteFileEmbeddings } = await import('../src/embeddings.js')
 const { getDb, closeAllDbs } = await import('../src/db.js')
 const { isCaseInsensitiveFs } = await import('../src/util.js')
+const { pathEqClause } = await import('../src/sql_path.js')
 
 let TMP: string
 
@@ -66,5 +67,44 @@ describe('pathEqClause non-ASCII case folding (TG_LOWER)', () => {
     // 'Ätest.ts' while the JS-side foldPath() param is already 'ätest.ts' -- they never match
     // and the row survives. TG_LOWER() folds both sides identically, so it must be gone.
     expect(chunkCount(db, 'c:/proj/Ätest.ts')).toBe(0)
+  })
+
+  // Correctness, not just perf: a plain mixed-ASCII-case input must still resolve through
+  // pathEqClause's TG_LOWER()-backed branch after the expression-index fix below -- this locks
+  // in the everyday case (not just the non-ASCII edge case above) alongside the index-usage
+  // assertion.
+  it('case-insensitive FS: matches a path differing only by ASCII casing (Foo.ts vs foo.ts)', () => {
+    const db = path.join(TMP, 'index.db')
+    seed(db, 'c:/proj/Foo.ts') // walker casing
+    deleteFileEmbeddings(getDb(db), 'c:/proj/foo.ts') // edit-queue casing, different ASCII case
+    expect(chunkCount(db, 'c:/proj/Foo.ts')).toBe(0)
+  })
+})
+
+describe('pathEqClause query plan (full table scan fix)', () => {
+  // Regression: TG_LOWER() is a custom SQL function, so a plain column index cannot satisfy a
+  // `TG_LOWER(column) = ?` WHERE clause -- every pathEqClause()-built query used to be a full
+  // table SCAN on the case-insensitive-filesystem branch, regardless of table size. db.ts adds
+  // an expression index (`CREATE INDEX ... ON chunks(TG_LOWER(file_path))`) that SQLite matches
+  // against pathEqClause's exact output text. Build the clause the same way every real caller
+  // does (parser.ts, embeddings.ts, index_reader.ts) and confirm via EXPLAIN QUERY PLAN that the
+  // resulting SQL uses SEARCH, not SCAN -- this is the assertion that locks the perf fix in so
+  // it cannot silently regress back to a full scan.
+  it('a query built from pathEqClause uses SEARCH (not SCAN), not a full table scan', () => {
+    const db = getDb(path.join(TMP, 'plan.db'))
+    const clause = pathEqClause('file_path')
+    expect(clause).toBe('TG_LOWER(file_path) = ?')
+
+    const plan = db
+      .prepare(`EXPLAIN QUERY PLAN SELECT * FROM chunks WHERE ${clause}`)
+      .all('c:/proj/foo.ts') as Array<{ detail: string }>
+    const detail = plan.map((row) => row.detail).join(' | ')
+    expect(detail).toMatch(/SEARCH/)
+    expect(detail).not.toMatch(/SCAN/)
+  })
+
+  it('case-sensitive FS: pathEqClause builds a plain raw-column comparison, already covered by the ordinary column index', () => {
+    vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
+    expect(pathEqClause('file_path')).toBe('file_path = ?')
   })
 })

@@ -16,9 +16,10 @@ import {
   workerPidPath,
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
-import { querySymbols, queryRefs } from '../src/index_reader.js'
+import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { clearModuleCaches } from '../src/reset.js'
 import { loadConfig } from '../src/config.js'
 import { store } from '../src/snapshots.js'
 
@@ -46,6 +47,13 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // The retry-count DB helpers (bumpRetryCount/clearRetryCount in worker.ts) open a connection
+  // to `${DIR}/global.db` as a side effect of any transient-read-failure requeue or successful
+  // read, even for tests that inject a fake in-memory index callback and never otherwise touch
+  // the DB. Close it before removing DIR, or the still-open WAL handle makes rmSync fail with
+  // EPERM on Windows -- same pattern as the explicit closeDb(projectDb) calls elsewhere in this
+  // file, just applied unconditionally here since any test may now trigger it indirectly.
+  closeDb(path.join(DIR, 'global.db'))
   fs.rmSync(DIR, { recursive: true, force: true })
 })
 
@@ -283,18 +291,20 @@ describe('processDirtyBatch', () => {
     expect(giveUpLines.length).toBe(1)
   })
 
-  // Regression: transientRetryCounts was only ever cleared on a *successful* read
-  // (processDirtyBatch), never on a fresh edit re-dirtying the path -- so a path that once
-  // exhausted its retry budget during a transient lock episode stayed permanently exhausted
-  // for the rest of the daemon's lifetime, even after the file was edited again. The fix is
+  // Regression: the retry count was cleared on a *successful* read (processDirtyBatch) but
+  // never on a fresh edit re-dirtying the path -- so a path that once exhausted its retry
+  // budget during a transient lock episode stayed permanently exhausted for the rest of the
+  // daemon's lifetime, even after the file was edited again. The fix is
   // resetTransientRetryCount, called from appendDirtyPath (hooks_index.ts) whenever a path is
-  // freshly dirtied by an edit. Simulate that call directly and confirm the path gets a full
-  // new retry budget -- five more failed cycles before it gives up again, with a second,
-  // distinct "giving up" log line -- rather than instantly giving up with zero new log output.
+  // freshly dirtied by an edit. Pass this test's own DIR-scoped DB explicitly -- production
+  // callers (appendDirtyPath) rely on the `dbPath` default (globalDbPath()), but a test using
+  // an isolated dir must name the same DB drainOnce(DIR) itself reads, exactly as a real
+  // hook-process/daemon-process pair would both resolve to the one shared global.db.
   it('gives a fresh retry budget to a path re-dirtied after exhausting its retry cap', () => {
     const lockedPath = path.join(DIR, 'stuck2.ts')
     fs.mkdirSync(lockedPath)
     writeQueue(DIR, [lockedPath])
+    const dbPath = path.join(DIR, 'global.db')
 
     for (let cycle = 0; cycle < 10; cycle++) {
       drainOnce(DIR)
@@ -308,7 +318,7 @@ describe('processDirtyBatch', () => {
 
     // Simulate the edit-driven re-dirty path: reset the retry count (what appendDirtyPath now
     // does) and re-queue the still-stuck path, as a fresh edit to it would.
-    resetTransientRetryCount(lockedPath)
+    resetTransientRetryCount(lockedPath, dbPath)
     writeQueue(DIR, [lockedPath])
 
     for (let cycle = 0; cycle < 10; cycle++) {
@@ -321,6 +331,53 @@ describe('processDirtyBatch', () => {
       .split('\n')
       .filter((l) => l.includes('giving up on') && l.includes(lockedPath)).length
     expect(secondGiveUpCount).toBe(2)
+  })
+
+  // Regression (the actual cross-process bug, not just the same-process behavior above): the
+  // retry count used to live only in a worker.ts module-level Map, so resetTransientRetryCount
+  // -- called from appendDirtyPath in the short-lived hook CLI process -- could never reach the
+  // long-lived detached daemon's own copy of that Map. A same-process test calling
+  // resetTransientRetryCount and then drainOnce in immediate succession would pass even with
+  // that bug, because both calls shared the one process's Map (the "wrong-oracle" trap: the
+  // test never actually exercised the missing cross-process link). This test instead closes
+  // every cached DB connection (clearModuleCaches -> closeAllDbs) between each step, forcing
+  // drainOnce/resetTransientRetryCount to open a brand-new connection object every time -- the
+  // closest a single Node process can get to proving the persisted DB row, not any
+  // process-local cache, is what carries the reset across. If retry state lived in memory
+  // again, this would regress back to zero new "giving up" output after the reset.
+  it('persists the retry-count reset through the DB even when every in-process DB connection is closed and reopened between steps (cross-process simulation)', () => {
+    const lockedPath = path.join(DIR, 'stuck3.ts')
+    fs.mkdirSync(lockedPath)
+    writeQueue(DIR, [lockedPath])
+    const dbPath = path.join(DIR, 'global.db')
+
+    for (let cycle = 0; cycle < 10; cycle++) {
+      drainOnce(DIR)
+    }
+    const logPath = path.join(DIR, 'worker-errors.log')
+    const giveUpCount = (log: string): number =>
+      log.split('\n').filter((l) => l.includes('giving up on') && l.includes(lockedPath)).length
+    expect(giveUpCount(fs.readFileSync(logPath, 'utf8'))).toBe(1)
+
+    // Close every cached DB connection -- simulates the daemon process (which just wrote
+    // retry_count = 5 while giving up) exiting or being a wholly separate process from whatever
+    // resets the count next.
+    clearModuleCaches()
+
+    // Simulates appendDirtyPath running in a fresh, short-lived hook CLI process: no shared
+    // memory with whatever wrote the exhausted count, only DB access.
+    resetTransientRetryCount(lockedPath, dbPath)
+    writeQueue(DIR, [lockedPath])
+
+    // Close the connection the reset just opened too, then simulate the daemon coming back
+    // (its own fresh process/connection) to drain the re-queued path.
+    clearModuleCaches()
+
+    for (let cycle = 0; cycle < 10; cycle++) {
+      drainOnce(DIR)
+    }
+    expect(getDirtyPathsFor(DIR)).toEqual([])
+    expect(giveUpCount(fs.readFileSync(logPath, 'utf8'))).toBe(2)
   })
 })
 
@@ -427,6 +484,12 @@ describe('drainOnce', () => {
       getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
       expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
 
+      // This test targets the PARSE-sha gate specifically (embedding freshness is gated
+      // independently -- see the dedicated embed_sha regression tests below). Stamp embed_sha to
+      // match the stored sha, simulating a prior successful embed, so a fully-skipped drain here
+      // isolates the parse gate rather than being driven by the (unrelated) embed re-trigger.
+      getDb(projectDb).prepare('UPDATE files SET embed_sha = sha WHERE path = ?').run(norm)
+
       // Re-queue the unchanged file and drain again; the sha gate must skip the reparse, and the
       // returned count must not include it (it was visited but not actually reindexed).
       writeQueue(DIR, [norm])
@@ -463,9 +526,40 @@ describe('drainOnce', () => {
       getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
       expect(querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length).toBe(0)
 
+      // Isolate the parse gate from the (independently gated) embed re-trigger -- see the
+      // matching comment in the sha-gate test above.
+      getDb(projectDb).prepare('UPDATE files SET embed_sha = sha WHERE path = ?').run(norm)
+
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(0)
       expect(querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length).toBe(0)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  // Regression: parseFile stripped a leading UTF-8 BOM (U+FEFF) before parsing, but
+  // indexFileSync (the worker's real shipping path -- used by drainOnce) called
+  // parseContent directly on the raw decoded content without stripping it first. Any
+  // `^`-anchored regex extractor (markdown headings included) then has its line-1 match
+  // fail, because the BOM sits before the `#`. This drives the real default drain path
+  // (no injected callback) on a BOM'd markdown file and asserts the line-1 heading still
+  // resolves as a symbol. It fails pre-fix (0 symbols) and passes once the BOM is stripped
+  // inside parseContent itself, so both parseFile and indexFileSync inherit the fix.
+  it('default path strips a leading UTF-8 BOM before parsing (indexFileSync path)', () => {
+    const src = path.join(DIR, 'bom.md')
+    fs.writeFileSync(src, '﻿# Known Bom Heading\n\nBody text.\n', 'utf8')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    const count = drainOnce(DIR)
+    expect(count).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      const found = querySymbols({ name: 'Known Bom Heading', limit: 10 }, projectDb)
+      expect(found.length).toBeGreaterThan(0)
+      expect(found[0]?.lineStart).toBe(1)
     } finally {
       closeDb(projectDb)
     }
@@ -638,6 +732,62 @@ describe('makeIndexer failure handling (regression)', () => {
       const logContent = fs.readFileSync(logPath, 'utf8')
       expect(logContent).toContain(bad)
       expect(logContent).toContain('simulated parse failure')
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+})
+
+// Regression: makeIndexer committed files.sha via indexFileSync, then fired
+// indexFileEmbeddings without awaiting it (fire-and-forget). If the daemon died mid-embedding,
+// or the embed call threw (previously swallowed with nothing to show for it), the sha was
+// already stamped current, so the next touch of IDENTICAL content got sha-gate-skipped forever
+// -- chunks stayed stale/missing permanently, with no way to recover short of deleting the
+// index. files.embed_sha now tracks embedding freshness separately from files.sha (parse
+// freshness): it is only stamped after indexFileEmbeddings actually commits successfully (see
+// its doc comment in parser.ts), and makeIndexer's gate re-triggers embedding whenever
+// embed_sha !== sha, even when the parse-sha gate above it skipped the reparse entirely. This
+// drives the real default drain path (drainOnce(DIR), no injected index callback); only
+// indexFileEmbeddings itself is mocked (throwing once to simulate the crash/error, then
+// delegating to the real implementation), the narrowest seam for deterministic failure
+// injection -- makeIndexer/processDirtyBatch/drainOnce and indexFileSync are entirely real.
+describe('makeIndexer embed-freshness gate (regression)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('retries embedding on the next touch of unchanged content after a simulated embedding crash', () => {
+    const realIndexFileEmbeddings = parserModule.indexFileEmbeddings
+    const src = path.join(DIR, 'embed-crash.ts')
+    fs.writeFileSync(src, 'export function embedCrashSymbol(): number {\n  return 9\n}\n')
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+
+    const embedSpy = vi
+      .spyOn(parserModule, 'indexFileEmbeddings')
+      .mockImplementationOnce(() => Promise.reject(new Error('simulated embedding crash')))
+
+    try {
+      // First drain: indexFileSync succeeds (real), but the embedding step throws. The
+      // syntactic index must still succeed -- an embeddings-only failure never fails the
+      // overall index -- and embed_sha must be left unstamped (stale/empty) rather than
+      // wrongly marked current.
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(embedSpy).toHaveBeenCalledTimes(1)
+      expect(
+        querySymbols({ name: 'embedCrashSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(getFileEntry(norm, projectDb)?.embedSha).toBe('')
+
+      // Second drain of the SAME, byte-identical file: the parse-sha gate alone would skip it
+      // entirely (pre-fix behaviour), permanently losing the embedding retry. With the fix,
+      // embed_sha (still empty) !== sha, so embedding must be retried even though the parse
+      // step is correctly skipped.
+      embedSpy.mockImplementation((filePath, dbPath, sha) => realIndexFileEmbeddings(filePath, dbPath, sha))
+      writeQueue(DIR, [norm])
+      drainOnce(DIR)
+      expect(embedSpy).toHaveBeenCalledTimes(2)
     } finally {
       closeDb(projectDb)
     }

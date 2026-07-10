@@ -33,6 +33,15 @@ export interface HookEvent {
   readonly toolName: string | undefined
   readonly toolInput: Record<string, unknown>
   readonly sessionId: string
+  /**
+   * Unique per-subagent-invocation id (Claude Code's `agent_id` field), present only
+   * when this hook fired inside a subagent call. `undefined` for main-thread events.
+   * All subagents spawned by one parent share the parent's `session_id`, so this is
+   * the only signal that distinguishes a subagent's own reads/edits from a sibling
+   * subagent's or the parent's -- used to salt the persisted session-state key so
+   * sibling agents get independent re-read dedup ledgers instead of conflating them.
+   */
+  readonly agentId: string | undefined
   readonly raw: Record<string, unknown>
 }
 

@@ -164,7 +164,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
-  return { text: blocks.join('\n\n'), code: 0 }
+  return { text: guardText(blocks.join('\n\n'), 'symbol'), code: 0 }
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -545,6 +545,7 @@ export function runRefs(opts: RefsOptions): number {
 
   const jsonOut: Record<string, RefEntry[]> = {}
   let anyFound = false
+  const lines: string[] = []
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to
@@ -559,17 +560,21 @@ export function runRefs(opts: RefsOptions): number {
       continue
     }
     if (results.length === 0) {
-      emit(`${sym}: (no references found)`)
+      lines.push(`${sym}: (no references found)`)
       continue
     }
-    emit(`${sym}:`)
+    lines.push(`${sym}:`)
     if (opts.callers === true) {
-      emitCallerGroups(results)
+      lines.push(...renderCallerGroups(results))
     } else {
-      for (const ref of results) emit(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
+      for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
     }
   }
-  if (opts.json === true) emit(JSON.stringify(jsonOut, null, 2))
+  if (opts.json === true) {
+    emit(JSON.stringify(jsonOut, null, 2))
+    return anyFound ? 0 : 1
+  }
+  emitGuarded(lines.join('\n'), 'symbol')
   return anyFound ? 0 : 1
 }
 
@@ -595,17 +600,15 @@ function runRefsSingle(opts: RefsOptions): number {
     return 0
   }
 
-  if (opts.callers === true) {
-    emitCallerGroups(results)
-  } else {
-    for (const ref of results) {
-      emit(`${ref.filePath}:${ref.line}: ${ref.context}`)
-    }
-  }
+  const lines =
+    opts.callers === true
+      ? renderCallerGroups(results)
+      : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
+  emitGuarded(lines.join('\n'), 'symbol')
   return 0
 }
 
-function emitCallerGroups(refs: RefEntry[]): void {
+function renderCallerGroups(refs: RefEntry[]): string[] {
   const byFile = new Map<string, RefEntry[]>()
   for (const ref of refs) {
     const bucket = byFile.get(ref.filePath)
@@ -615,12 +618,14 @@ function emitCallerGroups(refs: RefEntry[]): void {
       byFile.set(ref.filePath, [ref])
     }
   }
+  const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
-    emit(`${file}:`)
+    lines.push(`${file}:`)
     for (const ref of fileRefs) {
-      emit(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
+      lines.push(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
     }
   }
+  return lines
 }
 
 // ---- skeleton / stub_view ---------------------------------------------------
@@ -681,7 +686,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : ''
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  return { text: lines.join('\n'), code: 0 }
+  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- outline ----------------------------------------------------------------
@@ -742,7 +747,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
-  return { text: lines.join('\n'), code: 0 }
+  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- csv / pdf / screenshot --------------------------------------------------

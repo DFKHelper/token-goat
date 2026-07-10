@@ -404,33 +404,8 @@ function _plainTextStats(summary: StatsSummary): void {
  * by-command/by-day breakdown and no rich TTY rendering. Same output on a
  * TTY or a pipe -- the short block needs no sparklines/KPI treatment.
  */
-export function renderShortStats(opts?: { windowDays?: number; homeDir?: string }): void {
-  const windowDays = opts?.windowDays ?? 30
-  const summary = summarize(windowDays, undefined, opts?.homeDir)
-
-  if (summary.total_events === 0) {
-    console.log('No stats recorded yet.')
-    return
-  }
-
-  _renderShortTotals(summary)
-}
-
-export function renderStats(opts?: { windowDays?: number; homeDir?: string }): void {
-  const windowDays = opts?.windowDays ?? 30
-  const summary = summarize(windowDays, undefined, opts?.homeDir)
-
-  if (summary.total_events === 0) {
-    console.log('No stats recorded yet.')
-    return
-  }
-
-  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
-  if (!useTty) {
-    _plainTextStats(summary)
-    return
-  }
-
+/** Build the StatsData payload consumed by the rich TTY renderer from a StatsSummary. */
+function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
   const now = new Date()
   const periodStart =
     windowDays > 0 ? new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000) : new Date(0)
@@ -446,7 +421,7 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
         }
       : null
 
-  const statsData: StatsData = {
+  return {
     period_start: periodStart,
     period_end: now,
     version: VERSION,
@@ -489,6 +464,48 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
       events: c.events,
     })),
   }
+}
 
+/**
+ * Bare ``token-goat stats`` default: totals + hints only, no by-source/
+ * by-command/by-day breakdown. On a TTY this uses the same rich header + KPI
+ * section as ``--full`` (just without the detail sections); on a pipe it
+ * stays flat plain text.
+ */
+export function renderShortStats(opts?: { windowDays?: number; homeDir?: string }): void {
+  const windowDays = opts?.windowDays ?? 30
+  const summary = summarize(windowDays, undefined, opts?.homeDir)
+
+  if (summary.total_events === 0) {
+    console.log('No stats recorded yet.')
+    return
+  }
+
+  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  if (!useTty) {
+    _renderShortTotals(summary)
+    return
+  }
+
+  const statsData = _buildStatsData(summary, windowDays)
+  process.stdout.write(richRenderStats(statsData, { short: true }) + '\n')
+}
+
+export function renderStats(opts?: { windowDays?: number; homeDir?: string }): void {
+  const windowDays = opts?.windowDays ?? 30
+  const summary = summarize(windowDays, undefined, opts?.homeDir)
+
+  if (summary.total_events === 0) {
+    console.log('No stats recorded yet.')
+    return
+  }
+
+  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  if (!useTty) {
+    _plainTextStats(summary)
+    return
+  }
+
+  const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData) + '\n')
 }

@@ -6,7 +6,13 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan, stripLineComment, stripStringLiterals } from './common.js'
+import {
+  stripBlockCommentSpan,
+  stripLineComment,
+  stripMultilineStringSpan,
+  stripStringLiterals,
+  type MultilineStringState,
+} from './common.js'
 
 export interface CsharpImport {
   readonly kind: string
@@ -88,16 +94,28 @@ export function extractCsharp(
   const classStack: ClassFrame[] = []
   let braceDepth = 0
   let inComment = false
+  let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
     let openedFrameThisLine = false
 
+    // Mask multi-line C# string spans (verbatim `@"..."`, raw `"""..."""`) first, state
+    // carried across lines, so braces inside one of those can never desync braceDepth. Skipped
+    // on lines that start already inside a block comment (mlState null) to avoid misreading
+    // comment prose that happens to contain opener-shaped text.
+    let mlLine = rawLine
+    if (mlState !== null || !inComment) {
+      const masked = stripMultilineStringSpan(rawLine, mlState, 'csharp')
+      mlLine = masked.code
+      mlState = masked.state
+    }
+
     // Strip /* */ block-comment spans (state carried across lines) so braces inside
     // commented-out code are not counted toward braceDepth. A `/*` inside an open quote is
     // not treated as a comment opener.
-    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
     const line = codeLine.trimEnd()
     const stripped = line.trim()

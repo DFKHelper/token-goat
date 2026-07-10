@@ -1201,11 +1201,6 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
     return { symbols: [], refs: [], language, duration: Date.now() - start }
   }
 
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
-  if (content.charCodeAt(0) === 0xfeff) {
-    content = content.slice(1)
-  }
-
   const { symbols, refs } = parseContent(content, filePath, language)
   return { symbols, refs, language, duration: Date.now() - start }
 }
@@ -1218,6 +1213,14 @@ interface ParseContentResult {
 
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
 function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
+  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix.
+  // Both entry points (parseFile, indexFileSync) funnel through here, so this is the
+  // single place BOM stripping needs to happen. Sha/hash computation elsewhere stays
+  // on the raw original bytes — only this decoded copy is affected.
+  if (content.charCodeAt(0) === 0xfeff) {
+    content = content.slice(1)
+  }
+
   if (isTreeSitterAvailable(language)) {
     try {
       const Ctor = loadParserCtor()
@@ -1474,7 +1477,19 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
   return symbols.map((s) => ({ start: s.lineStart, end: s.lineEnd, kind: 'symbol' as const }))
 }
 
-export async function indexFileEmbeddings(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
+/**
+ * `sha`, when provided, is stamped into `files.embed_sha` after {@link embedIndexFile}
+ * commits successfully -- tracked separately from `files.sha` (the parse-freshness gate) so
+ * a crash or thrown error mid-embedding never gets masked by the parse-sha gate: the embed_sha
+ * column is left at its previous (stale/empty) value on any early return or thrown error below,
+ * so a later touch of byte-identical content still re-triggers embedding instead of being
+ * permanently sha-gate-skipped. See makeIndexer in worker.ts for the read side of this gate.
+ */
+export async function indexFileEmbeddings(
+  filePath: string,
+  dbPath: string = globalDbPath(),
+  sha?: string,
+): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) return
   if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
     // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
@@ -1496,8 +1511,15 @@ export async function indexFileEmbeddings(filePath: string, dbPath: string = glo
     const db = getDb(dbPath)
     const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
     await embedIndexFile(db, filePath, content, boundaries)
+    if (sha !== undefined) {
+      db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(
+        sha,
+        foldPath(filePath),
+      )
+    }
   } catch {
-    // Best-effort: never fail the overall index over an embeddings-only error.
+    // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is
+    // deliberately left unstamped here (see doc comment above).
   }
 }
 

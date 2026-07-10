@@ -1,6 +1,6 @@
 // PowerShell language adapter (.ps1, .psm1) using regex-based symbol extraction.
 import type { SymbolEntry } from '../parser_types.js'
-import { stripStringLiterals } from './common.js'
+import { stripMultilineStringSpan, stripStringLiterals, type MultilineStringState } from './common.js'
 
 const MAX_SYMBOLS = 500
 
@@ -64,10 +64,24 @@ export function extractPowershell(
   let classBodyEntered = false
   let braceDepth = 0
   let inBlockComment = false
+  let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i] ?? ''
+    const sourceLine = lines[i] ?? ''
     const lineNum = i + 1
+
+    // Mask multi-line PowerShell here-string spans (@"..."@ / @'...'@) first, state carried
+    // across lines, so braces (and comment-looking sequences) inside one of those can never
+    // desync braceDepth or the <# #> block-comment scanner below. Skipped on lines that start
+    // already inside a block comment (mlState null) to avoid misreading comment prose that
+    // happens to contain opener-shaped text.
+    let mlLine = sourceLine
+    if (mlState !== null || !inBlockComment) {
+      const masked = stripMultilineStringSpan(sourceLine, mlState, 'powershell')
+      mlLine = masked.code
+      mlState = masked.state
+    }
+    const rawLine = mlLine
 
     // Handle <# ... #> block comments. A `<#` only opens a real comment when
     // it isn't sitting inside a quoted string literal - PowerShell strings can

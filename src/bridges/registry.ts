@@ -89,8 +89,7 @@ export function detectHarness(): HarnessName {
   if (
     env['TERM_PROGRAM'] === 'claude-code' ||
     env['CLAUDE_CODE_VERSION'] !== undefined ||
-    env['CLAUDE_CODE_SESSION_ID'] ||
-    env['ANTHROPIC_API_KEY']
+    env['CLAUDE_CODE_SESSION_ID']
   ) {
     return 'claudecode'
   }
@@ -116,6 +115,16 @@ export function detectHarness(): HarnessName {
 
   if (env['OPENCLAW_SESSION_ID'] !== undefined) {
     return 'openclaw'
+  }
+
+  // Claude Code, bare-API-key fallback. Checked AFTER every harness-specific
+  // `*_SESSION_ID` branch above (Codex/opencode/Grok/OpenClaw), for the same
+  // reason Hermes is checked ahead of Claude Code: a Grok/Codex/opencode
+  // session can still carry an ambient `ANTHROPIC_API_KEY` (Grok reuses Claude
+  // Code's own settings.json), so an early bare-key match would misdetect those
+  // harnesses as claudecode and silently disable their wire-format translation.
+  if (env['ANTHROPIC_API_KEY']) {
+    return 'claudecode'
   }
 
   if (env['OPENAI_API_KEY'] && !env['ANTHROPIC_API_KEY']) {

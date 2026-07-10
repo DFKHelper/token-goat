@@ -287,6 +287,30 @@ describe('Stats rendering', () => {
     expect(result).toContain('Insights')
   })
 
+  it('renderStats with { short: true } includes the header and KPI section', () => {
+    const result = renderStats(minimalStats, { short: true })
+    expect(result).toContain('token-goat')
+    expect(result).toContain('1.0.0')
+    expect(result).toContain('last 30 days')
+    expect(result).toContain('events')
+    expect(result).toContain('100')
+  })
+
+  it('renderStats with { short: true } omits the by-* and insights sections', () => {
+    const result = renderStats(minimalStats, { short: true })
+    expect(result).not.toContain('By kind')
+    expect(result).not.toContain('By source')
+    expect(result).not.toContain('By command')
+    expect(result).not.toContain('By day')
+    expect(result).not.toContain('By project')
+    expect(result).not.toContain('Insights')
+  })
+
+  it('renderStats with { short: true } includes a hint pointing at --full', () => {
+    const result = renderStats(minimalStats, { short: true })
+    expect(result).toContain("Run 'token-goat stats --full'")
+  })
+
   it('renderStats handles empty by_kind gracefully', () => {
     const stats = { ...minimalStats, by_kind: [] }
     const result = renderStats(stats)

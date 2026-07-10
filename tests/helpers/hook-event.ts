@@ -6,6 +6,7 @@ export function makeHookEvent(overrides: Partial<HookEvent> = {}): HookEvent {
     toolName: 'Read',
     toolInput: {},
     sessionId: 's1',
+    agentId: undefined,
     raw: {},
     ...overrides,
   }

@@ -26,6 +26,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import * as fs from 'node:fs'
 
+import { closeDb } from '../src/db.js'
 import { drainOnce } from '../src/worker.js'
 
 describe('drainOnce crash-recovery removal failure', () => {
@@ -37,6 +38,10 @@ describe('drainOnce crash-recovery removal failure', () => {
 
   afterEach(() => {
     mockState.throwRmSyncOnce = false
+    // drainOnce's retry-count DB helpers (bumpRetryCount/clearRetryCount in worker.ts) open a
+    // connection to DIR's global.db as a side effect of processing any dirty path. Close it
+    // before removing DIR, or the still-open WAL handle makes rmSync fail with EPERM on Windows.
+    closeDb(path.join(DIR, 'global.db'))
     fs.rmSync(DIR, { recursive: true, force: true })
   })
 
@@ -71,6 +76,8 @@ describe('drainOnce crash-recovery removal+quarantine both fail (stale .draining
   afterEach(() => {
     mockState.throwRmSyncOnce = false
     mockState.throwRenameSyncOnce = false
+    // See the closeDb() comment in the first describe block's afterEach above.
+    closeDb(path.join(DIR, 'global.db'))
     fs.rmSync(DIR, { recursive: true, force: true })
   })
 
@@ -122,6 +129,8 @@ describe('drainOnce stage (b) removal failure (double-processing regression)', (
   afterEach(() => {
     mockState.throwRmSyncOnce = false
     mockState.throwRenameSyncOnce = false
+    // See the closeDb() comment in the first describe block's afterEach above.
+    closeDb(path.join(DIR, 'global.db'))
     fs.rmSync(DIR, { recursive: true, force: true })
   })
 

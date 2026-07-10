@@ -21,6 +21,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob } from './disk_cache.js'
+import { isBuildCommand } from './hints/lang_patterns.js'
 
 /** Subdir under the token-goat home where bash-output blobs live. */
 export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
@@ -113,6 +114,23 @@ export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
 export function isUnscopedGitDiff(cmd: string): boolean {
   if (!isCommandOfType(cmd, 'gitDiffUnscoped')) return false
   return !isCommandOfType(cmd, 'gitDiffScoped')
+}
+
+/**
+ * A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is
+ * byte-identical on every rerun until either HEAD changes or the working tree changes —
+ * exactly the condition the `gitMutable` fingerprint (HEAD sha + `git status --porcelain`
+ * hash, see gitStateFingerprintSync below) already invalidates on. `git diff` without
+ * `--stat` is excluded: a full unified diff can legitimately grow/shrink in ways a byte-exact
+ * recall would misrepresent as unchanged, so only the compact `--stat` summary form is
+ * considered cacheable here. Plain `git status` (no `--stat` flag exists for it) is always
+ * eligible once scoped.
+ */
+export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
+  if (!isCommandOfType(cmd, 'gitMutable')) return false
+  if (!isCommandOfType(cmd, 'gitDiffScoped')) return false
+  if (/^\s*git\s+diff\b/i.test(cmd) && !/--stat\b/.test(cmd)) return false
+  return true
 }
 
 /**
@@ -328,6 +346,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
       isGitPushCommand(command) ||
       isTestRunnerCommand(command) ||
       isLintCommand(command) ||
+      isBuildCommand(command) ||
       isNpmRunScriptCommand(command))
   ) {
     const fp = gitStateFingerprintSync(cwd)

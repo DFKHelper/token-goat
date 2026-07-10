@@ -162,6 +162,21 @@ describe('harness detection', () => {
       expect(detectHarness()).toBe('claudecode')
     })
 
+    it('returns grok, not claudecode, when GROK_SESSION_ID and a bare ANTHROPIC_API_KEY are both set', () => {
+      // Grok reuses Claude Code's own settings.json, so an ambient
+      // ANTHROPIC_API_KEY is normal in a grok session; the bare-key claudecode
+      // fallback must not preempt the GROK_SESSION_ID branch.
+      process.env['GROK_SESSION_ID'] = 'g-1'
+      process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+      expect(detectHarness()).toBe('grok')
+    })
+
+    it('returns codex, not claudecode, when CODEX_SESSION_ID and a bare ANTHROPIC_API_KEY are both set', () => {
+      process.env['CODEX_SESSION_ID'] = 'abc'
+      process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+      expect(detectHarness()).toBe('codex')
+    })
+
     it('prefers hermes over claudecode when both signals are present', () => {
       process.env['HERMES_SESSION_ID'] = 'h-1'
       process.env['CLAUDE_CODE_VERSION'] = '1.0'

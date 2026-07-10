@@ -25,8 +25,28 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+      - name: Test
+        run: npm test
       - name: Build
         run: npm run build
+      - name: Tarball smoke test
+        run: |
+          set -euo pipefail
+          PACK_DIR="$RUNNER_TEMP/pack"
+          INSTALL_DIR="$RUNNER_TEMP/smoke-install"
+          DATA_DIR="$RUNNER_TEMP/smoke-data"
+          mkdir -p "$PACK_DIR" "$INSTALL_DIR" "$DATA_DIR"
+          TARBALL="$(npm pack --pack-destination "$PACK_DIR" | tail -1)"
+          npm install -g "$PACK_DIR/$TARBALL" --prefix "$INSTALL_DIR"
+          BIN="$INSTALL_DIR/bin/token-goat"
+          "$BIN" --version
+          # Index this checked-out repo through the installed tarball binary, then
+          # look up a real symbol, so the smoke test exercises the shipped critical
+          # path (parse -> index -> surgical read), not just the CLI entrypoint.
+          export XDG_DATA_HOME="$DATA_DIR"
+          "$BIN" index .
+          "$BIN" symbol indexFileSync
+        shell: bash
       - name: Publish
         run: npm publish --provenance --access public
         env:

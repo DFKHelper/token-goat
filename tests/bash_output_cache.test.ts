@@ -16,6 +16,7 @@ import {
   isDepListCommand,
   isNpxCommand,
   isUnscopedGitDiff,
+  isScopedGitStatusOrDiffStatCommand,
   isGitPushCommand,
   isTestRunnerCommand,
   isLintCommand,
@@ -61,6 +62,33 @@ describe('isGitMutableCommand', () => {
 
   it('rejects immutable commands', () => {
     expect(isGitMutableCommand('git show abc123')).toBe(false)
+  })
+})
+
+describe('isScopedGitStatusOrDiffStatCommand (Bug D regression)', () => {
+  it('accepts a scoped git status', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git status --porcelain -- a.txt')).toBe(true)
+    expect(isScopedGitStatusOrDiffStatCommand('git status -- src/foo.ts')).toBe(true)
+  })
+
+  it('accepts a scoped git diff --stat', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git diff --stat -- a.txt')).toBe(true)
+    expect(isScopedGitStatusOrDiffStatCommand('git diff --stat HEAD -- a.txt')).toBe(true)
+  })
+
+  it('rejects an unscoped git status (no `-- <path>`)', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git status')).toBe(false)
+    expect(isScopedGitStatusOrDiffStatCommand('git status --porcelain')).toBe(false)
+  })
+
+  it('rejects a scoped git diff without --stat (full diff, not the compact summary)', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git diff -- a.txt')).toBe(false)
+    expect(isScopedGitStatusOrDiffStatCommand('git diff HEAD -- a.txt')).toBe(false)
+  })
+
+  it('rejects unrelated git subcommands', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git log -- a.txt')).toBe(false)
+    expect(isScopedGitStatusOrDiffStatCommand('git show HEAD -- a.txt')).toBe(false)
   })
 })
 
@@ -419,7 +447,7 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
 })
 
 describe('computeBashFingerprints coverage for common monitored commands (M46 regression)', () => {
-  it.each(['pytest', 'vitest run', 'jest', 'go test ./...', 'eslint src', 'ruff check', 'npm run build', 'git push origin main'])(
+  it.each(['pytest', 'vitest run', 'jest', 'go test ./...', 'eslint src', 'ruff check', 'npm run build', 'git push origin main', 'tsc', 'npx tsc', 'make', 'cargo build', 'dotnet build', 'mvn package', 'vite build'])(
     'computes a git fingerprint for %s and flags it stale once a tracked file is edited',
     async (cmd) => {
       const tmpDir = initGitRepoWithFile('tg-fp-cov-')

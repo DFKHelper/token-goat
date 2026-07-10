@@ -12,6 +12,7 @@ import type { Database as BetterSqlite3Database, Statement as BetterSqlite3State
 
 import { pathEqClause } from './sql_path.js'
 import { foldPath } from './util.js'
+import { registerReset } from './reset.js'
 
 const _require = createRequire(import.meta.url)
 
@@ -42,6 +43,33 @@ function ensureTransformerLoaded(): void {
 // BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval. The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM without re-creating all chunk_vectors tables.
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
+
+// pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights +
+// tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in
+// memoization of its own. Keyed by model name and cached as a Promise (not the resolved
+// extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight
+// construction instead of each kicking off a redundant load. Cleared via registerReset so
+// tests that mock the pipeline factory start from a clean slate.
+type FeatureExtractor = (text: string, options: Record<string, unknown>) => Promise<unknown>
+type PipelineFn = (task: string, model: string) => Promise<FeatureExtractor>
+const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
+
+// @xenova/transformers is loaded via createRequire (see ensureTransformerLoaded above), which
+// resolves through Node's real CJS loader rather than vitest's mockable module graph, so
+// vi.mock('@xenova/transformers', ...) can't intercept it and its `pipeline` export is a
+// non-configurable, non-writable property that can't be monkey-patched from a test either.
+// This override lets tests substitute a cheap fake factory (mirrors the setXForTesting
+// pattern already used in skill_cache.ts) instead of constructing a real transformer pipeline.
+let _pipelineFnOverride: PipelineFn | null = null
+
+export function setPipelineFnForTesting(fn: PipelineFn | null): void {
+  _pipelineFnOverride = fn
+}
+
+registerReset(() => {
+  _extractorCache.clear()
+  _pipelineFnOverride = null
+})
 
 // Chunk size constraints (chars). MIN_CHUNK_CHARS filters trivial symbols. MAX_CHUNK_CHARS caps before embedding: bge-small has ~512-token context window.
 export const MIN_CHUNK_CHARS = 50
@@ -246,14 +274,19 @@ export async function embedTexts(
     throw new Error('Transformer module is unavailable')
   }
 
-  // Use the transformer pipeline to generate embeddings.
-  const transformerObj = _transformer as Record<string, unknown>
-  const pipelineFn = transformerObj['pipeline'] as (
-    task: string,
-    model: string,
-  ) => Promise<(text: string, options: Record<string, unknown>) => Promise<unknown>>
-
-  const extractor = await pipelineFn('feature-extraction', modelName)
+  // Use the transformer pipeline to generate embeddings, memoized per model name so the
+  // extractor is only constructed once per process (see _extractorCache above) instead of
+  // reloading model weights + tokenizer on every embedTexts call.
+  let extractorPromise = _extractorCache.get(modelName)
+  if (!extractorPromise) {
+    const transformerObj = _transformer as Record<string, unknown>
+    const pipelineFn: PipelineFn =
+      _pipelineFnOverride ??
+      (transformerObj['pipeline'] as PipelineFn)
+    extractorPromise = pipelineFn('feature-extraction', modelName)
+    _extractorCache.set(modelName, extractorPromise)
+  }
+  const extractor = await extractorPromise
 
   const vecs: number[][] = []
   const expectedDim = DEFAULT_DIM

@@ -280,6 +280,215 @@ export function stripStringLiterals(line: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-line string masking (heredoc/nowdoc, triple-quoted raw strings, verbatim
+// strings, PowerShell here-strings)
+// ---------------------------------------------------------------------------
+
+/** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
+export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle'
+
+/**
+ * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
+ * `stripBlockCommentSpan` threads across line-by-line calls. `null` means "not currently inside
+ * a multi-line string"; a non-null value means the previous line ended mid-span and the next
+ * call should look for that span's closer instead of scanning for a new opener.
+ */
+export interface MultilineStringState {
+  kind: MultilineStringKind
+  /** Heredoc/nowdoc closing identifier (e.g. `EOT`). Unused for the other kinds. */
+  identifier: string
+}
+
+/** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell'
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
+interface CloserMatch {
+  maskEnd: number
+}
+
+function findMultilineCloser(line: string, from: number, state: MultilineStringState): CloserMatch | null {
+  switch (state.kind) {
+    case 'heredoc':
+    case 'nowdoc': {
+      // PHP 7.3+ allows an indented closing marker; the identifier must be a whole word (not
+      // immediately followed by another identifier character).
+      const re = new RegExp(`^[ \\t]*${escapeRegExp(state.identifier)}\\b`)
+      const m = re.exec(line)
+      return m ? { maskEnd: m[0].length } : null
+    }
+    case 'tripleQuote': {
+      const idx = line.indexOf('"""', from)
+      return idx === -1 ? null : { maskEnd: idx + 3 }
+    }
+    case 'verbatim': {
+      // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
+      // quote and does not close it.
+      let j = from
+      while (j < line.length) {
+        if (line[j] === '"') {
+          if (line[j + 1] === '"') {
+            j += 2
+            continue
+          }
+          return { maskEnd: j + 1 }
+        }
+        j++
+      }
+      return null
+    }
+    case 'psHereDouble':
+      return line.startsWith('"@', from) ? { maskEnd: from + 2 } : null
+    case 'psHereSingle':
+      return line.startsWith("'@", from) ? { maskEnd: from + 2 } : null
+    default:
+      return null
+  }
+}
+
+/** Result of an opener search: where the opener starts, and either where it closes on the same line, or the carried state to use if it doesn't. */
+interface OpenerMatch {
+  openStart: number
+  closesSameLine: number | null
+  state: MultilineStringState
+}
+
+function findMultilineOpener(line: string, from: number, lang: MultilineStringLang): OpenerMatch | null {
+  if (lang === 'php') {
+    // <<<IDENTIFIER (heredoc) or <<<'IDENTIFIER'/<<<"IDENTIFIER" (nowdoc uses single quotes).
+    const re = /<<<\s*(['"]?)([A-Za-z_]\w*)\1/g
+    re.lastIndex = from
+    const m = re.exec(line)
+    if (!m || isInsideStringLiteral(line, m.index)) return null
+    const identifier = m[2] ?? ''
+    const kind: MultilineStringKind = m[1] === "'" ? 'nowdoc' : 'heredoc'
+    // Heredoc/nowdoc syntax never has real code after the opening marker on the same line.
+    return { openStart: m.index, closesSameLine: null, state: { kind, identifier } }
+  }
+
+  if (lang === 'kotlin') {
+    const idx = line.indexOf('"""', from)
+    if (idx === -1) return null
+    const closeIdx = line.indexOf('"""', idx + 3)
+    if (closeIdx !== -1) {
+      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '' } }
+    }
+    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '' } }
+  }
+
+  if (lang === 'csharp') {
+    const tripleIdx = line.indexOf('"""', from)
+    const verbRe = /\$?@\$?"/g
+    verbRe.lastIndex = from
+    const verbM = verbRe.exec(line)
+    const verbIdx = verbM ? verbM.index : -1
+
+    if (tripleIdx === -1 && verbIdx === -1) return null
+    const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
+
+    if (useTriple) {
+      const closeIdx = line.indexOf('"""', tripleIdx + 3)
+      if (closeIdx !== -1) {
+        return { openStart: tripleIdx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '' } }
+      }
+      return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '' } }
+    }
+
+    // Verbatim: content starts right after the opening `"`.
+    const quoteIdx = verbIdx + (verbM?.[0].length ?? 1) - 1
+    const closer = findMultilineCloser(line, quoteIdx + 1, { kind: 'verbatim', identifier: '' })
+    if (closer !== null) {
+      return { openStart: verbIdx, closesSameLine: closer.maskEnd, state: { kind: 'verbatim', identifier: '' } }
+    }
+    return { openStart: verbIdx, closesSameLine: null, state: { kind: 'verbatim', identifier: '' } }
+  }
+
+  if (lang === 'powershell') {
+    // PowerShell here-strings require `@"` / `@'` to be the last non-whitespace token on the
+    // opening line; nothing (not even a trailing comment) may follow it.
+    const re = /@("|')\s*$/
+    const tail = line.slice(from)
+    const m = re.exec(tail)
+    if (!m) return null
+    const openStart = from + m.index
+    const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
+    // Here-strings never close on the opening line by construction.
+    return { openStart, closesSameLine: null, state: { kind, identifier: '' } }
+  }
+
+  return null
+}
+
+/**
+ * Multi-line counterpart to `stripStringLiterals`, for the string forms that function's own doc
+ * comment calls out as gaps: PHP heredoc/nowdoc, Kotlin/C# triple-quoted raw strings, C# verbatim
+ * strings, and PowerShell here-strings. All of these can span multiple lines, so - like
+ * `stripBlockCommentSpan` - this takes and returns a carried state token instead of being usable
+ * standalone on a single line.
+ *
+ * Everything from the opener through the closer (inclusive) is replaced with spaces, preserving
+ * line length/column positions, so brace/paren characters anywhere in the span - including in the
+ * opener or closer syntax itself - are invisible to a caller's brace-depth counter. Content before
+ * the opener and after the closer is left untouched.
+ *
+ * `lang` restricts which opener syntaxes are recognized (each language only has some of these
+ * forms), and callers are expected to run this once per line, threading `state` through
+ * line-by-line the same way `inComment` is threaded through `stripBlockCommentSpan`.
+ *
+ * Known limitation: opener detection does not fully cross-check against `stripBlockCommentSpan`'s
+ * comment state or single-line string context (beyond the `isInsideStringLiteral` guard PHP's
+ * heredoc opener already applies), so a multi-line-string-opener-shaped sequence of characters
+ * appearing inside an unrelated comment is a rare false positive this function does not defend
+ * against - the same class of imprecision `stripStringLiterals` itself already accepts.
+ */
+export function stripMultilineStringSpan(
+  line: string,
+  state: MultilineStringState | null,
+  lang: MultilineStringLang,
+): { code: string; state: MultilineStringState | null } {
+  let code = ''
+  let i = 0
+  let cur = state
+
+  while (i < line.length) {
+    if (cur !== null) {
+      const closed = findMultilineCloser(line, i, cur)
+      if (closed === null) {
+        code += ' '.repeat(line.length - i)
+        i = line.length
+        continue
+      }
+      code += ' '.repeat(closed.maskEnd - i)
+      i = closed.maskEnd
+      cur = null
+      continue
+    }
+
+    const opened = findMultilineOpener(line, i, lang)
+    if (opened === null) {
+      code += line.slice(i)
+      break
+    }
+    code += line.slice(i, opened.openStart)
+    if (opened.closesSameLine !== null) {
+      code += ' '.repeat(opened.closesSameLine - opened.openStart)
+      i = opened.closesSameLine
+      cur = null
+    } else {
+      code += ' '.repeat(line.length - opened.openStart)
+      i = line.length
+      cur = opened.state
+    }
+  }
+
+  return { code, state: cur }
+}
+
+// ---------------------------------------------------------------------------
 // Symbol emitter factory
 // ---------------------------------------------------------------------------
 
