@@ -61,7 +61,21 @@ async function requireExcelJs(): Promise<ExcelJSModule> {
 async function loadWorkbook(filePath: string): Promise<ExcelWorkbook> {
   const ExcelJS = await requireExcelJs()
   const wb = new ExcelJS.Workbook()
-  await wb.xlsx.readFile(filePath)
+  try {
+    await wb.xlsx.readFile(filePath)
+  } catch (err) {
+    // ExcelJS's own "File not found: <path>" message (thrown before it ever touches the
+    // underlying jszip parser) is already clean and useful -- pass it through unchanged.
+    // Anything else here is jszip's raw internal parse error surfacing through ExcelJS for a
+    // non-.xlsx or corrupt file (e.g. "Can't find end of central directory : is this a zip
+    // file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html"),
+    // which leaks library internals and a docs URL straight to the CLI user instead of a clear
+    // message. Shared by every xlsx-* command (listSheets, headSheet, rangeSheet, querySheet
+    // all call loadWorkbook), so this one fix covers all four.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.startsWith('File not found:')) throw err
+    throw new Error(`not a valid .xlsx file: ${filePath}`, { cause: err })
+  }
   return wb
 }
 

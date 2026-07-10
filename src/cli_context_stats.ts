@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { pruneIndex } from './memory_prune.js'
+import { resolveProjectRoot } from './project.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -146,7 +147,7 @@ export interface ContextStatsOptions {
 
 /** Run the ``token-goat context-stats`` command. */
 export function runContextStats(opts: ContextStatsOptions = {}): void {
-  const projectRoot = path.resolve(opts.project ?? process.cwd())
+  const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
   const result = buildStats(projectRoot)
 
   if (opts.json === true) {

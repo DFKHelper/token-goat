@@ -19,6 +19,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } fr
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
+import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -819,6 +820,10 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
+    if (result.header.length === 0) {
+      emit(`No data rows found in ${opts.file}`)
+      return 0
+    }
     if (opts.json === true) {
       emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
     } else {
@@ -848,6 +853,10 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
+    if (profiles.length === 0) {
+      emit(`No data rows found in ${opts.file}`)
+      return 0
+    }
     emit(formatCsvProfile(profiles))
     return 0
   } catch (e) {
@@ -1107,13 +1116,11 @@ export function runChanged(opts: ChangedOptions = {}): number {
   // `git diff --name-only` always reports paths relative to the repo top-level, regardless
   // of which directory git was invoked from. Resolving those paths against `cwd` (which may
   // be a subdirectory when this command is invoked from e.g. `src/`) doubles the subdirectory
-  // segment and never matches the index. Resolve the actual top-level via `rev-parse` and use
-  // that as the base for `resolveIndexPath` below; `cwd` is still fine to pass to `runGit`
-  // since git resolves the repo from any subdirectory on its own. If `rev-parse` fails (not a
-  // git repo, or git unavailable), fall back to `cwd` — the subsequent `git diff` call below
-  // will fail the same way it always did and surface the existing error.
-  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd })
-  const projectRoot = toplevel.exitCode === 0 ? toplevel.stdout.trim() : cwd
+  // segment and never matches the index. `resolveProjectRoot` resolves the actual top-level
+  // (via `rev-parse --show-toplevel`, falling back to `findProject`/`cwd`) starting from `cwd`
+  // as its base, and that is what `resolveIndexPath` below is anchored to; `cwd` is still fine
+  // to pass to `runGit` since git resolves the repo from any subdirectory on its own.
+  const projectRoot = resolveProjectRoot({ project: cwd })
 
   let changedFiles: string[]
   try {

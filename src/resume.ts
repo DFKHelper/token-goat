@@ -1,7 +1,7 @@
 // Single-command post-compact restoration packet. Emits a structured context bundle for token-goat resume <session_id>.
 import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
-import { findProject } from './project.js'
+import { resolveProjectRoot } from './project.js'
 import { runGit } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 
@@ -53,7 +53,7 @@ export function buildResumePacket(sessionId: string): string | null {
   }
 
   try {
-    const projectRoot = findProject(process.cwd())?.root ?? process.cwd()
+    const projectRoot = resolveProjectRoot()
     const result = runGit(['diff', '--stat'], { cwd: projectRoot })
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       lines.push('## Uncommitted changes (git diff --stat)')

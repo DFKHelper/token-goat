@@ -15,7 +15,8 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { canonicalize, projectHash, makeProjectAt, findProject, PROJECT_MARKERS } from '../src/project.js';
+import { execFileSync } from 'node:child_process';
+import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS } from '../src/project.js';
 import { lowercaseDriveLetter } from '../src/paths.js';
 
 describe('project', () => {
@@ -365,6 +366,72 @@ describe('project', () => {
         const project = findProject(workDir);
         expect(project).toBeNull();
       });
+    });
+  });
+
+  // Regression: resolveProjectRoot consolidates three previously-divergent conventions for
+  // resolving "the current project root" (read_commands.ts's runChanged, resume.ts, and
+  // cli_context_stats.ts each rolled their own). Exercises the shared precedence directly:
+  // explicit `project` param (as the resolution base) -> git-toplevel/findProject resolution
+  // from that base -> the base directory itself when neither applies.
+  describe('resolveProjectRoot', () => {
+    const before = process.cwd();
+    afterEach(() => {
+      process.chdir(before);
+    });
+
+    it('resolves to the git top-level when the base directory is inside a git repo (git-toplevel step)', () => {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+      const subdir = path.join(tmpDir, 'src', 'lib');
+      fs.mkdirSync(subdir, { recursive: true });
+
+      const root = resolveProjectRoot({ project: subdir });
+
+      expect(root).toBe(canonicalize(tmpDir));
+    });
+
+    it('falls back to findProject when the base directory is not inside a git repo but has a marker file', () => {
+      const pyproject = path.join(tmpDir, 'pyproject.toml');
+      fs.writeFileSync(pyproject, '[project]\n');
+      const subdir = path.join(tmpDir, 'nested');
+      fs.mkdirSync(subdir);
+
+      const root = resolveProjectRoot({ project: subdir });
+
+      expect(root).toBe(canonicalize(tmpDir));
+    });
+
+    it('falls back to the base directory itself when neither a git repo nor a marker file is found', () => {
+      const root = resolveProjectRoot({ project: tmpDir });
+
+      expect(root).toBe(canonicalize(tmpDir));
+    });
+
+    it('uses process.cwd() as the base directory when no explicit project param is given (precedence: explicit param wins when present)', () => {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+      process.chdir(tmpDir);
+
+      const root = resolveProjectRoot();
+
+      expect(root).toBe(canonicalize(tmpDir));
+    });
+
+    it('an explicit project param overrides process.cwd() as the resolution base', () => {
+      const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-test-other-'));
+      try {
+        execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+        process.chdir(otherDir);
+
+        const root = resolveProjectRoot({ project: tmpDir });
+
+        expect(root).toBe(canonicalize(tmpDir));
+        expect(root).not.toBe(canonicalize(otherDir));
+      } finally {
+        // Windows can't remove a directory that is the current working directory; chdir away
+        // first (afterEach also restores cwd, but that runs after this finally block).
+        process.chdir(before);
+        fs.rmSync(otherDir, { recursive: true, force: true });
+      }
     });
   });
 

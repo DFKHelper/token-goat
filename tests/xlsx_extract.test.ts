@@ -40,6 +40,18 @@ describe('listSheets', () => {
     expect(employees?.rows).toBe(4)
     expect(employees?.cols).toBe(3)
   })
+
+  // Regression: a non-.xlsx/corrupt file forwarded jszip's raw internal parse error ("Can't
+  // find end of central directory : is this a zip file ? If it is, see
+  // https://stuk.github.io/jszip/documentation/howto/read_zip.html") straight to the CLI user
+  // instead of a clean message. loadWorkbook (shared by listSheets/headSheet/rangeSheet/
+  // querySheet) now catches that and re-throws a clear "not a valid .xlsx file" error.
+  it('throws a clean error instead of leaking the raw jszip parse error for a non-zip file', async () => {
+    const notXlsx = path.join(dir, 'plain-text.xlsx')
+    fs.writeFileSync(notXlsx, 'this is plain text, not a zip file\n')
+    await expect(listSheets(notXlsx)).rejects.toThrow(`not a valid .xlsx file: ${notXlsx}`)
+    await expect(listSheets(notXlsx)).rejects.not.toThrow(/central directory|jszip/i)
+  })
 })
 
 describe('headSheet', () => {
