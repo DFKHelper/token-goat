@@ -33,8 +33,32 @@ const SAFE_RE = /[^a-zA-Z0-9_-]/g
 const MAX_FILES = 500
 export const SESSIONS_SUBDIR = 'sessions'
 
+/**
+ * The sanitized form of relay.ts's `sessionStateKey` agent-salt separator
+ * (`:agent:`), as it actually appears in an on-disk filename after
+ * {@link sessionPath}'s `SAFE_RE` sanitization (`:` -> `_`). Exported so any
+ * code that needs to recognize or exclude a subagent-scoped session blob by
+ * filename (sibling-blob discovery for the pre_compact manifest, "latest
+ * session" resolution) derives the marker from the same sanitization logic
+ * rather than hardcoding a string that could drift out of sync with it.
+ */
+export const AGENT_SALT_MARKER = ':agent:'.replace(SAFE_RE, '_')
+
 /** Resolve the on-disk path for `sessionId`, or null when the id is empty,
- * sanitizes to empty, or would escape the sessions dir (traversal guard). */
+ * sanitizes to empty, or would escape the sessions dir (traversal guard).
+ *
+ * COLLISION RISK: `sessionId` here can be an agent-salted key
+ * (`${sessionId}:agent:${agentId}`, see relay.ts's `sessionStateKey`). A UUID
+ * session id (36 chars) + the sanitized salt marker (7 chars) already leaves
+ * only ~21 of a UUID agent id's 36 chars before the 64-char slice below cuts
+ * it off, so two different agent ids that happen to share that ~21-char
+ * prefix would collide onto the same filename. This is a known, deliberately
+ * accepted low-probability risk (not fixed by hashing instead of truncating,
+ * since callers and tests — e.g. `tests/session_persistence_e2e.test.ts` —
+ * rely on the plain, human-readable, non-salted case producing an exact
+ * `<sessionId>.json` filename; hashing would change that on-disk format for
+ * every caller). Leave as-is; do not "fix" by truncating differently without
+ * also addressing the human-readable-filename requirement above. */
 function sessionPath(sessionId: string): string | null {
   if (!sessionId) return null
   const safe = sessionId.replace(SAFE_RE, '_').slice(0, 64)
@@ -318,6 +342,39 @@ export function readSessionStateFile(sessionId: string): SerializedSession | nul
   const p = sessionPath(sessionId)
   if (!p) return null
   return readDiskState(p)
+}
+
+/**
+ * Read every sibling subagent session-state blob for `sessionId` (i.e. every
+ * on-disk file salted with `${sessionId}:agent:${agentId}` per relay.ts's
+ * `sessionStateKey`), without touching in-memory session state.
+ *
+ * `sessionPath` sanitizes and truncates the *whole* salted key to 64 chars,
+ * so a sibling's filename is `${sanitize(sessionId)}_agent_<agentId prefix>`
+ * possibly truncated mid-agentId — but the `${sanitize(sessionId)}_agent_`
+ * prefix itself (well under 64 chars for realistic session ids) always
+ * survives intact, which is what this scan matches on. Returns [] when the
+ * id is empty/unusable, the sessions dir doesn't exist, or on any read error
+ * (fail-soft, mirroring every other read in this module).
+ */
+export function listSiblingSessionStates(sessionId: string): SerializedSession[] {
+  if (!sessionId) return []
+  const safeSessionId = sessionId.replace(SAFE_RE, '_')
+  if (!safeSessionId) return []
+  const prefix = `${safeSessionId}${AGENT_SALT_MARKER}`
+  const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
+  const out: SerializedSession[] = []
+  try {
+    if (!fs.existsSync(dir)) return out
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.json') || !file.startsWith(prefix)) continue
+      const state = readDiskState(path.join(dir, file))
+      if (state !== null) out.push(state)
+    }
+  } catch {
+    return out
+  }
+  return out
 }
 
 /**

@@ -6,7 +6,7 @@
 import { listBlobs, pruneBlobs, DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { SESSIONS_SUBDIR } from './session_store.js'
+import { SESSIONS_SUBDIR, AGENT_SALT_MARKER } from './session_store.js'
 import { pruneSkillOutputs, SKILLS_OUTPUT_SUBDIR } from './skill_cache.js'
 import { isInstalled } from './install.js'
 import { buildResumePacket } from './resume.js'
@@ -37,6 +37,19 @@ const CACHE_ENV_GATES: Array<{ key: string; what: string }> = [
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
+}
+
+/**
+ * List session blobs, excluding agent-salted subagent blobs (see
+ * {@link AGENT_SALT_MARKER}) and sorted newest-first. Mirrors compact.ts's
+ * `findLatestSessionId` filter: a subagent's blob is often the newest file
+ * on disk, so an unfiltered "most recent" pick can surface a narrow
+ * subagent-scoped ledger where callers expect the genuine parent session.
+ */
+function listParentSessionBlobs(): Array<{ id: string; mtime: number; value: unknown }> {
+  return listBlobs(SESSIONS_SUBDIR)
+    .filter((b) => !b.id.includes(AGENT_SALT_MARKER))
+    .sort((a, b) => b.mtime - a.mtime)
 }
 
 // ── bash-history ─────────────────────────────────────────────────────────────
@@ -277,7 +290,7 @@ export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; jso
 
 /** One-screen summary of the latest cached session: file counts, top files, session id. */
 export function cmdSessionSummary(opts: { json?: boolean }): void {
-  const blobs = listBlobs(SESSIONS_SUBDIR).sort((a, b) => b.mtime - a.mtime)
+  const blobs = listParentSessionBlobs()
   if (blobs.length === 0) {
     if (opts.json === true) {
       process.stdout.write(JSON.stringify({ sessionCount: 0, message: 'no session blobs found' }, null, 2) + '\n')
@@ -314,7 +327,7 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
 /** Tokens-saved / cost breakdown. Thin framing over runStats from cli_stats.ts. */
 export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
   if (opts.session === true) {
-    const blobs = listBlobs(SESSIONS_SUBDIR).sort((a, b) => b.mtime - a.mtime)
+    const blobs = listParentSessionBlobs()
     if (blobs.length === 0) {
       if (opts.json === true) {
         process.stdout.write(JSON.stringify({ session: true, message: 'no session blobs found' }, null, 2) + '\n')

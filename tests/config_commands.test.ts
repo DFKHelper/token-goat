@@ -123,13 +123,17 @@ describe('cmdConfig get', () => {
     expect(parsed.length).toBeGreaterThan(0)
   })
 
-  it('throws and emits stderr for an unknown key', () => {
-    expect(() => cmdConfig({ action: 'get', key: 'no_such_section.foo' })).toThrow()
-    expect(capturedErr()).toContain('key not found')
+  it('throws with a key-not-found message for an unknown key, without also writing directly to stderr (regression: cmdConfig used to emitErr AND throw the same message, double-printing once the CLI guard() catch also prints the thrown error)', () => {
+    expect(() => cmdConfig({ action: 'get', key: 'no_such_section.foo' })).toThrow('key not found')
+    expect(capturedErr()).toBe('')
   })
 
   it('throws when key is missing', () => {
     expect(() => cmdConfig({ action: 'get' })).toThrow()
+  })
+
+  it('suggests a near-miss key ("did you mean") for a typo\'d known key', () => {
+    expect(() => cmdConfig({ action: 'get', key: 'compact_assist.enabld' })).toThrow(/did you mean: compact_assist\.enabled/)
   })
 })
 
@@ -169,9 +173,13 @@ describe('cmdConfig set', () => {
     expect(raw).toContain('min_events')
   })
 
-  it('throws and emits stderr for an unknown key', () => {
-    expect(() => cmdConfig({ action: 'set', key: 'no_such.key', value: 'x' })).toThrow()
-    expect(capturedErr()).toContain('key not found')
+  it('throws with a key-not-found message for an unknown key, without also writing directly to stderr (regression: double-print via emitErr + throw)', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'no_such.key', value: 'x' })).toThrow('key not found')
+    expect(capturedErr()).toBe('')
+  })
+
+  it('suggests a near-miss key ("did you mean") for a typo\'d known key', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.enabld', value: 'true' })).toThrow(/did you mean: compact_assist\.enabled/)
   })
 
   it('throws when key is missing', () => {
@@ -224,8 +232,8 @@ describe('cmdConfig set input validation hardening', () => {
   })
 
   it('rejects setting an entire config section to a scalar value instead of corrupting it (#M24)', () => {
-    expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow()
-    expect(capturedErr()).toContain('section')
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow('section')
+    expect(capturedErr()).toBe('')
     invalidateConfigCache()
     const cfg = loadConfig()
     // The section must still be a valid object with its documented fields intact, not
@@ -235,8 +243,8 @@ describe('cmdConfig set input validation hardening', () => {
   })
 
   it('rejects a config set value above the documented max instead of silently clamping on disk (#M28)', () => {
-    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '2000' })).toThrow()
-    expect(capturedErr()).toContain('outside the allowed range')
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '2000' })).toThrow('outside the allowed range')
+    expect(capturedErr()).toBe('')
     // The out-of-range value must never reach disk in the first place.
     expect(fs.existsSync(_testConfigPath)).toBe(false)
   })
@@ -371,9 +379,9 @@ describe('cmdConfig validate', () => {
 // ── config unknown action ────────────────────────────────────────────────────
 
 describe('cmdConfig unknown action', () => {
-  it('throws on an unknown action', () => {
-    expect(() => cmdConfig({ action: 'bogus_action' })).toThrow()
-    expect(capturedErr()).toContain('unknown action')
+  it('throws on an unknown action, without also writing directly to stderr (regression: double-print via emitErr + throw)', () => {
+    expect(() => cmdConfig({ action: 'bogus_action' })).toThrow('unknown action')
+    expect(capturedErr()).toBe('')
   })
 })
 

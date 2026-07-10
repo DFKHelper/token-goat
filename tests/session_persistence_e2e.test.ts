@@ -205,6 +205,133 @@ describe('sibling subagents get independent re-read dedup ledgers (regression: a
   })
 })
 
+describe('pre_compact manifest sees subagent edits (regression: agent_id salting drops them from the parent manifest)', () => {
+  it('a file edited only by a sibling subagent still appears in the parent pre_compact manifest', () => {
+    const fileA = path.join(repo, 'parent-touched.md')
+    const fileB = path.join(repo, 'subagent-edited.md')
+    fs.writeFileSync(fileA, '# A\n')
+    fs.writeFileSync(fileB, '# B\n')
+    const sessionId = 'e2e-compact-subagent'
+
+    // Parent thread (no agent_id) reads file A -- lands in the plain, unsalted blob.
+    const parentRead = runHook('pre_tool_use', {
+      session_id: sessionId,
+      tool_name: 'Read',
+      tool_input: { file_path: fileA },
+    })
+    expect(parentRead.status).toBe(0)
+    const parentReadPost = runHook('post_tool_use', {
+      session_id: sessionId,
+      tool_name: 'Read',
+      tool_input: { file_path: fileA },
+      tool_response: { content: fs.readFileSync(fileA, 'utf8') },
+    })
+    expect(parentReadPost.status).toBe(0)
+
+    // A sibling subagent (same session_id, distinct agent_id) edits file B -- this
+    // lands in a SEPARATE agent-salted blob (`<sid>:agent:<aid>`), never the parent's.
+    const subagentEdit = runHook('post_tool_use', {
+      session_id: sessionId,
+      agent_id: 'subagent-1',
+      tool_name: 'Write',
+      tool_input: { file_path: fileB, content: '# B edited\n' },
+    })
+    expect(subagentEdit.status).toBe(0)
+
+    // Sanity: the subagent's edit really did persist under a separate, salted blob file.
+    const siblingBlob = fs.readdirSync(path.join(tgHome, 'sessions')).find((f) => f.includes('_agent_'))
+    expect(siblingBlob).toBeDefined()
+
+    // pre_compact runs on the parent thread (no agent_id). Before the fix, its
+    // manifest only ever saw the plain unsalted blob and never knew file B was
+    // edited at all -- exactly the context compaction is supposed to preserve.
+    const compact = runHook('pre_compact', { session_id: sessionId })
+    expect(compact.status).toBe(0)
+    const parsed = JSON.parse(compact.stdout) as { systemMessage?: string }
+    expect(parsed.systemMessage).toBeDefined()
+    expect(parsed.systemMessage).toContain('subagent-edited.md')
+    expect(parsed.systemMessage).toMatch(/### Edited files/)
+    // File A (parent's own read, never edited) must still show up as read, not edited.
+    expect(parsed.systemMessage).toContain('parent-touched.md')
+  })
+})
+
+describe('"latest session" resolution skips subagent-salted blobs (regression: agent_id salting)', () => {
+  it('session-summary with no explicit session id resolves to the parent session, not a newer subagent blob', () => {
+    const sessionId = 'e2e-latest-session-parent'
+    const parentFile = path.join(repo, 'latest-session-parent-file.md')
+    fs.writeFileSync(parentFile, '# parent\n')
+
+    // Parent activity happens first.
+    const parentRead = runHook('pre_tool_use', {
+      session_id: sessionId,
+      tool_name: 'Read',
+      tool_input: { file_path: parentFile },
+    })
+    expect(parentRead.status).toBe(0)
+    const parentPost = runHook('post_tool_use', {
+      session_id: sessionId,
+      tool_name: 'Read',
+      tool_input: { file_path: parentFile },
+      tool_response: { content: fs.readFileSync(parentFile, 'utf8') },
+    })
+    expect(parentPost.status).toBe(0)
+
+    // A subagent (SAME session_id, distinct agent_id) is active AFTER the parent's
+    // last activity, so its blob is the newest file on disk by mtime.
+    const subagentFile = path.join(repo, 'latest-session-subagent-file.md')
+    fs.writeFileSync(subagentFile, '# subagent\n')
+    const subagentRead = runHook('pre_tool_use', {
+      session_id: sessionId,
+      agent_id: 'newer-subagent',
+      tool_name: 'Read',
+      tool_input: { file_path: subagentFile },
+    })
+    expect(subagentRead.status).toBe(0)
+    const subagentPost = runHook('post_tool_use', {
+      session_id: sessionId,
+      agent_id: 'newer-subagent',
+      tool_name: 'Read',
+      tool_input: { file_path: subagentFile },
+      tool_response: { content: fs.readFileSync(subagentFile, 'utf8') },
+    })
+    expect(subagentPost.status).toBe(0)
+
+    // Force deterministic mtime ordering (real-clock ordering across two spawned
+    // processes can tie on fast/low-resolution filesystems): bump the subagent's
+    // salted blob strictly into the future so this test reliably reproduces
+    // "subagent blob is the newest file on disk", the exact condition the bug
+    // depends on. The parent's own blob keeps its natural just-written mtime,
+    // which is already the most recent among every OTHER (non-agent-salted)
+    // session file from earlier tests in this shared tgHome.
+    const sessionsDir = path.join(tgHome, 'sessions')
+    const parentBlobPath = path.join(sessionsDir, `${sessionId}.json`)
+    const subagentBlobPath = path.join(sessionsDir, `${sessionId}_agent_newer-subagent.json`)
+    expect(fs.existsSync(parentBlobPath)).toBe(true)
+    expect(fs.existsSync(subagentBlobPath)).toBe(true)
+    const future = new Date(Date.now() + 60_000)
+    fs.utimesSync(subagentBlobPath, future, future)
+
+    // Sanity: the subagent's salted blob really is the newest file on disk.
+    const files = fs.readdirSync(sessionsDir).map((f) => ({ f, mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs }))
+    const newestFile = files.sort((a, b) => b.mtime - a.mtime)[0]!.f
+    expect(newestFile).toContain('_agent_')
+
+    // With no explicit session id, session-summary must still resolve to the
+    // genuine parent session, not the subagent's narrower, newer-on-disk blob.
+    const summary = runCli(['session-summary', '--json'])
+    expect(summary.status).toBe(0)
+    const parsed = JSON.parse(summary.stdout) as { sessionId?: string }
+    expect(parsed.sessionId).toBe(sessionId)
+
+    // compact-hint (which uses findLatestSessionId directly) must agree.
+    const hint = runCli(['compact-hint', '--json'])
+    expect(hint.status).toBe(0)
+    const hintParsed = JSON.parse(hint.stdout) as { sessionId?: string }
+    expect(hintParsed.sessionId).toBe(sessionId)
+  })
+})
+
 describe('WebFetch recall survives the process boundary', () => {
   it('a pre_fetch of a previously fetched URL in a new process emits the web-output recall hint', () => {
     const url = 'https://example.com/doc'

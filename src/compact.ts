@@ -12,7 +12,7 @@ import { loadConfig } from './config.js'
 import { configPath, dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
-import { readSessionStateFile } from './session_store.js'
+import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
 
 // ---------------------------------------------------------------------------
@@ -394,6 +394,13 @@ export function isNoisePath(inputPath: string): boolean {
 
 /**
  * Return the session_id of the most-recently-modified session file.
+ *
+ * Excludes agent-salted blobs (filenames containing {@link AGENT_SALT_MARKER},
+ * the sanitized form of relay.ts's `sessionStateKey` `:agent:` separator): a
+ * subagent's blob is frequently the newest file on disk (subagents run after
+ * the parent's own last tool call), so without this filter, "latest session"
+ * for a caller that gave no explicit session id could resolve to a narrow
+ * subagent-scoped ledger instead of the genuine parent/top-level session.
  */
 export function findLatestSessionId(): string | null {
   try {
@@ -403,7 +410,7 @@ export function findLatestSessionId(): string | null {
     }
 
     const files = fs.readdirSync(sessionsDir)
-    const jsonFiles = files.filter(f => f.endsWith('.json'))
+    const jsonFiles = files.filter(f => f.endsWith('.json') && !f.includes(AGENT_SALT_MARKER))
     if (jsonFiles.length === 0) {
       return null
     }

@@ -295,7 +295,14 @@ export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'verbat
  */
 export interface MultilineStringState {
   kind: MultilineStringKind
-  /** Heredoc/nowdoc closing identifier (e.g. `EOT`). Unused for the other kinds. */
+  /**
+   * Heredoc/nowdoc closing identifier (e.g. `EOT`) for those two kinds. For `tripleQuote`,
+   * carries the opening quote-run length as a string (e.g. `'3'`, `'4'`) instead -- C# 11+ raw
+   * string literals may open with a run of 3 or more `"` characters, and the closer must match
+   * that same run length (or greater), so the fixed 3-quote assumption can't be baked into the
+   * `findMultilineCloser` switch. Kotlin's triple-quoted strings are always exactly 3 and use
+   * `'3'` here too. Unused for `verbatim`/`psHereDouble`/`psHereSingle`.
+   */
   identifier: string
 }
 
@@ -322,8 +329,12 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       return m ? { maskEnd: m[0].length } : null
     }
     case 'tripleQuote': {
-      const idx = line.indexOf('"""', from)
-      return idx === -1 ? null : { maskEnd: idx + 3 }
+      // Closer must match the opener's quote-run length (or a longer run) — see the
+      // `identifier` field doc on `MultilineStringState` for why a fixed `"""` can't be used.
+      const n = state.identifier !== '' ? parseInt(state.identifier, 10) : 3
+      const re = new RegExp(`"{${n},}`)
+      const m = re.exec(line.slice(from))
+      return m === null ? null : { maskEnd: from + m.index + n }
     }
     case 'verbatim': {
       // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
@@ -372,16 +383,28 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
 
   if (lang === 'kotlin') {
     const idx = line.indexOf('"""', from)
-    if (idx === -1) return null
+    // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
+    // already-open single-line string literal is not a real raw-string opener.
+    if (idx === -1 || isInsideStringLiteral(line, idx)) return null
     const closeIdx = line.indexOf('"""', idx + 3)
     if (closeIdx !== -1) {
-      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '' } }
+      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
     }
-    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '' } }
+    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
   }
 
   if (lang === 'csharp') {
-    const tripleIdx = line.indexOf('"""', from)
+    // C# 11+ raw string literals open with a run of 3 or MORE `"` characters (not just a fixed
+    // `"""`); the closer must match that same run length or a longer one. Match the longest
+    // available run so a 4- or 5-quote opener is recognized instead of only ever matching 3.
+    const tripleRe = /"{3,}/g
+    tripleRe.lastIndex = from
+    const tripleM = tripleRe.exec(line)
+    let tripleIdx = tripleM ? tripleM.index : -1
+    const tripleLen = tripleM ? tripleM[0].length : 0
+    // Same guard as PHP's heredoc opener and Kotlin above.
+    if (tripleIdx !== -1 && isInsideStringLiteral(line, tripleIdx)) tripleIdx = -1
+
     const verbRe = /\$?@\$?"/g
     verbRe.lastIndex = from
     const verbM = verbRe.exec(line)
@@ -391,11 +414,13 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
 
     if (useTriple) {
-      const closeIdx = line.indexOf('"""', tripleIdx + 3)
-      if (closeIdx !== -1) {
-        return { openStart: tripleIdx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '' } }
+      const closeRe = new RegExp(`"{${tripleLen},}`)
+      const closeM = closeRe.exec(line.slice(tripleIdx + tripleLen))
+      if (closeM !== null) {
+        const closeIdx = tripleIdx + tripleLen + closeM.index
+        return { openStart: tripleIdx, closesSameLine: closeIdx + tripleLen, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
       }
-      return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '' } }
+      return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
     }
 
     // Verbatim: content starts right after the opening `"`.

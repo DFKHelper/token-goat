@@ -155,6 +155,49 @@ describe('read_commands', () => {
       expect(Array.isArray(parsed)).toBe(true)
     })
 
+    it('caps --json output at overflow_guard.max_tokens, wrapping with truncated/totalCount instead of emitting an unbounded array (regression: JSON mode had no overflow guard at all, unlike the text branch\'s guardText)', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 60 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
+        name: `fn${i}`,
+        kind: 'function',
+        filePath: 'a.ts',
+        lineStart: i * 10 + 1,
+        lineEnd: i * 10 + 5,
+        body: 'x'.repeat(50),
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runSymbol({ name: 'fn', json: true })
+      const parsed = JSON.parse(stdout) as { results: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(50)
+      expect(parsed.results.length).toBeLessThan(50)
+    })
+
+    it('does not wrap --json output when overflow_guard is disabled, even for a large result set', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: false, max_tokens: 60 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
+        name: `fn${i}`,
+        kind: 'function',
+        filePath: 'a.ts',
+        lineStart: i * 10 + 1,
+        lineEnd: i * 10 + 5,
+        body: 'x'.repeat(50),
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runSymbol({ name: 'fn', json: true })
+      const parsed = JSON.parse(stdout) as unknown[]
+      expect(Array.isArray(parsed)).toBe(true)
+      expect(parsed.length).toBe(50)
+    })
+
     it('reconstructs an empty indexed body from its source span for the preview', () => {
       const filePath = path.join(tempDir, 'Example.profile-meta.xml')
       fs.writeFileSync(filePath, '<Profile>\n  <label>Example</label>\n</Profile>\n')
@@ -758,6 +801,28 @@ describe('read_commands', () => {
       expect(parsed[0]?.name).toBe('large')
     })
 
+    it('caps --json output at overflow_guard.max_tokens, wrapping with symbols/truncated/totalCount instead of emitting an unbounded array', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 60 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
+        name: `fn${i}`,
+        kind: 'function',
+        filePath: 'a.ts',
+        lineStart: i * 10 + 1,
+        lineEnd: i * 10 + 5,
+        body: 'x'.repeat(50),
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runSkeleton({ file: 'a.ts', json: true })
+      const parsed = JSON.parse(stdout) as { symbols: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(50)
+      expect(parsed.symbols.length).toBeLessThan(50)
+    })
+
     it('reports the true max lineEnd across all symbols, not the last-by-lineStart symbol (nested-symbol regression)', () => {
       // querySymbols orders rows by (file_path, line_start), so the last element
       // by array order is the symbol with the greatest lineStart, not the
@@ -806,6 +871,28 @@ describe('read_commands', () => {
       const parsed = JSON.parse(stdout) as Array<{ name: string }>
       expect(parsed).toHaveLength(1)
       expect(parsed[0]?.name).toBe('large')
+    })
+
+    it('caps --json output at overflow_guard.max_tokens, wrapping with symbols/truncated/totalCount instead of emitting an unbounded array', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 60 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const syms: MockSymbol[] = Array.from({ length: 50 }, (_, i) => ({
+        name: `fn${i}`,
+        kind: 'function',
+        filePath: 'f.ts',
+        lineStart: i * 10 + 1,
+        lineEnd: i * 10 + 5,
+        body: 'x'.repeat(50),
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runOutline({ file: 'f.ts', json: true })
+      const parsed = JSON.parse(stdout) as { symbols: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(50)
+      expect(parsed.symbols.length).toBeLessThan(50)
     })
   })
 
@@ -1833,6 +1920,21 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).not.toContain('login:')
   })
 
+  it('caps a single-symbol --json output at overflow_guard.max_tokens, wrapping with references/truncated/totalCount instead of an unbounded array', () => {
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 60 },
+    } as unknown as ReturnType<typeof loadConfig>)
+    mockQueryRefs.mockReturnValue(Array.from({ length: 50 }, (_, i) => ref('src/auth.ts', i + 1, 'x'.repeat(50))))
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'login', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(stdout) as { references: unknown[]; truncated: boolean; totalCount: number }
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.totalCount).toBe(50)
+    expect(parsed.references.length).toBeLessThan(50)
+  })
+
   it('merges several symbols, each under its own header, in one call', () => {
     mockQueryRefs.mockImplementation((opts: { name: string }) => {
       if (opts.name === 'login') return [ref('src/auth.ts', 10, 'login()')]
@@ -1877,6 +1979,25 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(Object.keys(parsed)).toEqual(['login', 'refresh'])
     expect(parsed.login).toHaveLength(1)
     expect(parsed.refresh).toHaveLength(0)
+  })
+
+  it('caps a per-symbol entry under --json at overflow_guard.max_tokens, wrapping that entry with references/truncated/totalCount instead of an unbounded array', () => {
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 60 },
+    } as unknown as ReturnType<typeof loadConfig>)
+    mockQueryRefs.mockImplementation((opts: { name: string }) =>
+      opts.name === 'login'
+        ? Array.from({ length: 50 }, (_, i) => ref('src/auth.ts', i + 1, 'x'.repeat(50)))
+        : [ref('src/auth.ts', 1, 'refresh()')],
+    )
+    const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
+    const parsed = JSON.parse(stdout) as Record<string, unknown[] | { references: unknown[]; truncated: boolean; totalCount: number }>
+    const login = parsed.login as { references: unknown[]; truncated: boolean; totalCount: number }
+    expect(login.truncated).toBe(true)
+    expect(login.totalCount).toBe(50)
+    expect(login.references.length).toBeLessThan(50)
+    // The untruncated symbol keeps the original bare-array shape.
+    expect(Array.isArray(parsed.refresh)).toBe(true)
   })
 
   it('returns exit 1 when no symbol in a multi-spec has any references', () => {

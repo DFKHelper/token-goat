@@ -6,8 +6,6 @@ import * as path from 'node:path'
 
 import {
   getBashOutput,
-  getBashOutputByCommandHash,
-  hashCommand,
   storeBashOutput,
   isGitMutableCommand,
   isGitImmutableCommand,
@@ -15,7 +13,6 @@ import {
   isEnvProbeCommand,
   isDepListCommand,
   isNpxCommand,
-  isUnscopedGitDiff,
   isScopedGitStatusOrDiffStatCommand,
   isGitPushCommand,
   isTestRunnerCommand,
@@ -23,7 +20,6 @@ import {
   isNpmRunScriptCommand,
   isCatCommand,
   normalizeCommandForCacheKey,
-  globHash,
   commandHash,
   depLockfileFingerprint,
   computeBashFingerprints,
@@ -38,20 +34,6 @@ beforeEach(() => {
 
 afterEach(() => {
   clearModuleCaches()
-})
-
-describe('hashCommand', () => {
-  it('returns a 16-char hex hash', () => {
-    expect(hashCommand('ls -la')).toMatch(/^[0-9a-f]{16}$/)
-  })
-
-  it('ignores surrounding whitespace', () => {
-    expect(hashCommand('  npm test  ')).toBe(hashCommand('npm test'))
-  })
-
-  it('differs for different commands', () => {
-    expect(hashCommand('a')).not.toBe(hashCommand('b'))
-  })
 })
 
 describe('isGitMutableCommand', () => {
@@ -155,16 +137,6 @@ describe('isDepListCommand', () => {
   })
 })
 
-describe('isUnscopedGitDiff', () => {
-  it('detects unscoped diffs', () => {
-    expect(isUnscopedGitDiff('git diff')).toBe(true)
-  })
-
-  it('rejects scoped diffs', () => {
-    expect(isUnscopedGitDiff('git diff -- file.txt')).toBe(false)
-  })
-})
-
 describe('normalizeCommandForCacheKey', () => {
   it('strips whitespace', () => {
     expect(normalizeCommandForCacheKey('  cat file  ')).toBe('cat file')
@@ -196,19 +168,6 @@ describe('commandHash', () => {
   })
 })
 
-describe('globHash', () => {
-  it('returns 16-char hex', () => {
-    const hash = globHash('**/*.ts', '/src')
-    expect(hash).toMatch(/^[0-9a-f]{16}$/)
-  })
-
-  it('treats null path as empty string', () => {
-    const hash1 = globHash('**/*.ts', null)
-    const hash2 = globHash('**/*.ts', '')
-    expect(hash1).toBe(hash2)
-  })
-})
-
 describe('storeBashOutput', () => {
   it('returns an id equal to the command hash', async () => {
     const id = await storeBashOutput('echo hi', 'hi\n', 0)
@@ -230,16 +189,6 @@ describe('retrieval', () => {
 
   it('getBashOutput returns null for an unknown id', () => {
     expect(getBashOutput('0000000000000000')).toBeNull()
-  })
-
-  it('getBashOutputByCommandHash retrieves by command hash', async () => {
-    const id = await storeBashOutput('git status', 'clean', 0)
-    const entry = getBashOutputByCommandHash(id)
-    expect(entry?.output).toBe('clean')
-  })
-
-  it('getBashOutputByCommandHash returns null for an unknown hash', () => {
-    expect(getBashOutputByCommandHash('ffffffffffffffff')).toBeNull()
   })
 
   it('captures a non-zero exit code', async () => {
@@ -276,7 +225,6 @@ describe('reset', () => {
     clearModuleCaches()
     // The in-memory map was cleared, but the content is intentionally persisted so a later (separate) process can recall it — getBashOutput reads through.
     expect(getBashOutput(id)?.output).toBe('gone')
-    expect(getBashOutputByCommandHash(id)?.output).toBe('gone')
     // A never-stored id stays null (no lingering state after the reset).
     expect(getBashOutput('ffffffffffffffff')).toBeNull()
   })

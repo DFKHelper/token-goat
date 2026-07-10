@@ -131,6 +131,15 @@ class After {
     expect(after?.docstring).toBe('After')
   })
 
+  it('does not treat a """ appearing inside an already-open single-line string literal as a raw-string opener (mirrors the PHP heredoc-inside-string guard)', () => {
+    // One unescaped `"` precedes the `"""` run, so isInsideStringLiteral is true at that
+    // index -- pre-fix, findMultilineOpener had no such guard for Kotlin and would have
+    // misdetected this as opening a real multi-line raw string.
+    const { code, state } = stripMultilineStringSpan('val x = "before """', null, 'kotlin')
+    expect(code).toBe('val x = "before """')
+    expect(state).toBeNull()
+  })
+
   it('handles a single-line """ raw string without breaking later symbols', () => {
     const content = `class Before {
   fun beforeMethod(): Int {
@@ -279,6 +288,73 @@ public class After {
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
     expect(after?.docstring).toBe('After')
+  })
+
+  it('does not treat a """ appearing inside an already-open single-line string literal as a raw-string opener', () => {
+    // Same guard as the Kotlin case above: one unescaped `"` precedes the `"""` run.
+    const { code, state } = stripMultilineStringSpan('var x = "before """', null, 'csharp')
+    expect(code).toBe('var x = "before """')
+    expect(state).toBeNull()
+  })
+
+  it('recognizes a C# 11+ 4-quote raw string delimiter (not just the fixed 3-quote form), including content that itself contains a run of 3 quotes', () => {
+    const content = `public class Before {
+    public void BeforeMethod() {
+    }
+}
+
+public class Holder {
+    public string Text = """"
+This raw string contains an embedded run of quotes: """ and a brace { that would desync depth counting }
+"""";
+}
+
+public class After {
+    public void AfterMethod() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'raw_string_4quote.cs')
+    const before = symbols.find((s) => s.name === 'BeforeMethod')
+    expect(before?.kind).toBe('method')
+    expect(before?.docstring).toBe('Before')
+    const after = symbols.find((s) => s.name === 'AfterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('recognizes a C# 11+ 5-quote raw string delimiter', () => {
+    const content = `public class Before {
+    public void BeforeMethod() {
+    }
+}
+
+public class Holder {
+    public string Text = """""
+This raw string contains an embedded run of quotes: """" and a brace { that would desync depth counting }
+""""";
+}
+
+public class After {
+    public void AfterMethod() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'raw_string_5quote.cs')
+    const before = symbols.find((s) => s.name === 'BeforeMethod')
+    expect(before?.kind).toBe('method')
+    expect(before?.docstring).toBe('Before')
+    const after = symbols.find((s) => s.name === 'AfterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('masks a same-line 4-quote raw string (with a 3-quote run embedded as content) and resumes normal code after it', () => {
+    const { code, state } = stripMultilineStringSpan('var s = """"abc """ def""""; var y = 2;', null, 'csharp')
+    expect(state).toBeNull()
+    expect(code.endsWith('; var y = 2;')).toBe(true)
+    expect(code).not.toContain('abc')
+    expect(code).not.toContain('def')
   })
 })
 

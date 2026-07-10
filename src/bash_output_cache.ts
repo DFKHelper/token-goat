@@ -63,7 +63,6 @@ let _byId = new Map<string, BashOutputEntry>()
 const COMMAND_PATTERNS: Record<string, RegExp> = {
   gitMutable: /^\s*git\s+(diff|status)\b/i,
   gitImmutable: /^\s*git\s+show\s+[0-9a-f]{40}\b/i,
-  gitDiffUnscoped: /^\s*git\s+diff\b/i,
   gitDiffScoped: /\s--\s+\S/,
   dirListing: /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i,
   depList: /^\s*(?:npm\s+(?:-\S+\s+)*(?:ls|list)\b|pip\s+(?:-\S+\s+)*(?:list|freeze)\b|uv\s+pip\s+(?:-\S+\s+)*(?:list|freeze)\b|pnpm\s+(?:-\S+\s+)*(?:list|ls)\b|yarn\s+(?:-\S+\s+)*(?:list)\b|cargo\s+(?:-\S+\s+)*tree\b|bundle\s+(?:-\S+\s+)*(?:list|show)\b|composer\s+(?:-\S+\s+)*show\b)/i,
@@ -110,11 +109,6 @@ export const isTestRunnerCommand = (cmd: string) => isCommandOfType(cmd, 'testRu
 export const isLintCommand = (cmd: string) => isCommandOfType(cmd, 'lintCommand')
 export const isNpmRunScriptCommand = (cmd: string) => isCommandOfType(cmd, 'npmRunScript')
 export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
-
-export function isUnscopedGitDiff(cmd: string): boolean {
-  if (!isCommandOfType(cmd, 'gitDiffUnscoped')) return false
-  return !isCommandOfType(cmd, 'gitDiffScoped')
-}
 
 /**
  * A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is
@@ -470,20 +464,6 @@ function extractCatTarget(cmd: string, cwd: string): string | null {
 }
 
 /**
- * Legacy hash function for backwards compatibility. Returns 16-hex hash of
- * command with surrounding whitespace trimmed (no cwd scoping).
- */
-export function hashCommand(command: string): string {
-  return shortFingerprint(command.trim())
-}
-
-export function globHash(pattern: string, path: string | null): string {
-  const canonical = `${pattern}\x00${path || ''}`
-  return shortFingerprint(canonical)
-}
-
-
-/**
  * Store a command's `output` and `exitCode`, returning its id.
  *
  * The id is {@link commandHash} of the command, so re-running an identical
@@ -556,16 +536,6 @@ export function getBashOutput(id: string): BashOutputEntry | null {
   if (entry === null) return null
   _byId.set(id, entry)
   return entry
-}
-
-/**
- * Return the entry whose command hashes to `commandHash`, or null.
- *
- * Since the entry id is itself the command hash, this resolves via the
- * command-hash index and then the id map.
- */
-export function getBashOutputByCommandHash(commandHash: string): BashOutputEntry | null {
-  return getBashOutput(commandHash)
 }
 
 registerReset(() => {

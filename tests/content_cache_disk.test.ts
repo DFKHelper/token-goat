@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { clearModuleCaches } from '../src/reset.js'
-import { storeBashOutput, getBashOutput, getBashOutputByCommandHash } from '../src/bash_output_cache.js'
+import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { storeWebOutput, getWebOutput, getWebOutputByUrl, getWebOutputByUrlFromDisk } from '../src/web_cache.js'
 
 let tmpHome: string
@@ -41,12 +41,6 @@ describe('bash-output disk read-through (simulated cross-process)', () => {
     expect(entry?.output).toBe('BUILD OK\n')
     expect(entry?.command).toBe('npm run build')
     expect(entry?.exitCode).toBe(0)
-  })
-
-  it('getBashOutputByCommandHash also reads through to disk', async () => {
-    const id = await storeBashOutput('echo hi', 'hi\n', 0, tmpHome)
-    clearModuleCaches()
-    expect(getBashOutputByCommandHash(id)?.output).toBe('hi\n')
   })
 
   it('returns null for an unknown id with nothing on disk', () => {
