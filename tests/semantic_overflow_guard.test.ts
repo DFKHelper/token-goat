@@ -62,4 +62,17 @@ describe('semantic command output is capped by the overflow guard (#5 follow-up)
     expect(text).toContain('output capped at ~20 tokens')
     expect(text).not.toContain('x'.repeat(500))
   })
+
+  it('uses a semantic-tailored remediation hint, not the symbol command\'s "file.py::Class.method" hint (regression: guardText was called with the wrong command label)', async () => {
+    const bigText = 'x'.repeat(500)
+    const hits: SearchHit[] = Array.from({ length: 50 }, (_, i) =>
+      hit('big.ts', i * 500 + 1, i * 500 + 10, i * 0.001, bigText),
+    )
+    searchSemanticMock.mockResolvedValue(hits)
+
+    const { text } = await runSemantic('big query', { limit: 50 })
+
+    expect(text).not.toContain('file.py::Class.method')
+    expect(text).toContain('--limit')
+  })
 })
