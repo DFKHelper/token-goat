@@ -792,6 +792,96 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       closeDb(projectDb)
     }
   })
+
+  // Regression (#5): indexFileEmbeddings (parser.ts) returned before ever reaching the
+  // embed_sha UPDATE when indexing.embeddings_enabled is false, so embed_sha was left stale/empty
+  // forever. That meant embedUnchanged (this gate, above) could never hold for these files: every
+  // re-touch of byte-identical content re-entered indexFileEmbeddings just to hit the same
+  // early-return again, on every drain, for as long as embeddings stayed disabled -- harmless
+  // correctness-wise, but wasted work.
+  //
+  // The fix stamps embed_sha with a disabled-marker form of the sha (disabledEmbedSha(sha), NOT
+  // the bare sha) on the disabled early-return, and this gate now compares against that same
+  // marker form while disabled. Stamping the bare sha directly (the naive fix) would have been
+  // indistinguishable from a real successful embed: re-enabling embeddings later for the same
+  // unchanged content would then wrongly look "already embedded" and permanently skip its real
+  // first embed -- the second test below proves that scenario specifically. Drives the real
+  // default drain path (drainOnce(DIR), no injected index callback); only indexFileEmbeddings is
+  // spied (call-through, not mocked) to count invocations without altering its real behaviour.
+  it('stamps a disabled-marker embed_sha while embeddings are disabled, so a second reindex of unchanged content short-circuits via the gate', () => {
+    const src = path.join(DIR, 'embed-disabled.ts')
+    fs.writeFileSync(src, 'export function embedDisabledSymbol(): number {\n  return 3\n}\n')
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [] },
+      indexing: { embeddings_enabled: false },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+
+    try {
+      // First drain: symbols index normally; indexFileEmbeddings is invoked once but no-ops
+      // (embeddings disabled) other than stamping the disabled-marker embed_sha.
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(embedSpy).toHaveBeenCalledTimes(1)
+      expect(
+        querySymbols({ name: 'embedDisabledSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+
+      const entry = getFileEntry(norm, projectDb)
+      expect(entry?.sha).toBeTruthy()
+      expect(entry?.embedSha).toBe(parserModule.disabledEmbedSha(entry?.sha ?? ''))
+      // Never the bare sha: that would be indistinguishable from a real successful embed.
+      expect(entry?.embedSha).not.toBe(entry?.sha)
+
+      // Second drain of the SAME, byte-identical file, still disabled: parseUnchanged AND
+      // embedUnchanged both now hold, so makeIndexer must short-circuit entirely without
+      // invoking indexFileEmbeddings again.
+      writeQueue(DIR, [norm])
+      drainOnce(DIR)
+      expect(embedSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  it('re-embeds unchanged content on the next touch after embeddings are re-enabled, instead of being masked by a disabled-marker embed_sha from an earlier disabled run (fail-on-buggy: stamping the bare sha while disabled would make this look "already embedded" forever)', () => {
+    const src = path.join(DIR, 'embed-reenabled.ts')
+    fs.writeFileSync(src, 'export function embedReenabledSymbol(): number {\n  return 4\n}\n')
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+
+    try {
+      // First drain with embeddings disabled: only the disabled-marker embed_sha gets stamped.
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { embeddings_enabled: false },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(embedSpy).toHaveBeenCalledTimes(1)
+      const afterDisabled = getFileEntry(norm, projectDb)
+      expect(afterDisabled?.embedSha).toBe(parserModule.disabledEmbedSha(afterDisabled?.sha ?? ''))
+
+      // Second drain of the SAME, byte-identical file, now with embeddings enabled: the gate
+      // must NOT treat the disabled-marker embed_sha as a match for a real sha comparison --
+      // indexFileEmbeddings must be invoked again so the file actually gets embedded.
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { embeddings_enabled: true },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      drainOnce(DIR)
+      expect(embedSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
 })
 
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called

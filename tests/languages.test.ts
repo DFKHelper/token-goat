@@ -891,6 +891,38 @@ type Query { users: [User] }
     expect(stripped).toMatch(/^type Foo \{ id: ID! \} +\n$/)
   })
 
+  it('does not register a phantom symbol from a declaration-like line inside a """..."""` block description', () => {
+    const content = `"""
+type Foo represents a user
+"""
+type Foo {
+  id: ID
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const fooSymbols = symbols.filter((s) => s.name === 'Foo')
+    expect(fooSymbols).toHaveLength(1)
+    expect(fooSymbols[0]?.kind).toBe('graphql_type')
+    expect(fooSymbols[0]?.lineStart).toBe(4)
+  })
+
+  it('blanks a single-line "..." description containing declaration-like text before matching (defense-in-depth alongside the block-string fix)', () => {
+    // A single-line description's own line always starts with the opening quote, so the
+    // line-anchored declaration regexes below can't match its content directly today - this
+    // asserts the description is still blanked (not just "happens not to match yet") so the
+    // behavior doesn't silently depend on that anchoring detail.
+    const content = `"query GetFoo on a Foo returns nothing real"
+type Foo {
+  id: ID
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('GetFoo')
+    expect(names).toContain('Foo')
+    expect(symbols.find((s) => s.name === 'Foo')?.lineStart).toBe(2)
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractGraphql('', 'empty.graphql')
     expect(symbols).toHaveLength(0)
@@ -960,6 +992,43 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     const names = symbols.map((s) => s.name)
     expect(names).toContain('mat_view')
     expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
+  })
+
+  it('does not register a DDL keyword appearing inside a string literal (dynamic SQL) as a phantom object', () => {
+    const content = `
+EXECUTE 'CREATE TABLE audit_log (id int)';
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('audit_log')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
+  it('does not let an escaped quote (\'\') inside a dynamic-SQL string literal prematurely end the blanked span', () => {
+    const content = `
+EXECUTE 'CREATE TABLE it''s_a_ghost (id int)';
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('a_ghost')
+    expect(names).not.toContain('it')
+    expect(names).toContain('real_table')
+  })
+
+  it('registers a symbol for a double-quoted (delimited) identifier name, e.g. a reserved-word table name (regression: string-literal blanking must not also destroy identifier-quoting content)', () => {
+    const content = `
+CREATE TABLE "user" (id int);
+CREATE TABLE "order" (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('user')
+    expect(names).toContain('order')
   })
 
   it('returns empty array for empty input', () => {

@@ -55,6 +55,57 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [SCHEMA_RE, 'sql_schema'],
 ]
 
+/**
+ * Blank the contents of SQL single-quoted string literals, replacing interior characters with
+ * spaces (keeping the quote delimiters and any newlines) so DDL keywords that merely appear
+ * inside a string value (e.g. dynamic SQL passed to `EXECUTE '...'`) are never matched by the
+ * `CREATE ...` patterns below. Double-quoted spans are left untouched since double quotes
+ * delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string literals - blanking them
+ * would destroy legitimate delimited names. Length- and offset-preserving, like the other
+ * `strip*` helpers in `common.ts`, so `match.index` positions stay valid for line lookup.
+ *
+ * SQL's standard escape for a literal quote inside a string is a doubled quote (`''` inside a
+ * `'...'` string, `""` inside a `"..."` string) rather than a backslash - `common.ts`'s
+ * `isInsideStringLiteral`/`stripStringLiterals` assume backslash escaping, so they don't fit SQL's
+ * rule and this file needs its own quote-aware scanner.
+ */
+function stripSqlStringLiterals(text: string): string {
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === "'") {
+      // Double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string
+      // literals - blanking them would destroy legitimate delimited names. Dynamic-SQL DDL
+      // keywords that need masking (e.g. `EXECUTE 'CREATE TABLE ...'`) are always inside a
+      // single-quoted string literal, never a double-quoted identifier.
+      const quote = ch
+      out += quote
+      i++
+      while (i < text.length) {
+        const c = text[i]
+        if (c === quote) {
+          if (text[i + 1] === quote) {
+            // Doubled quote: an escaped literal quote inside the string, not the terminator.
+            out += '  '
+            i += 2
+            continue
+          }
+          out += quote
+          i++
+          break
+        }
+        out += c === '\n' ? '\n' : ' '
+        i++
+      }
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
 function unquote(name: string): string {
   if (
     name.length >= 2 &&
@@ -76,11 +127,12 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   let stripped = stripSqlLineComments(content)
   stripped = stripCstyleComments(stripped)
   const totalLines = content.split('\n').length
+  const noStrings = stripSqlStringLiterals(stripped)
 
   for (const [pattern, kind] of PATTERNS) {
     // Reset lastIndex since these are global regexes
     pattern.lastIndex = 0
-    for (const m of stripped.matchAll(pattern)) {
+    for (const m of noStrings.matchAll(pattern)) {
       const rawName = m[1]
       if (rawName) {
         const name = unquote(rawName).trim()

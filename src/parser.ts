@@ -1478,6 +1478,24 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} early-returns
+ * because `indexing.embeddings_enabled` is off, instead of the file's real content sha. Kept
+ * distinct from a real embed_sha (see {@link indexFileEmbeddings}'s own doc comment) so
+ * re-enabling embeddings later can't be mistaken for "already embedded, unchanged" by
+ * makeIndexer's embedUnchanged gate in worker.ts, which checks the CURRENT
+ * embeddings_enabled state and only treats this disabled-marker form as "unchanged" while
+ * still disabled -- a bare sha match here would otherwise permanently skip re-embedding once
+ * a user turns embeddings back on for content that was only ever marker-stamped, never
+ * actually embedded.
+ */
+export const DISABLED_EMBED_SHA_PREFIX = 'disabled:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` while embeddings are disabled. */
+export function disabledEmbedSha(sha: string): string {
+  return DISABLED_EMBED_SHA_PREFIX + sha
+}
+
+/**
  * `sha`, when provided, is stamped into `files.embed_sha` after {@link embedIndexFile}
  * commits successfully -- tracked separately from `files.sha` (the parse-freshness gate) so
  * a crash or thrown error mid-embedding never gets masked by the parse-sha gate: the embed_sha
@@ -1490,7 +1508,21 @@ export async function indexFileEmbeddings(
   dbPath: string = globalDbPath(),
   sha?: string,
 ): Promise<void> {
-  if (!loadConfig().indexing.embeddings_enabled) return
+  if (!loadConfig().indexing.embeddings_enabled) {
+    // Stamp a disabled-marker embed_sha even though no embedding actually ran, so
+    // makeIndexer's embedUnchanged gate (worker.ts) can hold for this content the next time
+    // it's touched while STILL disabled -- otherwise every re-touch of an unchanged file
+    // re-enters indexFileEmbeddings just to hit this same early-return again, on every drain,
+    // for as long as embeddings stay disabled. Deliberately NOT the real sha (see
+    // disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for
+    // "already embedded, unchanged".
+    if (sha !== undefined) {
+      getDb(dbPath)
+        .prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`)
+        .run(disabledEmbedSha(sha), foldPath(filePath))
+    }
+    return
+  }
   if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
     // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
     deleteFileEmbeddings(getDb(dbPath), filePath)

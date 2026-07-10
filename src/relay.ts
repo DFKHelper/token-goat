@@ -239,6 +239,17 @@ export async function relay(eventName: string): Promise<void> {
         ? normalizePayload(rawPayload, harnessForNormalization())
         : rawPayload
     const event = buildEvent(eventName, payload)
+    // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the
+    // environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi,
+    // Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only
+    // on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived
+    // process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a
+    // brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing,
+    // context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once,
+    // before any handler runs, rather than patching each getSessionId() call site individually.
+    if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
+      process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
+    }
     // Load persisted session state before handlers run; save the mutated state after. Each is isolated in its own try/catch so a persistence failure can never suppress the handler's real output (the cardinal rule above).
     const stateKey = sessionStateKey(event)
     try {

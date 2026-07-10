@@ -6,7 +6,9 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerHook } from '../src/hook_registry.js'
+import { clearModuleCaches } from '../src/reset.js'
 import { buildEvent, readStdinJson, relay } from '../src/relay.js'
+import { getSessionId } from '../src/session.js'
 
 /**
  * Replace process.stdin with a fake emitter and capture process.stdout writes.
@@ -478,5 +480,104 @@ describe('relay Gemini deny wire format (regression: Gemini CLI has no output-re
     expect(typeof parsed['reason']).toBe('string')
     expect(parsed['reason'] as string).toContain('already cached this session')
     expect(parsed['hookSpecificOutput']).toBeUndefined()
+  })
+})
+
+describe('relay seeds CLAUDE_CODE_SESSION_ID from the wire session id on non-Claude-Code harnesses (regression: getSessionId() previously resolved only from that env var, which Claude Code sets itself but Codex/opencode/pi/Gemini/Grok/Copilot/OpenClaw never do -- each hook invocation is a fresh short-lived process, so without seeding, every call on those harnesses got a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity)', () => {
+  const ENV_KEYS = [
+    'TERM_PROGRAM',
+    'CLAUDE_CODE_VERSION',
+    'CLAUDE_CODE_SESSION_ID',
+    'ANTHROPIC_API_KEY',
+    'CODEX_SESSION_ID',
+    'CODEX_SESSION',
+    'OPENCODE_SESSION_ID',
+    'OPENCODE_SESSION',
+    'GROK_SESSION_ID',
+    'OPENCLAW_SESSION_ID',
+    'HERMES_SESSION_ID',
+    'HERMES_HOME',
+    'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'TOKEN_GOAT_HARNESS_OVERRIDE',
+  ] as const
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      savedEnv[k] = process.env[k]
+      delete process.env[k]
+    }
+    // A real Codex hook subprocess sets CODEX_SESSION_ID in its own ambient environment (see
+    // harnessForNormalization()'s Codex branch), but -- unlike Claude Code -- never sets
+    // CLAUDE_CODE_SESSION_ID. Simulate that: harness detection resolves to 'codex', while
+    // getSessionId() has nothing to resolve from except what relay() seeds from the wire.
+    process.env['CODEX_SESSION_ID'] = 'codex-test-session'
+    // getSessionId() memoizes its result in a module-level variable; reset it (and every other
+    // session.ts global) so this suite starts from a clean slate regardless of test order.
+    clearModuleCaches()
+  })
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k]
+      else process.env[k] = savedEnv[k]
+    }
+    clearModuleCaches()
+  })
+
+  it('seeds CLAUDE_CODE_SESSION_ID from event.sessionId so getSessionId() resolves it consistently across two separate simulated hook calls', async () => {
+    const wireSessionId = 'codex-wire-session-77'
+
+    // First simulated hook call (pre_tool_use): CLAUDE_CODE_SESSION_ID starts unset, as it
+    // would for a genuine Codex subprocess. relay() must seed it from the wire payload's
+    // session_id before any handler (including getSessionId() consumers like hooks_read.ts)
+    // runs.
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/never-seen-codex-session.ts' },
+        session_id: wireSessionId,
+      }),
+    )
+    await relay('pre_tool_use')
+
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe(wireSessionId)
+    expect(getSessionId()).toBe(wireSessionId)
+
+    io.restore()
+    io = withFakeIo()
+
+    // Second simulated hook call (post_tool_use), same wire session id: getSessionId() must
+    // keep resolving to the same id it did on the first call, proving continuity across
+    // separate hook invocations rather than a fresh random id per call.
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/never-seen-codex-session.ts' },
+        session_id: wireSessionId,
+        tool_response: { output: 'ok' },
+      }),
+    )
+    await relay('post_tool_use')
+
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe(wireSessionId)
+    expect(getSessionId()).toBe(wireSessionId)
+  })
+
+  it('does not overwrite an already-set CLAUDE_CODE_SESSION_ID with a different wire session id', async () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'preexisting-session'
+
+    io.emit(
+      JSON.stringify({
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/never-seen-codex-session-2.ts' },
+        session_id: 'a-different-wire-session',
+      }),
+    )
+    await relay('pre_tool_use')
+
+    expect(process.env['CLAUDE_CODE_SESSION_ID']).toBe('preexisting-session')
   })
 })
