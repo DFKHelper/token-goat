@@ -139,6 +139,21 @@ const FILE_PATH_ARG_KEY = {
   create: 'path',
 }
 
+// Copilot spawns a brand-new process for every single hook invocation (no long-lived plugin
+// process the way OpenClaw's is -- OPENCLAW_HOOK_SCRIPT's own \`copilot-\${process.pid}-\${Date.now()}\`
+// fallback is safe there specifically because that process lives for the whole session, so the
+// pid stays constant across calls). If Copilot ever omits \`sessionId\` from a payload, falling
+// back to \`process.pid\` here would mint a DIFFERENT id on every single call for what's really
+// the same session, since process.pid varies per invocation -- breaking token-goat's
+// session-based dedup/state ledger, which never accumulates across calls as a result. Derive a
+// stable id instead from the one thing that's actually constant across calls for the same
+// session: the working directory Copilot reports in \`payload.cwd\`.
+function stableFallbackSessionId(cwd) {
+  const key = typeof cwd === 'string' && cwd ? cwd : process.cwd()
+  const hash = require('node:crypto').createHash('sha256').update(key).digest('hex').slice(0, 16)
+  return 'copilot-' + hash
+}
+
 function remapToolInput(copilotToolName, input) {
   const pathKey = FILE_PATH_ARG_KEY[copilotToolName]
   if (pathKey === undefined || !input || typeof input !== 'object' || !(pathKey in input)) {
@@ -181,7 +196,7 @@ function main() {
 
   const toolName = payload && payload.toolName
   const canonical = {
-    session_id: (payload && payload.sessionId) || 'copilot-' + process.pid,
+    session_id: (payload && payload.sessionId) || stableFallbackSessionId(payload && payload.cwd),
     cwd: payload && payload.cwd,
   }
   if (toolName) {

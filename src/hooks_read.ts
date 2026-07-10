@@ -593,7 +593,6 @@ export function preReadHandler(event: HookEvent): HookOutput {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
         const alreadyRead = wasFileReadThisSession(normalized)
-        recordActualRead(event, normalized)
         const hintText = formatHeadingTree(headings, normalized)
         const wellKnown = getWellKnownSections(basename)
         const wellKnownText =
@@ -612,9 +611,20 @@ export function preReadHandler(event: HookEvent): HookOutput {
         // the size-based deny further below ever runs, so it must enforce that gate itself.
         const tooLargeForFirstRead = markdownSize !== null && markdownSize >= largeFileDenyBytes()
         if (alreadyRead || tooLargeForFirstRead) {
+          // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not
+          // alreadyRead) never actually happened, so don't record it against re-read dedup --
+          // mirrors the generic large-file path's same rule further below. Otherwise a retry
+          // (offset/limit) on the same file hits the "already read this session" 2nd-read deny
+          // instead of this same heading-tree guidance, which a genuinely-unread file should
+          // still get. A deny that IS because of a real prior read (alreadyRead) still records,
+          // same as every other re-read-deny branch in this file.
+          if (alreadyRead) {
+            recordActualRead(event, normalized)
+          }
           message += ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
           return denyOutput(message)
         }
+        recordActualRead(event, normalized)
         return contextOutput(message)
       }
     }

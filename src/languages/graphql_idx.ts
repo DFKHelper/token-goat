@@ -8,12 +8,14 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import type { MiniSection } from './common.js'
+import type { MiniSection, MultilineStringState } from './common.js'
 import {
   assignFlatEndLines,
   makeSymbolEmitter,
   propagateEndLinesToSymbols,
   stripHashComments,
+  stripMultilineStringSpan,
+  stripStringLiterals,
 } from './common.js'
 
 // ---------------------------------------------------------------------------
@@ -51,6 +53,30 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 120
 
+/**
+ * Blank GraphQL SDL description strings - both `"""..."""` block descriptions (which can span
+ * multiple lines, carrying `stripMultilineStringSpan` state across calls the same way
+ * C#/Kotlin/PHP/PowerShell do for their own multi-line string forms) and single-line `"..."`
+ * descriptions - before the declaration regexes run. A description's content is arbitrary prose,
+ * and a content line that happens to read like a declaration (e.g. `type Foo represents a user`
+ * inside a `"""..."""` block) would otherwise be matched by `TYPE_RE`/`OPERATION_RE`/`FRAGMENT_RE`
+ * as a real, phantom symbol since those patterns are only anchored to line start, not aware of
+ * being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter
+ * as Kotlin's raw strings, so the `'kotlin'` `MultilineStringLang` is reused rather than adding a
+ * new one.
+ */
+function stripGraphqlDescriptions(text: string): string {
+  let state: MultilineStringState | null = null
+  const outLines: string[] = []
+  for (const line of text.split('\n')) {
+    const { code, state: nextState } = stripMultilineStringSpan(line, state, 'kotlin')
+    state = nextState
+    // Also blank single-line double-quoted descriptions that aren't part of a triple-quoted span.
+    outLines.push(stripStringLiterals(code))
+  }
+  return outLines.join('\n')
+}
+
 export interface GraphqlImport {
   readonly kind: string
   readonly target: string
@@ -76,7 +102,7 @@ export function extractGraphql(
     }
   }
 
-  const stripped = stripHashComments(content)
+  const stripped = stripGraphqlDescriptions(stripHashComments(content))
   const totalLines = content.split('\n').length
 
   // type / interface / input / enum / union / scalar (+ extend variants)

@@ -66,6 +66,29 @@ describe('apex adapter', () => {
     })
   })
 
+  it('does not let a "//" inside a string literal (e.g. a URL) eat the rest of the line, including a method-closing brace', () => {
+    // Before the fix, stripCstyleComments's `//` stripper ran BEFORE stripStringLiterals, so the
+    // `//` inside 'https://example.com' was treated as a real line-comment opener and blanked
+    // everything through end-of-line - including the `}` that closes getName. That made
+    // findBlockEndLine keep scanning for a match past getOther's own braces, swallowing getOther's
+    // declaration line inside getName's span and causing overlapsExisting to skip getOther entirely.
+    const content = `public class UrlHolder {
+  public String getName() {
+    String url = 'https://example.com'; return 'name'; }
+
+  public String getOther() {
+    return 'other';
+  }
+}
+`
+    const { symbols } = extractApex(content, 'UrlHolder.cls')
+    const find = (name: string, kind: string) =>
+      symbols.find((s) => s.name === name && s.kind === kind)
+
+    expect(find('getName', 'apex_method')?.lineEnd).toBe(3)
+    expect(find('getOther', 'apex_method')).toBeDefined()
+  })
+
   it('is used by parseFile for .cls files', async () => {
     const file = tmp(
       'ExampleService.cls',

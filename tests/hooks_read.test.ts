@@ -693,6 +693,47 @@ Examples here`
     }
   })
 
+  it('a retry (offset/limit) on an oversized markdown file that was just denied on its first read still gets heading-tree guidance, not a "you already read this" 2nd-read deny (regression: recordActualRead() was called unconditionally before the deny check, so a genuinely-first-and-denied read got marked as read, and a subsequent retry fell through to the generic 2nd-read markdown deny instead of repeating the heading-tree message a genuinely-unread file should get)', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here`
+
+    // Same 500KB-plus fixture as the sibling "hard-denies the FIRST read" test above.
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(520 * 1024))
+
+    const first = preReadHandler(readEvent(p))
+    expect(first.hookType).toBe('deny')
+    if (first.hookType === 'deny') {
+      expect(first.message).toContain('Large markdown file')
+    }
+
+    // This first-read deny must not have been recorded against re-read dedup: the read never
+    // actually happened (it was blocked outright), unlike a genuine re-read.
+    expect(wasFileReadThisSession(normalizePath(p))).toBe(false)
+
+    // Simulate the retry with an offset/limit range, exactly as the caller is told to do.
+    const retry = preReadHandler(readEventWithRange(p, 0, 50))
+    expect(retry.hookType).toBe('deny')
+    if (retry.hookType === 'deny') {
+      // Heading-tree guidance again — not the generic "Markdown file already read this
+      // session" 2nd-read deny, which would be wrong for a file that was never actually read.
+      expect(retry.message).toContain('Large markdown file')
+      expect(retry.message).toContain('# Title')
+      expect(retry.message).not.toContain('Markdown file already read this session')
+    }
+  })
+
   it('allows small markdown files to pass through even with headings', () => {
     const mdContent = `# Title
 ## Section

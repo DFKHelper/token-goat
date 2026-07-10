@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, disabledEmbedSha } from './parser.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { foldPath, isUnderBlockedRoot } from './util.js'
@@ -319,7 +319,24 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // gate above would otherwise mask that forever: identical content would keep skipping
       // the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check
       // embed_sha against the current sha every time, even when the parse gate above skipped.
-      const embedUnchanged = parseUnchanged && entry?.embedSha === sha
+      //
+      // While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with
+      // disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can
+      // still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged
+      // file -- but a bare-sha match must never satisfy the gate while disabled, or a file
+      // that was only ever marker-stamped (never actually embedded) would look "unchanged"
+      // the instant embeddings are re-enabled, permanently skipping its real first embed.
+      // Optional chaining/fallback here is a defensive test-mock safety net, not a real
+      // production path: loadConfig() always returns a fully-populated, schema-validated
+      // config object in production. Several existing tests in this file mock loadConfig()
+      // with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a
+      // bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled
+      // (true), matching config.ts's own default, so this new gate check is a no-op for tests
+      // that never cared about embeddings.
+      const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+      const embedUnchanged =
+        parseUnchanged &&
+        entry?.embedSha === (embeddingsEnabled ? sha : disabledEmbedSha(sha))
       if (embedUnchanged) {
         // Nothing to do at all: parse and embeddings are both already current for this content.
         return false

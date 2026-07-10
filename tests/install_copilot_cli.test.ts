@@ -761,4 +761,37 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as { tool_input: unknown }
     expect(captured.tool_input).toEqual({})
   })
+
+  it('derives a stable fallback session_id from cwd (not process.pid) when Copilot omits sessionId, so two separate hook-invocation processes for the same session agree', () => {
+    // Copilot spawns a brand-new process for every single hook call (no long-lived plugin
+    // process), so process.pid necessarily differs between these two runShim invocations even
+    // though they represent the same logical session. Before the fix, falling back to
+    // 'copilot-' + process.pid meant every call minted a different session_id, so token-goat's
+    // session-based dedup/state ledger never accumulated across calls. cwd is the one thing
+    // that's actually constant across calls for the same session, so the fallback must be
+    // derived from it instead.
+    const cwd = mkIsolated()
+    const capturePath1 = path.join(cwd, 'captured1.json')
+    const capturePath2 = path.join(cwd, 'captured2.json')
+    const makeScript = (capturePath: string): string =>
+      process.platform === 'win32'
+        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
+        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
+    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const payload = JSON.stringify({ cwd: '/same/project/dir', toolName: 'view', toolArgs: { path: '/f.txt' } })
+
+    fs.writeFileSync(binPath, makeScript(capturePath1), 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    runShim('preToolUse', payload, cwd, env)
+    const captured1 = JSON.parse(fs.readFileSync(capturePath1, 'utf8')) as { session_id: string }
+
+    fs.writeFileSync(binPath, makeScript(capturePath2), 'utf8')
+    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
+    runShim('preToolUse', payload, cwd, env)
+    const captured2 = JSON.parse(fs.readFileSync(capturePath2, 'utf8')) as { session_id: string }
+
+    expect(captured1.session_id).toBeTruthy()
+    expect(captured1.session_id).toBe(captured2.session_id)
+  })
 })

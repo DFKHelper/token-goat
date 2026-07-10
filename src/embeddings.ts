@@ -231,6 +231,15 @@ export interface SearchHit {
   kind: string
   distance: number
   text: string
+  /**
+   * Rerank score (distance - verbatimBoost + generatedPathPenalty) computed by
+   * rerankHits. Absent on hits that never went through reranking. Downstream
+   * consumers that resort hits (e.g. mergeNearbyHits) must sort by this field
+   * when present so the rerank order survives merging - falling back to
+   * `distance` would silently discard the verbatim-token boost and
+   * generated-path penalty.
+   */
+  adjustedDistance?: number
 }
 
 // ============================================================================
@@ -754,8 +763,10 @@ export async function searchSemantic(
  * then truncate to `topK`. Distance is a cosine distance (smaller = closer), so
  * lower adjusted score ranks higher: a chunk whose text contains query
  * identifiers is pulled up by a bounded boost; a chunk under a generated/build
- * directory is pushed down. Each returned hit keeps its raw `distance` — only
- * ordering and truncation change. This is what searchSemantic's over-fetch is for.
+ * directory is pushed down. Each returned hit keeps its raw `distance` but also
+ * gets `adjustedDistance` stamped with the rerank score, so downstream code
+ * that resorts hits (e.g. mergeNearbyHits) can preserve this ordering instead
+ * of silently reverting to raw-distance order.
  */
 export function rerankHits(hits: SearchHit[], query: string, topK: number): SearchHit[] {
   const queryTokens = _extractQueryTokens(query)
@@ -775,7 +786,7 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
     return { hit, index, adjusted: hit.distance - boost + penalty }
   })
   scored.sort((a, b) => a.adjusted - b.adjusted || a.index - b.index)
-  return scored.slice(0, topK).map((entry) => entry.hit)
+  return scored.slice(0, topK).map((entry) => ({ ...entry.hit, adjustedDistance: entry.adjusted }))
 }
 
 /**
@@ -786,7 +797,8 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
  *
  * @param hits - Array of search hits.
  * @param proximity - Lines within which to consider hits as "nearby" (default: 20).
- * @returns Merged array of hits, re-sorted by distance.
+ * @returns Merged array of hits, re-sorted by rerank score (adjustedDistance)
+ *   when present, falling back to raw distance otherwise.
  */
 export function mergeNearbyHits(
   hits: SearchHit[],
@@ -820,6 +832,7 @@ export function mergeNearbyHits(
     let curStart = current.startLine
     let curEnd = current.endLine
     let curDist = current.distance
+    let curAdjusted = current.adjustedDistance ?? current.distance
     const mergedTexts: string[] = [current.text]
 
     for (let i = 1; i < fileHits.length; i++) {
@@ -831,9 +844,10 @@ export function mergeNearbyHits(
       const gap = hit.startLine - curEnd - 1
 
       if (gap <= proximity) {
-        // Merge: extend the range and keep best distance, combine texts.
+        // Merge: extend the range and keep best distance/rerank score, combine texts.
         curEnd = Math.max(curEnd, hit.endLine)
         curDist = Math.min(curDist, hit.distance)
+        curAdjusted = Math.min(curAdjusted, hit.adjustedDistance ?? hit.distance)
         mergedTexts.push(hit.text)
       } else {
         // Gap too large: flush current and start new.
@@ -843,12 +857,14 @@ export function mergeNearbyHits(
           endLine: curEnd,
           kind: current.kind,
           distance: curDist,
+          adjustedDistance: curAdjusted,
           text: mergedTexts.join('\n---\n'),
         })
         current = hit
         curStart = hit.startLine
         curEnd = hit.endLine
         curDist = hit.distance
+        curAdjusted = hit.adjustedDistance ?? hit.distance
         mergedTexts.length = 0
         mergedTexts.push(hit.text)
       }
@@ -861,11 +877,16 @@ export function mergeNearbyHits(
       endLine: curEnd,
       kind: current.kind,
       distance: curDist,
+      adjustedDistance: curAdjusted,
       text: mergedTexts.join('\n---\n'),
     })
   }
 
-  merged.sort((a, b) => a.distance - b.distance)
+  // Sort by rerank score when available so rerankHits' ordering (verbatim-token
+  // boost, generated-path penalty) survives merging, instead of silently
+  // reverting to raw-distance order. Hits that never went through rerankHits
+  // (no adjustedDistance) fall back to their raw distance.
+  merged.sort((a, b) => (a.adjustedDistance ?? a.distance) - (b.adjustedDistance ?? b.distance))
   return merged
 }
 

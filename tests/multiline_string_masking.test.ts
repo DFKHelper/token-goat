@@ -356,6 +356,40 @@ public class After {
     expect(code).not.toContain('abc')
     expect(code).not.toContain('def')
   })
+
+  it('same-line closer: masks the full matched quote-run when it is longer than the opener, leaving no stray quote characters behind (regression: maskEnd used the opener length instead of the matched closer length)', () => {
+    const { code, state } = stripMultilineStringSpan('var s = """abc""""; var y = 2;', null, 'csharp')
+    expect(state).toBeNull()
+    expect(code.endsWith('; var y = 2;')).toBe(true)
+    expect(code).not.toContain('abc')
+    expect(code).not.toContain('"')
+  })
+
+  it('multi-line closer: masks the full matched quote-run on the closing line when it is longer than the opener (regression: closesSameLine/maskEnd used tripleLen instead of the matched closer length)', () => {
+    const content = `public class Before {
+    public void BeforeMethod() {
+    }
+}
+
+public class Holder {
+    public string Text = """
+line one
+""""; public string Trailing = "leftover";
+}
+
+public class After {
+    public void AfterMethod() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'raw_string_closer_longer_than_opener.cs')
+    const before = symbols.find((s) => s.name === 'BeforeMethod')
+    expect(before?.kind).toBe('method')
+    expect(before?.docstring).toBe('Before')
+    const after = symbols.find((s) => s.name === 'AfterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
 })
 
 // ---------------------------------------------------------------------------

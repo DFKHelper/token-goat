@@ -22,7 +22,7 @@ import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, disabledEmbedSha } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
@@ -228,7 +228,17 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = sha !== null && entry?.sha === sha
-    const embedUnchanged = parseUnchanged && entry?.embedSha === sha
+    // While embeddings are disabled, indexFileEmbeddings stamps embed_sha with
+    // disabledEmbedSha(sha) rather than the bare sha (see its doc comment in parser.ts), so
+    // this gate must compare against the same marker form here -- otherwise a file that was
+    // only ever marker-stamped (never actually embedded) would look permanently "unchanged"
+    // the instant embeddings are re-enabled, and mirror makeIndexer's identical gate in
+    // worker.ts.
+    const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+    const embedUnchanged =
+      parseUnchanged &&
+      sha !== null &&
+      entry?.embedSha === (embeddingsEnabled ? sha : disabledEmbedSha(sha))
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue

@@ -120,8 +120,12 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   const seen = new Set<string>()
   const lineIndex = buildLineIndex(content)
   const rawLines = content.split(/\r?\n/)
-  const commentFree = stripCstyleComments(content, /\/\/.*$/gm)
-  const code = stripStringLiterals(commentFree)
+  // String literals must be blanked BEFORE `//` line-comment stripping: stripCstyleComments's
+  // `lineCommentRe` application is not quote-aware, so a `//` inside a string (e.g. a URL literal
+  // like 'https://example.com') would otherwise be treated as a real comment starter and blank
+  // everything through end-of-line, corrupting any code that follows on the same line.
+  const stringFree = stripStringLiterals(content)
+  const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
 
   const emit = (name: string, kind: string, span: Span, docstring = ''): void => {
     if (!name || symbols.length >= MAX_SYMBOLS) return

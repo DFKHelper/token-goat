@@ -334,7 +334,7 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       const n = state.identifier !== '' ? parseInt(state.identifier, 10) : 3
       const re = new RegExp(`"{${n},}`)
       const m = re.exec(line.slice(from))
-      return m === null ? null : { maskEnd: from + m.index + n }
+      return m === null ? null : { maskEnd: from + m.index + m[0].length }
     }
     case 'verbatim': {
       // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
@@ -418,7 +418,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
       const closeM = closeRe.exec(line.slice(tripleIdx + tripleLen))
       if (closeM !== null) {
         const closeIdx = tripleIdx + tripleLen + closeM.index
-        return { openStart: tripleIdx, closesSameLine: closeIdx + tripleLen, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
+        return { openStart: tripleIdx, closesSameLine: closeIdx + closeM[0].length, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
       }
       return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
     }
