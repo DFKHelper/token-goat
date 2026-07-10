@@ -243,7 +243,11 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
     expect(PI_EXTENSION_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
     expect(PI_EXTENSION_SCRIPT).toMatch(/token-goat-entry\.json/)
-    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
+    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the
+    // in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn
+    // when that's unavailable. See the "in-process hook call" describe block below for
+    // coverage of the in-process path taking priority and never spawning a process.
+    const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
     expect(body).toMatch(/resolveEntryPath\(\)/)
@@ -259,7 +263,7 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     // entry-path sidecar was missing/stale, defeating the whole PATH-hardening this
     // commit added. Fix: use string concatenation + shell:true like the Codex/Copilot
     // CLI bridges already do.
-    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
+    const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
     // Find the fallback spawnSync block (the : branch of a ternary)
@@ -268,6 +272,23 @@ describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
     const fallbackBlock = fallbackMatch?.[0] ?? ''
     expect(fallbackBlock).toContain('shell: true')
     expect(fallbackBlock).toContain('token-goat hook')
+  })
+
+  // Regression: callHook used to spawnSync a whole second node process
+  // (`token-goat hook <event>`) for every single tool call in this long-lived agent
+  // process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs
+  // hook lib first, falling back to callHookViaSpawn only when that's unavailable.
+  it('tries the in-process hook lib (resolveRelayInProcess) before ever calling callHookViaSpawn', () => {
+    expect(PI_EXTENSION_SCRIPT).toMatch(/function resolveRelayInProcess\(\)/)
+    expect(PI_EXTENSION_SCRIPT).toMatch(/token-goat-hook\.mjs/)
+    expect(PI_EXTENSION_SCRIPT).toMatch(/await import\(pathToFileURL\(hookLibPath\)\.href\)/)
+    const callHookMatch = /async function callHook\([\s\S]*?\n\}/.exec(PI_EXTENSION_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    const inProcessIndex = body.indexOf('resolveRelayInProcess')
+    const spawnFallbackIndex = body.indexOf('callHookViaSpawn')
+    expect(inProcessIndex).toBeGreaterThanOrEqual(0)
+    expect(spawnFallbackIndex).toBeGreaterThan(inProcessIndex)
   })
 
   it("forwards tool_result's real output (event.content) as tool_response.output in the post_tool_use payload, mirroring opencode.ts's tool_response shape", () => {

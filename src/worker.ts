@@ -31,8 +31,9 @@ import { foldPath, isUnderBlockedRoot } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
-import { removeFileFromIndex } from './index_prune.js'
+import { removeFileFromIndex, pruneDeletedFiles } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
+import { findProject } from './project.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -59,6 +60,38 @@ const DEFAULT_POLL_INTERVAL_MS = 2000
 // window doesn't need finer-grained sweeping than hourly, and a full directory scan on every
 // 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
+
+/**
+ * How many {@link drainOnce} cycles to skip between opportunistic
+ * {@link pruneDeletedFiles} sweeps. A `git mv`, directory rename, `git checkout <branch>`,
+ * or `git clean` never fires an Edit hook for the paths it touches, so a plain dirty-queue
+ * drain (which only reconciles a deletion when the exact old path was enqueued) never
+ * notices those rows are gone and they orphan in the index forever. `pruneDeletedFiles`
+ * walks every indexed path under a project root and stats each one to catch this — too
+ * expensive to repeat on every ~2s poll tick, so it only runs every Nth cycle (mirrors
+ * SNAPSHOT_CLEANUP_INTERVAL_MS's throttling above, keyed on drain-cycle count here instead
+ * of wall time since the trigger is "enough drain activity", not "enough time elapsed").
+ */
+const PRUNE_EVERY_N_DRAINS = 30
+
+/**
+ * Per-dataDir drain-cycle counters, so unrelated worker instances (distinct test dirs, or a
+ * future multi-dataDir setup) don't share a single global cadence.
+ */
+const drainCycleCounts = new Map<string, number>()
+
+/**
+ * Per-dataDir last-known project root, opportunistically learned from the dirty paths
+ * {@link processDirtyBatch} actually processes. The dirty queue is global and path-keyed (one
+ * shared `dataDir`, not one per project — see the module doc comment), so there is no
+ * standing notion of "the active project" for the periodic prune sweep to target; the files
+ * currently flowing through the queue are the closest available signal for which project is
+ * active. This is deliberately best-effort: a rename/delete that happens without any other
+ * Edit-hook traffic in between won't be pruned until the NEXT unrelated edit in that project
+ * re-establishes the project root, which is an acceptable trade-off for orphaned rows that
+ * would otherwise never be cleaned up at all.
+ */
+const lastKnownProjectRoots = new Map<string, string>()
 
 /**
  * Tracks '.draining' files whose content was already folded into a batch by
@@ -415,6 +448,15 @@ export function processDirtyBatch(
     // later failure on this same path (e.g. after a fresh edit) starts from a full budget
     // instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount).
     clearRetryCount(path.join(dir, 'global.db'), p)
+    // Opportunistically learn the active project root from this batch's traffic -- see
+    // lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other
+    // standing notion of "the current project" for drainOnce's periodic prune sweep to target.
+    try {
+      const project = findProject(path.dirname(p))
+      if (project) lastKnownProjectRoots.set(dir, project.root)
+    } catch {
+      // best-effort signal only -- never let project-root discovery abort a real index.
+    }
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
     // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
     // other return value (including void/undefined from callers that don't bother returning
@@ -557,6 +599,24 @@ export function drainOnce(
     }
     // If the claim-rename never succeeded after 5 retries, the live queue is left untouched
     // and will be retried on the next poll cycle.
+  }
+
+  // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit
+  // hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above,
+  // on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the
+  // queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not
+  // this cycle's already-completed dirty-queue work.
+  const cycle = (drainCycleCounts.get(dir) ?? 0) + 1
+  drainCycleCounts.set(dir, cycle)
+  if (cycle % PRUNE_EVERY_N_DRAINS === 0) {
+    const root = lastKnownProjectRoots.get(dir)
+    if (root !== undefined) {
+      try {
+        pruneDeletedFiles(root, dbPath)
+      } catch {
+        // Best-effort housekeeping; a prune failure must not kill the drain loop.
+      }
+    }
   }
 
   return processed

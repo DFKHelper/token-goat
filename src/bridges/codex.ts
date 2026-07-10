@@ -38,6 +38,8 @@ export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Codex hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName so the response satisfies Codex's strict (additionalProperties:false) schema.
 'use strict'
 const { spawnSync } = require('node:child_process')
+const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 // Keep in sync with HOOK_EVENTS in src/types.ts. eventName is validated against this closed
 // set before being concatenated into a shell command string, so a hostile argv (e.g.
@@ -79,7 +81,27 @@ function stripTg(value) {
   return value
 }
 
-function main() {
+// Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
+// the baked token-goat entry path, built with zero load-time side effects -- unlike
+// the CLI entry, which runs the full argv-parsing CLI as a side effect of being
+// loaded) and calls its exported relayInProcess() directly, avoiding a second node
+// process spawn entirely. Returns undefined (triggering the spawnSync fallback below)
+// when entryPath is absent, the sibling file doesn't exist (an older install predating
+// this file), or anything else goes wrong -- this must never throw.
+async function tryInProcess(entryPath, eventName, input) {
+  if (!entryPath) return undefined
+  try {
+    const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
+    if (!require('node:fs').existsSync(hookLibPath)) return undefined
+    const mod = await import(pathToFileURL(hookLibPath).href)
+    const payload = JSON.parse(input)
+    return await mod.relayInProcess(eventName, payload)
+  } catch {
+    return undefined
+  }
+}
+
+async function main() {
   const eventName = process.argv[2] || ''
   if (!VALID_HOOK_EVENTS.has(eventName)) {
     process.stdout.write('{}')
@@ -94,30 +116,43 @@ function main() {
   }
   // process.argv[3], when present, is the absolute path to the token-goat CLI entry
   // that ran 'token-goat install --codex' (baked in by hookCommandFor in
-  // codex_install.ts). Invoking it directly via process.execPath sidesteps PATH/shell
-  // resolution for this inner call, the same single-point-of-failure class fixed for
-  // the Copilot CLI bridge's inner hook call (a bare 'token-goat' on PATH failing to
-  // resolve crashes this call, and Codex -- like Copilot -- fails closed on a
-  // non-zero-exit hook). Falls back to the old PATH-based shell:true invocation when
-  // argv[3] is absent (an older cached hook config).
+  // codex_install.ts). Try the in-process hook lib first (tryInProcess above) --
+  // this avoids spawning a second node process altogether. If that's unavailable,
+  // invoking the entry directly via process.execPath sidesteps PATH/shell resolution
+  // for this inner call, the same single-point-of-failure class fixed for the Copilot
+  // CLI bridge's inner hook call (a bare 'token-goat' on PATH failing to resolve
+  // crashes this call, and Codex -- like Copilot -- fails closed on a non-zero-exit
+  // hook). Falls back further to the old PATH-based shell:true invocation when argv[3]
+  // is absent (an older cached hook config). A 3000ms timeout/killSignal on both
+  // spawnSync fallbacks bounds them well under Codex's own hook timeout budget, so
+  // token-goat degrades to its own fail-open '{}' rather than being force-killed by
+  // Codex first.
   const entryPath = process.argv[3]
-  const res = entryPath
-    ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
-        input,
-        encoding: 'utf8',
-      })
-    : spawnSync('token-goat hook ' + eventName, {
-        input,
-        encoding: 'utf8',
-        shell: true,
-      })
-  if (res.status !== 0 || !res.stdout) {
-    process.stdout.write('{}')
-    return
+  let stdout = await tryInProcess(entryPath, eventName, input)
+  if (stdout === undefined) {
+    const res = entryPath
+      ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
+          input,
+          encoding: 'utf8',
+          timeout: 3000,
+          killSignal: 'SIGKILL',
+        })
+      : spawnSync('token-goat hook ' + eventName, {
+          input,
+          encoding: 'utf8',
+          shell: true,
+          timeout: 3000,
+          killSignal: 'SIGKILL',
+        })
+    if (res.status !== 0 || !res.stdout) {
+      process.stdout.write('{}')
+      return
+    }
+    stdout = res.stdout
   }
   let parsed
   try {
-    parsed = JSON.parse(res.stdout)
+    parsed = JSON.parse(stdout)
   } catch {
     process.stdout.write('{}')
     return
@@ -130,6 +165,8 @@ function main() {
   process.stdout.write(JSON.stringify(parsed))
 }
 
-main()
+main().catch(() => {
+  process.stdout.write('{}')
+})
 `
 

@@ -468,6 +468,51 @@ describe('drainOnce', () => {
     }
   })
 
+  // Regression: a rename/delete that never goes through the Edit hook path (git mv, a
+  // directory rename, `git checkout <branch>`, `git clean`) never enqueues the old path, so
+  // the dirty-queue reconciliation exercised by the sibling "prunes a deleted file's rows on
+  // re-drain" test above never runs for it -- the row orphans in the index forever. drainOnce
+  // now also runs an opportunistic pruneDeletedFiles sweep every PRUNE_EVERY_N_DRAINS (30)
+  // cycles, scoped to the project root it learned from earlier dirty-queue traffic. This drives
+  // the real default path end-to-end: index a file (learning the project root along the way),
+  // delete it WITHOUT re-queuing its path, drive enough drain cycles to cross the periodic
+  // threshold, and assert the stale row is gone. Fails pre-fix (row survives indefinitely,
+  // since nothing else in the drain loop ever revisits it) and passes post-fix.
+  it('prunes a stale row for a file renamed/deleted outside the Edit hook path once enough drain cycles cross the periodic threshold', () => {
+    // A project marker so findProject(path.dirname(src)) resolves DIR as a real project root --
+    // opportunistically learned by processDirtyBatch from the dirty paths it processes.
+    fs.writeFileSync(path.join(DIR, 'package.json'), '{"name":"tg-worker-prune-test"}')
+
+    const src = path.join(DIR, 'renamed-away.ts')
+    fs.writeFileSync(src, 'export function prunedWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'prunedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+
+      // Simulate the git-mv/git-clean scenario: the file is gone from disk, but its old path
+      // is never re-enqueued (unlike the sibling test above, which explicitly re-queues the
+      // old path to exercise the ordinary dirty-queue reconciliation branch instead of this
+      // one).
+      fs.rmSync(src)
+
+      // Empty-queue drain cycles: nothing for the normal dirty-queue path to reconcile each
+      // time, so only the periodic prune sweep (using the project root learned by the very
+      // first drainOnce call above) can catch the stale row.
+      for (let i = 0; i < 30; i++) {
+        drainOnce(DIR)
+      }
+
+      expect(querySymbols({ name: 'prunedWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
 
   // Regression: the real drain path must SHA-gate. makeIndexer is handed each file's fingerprint but the buggy version dropped it and reparsed every queued file on every drain. Drive the real default path (no injected callback): index a file, delete its symbol rows to prove a reindex would repopulate, then re-queue the UNCHANGED file. With the gate the stored files.sha matches the fingerprint so indexFileSync is skipped and the rows stay deleted; the buggy version reindexes and repopulates them.
   it('default path skips re-indexing a file whose content is unchanged (sha gate)', () => {

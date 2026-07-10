@@ -734,6 +734,42 @@ Examples here`
     }
   })
 
+  it('serves a bounded offset/limit slice of an oversized markdown file instead of hard-denying it (regression: the markdown branch used to gate tooLargeForFirstRead on the whole file size regardless of offset/limit, unlike the generic large-file gate and file-type dispatcher, which both call estimateRequestedSlice() to let a small bounded window through)', () => {
+    const headerLines = ['# Title', '## Installation', '### Quick Start']
+    const fillerLine = 'This is filler body content padding out the file well past a single heading. '
+    const fillerLines = Array.from({ length: 15000 }, (_, i) => fillerLine + i)
+    const mdContent = [...headerLines, ...fillerLines].join('\n')
+    const p = _makeTmpMdFile(mdContent)
+
+    // Deep into the filler body (well past the 3 headings, which sit in the first 3 lines) —
+    // "not cleanly under a single heading" — and a small enough window (25 lines) that its
+    // estimated byte size is nowhere near the 500KB deny threshold, even though the whole
+    // file (~850KB) is well above it.
+    const result = preReadHandler(readEventWithRange(p, 5000, 25))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Large markdown file')
+      expect(result.context).not.toContain('To edit it anyway')
+    }
+    expect(wasFileReadThisSession(normalizePath(p))).toBe(true)
+  })
+
+  it('still hard-denies a whole-file (no offset/limit) first read of that same oversized markdown file — the bounded-slice carve-out does not weaken the unbounded case', () => {
+    const headerLines = ['# Title', '## Installation', '### Quick Start']
+    const fillerLine = 'This is filler body content padding out the file well past a single heading. '
+    const fillerLines = Array.from({ length: 15000 }, (_, i) => fillerLine + i)
+    const mdContent = [...headerLines, ...fillerLines].join('\n')
+    const p = _makeTmpMdFile(mdContent)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large markdown file')
+      expect(result.message).toContain('token-goat replace')
+    }
+    expect(wasFileReadThisSession(normalizePath(p))).toBe(false)
+  })
+
   it('allows small markdown files to pass through even with headings', () => {
     const mdContent = `# Title
 ## Section
