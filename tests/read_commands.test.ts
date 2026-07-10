@@ -1962,3 +1962,80 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
     )
   })
 })
+
+// Overflow-guard coverage for the surgical-read commands that previously returned
+// unguarded text (#5): runSymbol / runRefs / runSkeleton / runOutline now route their
+// text output through emitGuarded/guardText the same way runRead/runSection do. Each test
+// forces output past a tiny max_tokens and asserts the truncation marker appears — all four
+// fail on pre-fix code (full, unbounded output, no marker).
+describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 20 },
+    } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('caps runSymbol output', () => {
+    const bigLine = 'x'.repeat(500)
+    const sym = {
+      name: 'huge',
+      kind: 'function',
+      filePath: 'big.ts',
+      lineStart: 1,
+      lineEnd: 5,
+      body: Array.from({ length: 5 }, () => bigLine).join('\n'),
+      docstring: '',
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuerySymbols.mockReturnValue([sym as any])
+    const { text } = runSymbol({ name: 'huge' })
+    expect(text).toContain('output capped at ~20 tokens')
+    expect(text).not.toContain('x'.repeat(500))
+  })
+
+  it('caps runSkeleton output', () => {
+    const syms = Array.from({ length: 300 }, (_, i) => ({
+      name: `sym${i}`,
+      kind: 'function',
+      filePath: 'big.ts',
+      lineStart: i + 1,
+      lineEnd: i + 1,
+      body: `function sym${i}() {}`,
+      docstring: '',
+    }))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuerySymbols.mockReturnValue(syms as any)
+    const { text } = runSkeleton({ file: 'big.ts' })
+    expect(text).toContain('output capped at ~20 tokens')
+    expect(text).not.toContain('sym299')
+  })
+
+  it('caps runOutline output', () => {
+    const syms = Array.from({ length: 300 }, (_, i) => ({
+      name: `sym${i}`,
+      kind: 'function',
+      filePath: 'big.ts',
+      lineStart: i + 1,
+      lineEnd: i + 2,
+      body: `function sym${i}() {}`,
+      docstring: '',
+    }))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuerySymbols.mockReturnValue(syms as any)
+    const { text } = runOutline({ file: 'big.ts' })
+    expect(text).toContain('output capped at ~20 tokens')
+    expect(text).not.toContain('sym299')
+  })
+
+  it('caps runRefs output', () => {
+    const refs = Array.from({ length: 300 }, (_, i) => ref('src/big.ts', i + 1, `use${i}()`))
+    mockQueryRefs.mockReturnValue(refs)
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'huge' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('output capped at ~20 tokens')
+    expect(stdout).not.toContain('use299()')
+  })
+})

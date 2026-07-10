@@ -32,13 +32,18 @@ export interface RefEntry {
   readonly context: string
 }
 
-/** One indexed source file: its SHA, mtime, language, and index timestamp. */
+/** One indexed source file: its SHA, mtime, language, index timestamp, and embedding freshness. */
 export interface FileIndexEntry {
   readonly filePath: string
   readonly sha: string
   readonly mtime: number
   readonly language: string
   readonly indexedAt: number
+  // The sha of the content that was last SUCCESSFULLY embedded, tracked separately from `sha`
+  // (the last successfully PARSED content) so a worker crash or a thrown error mid-embedding
+  // never gets masked by the parse-sha gate -- see makeIndexer in worker.ts. Empty string when
+  // the file has never been embedded (or its last embedding attempt never completed).
+  readonly embedSha: string
 }
 
 /** Languages token-goat can recognise. `unknown` is the catch-all fallback. */

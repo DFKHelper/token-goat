@@ -70,3 +70,18 @@ process.on('exit', () => {
 if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'false'
 }
+
+// Pin the three env vars that used to live only in the local pre-push hook
+// (.lefthook-scripts/run-test.sh / wsl-test.sh), so a green local pre-push and a
+// green CI run mean the same thing. Same "a test that sets its own value wins"
+// pattern as TOKEN_GOAT_HOME/TOKEN_GOAT_EMBEDDINGS_ENABLED above: these are only
+// defaults, applied before the test module graph imports anything that reads them.
+if (!process.env['TOKEN_GOAT_NO_WORKER_SPAWN']) {
+  process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'
+}
+if (!process.env['TOKEN_GOAT_HARNESS_OVERRIDE']) {
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+}
+if (!process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB']) {
+  process.env['TOKEN_GOAT_MEMORY_PRESSURE_MB'] = '99999'
+}

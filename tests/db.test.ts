@@ -260,3 +260,60 @@ describe('closeAllDbs', () => {
     expect(() => getDb('index.db:evil')).toThrow(/colon/)
   })
 })
+
+describe('folded-path expression indexes (full table scan fix)', () => {
+  // Regression: pathEqClause() (sql_path.ts) emits `TG_LOWER(column) = ?` for case-insensitive
+  // filesystem comparisons, and TG_LOWER is a custom registered SQL function -- SQLite cannot
+  // use a plain column index (idx_symbols_file etc.) to satisfy a WHERE clause wrapped in a
+  // function call, so every such query used to be a full table SCAN regardless of table size.
+  // The fix is an expression index (CREATE INDEX ... ON table(TG_LOWER(column))) added to
+  // SCHEMA_SQL for files/symbols/refs/chunks -- SQLite matches pathEqClause's exact
+  // `TG_LOWER(column) = ?` text against it and uses SEARCH instead of SCAN, without requiring
+  // any writer to populate a separate folded column. These tests assert the query plan directly
+  // via EXPLAIN QUERY PLAN so the fix can't silently regress back to a full scan.
+  const tables: ReadonlyArray<readonly [string, string]> = [
+    ['files', 'path'],
+    ['symbols', 'file_path'],
+    ['refs', 'file_path'],
+    ['chunks', 'file_path'],
+  ]
+  for (const [table, column] of tables) {
+    it(`uses SEARCH (not SCAN) for a TG_LOWER(${column}) = ? lookup on ${table}`, () => {
+      const db = getDb(tmpDbPath())
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN SELECT * FROM ${table} WHERE TG_LOWER(${column}) = ?`)
+        .all('c:/proj/file.ts') as Array<{ detail: string }>
+      const detail = plan.map((row) => row.detail).join(' | ')
+      expect(detail).toMatch(/SEARCH/)
+      expect(detail).not.toMatch(/SCAN/)
+    })
+  }
+
+  it('is populated for rows already present before the index is (re)created (pre-existing DB)', () => {
+    // Simulate a DB that lost or never had the expression index (e.g. an older on-disk index
+    // predating this fix): open a connection (creating the schema), drop the index, insert
+    // rows, then reopen via getDb. initConnection's `CREATE INDEX IF NOT EXISTS` runs
+    // unconditionally on every open (no MIGRATIONS/SCHEMA_VERSION gate needed for a purely
+    // additive index -- see the SCHEMA_SQL comment in db.ts), so the index comes back; SQLite
+    // backfills an expression index from existing table contents automatically on CREATE INDEX,
+    // unlike a stored column, which would need an explicit UPDATE backfill.
+    const p = tmpDbPath()
+    const db = getDb(p)
+    db.exec('DROP INDEX IF EXISTS idx_symbols_file_folded')
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('C:/proj/Foo.ts', 'foo', 'function', 1, 1, 'x', '')
+    closeDb(p)
+
+    const reopened = getDb(p) // initConnection re-runs SCHEMA_SQL, recreating the dropped index.
+    const plan = reopened
+      .prepare('EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE TG_LOWER(file_path) = ?')
+      .all('c:/proj/foo.ts') as Array<{ detail: string }>
+    expect(plan.map((row) => row.detail).join(' | ')).toMatch(/SEARCH/)
+
+    const row = reopened
+      .prepare('SELECT name FROM symbols WHERE TG_LOWER(file_path) = ?')
+      .get('c:/proj/foo.ts') as { name: string } | undefined
+    expect(row?.name).toBe('foo')
+  })
+})

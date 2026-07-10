@@ -30,6 +30,7 @@ import { normalizePath } from './paths.js'
 import { foldPath, isUnderBlockedRoot } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
+import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
 
@@ -79,14 +80,57 @@ const unclearedDrainingSnapshots = new Map<string, string>()
 const MAX_TRANSIENT_RETRIES = 5
 
 /**
- * Consecutive transient-read-failure count per path, keyed by the case-folded normalized
- * absolute path (see {@link foldPath}/{@link normalizePath}) so case-variant references to
- * the same file on a case-insensitive filesystem share one counter. Cleared as soon as the
- * path reads successfully again (see {@link processDirtyBatch}), so a file that starts
- * failing again later (e.g. after a fresh edit) gets a full new retry budget instead of
- * picking up where a much earlier, unrelated failure streak left off.
+ * Read and increment `files.retry_count` for `absPath` in the index DB at `dbPath`, creating a
+ * placeholder `files` row (every other column left unset) if the path has never been indexed
+ * yet. Returns the count AFTER incrementing.
+ *
+ * Persisted in the index DB rather than an in-memory Map so the count survives across the
+ * hook-process/daemon-process boundary -- see {@link resetTransientRetryCount}'s doc comment
+ * for the cross-process bug this closes. Matched by the same folded-path convention as every
+ * other file_path/path comparison in this codebase (see {@link foldPath}, {@link
+ * pathEqClause}), so a case-variant reference to the same file on a case-insensitive
+ * filesystem shares one counter. Wrapped in a transaction so the read-then-write is atomic
+ * against a concurrent writer (the daemon and a CLI hook process both have DB access).
  */
-const transientRetryCounts = new Map<string, number>()
+function bumpRetryCount(dbPath: string, absPath: string): number {
+  const db = getDb(dbPath)
+  // NOT normalizePath()'d: the files.path column stores the raw path exactly as the indexer
+  // wrote it (see writeParseResult in parser.ts, which never runs it through normalizePath
+  // either) -- normalizing here would flip native OS separators (backslashes on Windows) to
+  // forward slashes and never match the stored row, always falling through to the INSERT
+  // branch below on every call after the first (see the regression test in worker.test.ts).
+  const folded = foldPath(absPath)
+  const tx = db.transaction((): number => {
+    const row = db.prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`).get(folded) as
+      | { retry_count: number | null }
+      | undefined
+    if (row !== undefined) {
+      const next = (row.retry_count ?? 0) + 1
+      db.prepare(`UPDATE files SET retry_count = ? WHERE ${pathEqClause('path')}`).run(next, folded)
+      return next
+    }
+    db.prepare('INSERT INTO files (path, retry_count) VALUES (?, 1)').run(absPath)
+    return 1
+  })
+  return tx()
+}
+
+/**
+ * Reset `files.retry_count` to 0 for `absPath` in the index DB at `dbPath`. Best-effort: a DB
+ * error here (e.g. the DB does not exist yet) must not block the caller's own already-completed
+ * work. No-op if the path has no `files` row yet -- nothing to reset.
+ */
+function clearRetryCount(dbPath: string, absPath: string): void {
+  try {
+    const db = getDb(dbPath)
+    // See bumpRetryCount's doc comment: no normalizePath() here either, to match the raw form
+    // the row was written under.
+    const folded = foldPath(absPath)
+    db.prepare(`UPDATE files SET retry_count = 0 WHERE ${pathEqClause('path')}`).run(folded)
+  } catch {
+    // best-effort -- see doc comment above.
+  }
+}
 
 /**
  * Clear any transient-retry count for `absPath`, giving it a fresh retry budget.
@@ -95,9 +139,21 @@ const transientRetryCounts = new Map<string, number>()
  * path, so a path that previously exhausted {@link MAX_TRANSIENT_RETRIES} (e.g. during a long
  * antivirus/OneDrive lock episode) does not inherit that exhausted counter on its next,
  * unrelated failure streak after the file is edited again.
+ *
+ * Persisted to the index DB (files.retry_count), NOT an in-memory Map: appendDirtyPath runs in
+ * the short-lived hook CLI process, while the drain loop that reads the retry count
+ * (requeueDirtyPath, via processDirtyBatch/drainOnce) runs in the long-lived detached daemon --
+ * a separate Node process with its own heap. A reset that only mutated a module-level Map here
+ * would be invisible to the daemon's own copy of that Map and would silently do nothing in the
+ * real deployed topology: an already-exhausted path would stay permanently given-up-on even
+ * after being freshly edited. Going through the index DB, which both processes already share
+ * for every other cross-process-visible field (files.sha, files.embed_sha), makes the reset
+ * actually observable on the daemon's next drain cycle. `dbPath` defaults to the global index
+ * DB every real caller uses; tests pass an isolated dir's DB explicitly to prove the DB write is
+ * what unblocks retries, not any process-local cache.
  */
-export function resetTransientRetryCount(absPath: string): void {
-  transientRetryCounts.delete(foldPath(normalizePath(absPath)))
+export function resetTransientRetryCount(absPath: string, dbPath: string = globalDbPath()): void {
+  clearRetryCount(dbPath, absPath)
 }
 
 /** Absolute path to the dirty queue file for `dir`. */
@@ -204,9 +260,8 @@ function logTransientReadFailure(dir: string, absPath: string): void {
 // if the requeue write itself fails, the path is lost for this cycle, but the failure is still
 // captured via logTransientReadFailure above.
 function requeueDirtyPath(dir: string, absPath: string): void {
-  const retryKey = foldPath(normalizePath(absPath))
-  const attempts = (transientRetryCounts.get(retryKey) ?? 0) + 1
-  transientRetryCounts.set(retryKey, attempts)
+  const dbPath = path.join(dir, 'global.db')
+  const attempts = bumpRetryCount(dbPath, absPath)
   if (attempts > MAX_TRANSIENT_RETRIES) {
     // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path
     // doesn't get hammered every single drain cycle forever. Log exactly once -- on the
@@ -251,9 +306,24 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
   const dir = path.dirname(dbPath)
   return (absPath, sha) => {
     try {
-      // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. Return false so processDirtyBatch's count reflects files actually (re)indexed, not ones the gate skipped.
-      if (getFileEntry(absPath, dbPath)?.sha === sha) return false
-      indexFileSync(absPath, dbPath)
+      const entry = getFileEntry(absPath, dbPath)
+      // Skip the syntactic reparse when content is byte-identical to what's already indexed
+      // (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
+      const parseUnchanged = entry?.sha === sha
+      if (!parseUnchanged) {
+        indexFileSync(absPath, dbPath)
+      }
+      // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set
+      // only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts).
+      // If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha
+      // gate above would otherwise mask that forever: identical content would keep skipping
+      // the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check
+      // embed_sha against the current sha every time, even when the parse gate above skipped.
+      const embedUnchanged = parseUnchanged && entry?.embedSha === sha
+      if (embedUnchanged) {
+        // Nothing to do at all: parse and embeddings are both already current for this content.
+        return false
+      }
       // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is
       // synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty
       // queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol
@@ -262,7 +332,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // a defensive backstop against a future regression there ever rejecting; returning the
       // promise (rather than voiding it) lets a caller that wants to - such as a test - await
       // it explicitly instead of racing it.
-      return indexFileEmbeddings(absPath, dbPath).catch(() => undefined)
+      return indexFileEmbeddings(absPath, dbPath, sha).catch(() => undefined)
     } catch (err) {
       // One bad file must not abort the rest of the batch -- but a swallowed failure must not be
       // silently indistinguishable from a successful index either. See the doc comment above.
@@ -326,8 +396,8 @@ export function processDirtyBatch(
     }
     // The read succeeded -- clear any transient-retry count from a prior failure streak so a
     // later failure on this same path (e.g. after a fresh edit) starts from a full budget
-    // instead of resuming a much earlier streak (see requeueDirtyPath / transientRetryCounts).
-    transientRetryCounts.delete(foldPath(normalizePath(p)))
+    // instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount).
+    clearRetryCount(path.join(dir, 'global.db'), p)
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
     // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
     // other return value (including void/undefined from callers that don't bother returning

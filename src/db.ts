@@ -46,8 +46,21 @@ CREATE TABLE IF NOT EXISTS files (
   sha TEXT,
   mtime REAL,
   language TEXT,
-  indexed_at REAL
+  indexed_at REAL,
+  embed_sha TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0
 );
+-- Expression index on TG_LOWER(path) -- see pathEqClause (sql_path.ts) and TG_LOWER's
+-- registration above. TG_LOWER is registered { deterministic: true }, which is required for
+-- SQLite to index an expression at all; without it CREATE INDEX on a function call throws
+-- "non-deterministic functions prohibited in index expressions". Because pathEqClause emits
+-- this exact 'TG_LOWER(path) = ?' text for every case-insensitive-filesystem query, the planner
+-- matches it against this index and uses SEARCH instead of a full table SCAN, without requiring
+-- any writer to populate a separate folded column (verified via EXPLAIN QUERY PLAN in
+-- db.test.ts / sql_path.test.ts). CREATE INDEX IF NOT EXISTS is purely additive and safe to run
+-- against an already-populated table on every connection open, unlike an ALTER TABLE column add
+-- -- no MIGRATIONS entry or SCHEMA_VERSION bump is needed for this index.
+CREATE INDEX IF NOT EXISTS idx_files_path_folded ON files(TG_LOWER(path));
 
 CREATE TABLE IF NOT EXISTS symbols (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +75,7 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_file_folded ON symbols(TG_LOWER(file_path));
 
 CREATE TABLE IF NOT EXISTS refs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +87,7 @@ CREATE TABLE IF NOT EXISTS refs (
 );
 CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
+CREATE INDEX IF NOT EXISTS idx_refs_file_folded ON refs(TG_LOWER(file_path));
 
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +98,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   kind TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
+CREATE INDEX IF NOT EXISTS idx_chunks_file_folded ON chunks(TG_LOWER(file_path));
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
@@ -112,19 +128,47 @@ END;
 
 // Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an
 // already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add
-// the matching step to MIGRATIONS below. It represents the schema as it exists today; every
-// database on disk right now (freshly created or from a prior release) is already compatible
-// with version 1, since nothing has structurally changed yet.
-export const SCHEMA_VERSION = 1 as const
+// the matching step to MIGRATIONS below. It represents the schema as it exists today.
+export const SCHEMA_VERSION = 3 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 
 // Keyed by the FROM version: MIGRATIONS[1] upgrades a v1 database to v2, MIGRATIONS[2] upgrades
-// v2 to v3, and so on. Empty today -- there is only one schema version in this codebase's history
-// so far, so there is nothing to migrate from yet. A version with no registered step is a no-op,
-// which also covers a SCHEMA_VERSION bump for a purely additive change already handled by
-// `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
-const MIGRATIONS: Record<number, Migration> = {}
+// v2 to v3, and so on. A version with no registered step is a no-op, which also covers a
+// SCHEMA_VERSION bump for a purely additive change already handled by `CREATE TABLE IF NOT
+// EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
+const MIGRATIONS: Record<number, Migration> = {
+  // v1 -> v2: adds files.embed_sha, tracked separately from files.sha so embedding freshness
+  // can be gated independently of parse freshness (see makeIndexer in worker.ts). A pre-existing
+  // v1 database's `files` table predates the column, so it needs an explicit ALTER TABLE here;
+  // a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the
+  // ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and
+  // rethrow anything else, so a genuine ALTER TABLE failure is never silently lost.
+  1: (conn) => {
+    try {
+      conn.exec('ALTER TABLE files ADD COLUMN embed_sha TEXT')
+    } catch (err) {
+      if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+    }
+  },
+  // v2 -> v3: adds files.retry_count, a durable per-path counter for consecutive
+  // transient-read-failure requeues (see MAX_TRANSIENT_RETRIES / requeueDirtyPath /
+  // resetTransientRetryCount in worker.ts). Previously this counter lived only in an
+  // in-memory Map inside worker.ts, which meant resetTransientRetryCount -- called from
+  // appendDirtyPath (hooks_index.ts) in the short-lived hook CLI process -- could never
+  // actually reach the long-lived detached daemon process's own copy of that Map: they are
+  // different Node processes with no shared memory, so the reset was a silent no-op in the
+  // real deployed topology. Persisting the counter in `files` makes it visible to both
+  // processes via the one thing they do share: the index DB. Same swallow-duplicate-column
+  // pattern as v1 -> v2 above.
+  2: (conn) => {
+    try {
+      conn.exec('ALTER TABLE files ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0')
+    } catch (err) {
+      if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+    }
+  },
+}
 
 // Walks a database from its stamped version up to (but not including) `toVersion`, applying each
 // registered migration step in order. Does not itself touch PRAGMA user_version -- the caller

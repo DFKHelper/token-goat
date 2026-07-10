@@ -3,6 +3,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp
 // file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
@@ -19,7 +20,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
-import { getBashOutputId, recordFileRead } from '../src/session.js'
+import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
@@ -426,6 +427,25 @@ describe('preBashHandler — cat source file recall', () => {
     const event = makeBashEvent('cat /c/Projects/repo/src/main/java/Foo.java')
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
+  })
+
+  it('denies a multi-file cat that a single-file cat would deny (regex previously anchored one path, so `cat a.ts b.ts` slipped through)', () => {
+    // `cat src/a.ts` alone is denied; the single-path regex `$`-anchor rejected a
+    // trailing second path, so `cat src/a.ts src/b.ts` bypassed the deny entirely.
+    const event = makeBashEvent('cat src/a.ts src/b.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      // Both paths are surfaced with a surgical-read suggestion.
+      expect(result.message).toContain('src/a.ts')
+      expect(result.message).toContain('src/b.ts')
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('still passes a piped single-file cat through (multi-file guard must not fire on `cat f | cmd`)', () => {
+    const result = preBashHandler(makeBashEvent('cat src/a.ts | wc -l'))
+    expect(result.hookType).not.toBe('deny')
   })
 
   it('denies cat of a markdown file', () => {
@@ -1114,6 +1134,10 @@ describe('preBashHandler — task output file interception', () => {
       expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
       expect(result.message).toContain('--transcript')
       expect(result.message).toContain('--tail 50')
+      // The recall hint must also advertise the line-range slice read -- the only way to
+      // reach the MIDDLE of a large on-disk artifact (bash-output only does head/tail/grep).
+      expect(result.message).toContain('@START-END')
+      expect(result.message).toContain('token-goat read')
       expect(result.message).not.toContain('already cached')
     }
   })
@@ -1600,6 +1624,144 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
   })
 })
 
+/** Init a git repo with one committed file at `<repo>/a.txt`, returning the repo dir. */
+function initGitRepoForBashTests(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  writeFileSync(join(dir, 'a.txt'), 'one\n')
+  const git = (args: string[]): void => {
+    execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+  }
+  git(['init'])
+  git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+  git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+  return dir
+}
+
+describe('preBashHandler/postBashHandler — scoped git status/diff --stat recall (Bug D regression)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('recalls a cached scoped `git status --porcelain -- <path>` on an identical rerun with no intervening edit', async () => {
+    const dir = initGitRepoForBashTests('tg-gitscope-status-')
+    try {
+      const cmd = 'git status --porcelain -- a.txt'
+      // Padded well above bash_compress.cache_min_bytes (512) — a real scoped status/diff
+      // output is often this small, but the cache write is gated on the size floor same as
+      // every other recall source (gh api, curl, monitoring), so the test must clear it too.
+      const output = (' M a.txt\n').repeat(80)
+
+      // First run: nothing cached yet — the existing git-diff/status compression pipeline
+      // (detectFromCommand -> maybeCompressRewrite) wraps it, which is unrelated to caching.
+      const firstResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(firstResult.hookType).not.toBe('block')
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+
+      // Second, identical run with no intervening edit: recalled instead of re-run.
+      const secondResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(secondResult.hookType).toBe('context')
+      if (secondResult.hookType === 'context') {
+        expect(secondResult.context).toContain('is cached and unchanged')
+        expect(secondResult.context).toContain('token-goat bash-output')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('recalls a cached scoped `git diff --stat HEAD -- <path>` on an identical rerun with no intervening edit', async () => {
+    const dir = initGitRepoForBashTests('tg-gitscope-diffstat-')
+    try {
+      const cmd = 'git diff --stat HEAD -- a.txt'
+      const output = (' a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n').repeat(20)
+
+      const firstResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(firstResult.hookType).not.toBe('block')
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+
+      const secondResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(secondResult.hookType).toBe('context')
+      if (secondResult.hookType === 'context') {
+        expect(secondResult.context).toContain('is cached and unchanged')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not recall a scoped git status once the scoped path is edited (dirty-queue-visible change invalidates the cache)', async () => {
+    const dir = initGitRepoForBashTests('tg-gitscope-invalidate-')
+    try {
+      const cmd = 'git status --porcelain -- a.txt'
+      const output = (' M a.txt\n').repeat(80)
+
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+
+      // Sanity: recall fires before anything changes.
+      const freshResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(freshResult.hookType).toBe('context')
+
+      // Edit the scoped path without staging or committing -- this is exactly what a real
+      // edit-tool write followed by postEditHandler's dirty-queue append looks like from git's
+      // perspective: the file's content changes, HEAD stays put. `git status --porcelain`
+      // reflects it immediately, which is what the fingerprint is keyed on.
+      writeFileSync(join(dir, 'a.txt'), 'two\n')
+
+      const staleResult = preBashHandler(makeBashEvent(cmd, dir))
+      if (staleResult.hookType === 'context') {
+        expect(staleResult.context).not.toContain('is cached and unchanged')
+      } else {
+        expect(staleResult.hookType).not.toBe('block')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not recall a scoped git diff --stat once HEAD changes (a commit lands between runs)', async () => {
+    const dir = initGitRepoForBashTests('tg-gitscope-head-')
+    try {
+      const cmd = 'git diff --stat -- a.txt'
+      const output = (' a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n').repeat(20)
+
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      const freshResult = preBashHandler(makeBashEvent(cmd, dir))
+      expect(freshResult.hookType).toBe('context')
+
+      writeFileSync(join(dir, 'b.txt'), 'new\n')
+      execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'add', '.'], { cwd: dir, stdio: 'ignore' })
+      execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'second'], { cwd: dir, stdio: 'ignore' })
+
+      const staleResult = preBashHandler(makeBashEvent(cmd, dir))
+      if (staleResult.hookType === 'context') {
+        expect(staleResult.context).not.toContain('is cached and unchanged')
+      } else {
+        expect(staleResult.hookType).not.toBe('block')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not cache/recall an unscoped `git status` (no `-- <path>`) via the scoped-git recall path', async () => {
+    const dir = initGitRepoForBashTests('tg-gitscope-unscoped-')
+    try {
+      const cmd = 'git status'
+      const output = 'nothing to commit, working tree clean\n'.repeat(20)
+
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      // The generic git compression pipeline may still rewrite this (unrelated to caching);
+      // what matters is that the scoped-git recall hint specifically never fires for it.
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('is cached and unchanged')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('extractCurlDownload', () => {
   it('extracts url and output path from curl -o', () => {
     const result = extractCurlDownload('curl https://example.com/file.json -o /tmp/file.json')
@@ -1675,6 +1837,27 @@ describe('preBashHandler — curl download dedup', () => {
       await postBashHandler(makePostBashEvent(cmd, ''))
       const result = preBashHandler(makeBashEvent(cmd))
       expect(result.hookType).toBe('deny')
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
+  })
+
+  it('does not deny a re-download once the previously saved file is gone, and clears the stale session record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-curl-gone-'))
+    const outPath = join(dir, 'artifact.json')
+    try {
+      const url = 'https://example.com/artifact.json'
+      const cmd = `curl ${url} -o ${outPath}`
+      writeFileSync(outPath, '{"v":1}')
+      await postBashHandler(makePostBashEvent(cmd, ''))
+      expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('deny')
+
+      rmSync(outPath, { force: true })
+
+      const afterDelete = preBashHandler(makeBashEvent(cmd))
+      expect(afterDelete.hookType).not.toBe('deny')
+
+      expect(getCurlDownloadPath(url)).toBeNull()
     } finally {
       try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
     }

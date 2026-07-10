@@ -23,11 +23,11 @@ if [[ "$GIT_ROOT" =~ ^[A-Za-z]:/ ]]; then
 fi
 WSL_ROOT="$(echo "$GIT_ROOT" | sed 's|^/\([a-zA-Z]\)/|/mnt/\1/|')"
 
+# TOKEN_GOAT_NO_WORKER_SPAWN / TOKEN_GOAT_HARNESS_OVERRIDE / TOKEN_GOAT_MEMORY_PRESSURE_MB
+# are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push
+# and CI run under the same defaults. Don't re-export them here.
 wsl.exe -d Ubuntu -- bash -l -c "
   set -euo pipefail
   cd '$WSL_ROOT'
-  export TOKEN_GOAT_NO_WORKER_SPAWN=1
-  export TOKEN_GOAT_HARNESS_OVERRIDE=claudecode
-  export TOKEN_GOAT_MEMORY_PRESSURE_MB=99999
   npm test
 "

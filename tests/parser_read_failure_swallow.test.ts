@@ -224,4 +224,42 @@ describe('cmdIndex per-file failure handling (regression)', () => {
     expect(stderrChunks.join('')).toContain('EBUSY')
     expect(stdoutChunks.join('')).toMatch(/failed to index 1 file/i)
   })
+
+  // Regression: cmdIndex's per-file loop counted failures but never set process.exitCode, so a
+  // run where every single file failed (indexed: 0, failed: N -- a completely broken index)
+  // still exited 0. Any script gating on `$?` after `token-goat index` had no way to detect a
+  // total failure. Forces the only file in the walk to throw on read and asserts a nonzero exit
+  // code is set; the control test below confirms a normal successful run still exits 0.
+  it('sets a nonzero exit code when every file in the walk fails to index', async () => {
+    const bad = path.join(TMP, 'bad.ts')
+    fs.writeFileSync(bad, 'export function neverIndexedSymbol(): number {\n  return 2\n}\n')
+
+    mockState.target = resolveIndexPath(bad)
+    mockState.errorCode = 'EBUSY'
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const previousExitCode = process.exitCode
+    process.exitCode = undefined
+    try {
+      await cmdIndex(TMP, { walk: true, dbPath })
+      expect(process.exitCode).toBeTruthy()
+    } finally {
+      process.exitCode = previousExitCode
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it('control: a normal successful index run still exits 0', async () => {
+    const good = path.join(TMP, 'good.ts')
+    fs.writeFileSync(good, 'export function knownGoodSymbol(): number {\n  return 1\n}\n')
+
+    const previousExitCode = process.exitCode
+    process.exitCode = undefined
+    try {
+      await cmdIndex(TMP, { walk: true, dbPath })
+      expect(process.exitCode).toBeFalsy()
+    } finally {
+      process.exitCode = previousExitCode
+    }
+  })
 })

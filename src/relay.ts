@@ -148,10 +148,36 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
       ? (rawInput as Record<string, unknown>)
       : {}
 
-  const rawSession = obj['session_id']
+  // Prefer snake_case `session_id` (Claude Code wire format); fall back to
+  // camelCase `sessionId` for harnesses that emit camelCase payloads (e.g. Grok,
+  // which inherits claudecode's 7-event hook wiring but sends `sessionId`). Without
+  // this, non-tool events (stop/pre_compact/notification/...) load and save session
+  // state under an empty string.
+  const rawSession = obj['session_id'] ?? obj['sessionId']
   const sessionId = typeof rawSession === 'string' ? rawSession : ''
 
-  return { eventName, toolName, toolInput, sessionId, raw: obj }
+  // agent_id (Claude Code's subagent-invocation id) is present only when this hook
+  // fired inside a subagent call; undefined on the main thread. camelCase fallback
+  // mirrors sessionId's harness-tolerance above.
+  const rawAgentId = obj['agent_id'] ?? obj['agentId']
+  const agentId = typeof rawAgentId === 'string' && rawAgentId !== '' ? rawAgentId : undefined
+
+  return { eventName, toolName, toolInput, sessionId, agentId, raw: obj }
+}
+
+/**
+ * The key used to load/save persisted session state (see {@link file://./session_store.ts}).
+ *
+ * All subagents spawned by one parent share the parent's `session_id` on the Claude
+ * Code wire, so persisting keyed on `sessionId` alone conflates every subagent's reads
+ * with its siblings' and the parent's -- a subagent's genuinely-first read of a file
+ * gets denied as "already read" because a *different* subagent read it earlier. Salting
+ * the key with `agentId` (present only inside a subagent call) gives each subagent its
+ * own independent re-read dedup ledger while leaving the main thread (no agentId)
+ * keyed on `sessionId` alone, unchanged from before this existed.
+ */
+function sessionStateKey(event: HookEvent): string {
+  return event.agentId !== undefined ? `${event.sessionId}:agent:${event.agentId}` : event.sessionId
 }
 
 /**
@@ -214,14 +240,15 @@ export async function relay(eventName: string): Promise<void> {
         : rawPayload
     const event = buildEvent(eventName, payload)
     // Load persisted session state before handlers run; save the mutated state after. Each is isolated in its own try/catch so a persistence failure can never suppress the handler's real output (the cardinal rule above).
+    const stateKey = sessionStateKey(event)
     try {
-      loadSessionState(event.sessionId)
+      loadSessionState(stateKey)
     } catch {
       // fail-soft: a load failure just means a cold session
     }
     const output = await runHook(event)
     try {
-      saveSessionState(event.sessionId)
+      saveSessionState(stateKey)
     } catch {
       // fail-soft: a save failure must not block the tool call
     }

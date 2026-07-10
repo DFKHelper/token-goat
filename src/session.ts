@@ -354,6 +354,11 @@ export function getCurlDownloadPath(url: string): string | null {
   return _curlDownloads.get(url) ?? null
 }
 
+/** Forget a recorded curl -o download for `url` (e.g. its saved file is gone). */
+export function clearCurlDownload(url: string): void {
+  _curlDownloads.delete(url)
+}
+
 /** Cap on retained line ranges per file - bounds memory if one file is paged many times. */
 export const MAX_RANGES_PER_FILE = 64
 

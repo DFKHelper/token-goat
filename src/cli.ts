@@ -24,6 +24,8 @@ import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
+import { fingerprintFile } from './fingerprint.js'
+import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
 import { appendDirtyPath } from './hooks_index.js'
@@ -207,6 +209,7 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
   const blockedRoots = loadConfig().worker.blocked_roots
   let indexed = 0
   let failed = 0
+  let skipped = 0
   for (const f of files) {
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
@@ -214,31 +217,59 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
-    try {
-      indexFileSync(key, dbPath)
-    } catch (e) {
-      // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all
-      // common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only
-      // fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and
-      // rethrows everything else so callers can report it -- worker.ts's makeIndexer already
-      // catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop
-      // had no try/catch at all, so the same rethrow aborted the whole command uncaught.
-      failed += 1
-      err(`token-goat: index: failed to index '${key}': ${extractErrorMessage(e)}`)
+
+    // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
+    // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
+    // for every tracked file on every invocation, even ones byte-identical to what was already
+    // indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not
+    // unchanged" so the file still gets a normal reindex attempt below. Parse and embed
+    // freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file
+    // whose embedding previously failed still gets re-embedded even when its parse is current.
+    const sha = fingerprintFile(key)
+    const entry = sha !== null ? getFileEntry(key, dbPath) : null
+    const parseUnchanged = sha !== null && entry?.sha === sha
+    const embedUnchanged = parseUnchanged && entry?.embedSha === sha
+    if (parseUnchanged && embedUnchanged) {
+      skipped += 1
       continue
     }
-    // Best-effort semantic-embeddings step for the same file, run right after its syntactic
-    // parse; awaited here because this is a one-shot foreground command the caller waits on,
-    // unlike the worker's incremental drain which fires this and forgets it.
-    await indexFileEmbeddings(key, dbPath)
+
+    if (!parseUnchanged) {
+      try {
+        indexFileSync(key, dbPath)
+      } catch (e) {
+        // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all
+        // common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only
+        // fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and
+        // rethrows everything else so callers can report it -- worker.ts's makeIndexer already
+        // catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop
+        // had no try/catch at all, so the same rethrow aborted the whole command uncaught.
+        failed += 1
+        err(`token-goat: index: failed to index '${key}': ${extractErrorMessage(e)}`)
+        continue
+      }
+    }
+    if (!embedUnchanged) {
+      // Best-effort semantic-embeddings step for the same file, run right after its syntactic
+      // parse; awaited here because this is a one-shot foreground command the caller waits on,
+      // unlike the worker's incremental drain which fires this and forgets it. Passing sha lets
+      // it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
+      await indexFileEmbeddings(key, dbPath, sha ?? undefined)
+    }
     indexed += 1
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
   out(
     `Indexed ${indexed} files into the symbol index.` +
+      `${skipped > 0 ? ` Skipped ${skipped} unchanged file(s).` : ''}` +
       `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
       `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
   )
+  // A run where every file failed and none indexed is a total indexing failure, not a
+  // no-op success -- callers scripting on `$?` must be able to detect it.
+  if (indexed === 0 && failed > 0) {
+    process.exitCode = 1
+  }
 }
 
 function cmdMap(opts: { compact?: boolean }): void {

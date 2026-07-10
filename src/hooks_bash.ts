@@ -10,11 +10,11 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
-import { storeBashOutput, getBashOutput, isBashEntryStale } from './bash_output_cache.js'
+import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
@@ -163,12 +163,14 @@ function extractCatSourceFile(cmd: string): string | null {
 }
 
 /** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, config, or sql file. Returns null for multi-file cat, piped cat, etc. */
-export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
-  const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i.exec(cmd)
-  if (!m) return null
-  const cmd0 = m[1]!
-  const filePath = m[2] ?? m[3] ?? m[4]
-  if (filePath === undefined) return null
+// Classify a single candidate `cat`/`bat`/`type`/`Get-Content` path: returns the
+// per-path flags used by the deny/hint logic, or null if the path is a temp scratch
+// file or lacks a known source/doc/config extension. Shared by the single-path
+// extractCatFile and the multi-path extractCatFilesMulti so both apply identical rules.
+function classifyCatPath(
+  filePath: string,
+  cmd0: string,
+): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
@@ -179,6 +181,41 @@ export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean;
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
   return { filePath, isDoc, isEnv, isConfig, isSql, cmd0 }
+}
+
+export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
+  const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i.exec(cmd)
+  if (!m) return null
+  const cmd0 = m[1]!
+  const filePath = m[2] ?? m[3] ?? m[4]
+  if (filePath === undefined) return null
+  return classifyCatPath(filePath, cmd0)
+}
+
+// Multi-file variant: `cat a.ts b.ts` (2+ path args) slips past the single-path
+// extractCatFile (its `$` anchor rejects a trailing second path), so a multi-file cat
+// used to bypass the deny entirely. Tokenizes every path argument and returns the
+// qualifying ones so the same per-path deny/hint fires. Returns null unless the command
+// is a bare cat/bat/type/Get-Content with 2+ arguments and at least one qualifying path.
+export function extractCatFilesMulti(
+  cmd: string,
+): Array<{ filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string }> | null {
+  // Only a bare `cat a b c`: bail on any pipe/redirect/chain/substitution so a piped
+  // single read (`cat -n f | jq`, `cat f | grep`) still passes through untouched, the
+  // same way the `$`-anchored single-path extractCatFile never matched those.
+  if (/[|<>;&`]/.test(cmd) || cmd.includes('$(')) return null
+  const m = /^(cat|bat|type|Get-Content|gc)\s+(.+?)\s*$/i.exec(cmd)
+  if (!m) return null
+  const cmd0 = m[1]!
+  const tokens = m[2]!.match(/"[^"]+"|'[^']+'|\S+/g) ?? []
+  const paths = tokens.filter((t) => !/^-/.test(t)).map((t) => t.replace(/^["']|["']$/g, ''))
+  if (paths.length < 2) return null
+  const out = paths.map((p) => classifyCatPath(p, cmd0)).filter((r): r is NonNullable<typeof r> => r !== null)
+  // Require 2+ qualifying source paths: a single path with flag VALUES (e.g.
+  // `Get-Content -Tail 50 src/auth.ts`, where `50` is the -Tail argument) is a
+  // flagged single-file read that the tail/head/single-cat handlers own -- firing
+  // here would preempt them with a hard deny.
+  return out.length >= 2 ? out : null
 }
 
 const POWERSHELL_WRAP_RE = /^(?:powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z]+(?:\s+\S+)?)*\s+(?:-Command|-c|-EncodedCommand)\s+(?:"([^"]*)"|'([^']*)')\s*$/i
@@ -1187,7 +1224,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const tail = n ?? 50
     return denyOutput(
-      'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, instead of reading the whole file.',
+      'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
     )
   }
 
@@ -1283,6 +1320,26 @@ export function preBashHandler(event: HookEvent): HookOutput {
           ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
     return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
+  }
+
+  const catMulti = extractCatFilesMulti(cmd)
+  if (catMulti !== null) {
+    recordStat('session_hint', 0, 0)
+    const cmd0 = catMulti[0]!.cmd0
+    const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql }) => {
+      const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
+      const how = isSql
+        ? 'token-goat section "' + hintPath + '::table_name"'
+        : isEnv || isConfig
+          ? 'token-goat config-get "' + hintPath + '" KEY_NAME'
+          : isDoc
+            ? 'token-goat section "' + hintPath + '::SectionHeading"'
+            : 'token-goat read "' + hintPath + '::SymbolName"'
+      return '  ' + hintPath + ' -> `' + how + '`'
+    })
+    const msg =
+      '`' + cmd0 + '` on multiple files loads them all into context. Read each surgically instead:\n' + perPath.join('\n')
+    return cdStripped ? contextOutput(msg) : denyOutput(msg)
   }
 
   const psGetContentResult = extractPowerShellWrappedGetContent(cmd)
@@ -1470,7 +1527,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const curlDl = extractCurlDownload(cmd)
   if (curlDl !== null) {
     const prevPath = getCurlDownloadPath(curlDl.url)
-    if (prevPath !== null) {
+    if (prevPath !== null && !existsSync(resolveIndexPath(prevPath, preHookCwd ?? process.cwd()))) {
+      // The previously downloaded file is gone (deleted/moved since). Forget the
+      // stale session record and let the re-download proceed instead of denying.
+      clearCurlDownload(curlDl.url)
+    } else if (prevPath !== null) {
       recordStat('session_hint', 0, 0)
       return denyOutput(
         'Already downloaded to ' + prevPath + ' earlier this session. ' +
@@ -1514,6 +1575,30 @@ export function preBashHandler(event: HookEvent): HookOutput {
         'gh api response cached (`' + ghPreview + '`).' + pipelineDivergenceNote(cmd, ghEntry.command) + ' ' +
         'Use `token-goat bash-output ' + ghOutputId + '` to recall it. ' +
         "Append `--jq '.field'` on the original call, or `--grep PATTERN` / `--max-matches N` here, to narrow it.",
+      )
+    }
+  }
+
+  // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or
+  // `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the
+  // working tree changes. The `gitMutable` fingerprint already attached in
+  // computeBashFingerprints (HEAD sha + `git status --porcelain` hash) invalidates the
+  // instant either happens — including an edit to the scoped path recorded through the
+  // normal postEditHandler/dirty-queue flow, since that edit shows up in `git status
+  // --porcelain` regardless of whether the reindex queue has drained yet — so this reuses
+  // the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
+  if (isScopedGitStatusOrDiffStatCommand(cmd)) {
+    const gitScopedHash = shortFingerprint(stripOutputPipeline(cmd))
+    const gitScopedOutputId = getBashOutputId(gitScopedHash)
+    const gitScopedEntryRaw = gitScopedOutputId !== null ? getBashOutput(gitScopedOutputId) : null
+    const gitScopedEntry = gitScopedEntryRaw !== null && !isBashEntryStale(gitScopedEntryRaw, cmd, preHookCwd) ? gitScopedEntryRaw : null
+    if (gitScopedOutputId !== null && gitScopedEntry !== null) {
+      const gitScopedBytes = gitScopedEntry.sizeBytes
+      recordStat('bash_compress:recall', gitScopedBytes, Math.round(gitScopedBytes / 4))
+      const gitScopedPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      return contextOutput(
+        'Output from `' + gitScopedPreview + '`' + pipelineDivergenceNote(cmd, gitScopedEntry.command) + ' is cached and unchanged (no edits to that path or HEAD since). ' +
+        'Use `token-goat bash-output ' + gitScopedOutputId + '` to recall it instead of re-running.',
       )
     }
   }
@@ -1708,6 +1793,17 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       recordStat('session_hint', 0, 0)
       return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
+    }
+
+    // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical
+    // call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above).
+    // Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is
+    // enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints
+    // (HEAD sha + `git status --porcelain` hash), not a separate mechanism.
+    if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+      const gitScopedCacheHash = shortFingerprint(stripOutputPipeline(cmd))
+      const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+      recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.

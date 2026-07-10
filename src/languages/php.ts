@@ -6,7 +6,13 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import { stripBlockCommentSpan, stripLineComment, stripStringLiterals } from './common.js'
+import {
+  stripBlockCommentSpan,
+  stripLineComment,
+  stripMultilineStringSpan,
+  stripStringLiterals,
+  type MultilineStringState,
+} from './common.js'
 
 export interface PhpImport {
   readonly kind: string
@@ -62,6 +68,7 @@ export function extractPhp(
   const contextStack: Array<[string, number, boolean]> = []
   let braceDepth = 0
   let inComment = false
+  let mlState: MultilineStringState | null = null
 
   function currentClass(): string | null {
     return contextStack.length > 0 ? (contextStack[contextStack.length - 1]?.[0] ?? null) : null
@@ -71,8 +78,19 @@ export function extractPhp(
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
+    // Mask multi-line PHP heredoc/nowdoc string spans first, state carried across lines, so
+    // braces inside one of those can never desync braceDepth. Skipped on lines that start
+    // already inside a block comment (mlState null) to avoid misreading comment prose that
+    // happens to contain opener-shaped text.
+    let mlLine = rawLine
+    if (mlState !== null || !inComment) {
+      const masked = stripMultilineStringSpan(rawLine, mlState, 'php')
+      mlLine = masked.code
+      mlState = masked.state
+    }
+
     // Strip /* */ block-comment spans (state carried across lines via inComment) and keep the residual code, so a brace or declaration sharing a line with a comment is still counted and parsed - the old line-granular skip dropped them. A `/*` inside an open quote (e.g. glob('src/*.php')) is not treated as a comment opener.
-    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
     const line = codeLine.trimEnd()
     const stripped = line.trimStart()

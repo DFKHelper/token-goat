@@ -839,12 +839,30 @@ function _renderHeader(stats: StatsData): string[] {
   return [line]
 }
 
+// Short-mode hint
+
+function _renderShortHint(): string[] {
+  return [
+    '',
+    `${_M}${fg(...C.TEXT_MUTED)}Run 'token-goat stats --full' for the full breakdown (by source, by command, by day).${RESET}`,
+  ]
+}
+
 // Main export
 
 /**
  * Render a complete token-goat stats report to a string ready for print().
+ *
+ * Pass ``{ short: true }`` to render only the header and KPI section (totals,
+ * bars, sparklines) plus a hint pointing at ``--full`` -- used by the bare
+ * ``token-goat stats`` default on a TTY.
  */
-export function renderStats(stats: StatsData): string {
+export function renderStats(stats: StatsData, opts?: { short?: boolean }): string {
+  if (opts?.short) {
+    const sections = [_renderHeader(stats), _renderKpiSection(stats), _renderShortHint(), ['']]
+    return sections.flatMap((s) => s).join('\n')
+  }
+
   const sections = [
     _renderHeader(stats),
     _renderKpiSection(stats),

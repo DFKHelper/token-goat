@@ -1593,6 +1593,16 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     }
   })
 
+  it('denies (does not pass) a large first read of tasks/*.output instead of dumping it unsized (regression: 57,920-byte first read previously went through as a bare advisory hint)', () => {
+    const p = makeTasksOutputFile('x'.repeat(25 * 1024)) // above TASK_OUTPUT_DENY_BYTES (20KB)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
+      expect(result.message).toContain('--tail 50')
+    }
+  })
+
   it('denies re-read of tasks/*.output when content unchanged since last read', () => {
     const content = 'task output data\nline two\n'
     const p = makeTasksOutputFile(content)
