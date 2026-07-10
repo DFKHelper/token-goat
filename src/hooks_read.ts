@@ -609,7 +609,16 @@ export function preReadHandler(event: HookEvent): HookOutput {
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
-        const tooLargeForFirstRead = markdownSize !== null && markdownSize >= largeFileDenyBytes()
+        // A genuine, bounded offset/limit request gates on the requested slice's size
+        // instead of the whole file's, same as the generic large-file gate and the
+        // file-type dispatcher further below — a small window into a huge markdown file
+        // should be let through rather than hard-denied.
+        const slice = estimateRequestedSlice(event, normalized)
+        const gateSize =
+          slice.kind === 'bytes' && markdownSize !== null
+            ? Math.min(slice.bytes, markdownSize)
+            : markdownSize
+        const tooLargeForFirstRead = gateSize !== null && gateSize >= largeFileDenyBytes()
         if (alreadyRead || tooLargeForFirstRead) {
           // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not
           // alreadyRead) never actually happened, so don't record it against re-read dedup --

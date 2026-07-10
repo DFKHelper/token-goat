@@ -213,20 +213,23 @@ function harnessForNormalization(): Harness {
 }
 
 /**
- * Run the hook for `eventName` and write the wire JSON response to stdout.
+ * Run the hook for `eventName` against an already-parsed payload and return the
+ * serialized wire JSON response as a string (never writes to stdout/stdin).
  *
- * Reads and parses stdin, builds the event, dispatches it through the registry,
- * and prints the serialized output. On *any* error — invalid event name,
- * stdin failure, handler throw — it writes `{}` so the tool call proceeds
- * unchanged. This function never throws.
+ * This is the in-process counterpart of {@link relay}: it contains every step
+ * relay() performs after reading stdin, factored out so bridges that already
+ * run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn
+ * their own shim process (Codex, Claude Code, Copilot CLI) can call straight
+ * into the hook registry via `import()` instead of `spawnSync`-ing a second
+ * `token-goat hook <event>` process. On *any* error — invalid event name,
+ * malformed payload, handler throw — it resolves to `'{}'` so the caller's
+ * tool call proceeds unchanged. This function never throws and never rejects.
  */
-export async function relay(eventName: string): Promise<void> {
+export async function relayInProcess(eventName: string, rawPayload: unknown): Promise<string> {
   try {
     if (!isHookEventName(eventName)) {
-      process.stdout.write('{}')
-      return
+      return '{}'
     }
-    const rawPayload = await readStdinJson()
     // Codex and Gemini send harness-native
     // tool names (e.g. `bash`, `read_file`) that never match the canonical names
     // (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }).
@@ -263,7 +266,29 @@ export async function relay(eventName: string): Promise<void> {
     } catch {
       // fail-soft: a save failure must not block the tool call
     }
-    process.stdout.write(serializeOutput(output, event.eventName))
+    return serializeOutput(output, event.eventName)
+  } catch {
+    // Pass-through on every failure path — a hook must never block the caller's tool call.
+    return '{}'
+  }
+}
+
+/**
+ * Run the hook for `eventName` and write the wire JSON response to stdout.
+ *
+ * Reads stdin, then delegates to {@link relayInProcess} for everything else,
+ * and prints its result. On *any* error — including a stdin read failure —
+ * it writes `{}` so the tool call proceeds unchanged. This function never
+ * throws.
+ */
+export async function relay(eventName: string): Promise<void> {
+  try {
+    if (!isHookEventName(eventName)) {
+      process.stdout.write('{}')
+      return
+    }
+    const rawPayload = await readStdinJson()
+    process.stdout.write(await relayInProcess(eventName, rawPayload))
   } catch {
     // Pass-through on every failure path — a hook must never block Claude Code.
     process.stdout.write('{}')

@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const ROOT = path.join(HERE, '..', '..')
 export const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+// The in-process hook library bundle (src/hook_lib.ts) -- a sibling of BUNDLE with zero
+// load-time side effects, exporting relayInProcess() for bridges to import() directly
+// instead of spawnSync-ing a second `token-goat hook <event>` process. See esbuild.config.mjs.
+export const HOOK_BUNDLE = path.join(ROOT, 'dist', 'token-goat-hook.mjs')
 
 export interface RunResult {
   readonly status: number | null
