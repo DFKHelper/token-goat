@@ -15,6 +15,11 @@ import { Command } from 'commander'
 import * as fs from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
+// Type-only imports: erased at compile time, so referencing them here does not
+// eagerly load mcp_server.js (and transitively @modelcontextprotocol/sdk) at CLI
+// startup. The runtime values are lazy-imported only inside cmdMcpServe.
+import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
+import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { formatLocalTimestamp } from './stats.js'
@@ -46,8 +51,6 @@ import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
-import { createMcpServer } from './mcp_server.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -299,6 +302,18 @@ function cmdMap(opts: { compact?: boolean }): void {
 // `connect()` itself does to the transport's own `onclose`) -- resolving early here would let
 // `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
 async function cmdMcpServe(): Promise<void> {
+  let createMcpServer: typeof CreateMcpServerFn
+  let StdioServerTransport: typeof StdioServerTransportClass
+  try {
+    ;({ createMcpServer } = await import('./mcp_server.js'))
+    ;({ StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js'))
+  } catch (err) {
+    process.stderr.write(
+      `token-goat: mcp-server unavailable (install @modelcontextprotocol/sdk to use this feature): ${String(err)}\n`,
+    )
+    process.exitCode = 1
+    return
+  }
   const server = createMcpServer()
   const transport = new StdioServerTransport()
   await server.connect(transport)
