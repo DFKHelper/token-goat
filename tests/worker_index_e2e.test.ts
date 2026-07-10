@@ -43,7 +43,13 @@ let dataBase: string
 
 /** Redirect the data dir into a temp base so the e2e never touches the real index. */
 function tgEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase }
+  return {
+    ...process.env,
+    HOME: dataBase,
+    USERPROFILE: dataBase,
+    LOCALAPPDATA: dataBase,
+    XDG_DATA_HOME: dataBase,
+  }
 }
 
 function runBundle(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -270,7 +276,13 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
   let relData: string
 
   function relEnv(): NodeJS.ProcessEnv {
-    return { ...process.env, LOCALAPPDATA: relData, XDG_DATA_HOME: relData }
+    return {
+      ...process.env,
+      HOME: relData,
+      USERPROFILE: relData,
+      LOCALAPPDATA: relData,
+      XDG_DATA_HOME: relData,
+    }
   }
 
   function runRel(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -355,7 +367,13 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
   function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
       cwd: cmdRepo,
-      env: { ...process.env, LOCALAPPDATA: cmdData, XDG_DATA_HOME: cmdData },
+      env: {
+        ...process.env,
+        HOME: cmdData,
+        USERPROFILE: cmdData,
+        LOCALAPPDATA: cmdData,
+        XDG_DATA_HOME: cmdData,
+      },
       encoding: 'utf8',
     })
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
