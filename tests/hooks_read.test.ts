@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
-import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
+import { preReadHandler, postReadHandler, buildLineDiff } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
@@ -839,6 +839,36 @@ Some content that makes the file large enough`
       expect(result.message).toContain('Installation')
       expect(result.message).toContain('Usage')
       expect(result.message).toContain('API')
+    }
+  })
+
+  it('filters well-known sections down to headings that actually exist in the file (regression: dead-end hints)', () => {
+    // WELL_KNOWN_SECTIONS['README.md'] hardcodes ['Install', 'Usage', 'API', 'Configuration',
+    // 'Getting Started'], but this README only has 'Installation' (not an exact match for
+    // 'Install') and 'License' (not in the hardcoded list at all). None of the hardcoded
+    // sections should be suggested as `token-goat section` commands.
+    const readmeContent = `# My Project
+## Installation
+## License`
+
+    const p = path.join(os.tmpdir(), 'README.md')
+    fs.writeFileSync(p, readmeContent + 'x'.repeat(10000))
+    tmpFiles.push(p)
+
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      // The heading tree itself still lists the real headings.
+      expect(result.message).toContain('Installation')
+      expect(result.message).toContain('License')
+      // None of the hardcoded, nonexistent well-known sections should appear as a
+      // `token-goat section` suggestion.
+      expect(result.message).not.toContain('::Install"')
+      expect(result.message).not.toContain('::Usage"')
+      expect(result.message).not.toContain('::API"')
+      expect(result.message).not.toContain('::Configuration"')
+      expect(result.message).not.toContain('::Getting Started"')
     }
   })
 
@@ -1771,5 +1801,48 @@ describe('preReadHandler - skill stale compact advisory', () => {
     const result = preReadHandler(readEvent(skillMd))
     const text = result.hookType === 'context' ? result.context : ''
     expect(text).not.toContain('skill-compact advskill')
+  })
+})
+
+describe('buildLineDiff', () => {
+  it('hunk header counts match the untruncated body exactly (control)', () => {
+    const oldContent = 'a\nb\nc\n'
+    const newContent = 'a\nX\nY\nc\n'
+    const diff = buildLineDiff(oldContent, newContent, 'f.ts')
+    const header = diff.split('\n').find((l) => l.startsWith('@@'))
+    expect(header).toBe('@@ -2,1 +2,2 @@')
+    const removedShown = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---')).length
+    const addedShown = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length
+    expect(removedShown).toBe(1)
+    expect(addedShown).toBe(2)
+  })
+
+  it('hunk header counts reflect the truncated body, not the pre-truncation totals (regression: header overstated line counts on large diffs)', () => {
+    // 40 removed lines + 40 added lines = 80 changed lines, well over MAX_LINES (50), so
+    // the body truncates. Before the fix, the header still claimed the full pre-truncation
+    // counts (-x,40 +x,40) while the body itself only ever shows 50 lines total.
+    const oldLines = Array.from({ length: 40 }, (_, i) => `old${i}`)
+    const newLines = Array.from({ length: 40 }, (_, i) => `new${i}`)
+    const oldContent = oldLines.join('\n')
+    const newContent = newLines.join('\n')
+    const diff = buildLineDiff(oldContent, newContent, 'big.ts')
+    const header = diff.split('\n').find((l) => l.startsWith('@@'))
+    expect(header).toBeDefined()
+    const match = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/.exec(header ?? '')
+    expect(match).not.toBeNull()
+    const headerOldCount = Number(match?.[2])
+    const headerNewCount = Number(match?.[4])
+
+    const removedShown = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---')).length
+    const addedShown = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++') && !l.startsWith('... (')).length
+
+    // The header must describe exactly what the body shows, and the body is capped at 50
+    // total changed lines (all 40 removed + only 10 of the 40 added, since removed lines
+    // are emitted first).
+    expect(headerOldCount).toBe(removedShown)
+    expect(headerNewCount).toBe(addedShown)
+    expect(headerOldCount).toBe(40)
+    expect(headerNewCount).toBe(10)
+    expect(diff).toContain('more changed lines')
   })
 })

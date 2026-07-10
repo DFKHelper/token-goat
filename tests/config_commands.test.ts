@@ -9,9 +9,11 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { spawn } from 'node:child_process'
 import type * as WebfetchModule from '../src/webfetch.js'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BUNDLE } from './helpers/bundle.js'
 
 const performHttpFetchMock = vi.hoisted(() => vi.fn())
 
@@ -203,6 +205,59 @@ describe('cmdConfig set', () => {
     invalidateConfigCache()
     const cfg = loadConfig()
     expect(cfg.compact_assist.min_events).toBe(def.compact_assist.min_events)
+  })
+})
+
+// ── config set concurrent read-modify-write safety (Fix 6) ──────────────────
+//
+// cmdConfig's in-process tests above can't exercise the actual race: within one
+// Node process, two synchronous cmdConfig() calls never interleave, so the load
+// -> mutate -> save section always completes atomically regardless of locking.
+// The race only exists across real OS processes racing on the same config.toml,
+// so this spawns two real `token-goat config set` child processes against the
+// built bundle, each setting a *different* key, kicked off back-to-back (no
+// await between the two spawns) so their read-modify-write windows can overlap.
+// Before the fix, the loser's write is silently dropped; after the fix, both
+// keys survive.
+describe('config set concurrent writes (regression: unlocked read-modify-write can drop a key)', () => {
+  it('both keys survive when two `config set` calls race on different keys', async () => {
+    // configPath() resolves off LOCALAPPDATA (Windows) / XDG_DATA_HOME (Linux/macOS) via
+    // DATA_DIR, not TOKEN_GOAT_HOME — see src/constants.ts's defaultDataDir(). Isolate both
+    // so this spawns against a fresh config.toml instead of the developer's real one.
+    const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfg-race-'))
+    const env = { ...process.env, LOCALAPPDATA: tmpDataDir, XDG_DATA_HOME: tmpDataDir }
+    const configFile = process.platform === 'win32'
+      ? path.join(tmpDataDir, 'dfk-helper', 'token-goat', 'config.toml')
+      : path.join(tmpDataDir, 'token-goat', 'config.toml')
+
+    const spawnOne = (key: string, value: string, extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [BUNDLE, 'config', 'set', key, value], { env: { ...env, ...extraEnv } })
+        let stderr = ''
+        child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+        child.on('error', reject)
+        child.on('close', (code) => resolve({ code, stderr }))
+      })
+
+    // Relying on bare `spawn` timing to make two full Node cold-starts collide inside the
+    // narrow synchronous load->save window is not reliable (observed 0/5 collisions in
+    // practice -- one process's whole set finishes before the other even starts reading).
+    // TOKEN_GOAT_TEST_RMW_DELAY_MS is a test-only seam in config_commands.ts's applySet that
+    // widens the slow process's load->save window so the fast process is guaranteed to run
+    // its own full load+mutate+save inside it, deterministically forcing the collision this
+    // test exists to catch instead of hoping for one.
+    const slow = spawnOne('compact_assist.enabled', 'false', { TOKEN_GOAT_TEST_RMW_DELAY_MS: '500' })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const fast = spawnOne('bash_compress.enabled', 'false')
+    const [r1, r2] = await Promise.all([slow, fast])
+
+    expect(r1.code, r1.stderr).toBe(0)
+    expect(r2.code, r2.stderr).toBe(0)
+
+    const raw = fs.readFileSync(configFile, 'utf8')
+    // Both writers' keys must be present -- neither should have clobbered the other.
+    expect(raw).toMatch(/compact_assist[\s\S]*enabled\s*=\s*false/)
+    expect(raw).toMatch(/bash_compress[\s\S]*enabled\s*=\s*false/)
   })
 })
 

@@ -204,6 +204,18 @@ describe('preReadImageHandler', () => {
     expect(out.context).toContain('data:image/')
     expect(out.context).toContain('smaller')
   })
+
+  it('passes a large image through unshrunk when image_shrink.enabled is false (regression: no way to opt out of shrinking)', async () => {
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nenabled = false\n', 'utf8')
+    invalidateConfigCache()
+    try {
+      const out = await preReadImageHandler(makeEvent(largePngPath))
+      expect(out.hookType).toBe('pass')
+    } finally {
+      fs.writeFileSync(_testConfigPath, '', 'utf8')
+      invalidateConfigCache()
+    }
+  })
 })
 
 describe('composed pre_tool_use dispatch (real runHook)', () => {

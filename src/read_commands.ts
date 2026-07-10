@@ -20,6 +20,7 @@ import { readSection, listSections, extractSection, listAllSections, findContain
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
+import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { resolveCallers } from './graph_commands.js'
@@ -159,7 +160,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    const payload = capped.truncated ? { results: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
@@ -558,7 +559,10 @@ export function runRefs(opts: RefsOptions): number {
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
-  const jsonOut: Record<string, RefEntry[] | { references: RefEntry[]; truncated: true; totalCount: number }> = {}
+  // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/
+  // `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated —
+  // a JSON consumer should never have to branch on shape depending on truncation.
+  const jsonOut: Record<string, { items: RefEntry[]; truncated: boolean; totalCount: number }> = {}
   let anyFound = false
   const lines: string[] = []
   for (const sym of symbols) {
@@ -572,9 +576,7 @@ export function runRefs(opts: RefsOptions): number {
     if (results.length > 0) anyFound = true
     if (opts.json === true) {
       const capped = guardJsonRows(results)
-      jsonOut[sym] = capped.truncated
-        ? { references: capped.items, truncated: true, totalCount: capped.totalCount }
-        : capped.items
+      jsonOut[sym] = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
       continue
     }
     if (results.length === 0) {
@@ -615,7 +617,7 @@ function runRefsSingle(opts: RefsOptions): number {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    const payload = capped.truncated ? { references: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     emit(JSON.stringify(payload, null, 2))
     return 0
   }
@@ -658,6 +660,21 @@ export interface SkeletonOptions {
   stats?: boolean
 }
 
+/**
+ * "No indexed symbols" is ambiguous on its own: a genuinely empty file, an unrecognized
+ * extension, and a recognized-but-unsupported language (Swift, Scala, Lua, Elixir, Dart,
+ * Zig, R -- see {@link unsupportedLanguageName}) all currently produce zero symbol rows and
+ * look identical from the CLI's perspective. Callers get a clearer diagnostic distinguishing
+ * "token-goat can't parse this language at all yet" from a plain empty-index result.
+ */
+function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
+  const lang = unsupportedLanguageName(resolvedPath)
+  if (lang !== undefined) {
+    return `No indexed symbols found in '${displayPath}' -- ${lang} has no symbol extractor yet, so this file always indexes to 0 symbols regardless of its contents`
+  }
+  return `No indexed symbols found in '${displayPath}'`
+}
+
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const resolved = resolveIndexPath(opts.file)
@@ -667,7 +684,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
+    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
   }
 
   const filtered =
@@ -688,7 +705,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : {}),
     }))
     const capped = guardJsonRows(rows)
-    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
@@ -724,7 +741,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
+    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
   }
 
   const filtered =
@@ -744,7 +761,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
           }))
         : filtered
     const capped = guardJsonRows(rows)
-    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 

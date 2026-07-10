@@ -10,26 +10,22 @@ let file: string
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-xlsx-'))
   file = path.join(dir, 'sample.xlsx')
-  const XLSX = await import('xlsx')
-  const wb = XLSX.utils.book_new()
-  const ws = XLSX.utils.aoa_to_sheet([
-    ['name', 'age', 'dept'],
-    ['Alice', 30, 'Eng'],
-    ['Bob', 25, 'Sales'],
-    ['Carol', 40, 'Eng'],
-  ])
-  ;(ws['B2'] as { f?: string }).f = 'SUM(29,1)'
-  XLSX.utils.book_append_sheet(wb, ws, 'Employees')
-  const ws2 = XLSX.utils.aoa_to_sheet([['q', 'revenue']])
-  XLSX.utils.book_append_sheet(wb, ws2, 'Empty')
+  const ExcelJS = (await import('exceljs')).default ?? (await import('exceljs'))
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Employees')
+  ws.addRow(['name', 'age', 'dept'])
+  ws.addRow(['Alice', 30, 'Eng'])
+  ws.getCell('B2').value = { formula: 'SUM(29,1)', result: 30 }
+  ws.addRow(['Bob', 25, 'Sales'])
+  ws.addRow(['Carol', 40, 'Eng'])
+  const ws2 = wb.addWorksheet('Empty')
+  ws2.addRow(['q', 'revenue'])
   // Create a sheet with header narrower than some data rows (regression test for cell truncation)
-  const ws3 = XLSX.utils.aoa_to_sheet([
-    ['col1', 'col2'],
-    ['a', 'b', 'c', 'd'],
-    ['x', 'y', 'z'],
-  ])
-  XLSX.utils.book_append_sheet(wb, ws3, 'WideData')
-  XLSX.writeFile(wb, file)
+  const ws3 = wb.addWorksheet('WideData')
+  ws3.addRow(['col1', 'col2'])
+  ws3.addRow(['a', 'b', 'c', 'd'])
+  ws3.addRow(['x', 'y', 'z'])
+  await wb.xlsx.writeFile(file)
 })
 
 afterAll(() => {

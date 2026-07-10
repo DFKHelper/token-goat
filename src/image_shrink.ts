@@ -217,6 +217,8 @@ function statSize(absPath: string): number | null {
  * hook never blocks a Read.
  */
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
+  if (loadConfig().image_shrink.enabled === false) return passOutput()
+
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   if (!isImagePath(filePath)) return passOutput()
