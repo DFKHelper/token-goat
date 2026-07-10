@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.13] - 2026-07-10
+
 ### Security
 
 - **`xlsx` (SheetJS) has unpatched HIGH-severity CVEs (prototype pollution / ReDoS).** Replaced with `exceljs` for the `xlsx-sheets`/`xlsx-head`/`xlsx-range`/`xlsx-query` commands. Output format (CSV-formatted sheet/range/query text) is unchanged. The module doc comment's claim of `.xls`/`.ods` support was dropped — ExcelJS, like the SheetJS build actually in use, only reads `.xlsx`. See [src/xlsx_extract.ts](src/xlsx_extract.ts); regression-tested in [tests/xlsx_extract.test.ts](tests/xlsx_extract.test.ts) and [tests/command_matrix_e2e.test.ts](tests/command_matrix_e2e.test.ts).
