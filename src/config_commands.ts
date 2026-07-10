@@ -64,6 +64,13 @@ function closestKeys(unknown: string, known: string[]): string[] {
     .map((x) => x.k)
 }
 
+/** ` (did you mean: a, b?)` suffix for an unrecognized dotted config key, or '' if no near match. */
+function didYouMeanKeySuffix(unknownKey: string): string {
+  const knownKeys = flattenConfig(defaultConfig() as unknown as Record<string, unknown>).map(([k]) => k)
+  const suggestions = closestKeys(unknownKey, knownKeys)
+  return suggestions.length > 0 ? ` (did you mean: ${suggestions.join(', ')}?)` : ''
+}
+
 // ── Nested path walk helpers ─────────────────────────────────────────────────
 
 /** Walk a dotted path over a plain object, returning the value or null on miss. */
@@ -160,15 +167,13 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
   if (action === 'get') {
     if (!opts.key) {
-      emitErr('config get requires a key (e.g. compact_assist.enabled)')
-      throw new Error('missing key')
+      throw new Error('config get requires a key (e.g. compact_assist.enabled)')
     }
     const parts = opts.key.split('.')
     const cfg = loadConfig() as unknown as Record<string, unknown>
     const result = walkGet(cfg, parts)
     if (!result.found) {
-      emitErr(`key not found: ${opts.key}`)
-      throw new Error(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
     }
     if (opts.json === true) {
       emit(JSON.stringify({ key: opts.key, value: result.value }, null, 2))
@@ -180,28 +185,23 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
   if (action === 'set') {
     if (!opts.key) {
-      emitErr('config set requires a key (e.g. compact_assist.enabled)')
-      throw new Error('missing key')
+      throw new Error('config set requires a key (e.g. compact_assist.enabled)')
     }
     if (opts.value === undefined) {
-      emitErr('config set requires a value')
-      throw new Error('missing value')
+      throw new Error('config set requires a value')
     }
     const parts = opts.key.split('.')
     const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
     const ref = walkParent(cfg, parts)
     if (!ref) {
-      emitErr(`key not found: ${opts.key}`)
-      throw new Error(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
     }
     const existing = ref.parent[ref.leaf]
     if (existing === undefined) {
-      emitErr(`key not found: ${opts.key}`)
-      throw new Error(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
     }
     if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
-      emitErr(`config set: '${opts.key}' is a section, not a settable field — set an individual key within it instead (e.g. ${opts.key}.<field>)`)
-      throw new Error(`cannot set a whole config section: ${opts.key}`)
+      throw new Error(`config set: '${opts.key}' is a section, not a settable field — set an individual key within it instead (e.g. ${opts.key}.<field>)`)
     }
     const defaultAtKey = walkGet(defaultConfig() as unknown as Record<string, unknown>, parts)
     const coerced = coerce(opts.value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
@@ -214,8 +214,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
       const revalidatedResult = walkGet(revalidated, parts)
       if (revalidatedResult.found && revalidatedResult.value !== coerced) {
-        emitErr(`config set: ${opts.key} = ${coerced} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
-        throw new Error(`value out of range for ${opts.key}: ${coerced}`)
+        throw new Error(`config set: ${opts.key} = ${coerced} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
       }
     }
     saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
@@ -305,8 +304,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     return
   }
 
-  emitErr(`config: unknown action '${action}'. Use list, get, set, or validate.`)
-  throw new Error(`unknown config action: ${action}`)
+  throw new Error(`config: unknown action '${action}'. Use list, get, set, or validate.`)
 }
 
 // ── project ───────────────────────────────────────────────────────────────────

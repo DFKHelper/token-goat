@@ -21,7 +21,7 @@ const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/session.js'
-import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
+import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -85,7 +85,7 @@ describe('postBashHandler', () => {
     expect(id).not.toBeNull()
 
     // The cache entry should be findable
-    const entry = getBashOutputByCommandHash(id!)
+    const entry = getBashOutput(id!)
     expect(entry).not.toBeNull()
     expect(entry!.command).toBe('pytest tests/')
     expect(entry!.output).toBe(largeOutput)
@@ -122,7 +122,7 @@ describe('postBashHandler', () => {
     const simpleHash = fingerprintContent(cmd).slice(0, 16)
     const id = getBashOutputId(simpleHash)
     expect(id).not.toBeNull()
-    const entry = getBashOutputByCommandHash(id!)
+    const entry = getBashOutput(id!)
     expect(entry).not.toBeNull()
     expect(entry!.exitCode).toBe(101)
   })

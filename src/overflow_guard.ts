@@ -110,6 +110,37 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   return kept.join('\n') + '\n' + marker
 }
 
+/**
+ * Result of capping a JSON-serializable array to a token budget.
+ */
+export interface JsonRowCapResult<T> {
+  items: T[]
+  truncated: boolean
+  totalCount: number
+}
+
+/**
+ * Cap a JSON-serializable array to fit within a token budget, keeping as many leading whole
+ * items as fit. Unlike {@link trimToBudget}, this never truncates mid-item -- truncating inside
+ * a serialized JSON value would corrupt the payload -- so callers must surface the cap via the
+ * returned `truncated` flag (e.g. an added `truncated`/`totalCount` field in the JSON response)
+ * rather than a trailing text marker. The first item is always kept even if it alone exceeds the
+ * budget, matching {@link trimToBudget}'s "never return nothing" behavior.
+ */
+export function capJsonRows<T>(items: readonly T[], budgetTokens: number): JsonRowCapResult<T> {
+  const totalCount = items.length
+  const charBudget = Math.max(1, budgetTokens * 3)
+  const kept: T[] = []
+  let used = 0
+  for (const item of items) {
+    const cost = JSON.stringify(item).length + 2
+    if (kept.length > 0 && used + cost > charBudget) break
+    kept.push(item)
+    used += cost
+  }
+  return { items: kept, truncated: kept.length < totalCount, totalCount }
+}
+
 /** Get a tailored remediation hint based on the originating command. */
 function getHintFor(command?: string): string {
   const cmd = (command || '').toLowerCase().trim()

@@ -21,7 +21,7 @@ import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { loadConfig } from './config.js'
-import { trimToBudget } from './overflow_guard.js'
+import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
@@ -78,6 +78,19 @@ function emitGuarded(text: string, command: string): void {
 function guardText(text: string, command: string): string {
   const cfg = loadConfig()
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
+}
+
+/**
+ * JSON-mode counterpart to {@link guardText}: caps a JSON-serializable array at
+ * `config.overflow_guard.max_tokens` (when enabled) by dropping trailing whole items rather than
+ * truncating text mid-payload. `symbol`/`refs`/`skeleton`/`outline`'s `--json` branches were the
+ * one output path the overflow guard didn't reach -- their text-mode siblings already route
+ * through {@link guardText}/{@link emitGuarded}, but JSON mode returned the raw, unbounded array.
+ */
+function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
+  const cfg = loadConfig()
+  if (!cfg.overflow_guard.enabled) return { items: [...items], truncated: false, totalCount: items.length }
+  return capJsonRows(items, cfg.overflow_guard.max_tokens)
 }
 
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
@@ -145,7 +158,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   if (opts.json === true) {
-    return { text: JSON.stringify(results, null, 2), code: 0 }
+    const capped = guardJsonRows(results)
+    const payload = capped.truncated ? { results: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
@@ -543,7 +558,7 @@ export function runRefs(opts: RefsOptions): number {
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
-  const jsonOut: Record<string, RefEntry[]> = {}
+  const jsonOut: Record<string, RefEntry[] | { references: RefEntry[]; truncated: true; totalCount: number }> = {}
   let anyFound = false
   const lines: string[] = []
   for (const sym of symbols) {
@@ -556,7 +571,10 @@ export function runRefs(opts: RefsOptions): number {
     const results = queryRefs(queryOpts)
     if (results.length > 0) anyFound = true
     if (opts.json === true) {
-      jsonOut[sym] = results
+      const capped = guardJsonRows(results)
+      jsonOut[sym] = capped.truncated
+        ? { references: capped.items, truncated: true, totalCount: capped.totalCount }
+        : capped.items
       continue
     }
     if (results.length === 0) {
@@ -596,7 +614,9 @@ function runRefsSingle(opts: RefsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
+    const capped = guardJsonRows(results)
+    const payload = capped.truncated ? { references: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    emit(JSON.stringify(payload, null, 2))
     return 0
   }
 
@@ -658,22 +678,18 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
 
   if (opts.json === true) {
-    return {
-      text: JSON.stringify(
-        filtered.map((s) => ({
-          name: s.name,
-          kind: s.kind,
-          lineStart: s.lineStart,
-          lineEnd: s.lineEnd,
-          ...(refCounts !== undefined
-            ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: s.docstring.trim().length > 0 }
-            : {}),
-        })),
-        null,
-        2,
-      ),
-      code: 0,
-    }
+    const rows = filtered.map((s) => ({
+      name: s.name,
+      kind: s.kind,
+      lineStart: s.lineStart,
+      lineEnd: s.lineEnd,
+      ...(refCounts !== undefined
+        ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: s.docstring.trim().length > 0 }
+        : {}),
+    }))
+    const capped = guardJsonRows(rows)
+    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
@@ -719,20 +735,17 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
 
   if (opts.json === true) {
-    return {
-      text: JSON.stringify(
-        refCounts !== undefined
-          ? filtered.map((s) => ({
-              ...s,
-              refCount: refCounts.get(s.name) ?? 0,
-              hasDoc: s.docstring.trim().length > 0,
-            }))
-          : filtered,
-        null,
-        2,
-      ),
-      code: 0,
-    }
+    const rows =
+      refCounts !== undefined
+        ? filtered.map((s) => ({
+            ...s,
+            refCount: refCounts.get(s.name) ?? 0,
+            hasDoc: s.docstring.trim().length > 0,
+          }))
+        : filtered
+    const capped = guardJsonRows(rows)
+    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
   const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
