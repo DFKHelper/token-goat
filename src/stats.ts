@@ -481,7 +481,7 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string 
     return
   }
 
-  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  const useTty = process.stdout.isTTY !== false && !process.env['NO_COLOR']
   if (!useTty) {
     _renderShortTotals(summary)
     return
@@ -500,7 +500,7 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
     return
   }
 
-  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  const useTty = process.stdout.isTTY !== false && !process.env['NO_COLOR']
   if (!useTty) {
     _plainTextStats(summary)
     return
