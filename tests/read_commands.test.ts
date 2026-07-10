@@ -982,6 +982,32 @@ describe('read_commands', () => {
       runOutline({ file: 'f.ts' })
       expect(mockQueryRefCounts).not.toHaveBeenCalled()
     })
+
+    // Regression: global.db is a single machine-wide index shared across every project ever
+    // indexed (constants.ts). runOutline/runSkeleton used to call queryRefCounts with no
+    // project-root argument, so --stats ref counts summed references across every project
+    // sharing a symbol name.
+    it('runOutline --stats scopes queryRefCounts to the current project root', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      runOutline({ file: 'f.ts', stats: true })
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
+    })
+
+    it('runSkeleton --stats scopes queryRefCounts to the current project root', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      runSkeleton({ file: 'f.ts', stats: true })
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
+    })
   })
 
   // ---- runBrief -----------------------------------------------------------

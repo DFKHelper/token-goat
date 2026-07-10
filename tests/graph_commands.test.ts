@@ -334,7 +334,10 @@ describe('runTypes integration', () => {
   })
 
   it('sorts a realistic mixed-case file-path set in the expected en-locale order (regression: comparator must not silently drop its locale pin)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tg-types-locale-'))
+    // Must live under process.cwd() (the repo root, matched against runTypes()'s own
+    // process.cwd()-scoped rootDir since #43's cross-project fix), not the bare OS temp dir --
+    // otherwise this fixture is now correctly excluded as belonging to a different project.
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-locale-'))
     try {
       const fileA = join(dir, 'Banana.ts')
       const fileB = join(dir, 'apple.ts')
@@ -453,6 +456,50 @@ describe('runDead integration', () => {
     }
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
+  })
+})
+
+// ---- runDead cross-project scoping (regression) -----------------------------
+
+describe('runDead cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runDead used to run querySymbols/queryRefs with no project scope, so
+  // a function truly dead in one project could be scored ALIVE by a reference to a same-named
+  // symbol living in a completely unrelated project on the same machine.
+  it('reports a function as dead even when a same-named symbol is referenced in a different project', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-dead-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-dead-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function trulyDeadFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function trulyDeadFn9k2() { return 1 }\nfunction caller() { trulyDeadFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runDead({ json: true, top: 500 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        // rootB's reference to the same-named function must not mask rootA's copy as alive.
+        expect(parsed.some((r) => r.name === 'trulyDeadFn9k2')).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
   })
 })
 

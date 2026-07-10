@@ -692,7 +692,8 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
-  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+  const refCounts =
+    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -749,7 +750,8 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
-  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+  const refCounts =
+    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
 
   if (opts.json === true) {
     const rows =
@@ -993,7 +995,7 @@ export function runFind(opts: FindOptions): number {
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT })
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: process.cwd() })
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
@@ -1744,7 +1746,14 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
   // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const rawHits = await searchSemantic(getDb(globalDbPath()), query, overFetchForMerge)
+  const rawHits = await searchSemantic(
+    getDb(globalDbPath()),
+    query,
+    overFetchForMerge,
+    undefined,
+    undefined,
+    process.cwd(),
+  )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
     const blocks = hits.map(

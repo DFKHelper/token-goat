@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { getDb } from '../src/db.js'
 import {
   getFileEntry,
+  queryRefCounts,
   queryRefs,
   querySymbols,
   searchSymbolsFts,
@@ -113,6 +114,31 @@ describe('index_reader round-trips inserted rows', () => {
     expect(scoped).toHaveLength(1)
     expect(scoped[0]?.line).toBe(9)
     expect(scoped[0]?.context).toBe('await login()')
+  })
+
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). queryRefCounts used to run WHERE name IN (...) with no path scope,
+  // so outline/skeleton --stats summed reference counts across every project sharing a symbol
+  // name -- a symbol's ref count in project A was inflated by unrelated references to a
+  // same-named symbol in project B.
+  it('queryRefCounts scoped by rootDir excludes references from a different project root', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+    stmt.run('projA/x.ts', 'shared', 1, 0, '')
+    stmt.run('projA/x.ts', 'shared', 2, 0, '')
+    stmt.run('projB/y.ts', 'shared', 1, 0, '')
+    stmt.run('projB/y.ts', 'shared', 2, 0, '')
+    stmt.run('projB/y.ts', 'shared', 3, 0, '')
+
+    const unscoped = queryRefCounts(['shared'], dbPath)
+    expect(unscoped.get('shared')).toBe(5) // pre-fix behavior: counts both projects
+
+    const scopedToA = queryRefCounts(['shared'], dbPath, 'projA')
+    expect(scopedToA.get('shared')).toBe(2) // only projA's 2 references
+
+    const scopedToB = queryRefCounts(['shared'], dbPath, 'projB')
+    expect(scopedToB.get('shared')).toBe(3) // only projB's 3 references
   })
 
   it('getFileEntry returns an inserted file row', () => {
