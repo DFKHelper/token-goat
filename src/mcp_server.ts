@@ -145,15 +145,30 @@ export function createMcpServer(): McpServer {
   server.registerTool(
     'semantic',
     {
-      description: 'Semantic search over the indexed project (falls back to full-text search when no embedding index is available).',
+      description:
+        'Semantic search over the indexed project (falls back to full-text search when no embedding index is available). ' +
+        'Scoped to projectRoot if given, else the MCP server process\'s own cwd -- which may not be the actual workspace ' +
+        'root for a client that launched the server from elsewhere, so pass projectRoot explicitly when in doubt.',
       inputSchema: {
         query: z.string().describe('natural-language search query'),
         limit: z.number().int().nonnegative().optional().describe('max results (default: 20)'),
+        projectRoot: z
+          .string()
+          .optional()
+          .describe(
+            "absolute path to the workspace root to scope this search to; defaults to the MCP server process's cwd, " +
+              'which is not always the actual workspace root for MCP clients -- pass this explicitly when it might differ',
+          ),
       },
     },
     async (args) => {
-      const { query, limit } = args
-      return toCallToolResult(await runSemantic(query, { ...(limit !== undefined ? { limit } : {}) }))
+      const { query, limit, projectRoot } = args
+      return toCallToolResult(
+        await runSemantic(query, {
+          ...(limit !== undefined ? { limit } : {}),
+          ...(projectRoot !== undefined ? { projectRoot } : {}),
+        }),
+      )
     },
   )
 

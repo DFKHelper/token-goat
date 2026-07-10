@@ -1726,6 +1726,14 @@ function symbolHeader(s: SymbolEntry): string {
 
 interface SemanticOptions {
   limit?: number
+  /**
+   * Project root to scope the search to. Defaults to `process.cwd()`; same field name as
+   * {@link ChangedOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g. an
+   * MCP server launched by a client from an opaque directory) should pass the actual
+   * workspace root explicitly -- otherwise the search silently scopes to the wrong project
+   * (or the whole machine-wide index yields nothing under it).
+   */
+  projectRoot?: string
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -1752,7 +1760,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     overFetchForMerge,
     undefined,
     undefined,
-    process.cwd(),
+    opts.projectRoot ?? process.cwd(),
   )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
