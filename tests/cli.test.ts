@@ -613,6 +613,103 @@ describe('token-goat CLI', () => {
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('not found')
     })
+
+    // regression: cmdReplace read the whole file, computed the snippet replacement in memory,
+    // then rewrote the WHOLE file via atomicWriteBuffer. The snippet match only protects the
+    // matched region -- a concurrent write to any OTHER part of the file between the initial
+    // read and the final rename was silently lost (last-writer-wins over the entire file), even
+    // though the snippet match itself succeeded and reported no error. This forces that window
+    // open with the TOKEN_GOAT_TEST_REPLACE_DELAY_MS test-only seam (same pattern as
+    // config_commands.ts's TOKEN_GOAT_TEST_RMW_DELAY_MS), races a real concurrent write into it
+    // from this test process, and asserts replace aborts instead of clobbering the concurrent
+    // change.
+    it('replace aborts with a clear error instead of silently clobbering a concurrent modification', async () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-race-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
+      const oldB64 = Buffer.from('beta', 'utf8').toString('base64')
+      const newB64 = Buffer.from('delta', 'utf8').toString('base64')
+      try {
+        const child = spawn(process.execPath, [BUNDLE, 'replace', tmp, '--old-b64', oldB64, '--new-b64', newB64], {
+          env: { ...process.env, TOKEN_GOAT_TEST_REPLACE_DELAY_MS: '500' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stdout = ''
+        let stderr = ''
+        let sawReady = false
+        const readyPromise = new Promise<void>((resolveReady) => {
+          child.stderr.on('data', (d: Buffer) => {
+            const chunk = d.toString()
+            stderr += chunk
+            if (!sawReady && chunk.includes('TOKEN_GOAT_TEST_REPLACE_DELAY_READY')) {
+              sawReady = true
+              resolveReady()
+            }
+          })
+        })
+        child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+
+        // Wait for the child's deterministic readiness signal (emitted right as its delay
+        // window opens), then land a concurrent write to an UNRELATED part of the file --
+        // guaranteed to land after the child's initial read/stat but before its re-stat+rename,
+        // regardless of how long CLI startup itself takes.
+        await readyPromise
+        fs.writeFileSync(tmp, 'alpha beta gamma -- concurrent edit', 'utf8')
+
+        const exitCode: number | null = await new Promise((resolve, reject) => {
+          child.on('error', reject)
+          child.on('exit', resolve)
+        })
+
+        expect(exitCode).toBe(1)
+        expect(stderr).toContain('changed on disk')
+        expect(stderr).toContain('NOT applied')
+        // The concurrent writer's content must survive untouched -- replace must not have overwritten it.
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha beta gamma -- concurrent edit')
+        void stdout
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    }, 15_000)
+
+    // regression: atomicWriteBuffer always created its temp file at 0o600 and renamed it
+    // over dest, so a `replace` against a committed executable (chmod +x hook script, binary)
+    // silently dropped the exec bit -- git would then record a 100755->100644 mode change.
+    it.skipIf(process.platform === 'win32')('replace preserves the exec bit on a chmod +x target file', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-exec-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, '#!/bin/sh\necho old\n', 'utf8')
+      fs.chmodSync(tmp, 0o755)
+      try {
+        const oldB64 = Buffer.from('old', 'utf8').toString('base64')
+        const newB64 = Buffer.from('new', 'utf8').toString('base64')
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toContain('echo new')
+        const mode = fs.statSync(tmp).mode
+        expect(mode & 0o111).not.toBe(0)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+  })
+
+  // regression: same atomicWriteBuffer/atomicWriteCore mode-drop bug, exercised via
+  // write-file --from (the other caller that rewrites an existing destination file).
+  it.skipIf(process.platform === 'win32')('write-file --from preserves the exec bit on a chmod +x destination file', () => {
+    const dst = path.join(os.tmpdir(), `tg-wf-exec-${Date.now()}.txt`)
+    const src = path.join(os.tmpdir(), `tg-wf-exec-src-${Date.now()}.txt`)
+    fs.writeFileSync(dst, '#!/bin/sh\necho old\n', 'utf8')
+    fs.chmodSync(dst, 0o755)
+    fs.writeFileSync(src, '#!/bin/sh\necho new\n', 'utf8')
+    try {
+      const r = runCli(['write-file', dst, '--from', src])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(dst, 'utf8')).toBe('#!/bin/sh\necho new\n')
+      const mode = fs.statSync(dst).mode
+      expect(mode & 0o111).not.toBe(0)
+    } finally {
+      fs.rmSync(dst, { force: true })
+      fs.rmSync(src, { force: true })
+    }
   })
 
   it('write-file --from and --b64 together exits 1', () => {
