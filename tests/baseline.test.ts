@@ -8,6 +8,7 @@ import { buildProjectMap, formatProjectMap, walkProject } from '../src/baseline.
 import { loadConfig } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
+import { normalizePath } from '../src/paths.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -145,8 +146,13 @@ describe('buildProjectMap cross-project scoping', () => {
     fs.writeFileSync(path.join(rootA, 'a.ts'), 'export function fromRootA() {}\n')
     fs.writeFileSync(path.join(rootB, 'b.ts'), 'export function fromRootB() {}\n')
 
-    const rootAFilePath = path.join(rootA, 'a.ts').replace(/\\/g, '/')
-    const rootBFilePath = path.join(rootB, 'b.ts').replace(/\\/g, '/')
+    // Real indexing always stores file_path via normalizePath() (see sql_path.ts's
+    // projectScopeClause docstring) -- including 8.3 short-name expansion. A raw
+    // backslash-to-slash conversion here would drift from that on a Windows machine whose
+    // %TEMP% is pinned to its short form (e.g. CI's `RUNNER~1`), silently failing the
+    // LIKE-based project-scope match.
+    const rootAFilePath = `${normalizePath(rootA)}/a.ts`
+    const rootBFilePath = `${normalizePath(rootB)}/b.ts`
 
     const db = getDb(globalDbPath())
     const insert = db.prepare(
