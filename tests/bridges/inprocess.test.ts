@@ -28,6 +28,7 @@ import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from '../../src/bridges/openclaw.js'
 import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
+import { expandShortPath } from '../../src/paths.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
@@ -39,8 +40,13 @@ afterEach(() => {
   }
 })
 
+// %TEMP% can be pinned to its Windows 8.3 short form (e.g. `RUNNER~1`), which every
+// os.tmpdir()-based dir inherits. Vitest's Vite-backed module loader mishandles a `~` in a
+// dynamic import() URL (surfaces as a "Failed to load url ...RUNNER%7E1..." resolution
+// error), so expand to the long form before this dir is ever handed to pathToFileURL.
 function mkIsolated(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'tg-inprocess-test-'))
+  const raw = mkdtempSync(join(tmpdir(), 'tg-inprocess-test-'))
+  const dir = expandShortPath(raw.replace(/\\/g, '/'))
   tempDirs.push(dir)
   return dir
 }

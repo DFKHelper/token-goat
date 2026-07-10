@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
+import { normalizePath } from '../src/paths.js'
 import { runFind } from '../src/read_commands.js'
 
 /** Capture stdout for a function call. */
@@ -54,8 +55,13 @@ afterEach(() => {
 
 describe('runFind cross-project scoping', () => {
   it('never surfaces a file path from a different project root', () => {
-    const rootAFile = path.join(rootA, 'sharedName.ts').replace(/\\/g, '/')
-    const rootBFile = path.join(rootB, 'sharedName.ts').replace(/\\/g, '/')
+    // Real indexing always stores file_path via normalizePath() (see sql_path.ts's
+    // projectScopeClause docstring) -- including 8.3 short-name expansion. A raw
+    // backslash-to-slash conversion here would drift from that on a Windows machine whose
+    // %TEMP% is pinned to its short form (e.g. CI's `RUNNER~1`), silently failing the
+    // LIKE-based project-scope match.
+    const rootAFile = `${normalizePath(rootA)}/sharedName.ts`
+    const rootBFile = `${normalizePath(rootB)}/sharedName.ts`
 
     const db = getDb(globalDbPath())
     const insert = db.prepare(
