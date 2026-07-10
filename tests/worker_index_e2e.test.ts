@@ -270,7 +270,13 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
   let relData: string
 
   function relEnv(): NodeJS.ProcessEnv {
-    return { ...process.env, LOCALAPPDATA: relData, XDG_DATA_HOME: relData }
+    return {
+      ...process.env,
+      HOME: relData,
+      USERPROFILE: relData,
+      LOCALAPPDATA: relData,
+      XDG_DATA_HOME: relData,
+    }
   }
 
   function runRel(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -285,6 +291,9 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
   // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle wrote to under the redirected data dir.
   function globalDbFor(base: string): string {
     if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat', 'global.db')
+    if (process.platform === 'darwin') {
+      return path.join(base, 'Library', 'Application Support', 'token-goat', 'global.db')
+    }
     return path.join(base, 'token-goat', 'global.db')
   }
 
@@ -312,8 +321,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     if (relRepo) fs.rmSync(relRepo, { recursive: true, force: true })
   })
 
-  // The darwin data dir ignores LOCALAPPDATA/XDG_DATA_HOME, so the DB would live in the real home dir; skip the direct-DB probe there. CI runs Windows.
-  it.skipIf(process.platform === 'darwin')(
+  it(
     'stores the symbol file_path as the absolute-normalized key',
     () => {
       const dbPath = globalDbFor(relData)

@@ -49,7 +49,13 @@ function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResu
 }
 
 function tgEnv(base: string): NodeJS.ProcessEnv {
-  return { ...process.env, LOCALAPPDATA: base, XDG_DATA_HOME: base }
+  return {
+    ...process.env,
+    HOME: base,
+    USERPROFILE: base,
+    LOCALAPPDATA: base,
+    XDG_DATA_HOME: base,
+  }
 }
 
 /**
