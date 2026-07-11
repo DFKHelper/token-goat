@@ -36,13 +36,10 @@ import type * as fs from 'node:fs'
 
 import { atomicWriteBytes, atomicWriteText, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
+import { tsxProcessArgs } from './helpers/tsx_process.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const LOCK_HOLDER = path.join(HERE, 'fixtures', 'lock_holder.ts')
-// Spawn tsx's own CLI entry via `node`, not the node_modules/.bin/tsx(.cmd) shim -- the shim
-// is a shell script / batch file on POSIX/Windows respectively, and Node's spawn() cannot
-// exec those directly without shell:true (same rationale as tests/session_store_race.test.ts).
-const TSX_CLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -230,10 +227,14 @@ describe('withFileLock', () => {
       const holdMs = 8000
       const staleMs = 4000
       const holderExit = new Promise<string>((resolve, reject) => {
-        const child = spawn(process.execPath, [TSX_CLI, LOCK_HOLDER, lockPath, String(holdMs), String(staleMs)], {
-          cwd: ROOT,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
+        const child = spawn(
+          process.execPath,
+          tsxProcessArgs(LOCK_HOLDER, lockPath, String(holdMs), String(staleMs)),
+          {
+            cwd: ROOT,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))

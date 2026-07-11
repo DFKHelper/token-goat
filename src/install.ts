@@ -17,6 +17,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { normalizeDarwinSystemAlias } from './paths.js'
 import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
@@ -95,7 +96,12 @@ function hookCommand(eventArg: string): string {
 
 /** Return the `~/.claude` or `<cwd>/.claude` settings path for `scope`. */
 export function settingsPath(scope: HookScope): string {
-  const base = scope === 'user' ? path.join(os.homedir(), '.claude') : path.join(process.cwd(), '.claude')
+  // Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd()
+  // disagree on this after chdir) — not the full resolveIndexPath pipeline, whose
+  // unconditional drive-letter lowercasing would otherwise leak into this
+  // user-visible, printed-to-the-console path on Windows.
+  const root = scope === 'user' ? os.homedir() : normalizeDarwinSystemAlias(process.cwd())
+  const base = path.join(root, '.claude')
   return path.join(base, 'settings.json')
 }
 

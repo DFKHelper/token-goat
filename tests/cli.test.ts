@@ -998,7 +998,14 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
   function runIsolated(args: string[], dataDir: string, extraEnv?: Record<string, string>): RunResult {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, LOCALAPPDATA: dataDir, XDG_DATA_HOME: dataDir, ...extraEnv },
+      env: {
+        ...process.env,
+        HOME: dataDir,
+        USERPROFILE: dataDir,
+        LOCALAPPDATA: dataDir,
+        XDG_DATA_HOME: dataDir,
+        ...extraEnv,
+      },
     })
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }

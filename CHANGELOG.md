@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS `/var` and `/private/var` aliases could produce different cache and index keys for the same file.** Path canonicalization now normalizes the Darwin system alias consistently, restoring relative `skeleton`/`outline`, trace frame detection, project discovery, settings paths, and doc-compact reuse for temporary paths.
+- **The test harness could touch the live macOS data directory or fail to start TypeScript race helpers in restricted sandboxes.** Darwin tests now isolate `HOME`/`USERPROFILE`, and subprocess fixtures load `tsx` without its IPC-based CLI.
+
 ## [2.6.13] - 2026-07-10
 
 ### Security

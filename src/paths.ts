@@ -109,7 +109,25 @@ export function normalizePath(p: string): string {
   // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms. WSL processes emit Windows-format paths on Linux; both must produce the same cache key, so lowercasing is unconditional.
   s = lowercaseDriveLetter(s)
 
+  // Step 4: macOS reports the same temp path with two system aliases depending
+  // on whether it came from os.tmpdir() or process.cwd().
+  s = normalizeDarwinSystemAlias(s)
+
   return s
+}
+
+/**
+ * Normalize macOS's public `/var` alias to its physical `/private/var` path.
+ *
+ * `os.tmpdir()` commonly returns `/var/...`, while `process.cwd()` returns
+ * `/private/var/...` after chdir. Keep this lexical so deleted/future paths
+ * normalize too, without resolving arbitrary user symlinks.
+ */
+export function normalizeDarwinSystemAlias(p: string): string {
+  if (process.platform !== 'darwin') return p
+  if (p.toLowerCase() === '/var') return `/private${p}`
+  if (p.slice(0, 5).toLowerCase() === '/var/') return `/private${p}`
+  return p
 }
 
 /**
