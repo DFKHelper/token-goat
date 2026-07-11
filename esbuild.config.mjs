@@ -7,7 +7,7 @@ await esbuild.build({
   entryPoints: ['src/main.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',
   format: 'esm',
   outfile: 'dist/token-goat.mjs',
   // native addons cannot be bundled
@@ -41,7 +41,7 @@ await esbuild.build({
   entryPoints: ['src/hook_lib.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',
   format: 'esm',
   outfile: 'dist/token-goat-hook.mjs',
   external: ['better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*'],

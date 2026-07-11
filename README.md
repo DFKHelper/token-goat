@@ -256,7 +256,7 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 
 > **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.
 
-**Requirements:** Node.js 18 or later (all platforms)
+**Requirements:** Node.js 22 or later (all platforms)
 
 ```
 npm install -g token-goat

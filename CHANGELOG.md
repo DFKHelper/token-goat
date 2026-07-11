@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.14] - 2026-07-11
+
 ### Added
 
 - **Layered Salesforce DX indexing for metadata and frontend bundles.** Every `*-meta.xml` file now receives a stable top-level symbol, while Apex, Flow, object-member metadata, Custom Labels, LWC, Aura, and Visualforce receive detailed symbols and selected cross-file references. LWC indexing understands public `@api` members, Salesforce imports, template handlers/child components, bundle targets, and target properties; Aura/Visualforce markup now has a dedicated `salesforce_markup` adapter. The real default worker path and built bundle are covered by a Salesforce DX fixture so these adapters cannot silently disappear from the shipped artifact.
@@ -12,6 +14,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **macOS `/var` and `/private/var` aliases could produce different cache and index keys for the same file.** Path canonicalization now normalizes the Darwin system alias consistently, restoring relative `skeleton`/`outline`, trace frame detection, project discovery, settings paths, and doc-compact reuse for temporary paths.
 - **The test harness could touch the live macOS data directory or fail to start TypeScript race helpers in restricted sandboxes.** Darwin tests now isolate `HOME`/`USERPROFILE`, and subprocess fixtures load `tsx` without its IPC-based CLI.
+- **The declared Node.js floor (`>=18.0.0`) was untested.** CI, publish, and the tarball smoke test have only ever exercised Node 22; the esbuild target was also still `node18`. Both now declare Node 22 as the floor, matching what is actually built and tested.
+- **`token-goat stats` rendered the colorized rich box-table in CI instead of plain text.** The TTY heuristic treated any non-`false` `isTTY` as an interactive terminal (needed so Claude Code's own terminal, which reports `isTTY: undefined`, still gets rich output) but that same `undefined` value is also true of any non-interactive process, including CI runners. Now only `isTTY: true`, or `isTTY: undefined` with `CI` unset, uses the rich renderer.
 
 ## [2.6.13] - 2026-07-10
 
