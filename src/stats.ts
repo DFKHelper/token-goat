@@ -400,6 +400,18 @@ function _plainTextStats(summary: StatsSummary): void {
         `  ${row.command.padEnd(12)} ${row.events.toString().padStart(6)} events  ${fmtBytes(row.bytes_saved).padStart(8)}  ${row.tokens_saved.toString().padStart(8)} tokens`,
       )
     }
+  } else {
+    // Hints fired but no direct command was ever invoked -- surface this as a
+    // gap instead of letting the section vanish silently (see CHANGELOG).
+    const hintBucket = summary.by_source[SOURCE_HINT]
+    if (hintBucket && hintBucket.events > 0) {
+      lines.push(
+        '',
+        '## By Command',
+        `  0 direct command invocations this window -- ${hintBucket.events} hint(s) fired but not acted on.`,
+        '  Run token-goat symbol/read/section/semantic/outline/skeleton directly to capture these savings.',
+      )
+    }
   }
 
   if (summary.by_day.length > 0) {

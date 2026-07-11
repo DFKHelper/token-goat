@@ -543,6 +543,61 @@ describe('stats', () => {
       expect(output).toContain('Total events:   1')
       expect(output).toContain('Tokens saved:   1000')
     })
+
+    it('flags zero direct command invocations when hints fired but no commands were run', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-hints-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      // Only hint kinds -- no symbol_lookup/read_replacement/outline/etc -- so
+      // by_command stays empty while by_source[hint] is non-zero.
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'session_hint', 100, 500)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      // Force the plain-text (non-TTY) render path deterministically -- ambient
+      // TTY detection varies by shell/CI runner and must not decide which code
+      // path this test exercises.
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      expect(output).toContain('0 direct command')
+      expect(output).toContain('hint(s) fired but not acted on')
+    })
   })
 
   describe('renderShortStats', () => {
