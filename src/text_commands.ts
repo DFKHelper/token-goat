@@ -12,6 +12,7 @@ import { walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
+import { normalizeDarwinSystemAlias } from './paths.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
@@ -232,8 +233,8 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // canonicalize only lowercases the drive letter, not the rest of the path, so fold both
   // sides through foldPath (util.ts) to restore case-insensitive comparison on Windows/macOS
   // (matching the platform-gated convention used elsewhere, e.g. isUnderBlockedRoot).
-  const normalCwd = foldPath(canonicalize(cwd))
-  const normalAbs = foldPath(canonicalize(framePath, cwd))
+  const normalCwd = normalizeDarwinSystemAlias(foldPath(canonicalize(cwd)))
+  const normalAbs = normalizeDarwinSystemAlias(foldPath(canonicalize(framePath, cwd)))
   if (normalAbs.startsWith(normalCwd)) {
     // Ensure it's a real directory boundary: the path is either exactly the cwd,
     // or the next character after cwd is a path separator. This prevents false matches
