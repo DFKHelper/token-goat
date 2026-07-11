@@ -22,11 +22,13 @@ import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync, withFileLock, sleepSync } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 
 function emit(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(payload))
 }
 
 function emitErr(text: string): void {
