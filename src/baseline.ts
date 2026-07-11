@@ -19,6 +19,7 @@ import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
+import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
@@ -122,20 +123,26 @@ interface TopSymbolRow {
  * Fetch headline symbols from the index: classes first, then functions, by
  * body length (a rough proxy for significance). Returns `[]` when the index is
  * empty or unavailable so `map` works before any indexing has happened.
+ *
+ * `global.db` is a single machine-wide index keyed by absolute path across every
+ * project ever indexed (see constants.ts), so this query MUST be scoped to
+ * `rootDir` via {@link projectScopeClause} -- otherwise `map` mixes in headline
+ * symbols from unrelated projects that happen to share the same index.
  */
-function fetchTopSymbols(limit: number, dbPath: string): SymbolEntry[] {
+function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): SymbolEntry[] {
   try {
     const db = getDb(dbPath)
+    const { clause, param } = projectScopeClause('file_path')
     const rows = db
       .prepare(
         `SELECT file_path, name, kind, line_start, line_end, body, docstring
          FROM symbols
-         WHERE kind IN ('class', 'function', 'interface')
+         WHERE kind IN ('class', 'function', 'interface') AND ${clause}
          ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
                   LENGTH(COALESCE(body, '')) DESC
          LIMIT ?`,
       )
-      .all(limit) as TopSymbolRow[]
+      .all(param(rootDir), limit) as TopSymbolRow[]
     return rows.map((r) => ({
       filePath: r.file_path,
       name: r.name,
@@ -163,7 +170,7 @@ export function buildProjectMap(
   const root = path.resolve(rootDir)
   const { files, languages } = walkProject(root, { excludeTests: loadConfig().repomap.exclude_tests })
   const symbolLimit = opts.compact ? 10 : 30
-  const topSymbols = fetchTopSymbols(symbolLimit, globalDbPath())
+  const topSymbols = fetchTopSymbols(symbolLimit, globalDbPath(), root)
 
   // Recent files: most-recently-modified source files, capped for the summary.
   const recentFiles = files

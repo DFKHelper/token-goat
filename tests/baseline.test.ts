@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { buildProjectMap, formatProjectMap, walkProject } from '../src/baseline.js'
 import { loadConfig } from '../src/config.js'
+import { globalDbPath } from '../src/constants.js'
+import { getDb } from '../src/db.js'
+import { normalizePath } from '../src/paths.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -127,5 +130,47 @@ describe('formatProjectMap', () => {
     const text = formatProjectMap(map, false)
     expect(text).toContain(`Files: ${map.fileCount}`)
     expect(text).toContain('typescript')
+  })
+})
+
+describe('buildProjectMap cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index keyed by absolute path across every
+  // project ever indexed (see constants.ts). fetchTopSymbols used to run an unscoped query
+  // against `symbols`, so the `## Top symbols` section of `map` silently mixed in symbols from
+  // unrelated projects that happened to share the same index. This seeds two distinct project
+  // roots directly into the real (test-isolated) global.db and asserts buildProjectMap(rootA)
+  // never surfaces a symbol whose file_path lives under rootB.
+  it('never includes a symbol whose file_path is under a different project root', () => {
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-rootA-'))
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-rootB-'))
+    fs.writeFileSync(path.join(rootA, 'a.ts'), 'export function fromRootA() {}\n')
+    fs.writeFileSync(path.join(rootB, 'b.ts'), 'export function fromRootB() {}\n')
+
+    // Real indexing always stores file_path via normalizePath() (see sql_path.ts's
+    // projectScopeClause docstring) -- including 8.3 short-name expansion. A raw
+    // backslash-to-slash conversion here would drift from that on a Windows machine whose
+    // %TEMP% is pinned to its short form (e.g. CI's `RUNNER~1`), silently failing the
+    // LIKE-based project-scope match.
+    const rootAFilePath = `${normalizePath(rootA)}/a.ts`
+    const rootBFilePath = `${normalizePath(rootB)}/b.ts`
+
+    const db = getDb(globalDbPath())
+    const insert = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    insert.run(rootAFilePath, 'fromRootA', 'function', 1, 1, 'export function fromRootA() {}', '')
+    insert.run(rootBFilePath, 'fromRootB', 'function', 1, 1, 'export function fromRootB() {}', '')
+
+    try {
+      const map = buildProjectMap(rootA)
+      const names = map.topSymbols.map((s) => s.name)
+      expect(names).toContain('fromRootA')
+      expect(names).not.toContain('fromRootB')
+      expect(map.topSymbols.every((s) => !s.filePath.includes(path.basename(rootB)))).toBe(true)
+    } finally {
+      fs.rmSync(rootA, { recursive: true, force: true })
+      fs.rmSync(rootB, { recursive: true, force: true })
+    }
   })
 })

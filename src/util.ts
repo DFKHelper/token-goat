@@ -10,7 +10,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -189,6 +189,18 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
       }
     } finally {
       closeSync(fd)
+    }
+
+    // Preserve the destination's existing file mode (e.g. the exec bit on a committed
+    // script) across the rewrite. On POSIX, renaming the 0o600 temp file over dest would
+    // otherwise silently drop dest's permissions -- git then reports a 100755->100644 mode
+    // change and the file stops being executable. A brand-new dest has no mode to inherit,
+    // so it keeps the 0o600 default. No-op on Windows (chmodSync has no effect there).
+    try {
+      const destMode = statSync(dest).mode
+      chmodSync(tmp, destMode)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
     }
 
     withRetryOnLock(() => renameSync(tmp, dest))

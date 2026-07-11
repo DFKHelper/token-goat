@@ -15,6 +15,11 @@ import { Command } from 'commander'
 import * as fs from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
+// Type-only imports: erased at compile time, so referencing them here does not
+// eagerly load mcp_server.js (and transitively @modelcontextprotocol/sdk) at CLI
+// startup. The runtime values are lazy-imported only inside cmdMcpServe.
+import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
+import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { formatLocalTimestamp } from './stats.js'
@@ -46,8 +51,6 @@ import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
-import { createMcpServer } from './mcp_server.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -113,7 +116,7 @@ import {
 } from './graph_commands.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
 import { loadConfig } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
@@ -299,6 +302,18 @@ function cmdMap(opts: { compact?: boolean }): void {
 // `connect()` itself does to the transport's own `onclose`) -- resolving early here would let
 // `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
 async function cmdMcpServe(): Promise<void> {
+  let createMcpServer: typeof CreateMcpServerFn
+  let StdioServerTransport: typeof StdioServerTransportClass
+  try {
+    ;({ createMcpServer } = await import('./mcp_server.js'))
+    ;({ StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js'))
+  } catch (err) {
+    process.stderr.write(
+      `token-goat: mcp-server unavailable (install @modelcontextprotocol/sdk to use this feature): ${String(err)}\n`,
+    )
+    process.exitCode = 1
+    return
+  }
   const server = createMcpServer()
   const transport = new StdioServerTransport()
   await server.connect(transport)
@@ -1240,6 +1255,15 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
     // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.
     fs.writeFileSync(tmp, data, { mode: 0o600 })
+    // Preserve dest's existing file mode (e.g. the exec bit on a committed script) across
+    // the rewrite -- see atomicWriteCore in util.ts for the same fix and full rationale.
+    // A brand-new dest has no mode to inherit, so the tmp file keeps its 0o600 default.
+    try {
+      const destMode = fs.statSync(dest).mode
+      fs.chmodSync(tmp, destMode)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+    }
     // Retries the rename on the same transient Windows lock errno (EPERM/EBUSY/ETXTBSY)
     // that atomicWriteCore retries, so a briefly-locked destination behaves the same way
     // here as it does for every other atomic write path in the codebase.
@@ -1513,6 +1537,17 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   validateWritablePath(file, 'target file')
 
   const targetBuf = readFileBoundedRaw(file, 'target file', true)
+  // Optimistic-concurrency guard: the snippet match above only protects the matched region --
+  // a concurrent write to any OTHER part of the file between this read and the final rename
+  // would otherwise be silently lost (atomicWriteBuffer rewrites the whole file, last-writer-wins).
+  // Best-effort, not a lock: a race between the re-stat below and the rename itself is accepted
+  // residual risk, consistent with this codebase's other lock patterns.
+  let preWriteStat: fs.Stats | undefined
+  try {
+    preWriteStat = fs.statSync(file)
+  } catch {
+    // If the file vanished between the read above and now, let the write path surface its own error.
+  }
   const usingFrom = opts.oldFrom !== undefined || opts.newFrom !== undefined
   const usingB64 = opts.oldB64 !== undefined || opts.newB64 !== undefined
 
@@ -1575,6 +1610,30 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   }
   parts.push(targetBuf.subarray(prevEnd))
   const replacedBuf = Buffer.concat(parts)
+
+  if (preWriteStat !== undefined) {
+    // Test-only seam: widens the read->re-stat window so a regression test can deterministically
+    // force a concurrent modification to land inside it, instead of relying on OS timing jitter.
+    // No-op unless a test explicitly sets this env var; never set in normal operation.
+    const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
+    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
+      // Deterministic readiness signal for the regression test: emitted only under the same
+      // test-only env var, right as the delay window opens, so the test can land its concurrent
+      // write inside the window instead of guessing at CLI startup latency.
+      process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
+      sleepSync(testDelayMs)
+    }
+    let preRenameStat: fs.Stats | undefined
+    try {
+      preRenameStat = fs.statSync(file)
+    } catch {
+      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
+    }
+    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
+      throw new CliError(`${file} changed on disk while replace was running -- the file was modified concurrently, so the replace was NOT applied. Retry the replace.`)
+    }
+  }
+
   try {
     atomicWriteBuffer(file, replacedBuf)
   } catch (e) {

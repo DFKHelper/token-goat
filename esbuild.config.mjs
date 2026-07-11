@@ -29,4 +29,32 @@ await esbuild.build({
   },
 })
 
+// Separate library bundle for in-process hook invocation: bridges that either
+// already run inside a long-lived Node host (OpenClaw, opencode, pi) or spawn
+// their own shim process (Codex, Claude Code, Copilot CLI) `import()` this
+// sibling file directly, instead of `spawnSync`-ing a second
+// `token-goat hook <event>` process on top of dist/token-goat.mjs. It must
+// stay a plain library with zero load-time side effects, unlike
+// dist/token-goat.mjs (whose banner-less src/main.ts entry calls `run()` at
+// import time to parse `process.argv` as CLI args) -- see src/hook_lib.ts.
+await esbuild.build({
+  entryPoints: ['src/hook_lib.ts'],
+  bundle: true,
+  platform: 'node',
+  target: 'node18',
+  format: 'esm',
+  outfile: 'dist/token-goat-hook.mjs',
+  external: ['better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*'],
+  banner: {
+    js: [
+      "import { createRequire as __cjsRequire } from 'node:module';",
+      'const require = __cjsRequire(import.meta.url);',
+    ].join('\n'),
+  },
+  define: {
+    'import.meta.env': '{}',
+    __TG_VERSION__: JSON.stringify(pkg.version),
+  },
+})
+
 console.log(`Built dist/token-goat.mjs  (v${pkg.version})`)

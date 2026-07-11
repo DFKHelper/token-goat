@@ -92,6 +92,7 @@ export interface HintBudgetConfig {
 }
 
 export interface ImageShrinkConfig {
+  enabled: boolean
   jpeg_quality: number
   max_image_pixels: number
   screenshot_redirect: boolean
@@ -294,6 +295,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     max_index_only_per_session: 30,
   },
   image_shrink: {
+    enabled: true,
     jpeg_quality: 75,
     max_image_pixels: 16_000_000,
     screenshot_redirect: true,
@@ -686,6 +688,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const is_raw = section(raw, 'image_shrink')
   const is_cfg = getDefaultConfig('image_shrink') as ImageShrinkConfig
+  is_cfg.enabled = validatedBool(is_raw['enabled'], is_cfg.enabled)
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, 1, 100)
   is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 0, 1_000_000_000)
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
@@ -983,6 +986,7 @@ export function saveConfig(config: Config): void {
       max_index_only_per_session: config.hint_budget.max_index_only_per_session,
     },
     image_shrink: {
+      enabled: is_cfg.enabled,
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
       screenshot_redirect: is_cfg.screenshot_redirect,

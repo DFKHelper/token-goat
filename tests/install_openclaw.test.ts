@@ -324,7 +324,11 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/token-goat-entry\.json/)
-    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the
+    // in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn
+    // when that's unavailable. See the "in-process hook call" describe block below for
+    // coverage of the in-process path taking priority and never spawning a process.
+    const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
     expect(body).toMatch(/resolveEntryPath\(\)/)
@@ -333,7 +337,7 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   })
 
   it('fallback spawnSync uses shell:true so it resolves .cmd shims on Windows', () => {
-    const callHookMatch = /function callHook\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
     const fallbackMatch = /: spawnSync\("token-goat hook "[\s\S]*?\}\)/.exec(body)
@@ -341,5 +345,22 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     const fallbackBlock = fallbackMatch?.[0] ?? ''
     expect(fallbackBlock).toContain('shell: true')
     expect(fallbackBlock).toContain('token-goat hook')
+  })
+
+  // Regression: callHook used to spawnSync a whole second node process
+  // (`token-goat hook <event>`) for every single tool call in this long-lived gateway
+  // process. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs
+  // hook lib first, falling back to callHookViaSpawn only when that's unavailable.
+  it('tries the in-process hook lib (resolveRelayInProcess) before ever calling callHookViaSpawn', () => {
+    expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/function resolveRelayInProcess\(\)/)
+    expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/token-goat-hook\.mjs/)
+    expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/await import\(pathToFileURL\(hookLibPath\)\.href\)/)
+    const callHookMatch = /async function callHook\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)
+    expect(callHookMatch).not.toBeNull()
+    const body = callHookMatch?.[0] ?? ''
+    const inProcessIndex = body.indexOf('resolveRelayInProcess')
+    const spawnFallbackIndex = body.indexOf('callHookViaSpawn')
+    expect(inProcessIndex).toBeGreaterThanOrEqual(0)
+    expect(spawnFallbackIndex).toBeGreaterThan(inProcessIndex)
   })
 })

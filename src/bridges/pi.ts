@@ -61,7 +61,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // pi built-in tool names -> token-goat internal tool names
 const TOOL_TO_TG: Record<string, string> = {
@@ -111,7 +111,36 @@ function resolveEntryPath(): string | undefined {
   return undefined;
 }
 
-function callHook(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
+// import()s dist/token-goat-hook.mjs (a sibling of the baked token-goat entry path,
+// built with zero load-time side effects -- unlike the CLI entry, which runs the full
+// argv-parsing CLI as a side effect of being loaded) and returns its exported
+// relayInProcess() function, so callHook can call straight into the hook registry
+// instead of spawnSync-ing a whole second node process for every single hook call in
+// this long-lived agent process. Cached after the first successful resolution (the
+// module itself is cached by Node's ESM loader on repeat import() calls of the same
+// URL, so this mainly avoids repeat fs.existsSync/sidecar-read overhead). Returns
+// undefined (triggering the spawnSync fallback below) when entryPath is absent, the
+// sibling file doesn't exist (an install predating this file), or anything else goes
+// wrong -- this must never throw.
+type RelayInProcessFn = (event: string, payload: unknown) => Promise<string>;
+let cachedRelayInProcess: RelayInProcessFn | undefined;
+async function resolveRelayInProcess(): Promise<RelayInProcessFn | undefined> {
+  if (cachedRelayInProcess) return cachedRelayInProcess;
+  const entryPath = resolveEntryPath();
+  if (!entryPath) return undefined;
+  try {
+    const hookLibPath = path.join(path.dirname(entryPath), "token-goat-hook.mjs");
+    if (!fs.existsSync(hookLibPath)) return undefined;
+    const mod = (await import(pathToFileURL(hookLibPath).href)) as { relayInProcess?: unknown };
+    if (typeof mod.relayInProcess !== "function") return undefined;
+    cachedRelayInProcess = mod.relayInProcess as RelayInProcessFn;
+    return cachedRelayInProcess;
+  } catch {
+    return undefined;
+  }
+}
+
+function callHookViaSpawn(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
     // TOKEN_GOAT_HARNESS_OVERRIDE=pi guarantees detectHarness() resolves to
     // 'pi' for every call this bridge makes, instead of relying on a guessed
@@ -129,14 +158,16 @@ function callHook(event: string, payload: Record<string, unknown>): Record<strin
       ? spawnSync(process.execPath, [entryPath, "hook", event], {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 5000,
+          timeout: 3000,
+          killSignal: "SIGKILL",
           windowsHide: true,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         })
       : spawnSync('token-goat hook ' + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 5000,
+          timeout: 3000,
+          killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
@@ -148,6 +179,28 @@ function callHook(event: string, payload: Record<string, unknown>): Record<strin
   } catch {
     return null;
   }
+}
+
+// Tries the in-process hook call first (resolveRelayInProcess above), which avoids
+// spawning a second node process altogether for every single tool call in this
+// long-lived agent process. Falls back to callHookViaSpawn (the original
+// spawnSync-based path, now with a 3000ms timeout/killSignal so token-goat degrades to
+// its own fail-open null rather than being force-killed by pi's own hook timeout
+// budget, ~5000ms) when the in-process path is unavailable or throws.
+async function callHook(event: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  const relay = await resolveRelayInProcess();
+  if (relay) {
+    try {
+      process.env.TOKEN_GOAT_HARNESS_OVERRIDE = "pi";
+      const out = await relay(event, payload);
+      const trimmed = out?.trim();
+      if (!trimmed) return null;
+      return JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      // fall through to the spawnSync fallback below
+    }
+  }
+  return callHookViaSpawn(event, payload);
 }
 
 function reverseArgMap(tool: string): Record<string, string> {
@@ -227,7 +280,7 @@ export default function (pi: ExtensionAPI) {
     if (!tg || !PRE_HOOK_TOOLS.has(tg)) return;
 
     const input = event.input as Record<string, unknown>;
-    const resp = callHook("pre_tool_use", {
+    const resp = await callHook("pre_tool_use", {
       session_id: sessionId,
       tool_name: tg,
       tool_input: toToolInput(event.toolName, input),
@@ -275,8 +328,8 @@ export default function (pi: ExtensionAPI) {
     const output = contentBlocks
       .filter((c: { type?: string }) => c && c.type === "text")
       .map((c: { text?: string }) => c.text ?? "")
-      .join("\n");
-    callHook("post_tool_use", {
+      .join("\\n");
+    await callHook("post_tool_use", {
       session_id: sessionId,
       tool_name: tg,
       tool_input: toToolInput(event.toolName, (event.input ?? {}) as Record<string, unknown>),
@@ -292,7 +345,7 @@ export default function (pi: ExtensionAPI) {
   // window. This preserves the edited-file / symbol manifest within pi's
   // replace-only compaction model.
   pi.on("session_before_compact", async (_event, _ctx) => {
-    const resp = callHook("pre_compact", { session_id: sessionId, trigger: "auto" });
+    const resp = await callHook("pre_compact", { session_id: sessionId, trigger: "auto" });
     pendingManifest = resp?.["systemMessage"] as string | undefined;
   });
 
