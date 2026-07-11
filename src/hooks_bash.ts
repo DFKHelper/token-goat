@@ -439,7 +439,7 @@ function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonl
 
 // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
 const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
-  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell',
+  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell', 'apex', 'salesforce_metadata', 'salesforce_markup',
 ])
 
 // Builds the recall hint for a `sed -n 'N,Mp' file` read, tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range.

@@ -102,6 +102,74 @@ export function stripCstyleComments(
 }
 
 /**
+ * Strip XML/HTML ``<!-- ... -->`` block comments. Comment content is blanked with spaces (not
+ * removed), and newlines inside a multi-line comment are preserved as-is, so line/column offsets
+ * are unaffected downstream — mirrors `stripCstyleComments`'s span-blanking approach for `/* ... *\/`
+ * comments, just with the `<!--`/`-->` delimiters instead of `/*`/`*\/`.
+ */
+export function stripXmlComments(text: string): string {
+  const lines = text.split('\n')
+  let inComment = false
+  const outLines: string[] = []
+  for (const line of lines) {
+    let result = ''
+    let j = 0
+    while (j < line.length) {
+      if (!inComment) {
+        const open = line.indexOf('<!--', j)
+        if (open === -1) {
+          result += line.slice(j)
+          break
+        }
+        result += line.slice(j, open)
+        const close = line.indexOf('-->', open + 4)
+        if (close === -1) {
+          result += ' '.repeat(line.length - open)
+          inComment = true
+          break
+        }
+        result += ' '.repeat(close + 3 - open)
+        j = close + 3
+        inComment = false
+      } else {
+        const close = line.indexOf('-->', j)
+        if (close === -1) {
+          result += ' '.repeat(line.length - j)
+          break
+        }
+        result += ' '.repeat(close + 3 - j)
+        j = close + 3
+        inComment = false
+      }
+    }
+    outLines.push(result)
+  }
+  return outLines.join('\n')
+}
+
+/**
+ * Strip `//` line comments, quote-aware (like `stripSqlLineComments`'s `--` handling below) so a
+ * `//` inside an open string literal (e.g. a URL like `'https://example.com'`) is not mistaken for
+ * a real comment starter. Blank-fills (rather than deletes) the comment span so line/column offsets
+ * are preserved for downstream line-based symbol extraction. Unlike `stripCstyleComments`'s
+ * `lineCommentRe` parameter, this is quote-aware on its own and does not require callers to blank
+ * string literals first — needed by callers (like the Salesforce LWC JS adapter) that still need
+ * string-literal content intact after stripping comments, e.g. to read an import path.
+ */
+export function stripSlashLineComments(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      let idx = line.indexOf('//')
+      while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+        idx = line.indexOf('//', idx + 1)
+      }
+      return idx === -1 ? line : line.slice(0, idx) + ' '.repeat(line.length - idx)
+    })
+    .join('\n')
+}
+
+/**
  * Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an
  * open single- or double-quoted string literal on the same line is not treated as a comment
  * starter, so e.g. a GraphQL description string containing a literal `#` is preserved.

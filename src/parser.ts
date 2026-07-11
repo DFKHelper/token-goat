@@ -45,6 +45,11 @@ import { extractProto } from './languages/proto_idx.js'
 import { extractPowershell } from './languages/powershell_idx.js'
 import { extractApex } from './languages/apex.js'
 import { extractSalesforceMetadata } from './languages/salesforce_metadata.js'
+import {
+  extractLwcJavaScript,
+  extractLwcTemplate,
+  extractSalesforceMarkup,
+} from './languages/salesforce_frontend.js'
 import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
@@ -1211,6 +1216,33 @@ interface ParseContentResult {
   readonly refs: RefEntry[]
 }
 
+function isLwcFile(filePath: string, extension: '.js' | '.html'): boolean {
+  const normalized = filePath.replace(/\\/g, '/')
+  return /\/lwc\/[^/]+\/[^/]+$/i.test(normalized) && normalized.toLowerCase().endsWith(extension)
+}
+
+function mergeParseResults(...results: readonly ParseContentResult[]): ParseContentResult {
+  const symbols: SymbolEntry[] = []
+  const refs: RefEntry[] = []
+  const seenSymbols = new Set<string>()
+  const seenRefs = new Set<string>()
+  for (const result of results) {
+    for (const entry of result.symbols) {
+      const key = `${entry.filePath}\0${entry.name}\0${entry.kind}\0${entry.lineStart}`
+      if (seenSymbols.has(key)) continue
+      seenSymbols.add(key)
+      symbols.push(entry)
+    }
+    for (const entry of result.refs) {
+      const key = `${entry.filePath}\0${entry.name}\0${entry.line}\0${entry.col}`
+      if (seenRefs.has(key)) continue
+      seenRefs.add(key)
+      refs.push(entry)
+    }
+  }
+  return { symbols, refs }
+}
+
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
 function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
   // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix.
@@ -1247,7 +1279,10 @@ function parseContent(content: string, filePath: string, language: Language): Pa
           symbols = extractTsJsSymbols(root, filePath)
         }
         const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
-        return { symbols, refs }
+        const parsed = { symbols, refs }
+        return language === 'javascript' && isLwcFile(filePath, '.js')
+          ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+          : parsed
       }
     } catch {
       // Parser threw on this input — fall through to the regex pass below.
@@ -1255,7 +1290,7 @@ function parseContent(content: string, filePath: string, language: Language): Pa
   }
 
   // Regex-based extractors for languages without tree-sitter
-  return { symbols: extractSymbolsNoTreeSitter(content, filePath, language), refs: [] }
+  return extractNoTreeSitter(content, filePath, language)
 }
 
 /**
@@ -1315,6 +1350,24 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
+}
+
+function extractNoTreeSitter(
+  content: string,
+  filePath: string,
+  language: Language,
+): ParseContentResult {
+  if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
+  if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
+  if (language === 'html' && isLwcFile(filePath, '.html')) return extractLwcTemplate(content, filePath)
+
+  const parsed: ParseContentResult = {
+    symbols: extractSymbolsNoTreeSitter(content, filePath, language),
+    refs: [],
+  }
+  return language === 'javascript' && isLwcFile(filePath, '.js')
+    ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+    : parsed
 }
 
 function extractSymbolsNoTreeSitter(

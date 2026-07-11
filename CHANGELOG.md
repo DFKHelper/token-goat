@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Layered Salesforce DX indexing for metadata and frontend bundles.** Every `*-meta.xml` file now receives a stable top-level symbol, while Apex, Flow, object-member metadata, Custom Labels, LWC, Aura, and Visualforce receive detailed symbols and selected cross-file references. LWC indexing understands public `@api` members, Salesforce imports, template handlers/child components, bundle targets, and target properties; Aura/Visualforce markup now has a dedicated `salesforce_markup` adapter. The real default worker path and built bundle are covered by a Salesforce DX fixture so these adapters cannot silently disappear from the shipped artifact.
+
 ### Fixed
 
 - **macOS `/var` and `/private/var` aliases could produce different cache and index keys for the same file.** Path canonicalization now normalizes the Darwin system alias consistently, restoring relative `skeleton`/`outline`, trace frame detection, project discovery, settings paths, and doc-compact reuse for temporary paths.

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+  <actionCalls>
+    <name>Load_Account</name>
+    <actionName>AccountController.loadAccount</actionName>
+    <actionType>apex</actionType>
+  </actionCalls>
+  <subflows>
+    <name>Run_Child</name>
+    <flowName>Child_Account_Flow</flowName>
+  </subflows>
+  <recordLookups>
+    <name>Find_Account</name>
+    <object>Account</object>
+    <filters>
+      <field>Name</field>
+      <operator>EqualTo</operator>
+      <value><stringValue>Acme</stringValue></value>
+    </filters>
+  </recordLookups>
+  <status>Active</status>
+</Flow>
