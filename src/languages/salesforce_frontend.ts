@@ -1,6 +1,7 @@
 import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
+import { stripCstyleComments, stripSlashLineComments, stripXmlComments } from './common.js'
 
 export interface SalesforceFrontendResult {
   readonly symbols: SymbolEntry[]
@@ -53,22 +54,25 @@ export function extractLwcJavaScript(content: string, filePath: string): Salesfo
   ]
   const refs: RefEntry[] = []
 
+  // Blank comments (block first, then quote-aware `//`) so commented-out `@api` declarations and Salesforce imports aren't indexed as live code; string-literal content is untouched.
+  const commentFree = stripSlashLineComments(stripCstyleComments(content))
+
   const apiRe = /@api\s*(?:\r?\n\s*)?(?:(get|set)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*(\()?/g
-  for (const match of content.matchAll(apiRe)) {
-    const before = content.slice(0, match.index ?? 0)
+  for (const match of commentFree.matchAll(apiRe)) {
+    const before = commentFree.slice(0, match.index ?? 0)
     const line = before.split('\n').length
     const kind = match[3] && !match[1] ? 'lwc_api_method' : 'lwc_api_property'
     symbols.push(symbol(filePath, match[2] ?? '', kind, line))
   }
 
   const importRe = /from\s+['"]@salesforce\/(apex|schema|label|resourceUrl|messageChannel|customPermission|userPermission)\/([^'"]+)['"]/g
-  for (const match of content.matchAll(importRe)) {
+  for (const match of commentFree.matchAll(importRe)) {
     const offset = match.index ?? 0
-    const line = content.slice(0, offset).split('\n').length
+    const line = commentFree.slice(0, offset).split('\n').length
     const context = sourceLines[line - 1]?.trim() ?? ''
     const target = match[2] ?? ''
     const targetOffset = offset + (match[0]?.indexOf(target) ?? 0)
-    const col = targetOffset - (content.lastIndexOf('\n', targetOffset) + 1)
+    const col = targetOffset - (commentFree.lastIndexOf('\n', targetOffset) + 1)
     if (match[1] === 'apex') {
       const className = target.split('.')[0] ?? target
       refs.push(ref(filePath, className, line, col, context))
@@ -102,9 +106,11 @@ export function extractLwcTemplate(content: string, filePath: string): Salesforc
     const line = matchLine(content, match.index ?? 0)
     symbols.push(symbol(filePath, match[1] ?? '', 'lwc_id', line))
   }
-  for (const match of content.matchAll(/\bon[a-z][\w-]*\s*=\s*\{\s*([A-Za-z_$][\w$]*)\s*\}/gi)) {
+  // Blank `<!-- ... -->` spans before matching event-handler bindings so a commented-out element (e.g. `<!-- <button onclick={oldHandler}> -->`) isn't indexed as a live ref.
+  const markupNoComments = stripXmlComments(content)
+  for (const match of markupNoComments.matchAll(/\bon[a-z][\w-]*\s*=\s*\{\s*([A-Za-z_$][\w$]*)\s*\}/gi)) {
     const offset = match.index ?? 0
-    const line = matchLine(content, offset)
+    const line = matchLine(markupNoComments, offset)
     refs.push(ref(filePath, match[1] ?? '', line, 0, lineContext(content, line)))
   }
   for (const match of content.matchAll(/<\s*(c-[a-z][\w-]*)\b/gi)) {
@@ -192,11 +198,13 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
   attributeRefs(refs, content, filePath, 'controller')
   attributeRefs(refs, content, filePath, 'extensions', true)
 
+  // Blank `<!-- ... -->` spans before matching `{!c.action}` / `action="{!...}"` bindings so a commented-out element isn't indexed as a live controller-action ref.
+  const markupNoComments = stripXmlComments(content)
   const actionRe = isAura
     ? /\{!\s*c\.([A-Za-z_$][\w$]*)[^}]*\}/gi
     : /\baction\s*=\s*["']\{!\s*(?:c\.)?([A-Za-z_$][\w$]*)[^}]*\}["']/gi
-  for (const match of content.matchAll(actionRe)) {
-    const line = matchLine(content, match.index ?? 0)
+  for (const match of markupNoComments.matchAll(actionRe)) {
+    const line = matchLine(markupNoComments, match.index ?? 0)
     refs.push(ref(filePath, match[1] ?? '', line, 0, lineContext(content, line)))
   }
 

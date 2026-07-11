@@ -132,6 +132,44 @@ describe('Salesforce metadata XML adapter', () => {
     expect(result.refs.map((ref) => ref.name)).toEqual(expected)
   })
 
+  it('ignores metadata names, flow refs, and target-config properties inside XML comments', () => {
+    const commentedName = extractSalesforceMetadata(
+      `<CustomObject xmlns="urn:test">
+  <!-- <fullName>Old_Object__c</fullName> -->
+  <fullName>Real_Object__c</fullName>
+</CustomObject>`,
+      'force-app/main/default/objects/Real_Object__c/Real_Object__c.object-meta.xml',
+    )
+    expect(commentedName.symbols).toEqual([
+      expect.objectContaining({ name: 'Real_Object__c', kind: 'sf_object' }),
+    ])
+
+    const commentedFlow = extractSalesforceMetadata(
+      `<Flow xmlns="urn:test">
+  <!-- <actionCalls><name>Disabled</name><actionName>OldService.create</actionName></actionCalls> -->
+  <actionCalls><name>Invoke</name><actionName>InvoiceService.create</actionName></actionCalls>
+</Flow>`,
+      'force-app/main/default/flows/Checkout.flow-meta.xml',
+    )
+    expect(commentedFlow.symbols.map((symbol) => symbol.name)).not.toContain('Disabled')
+    expect(commentedFlow.symbols.map((symbol) => symbol.name)).toContain('Invoke')
+    expect(commentedFlow.refs.map((ref) => ref.name)).toEqual(['InvoiceService.create'])
+
+    const commentedProperty = extractSalesforceMetadata(
+      `<LightningComponentBundle xmlns="urn:test">
+  <targetConfigs>
+    <!-- <targetConfig targets="lightning__RecordPage"><property name="disabledProp" type="String"/></targetConfig> -->
+    <targetConfig targets="lightning__RecordPage">
+      <property name="recordId" type="String"/>
+    </targetConfig>
+  </targetConfigs>
+</LightningComponentBundle>`,
+      'force-app/main/default/lwc/orderCard/orderCard.js-meta.xml',
+    )
+    expect(commentedProperty.symbols.map((symbol) => symbol.name)).not.toContain('disabledProp')
+    expect(commentedProperty.symbols.map((symbol) => symbol.name)).toContain('recordId')
+  })
+
   it('returns no entries for malformed metadata and caps duplicate child symbols', () => {
     expect(
       extractSalesforceMetadata('<CustomLabels><labels><fullName>Broken', 'Broken.labels-meta.xml'),
@@ -147,5 +185,27 @@ describe('Salesforce metadata XML adapter', () => {
     )
     expect(result.symbols).toHaveLength(1000)
     expect(new Set(result.symbols.map((symbol) => symbol.name)).size).toBe(1000)
+  })
+
+  it('indexes a metadata file whose root element is self-closing (regression: rootElement required a separate close tag, so a self-closing root indexed as zero symbols)', () => {
+    const result = extractSalesforceMetadata(
+      '<CustomObjectTranslation xmlns="http://soap.sforce.com/2006/04/metadata"/>',
+      'Account.objectTranslation-meta.xml',
+    )
+    expect(result.symbols).toEqual([
+      expect.objectContaining({ name: 'Account', kind: 'sf_custom_object_translation' }),
+    ])
+  })
+
+  it('caps ref emission at MAX_REFS instead of growing unbounded (regression: emitRef had no cap, unlike emit’s MAX_SYMBOLS)', () => {
+    const repeated = Array.from(
+      { length: 1100 },
+      (_, index) => `<flexiPageRegion><componentInstance><componentName>cmp_${index}</componentName></componentInstance></flexiPageRegion>`,
+    ).join('')
+    const result = extractSalesforceMetadata(
+      `<FlexiPage>${repeated}</FlexiPage>`,
+      'Test.flexipage-meta.xml',
+    )
+    expect(result.refs.length).toBeLessThanOrEqual(1000)
   })
 })

@@ -1,9 +1,10 @@
 import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
-import { buildLineIndex, offsetToLine } from './common.js'
+import { buildLineIndex, offsetToLine, stripXmlComments } from './common.js'
 
 const MAX_SYMBOLS = 1000
+const MAX_REFS = 1000
 
 const FLOW_TAG_KIND: Readonly<Record<string, string>> = {
   actionCalls: 'sf_flow_action',
@@ -113,8 +114,11 @@ function makeSymbol(
 
 function rootElement(content: string): string | null {
   const match = /<(?!\?|!)(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)\b[^>]*>/.exec(content)
-  const root = match?.[1]
+  if (match === null) return null
+  const root = match[1]
   if (root === undefined) return null
+  // A self-closing root (e.g. `<CustomObjectTranslation xmlns="..."/>`) has no separate close tag to find.
+  if (match[0].endsWith('/>')) return root
   const close = new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${root}\\s*>`, 'i')
   return close.test(content) ? root : null
 }
@@ -177,8 +181,9 @@ function makeRef(content: string, filePath: string, name: string, offset: number
 }
 
 function emitRef(refs: RefEntry[], seen: Set<string>, ref: RefEntry): void {
+  if (!ref.name || refs.length >= MAX_REFS) return
   const key = `${ref.filePath}\0${ref.name}\0${ref.line}\0${ref.col}`
-  if (!ref.name || seen.has(key)) return
+  if (seen.has(key)) return
   seen.add(key)
   refs.push(ref)
 }
@@ -236,9 +241,11 @@ function emit(symbols: SymbolEntry[], seen: Set<string>, symbol: SymbolEntry): v
 }
 
 export function extractSalesforceMetadata(
-  content: string,
+  rawContent: string,
   filePath: string,
 ): { symbols: SymbolEntry[]; refs: RefEntry[] } {
+  // Blank `<!-- ... -->` spans up front so every regex-based extractor below scans only live XML and never mistakes commented-out metadata for the real thing; blanking (not deleting) preserves line/column offsets.
+  const content = stripXmlComments(rawContent)
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const refs: RefEntry[] = []

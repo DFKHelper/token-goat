@@ -45,6 +45,28 @@ export default class OrderList extends LightningElement {
     ])
   })
 
+  it('ignores @api declarations and Salesforce imports inside JS comments', () => {
+    const source = `import { LightningElement, api } from 'lwc';
+// import disabledImport from '@salesforce/apex/OldController.getRows';
+/*
+  @api disabledProp;
+*/
+import getRows from '@salesforce/apex/OrderController.getRows';
+
+export default class OrderList extends LightningElement {
+  @api recordId;
+}
+`
+
+    const result = extractLwcJavaScript(source, 'force-app/main/default/lwc/orderList/orderList.js')
+
+    expect(result.symbols.map(({ name }) => name)).toEqual(['orderList', 'c-order-list', 'recordId'])
+    expect(result.refs.map(({ name, line }) => ({ name, line }))).toEqual([
+      { name: 'OrderController', line: 6 },
+      { name: 'OrderController.getRows', line: 6 },
+    ])
+  })
+
   it('classifies public LWC accessors as properties and async functions as methods', () => {
     const source = `export default class StatusPanel {
   @api get status() { return 'ready'; }
@@ -80,6 +102,31 @@ export default class OrderList extends LightningElement {
       { name: 'c-order-row', line: 4 },
       { name: 'c-order-row', line: 5 },
     ])
+  })
+
+  it('ignores event-handler bindings inside HTML comments', () => {
+    const source = `<template>
+  <!-- <lightning-button onclick={disabledHandler}></lightning-button> -->
+  <lightning-button onclick={handleCheckout}></lightning-button>
+</template>`
+
+    const result = extractLwcTemplate(source, 'force-app/main/default/lwc/checkoutPanel/checkoutPanel.html')
+
+    expect(result.refs.map(({ name, line }) => ({ name, line }))).toEqual([
+      { name: 'handleCheckout', line: 3 },
+    ])
+  })
+
+  it('ignores {!c.action} bindings inside HTML comments', () => {
+    const source = `<aura:component controller="OrderController">
+  <!-- <c:OrderRow onselect="{!c.disabledAction}"/> -->
+  <c:OrderRow onselect="{!c.select}"/>
+</aura:component>`
+
+    const result = extractSalesforceMarkup(source, 'force-app/main/default/aura/orderPanel/orderPanel.cmp')
+
+    expect(result.refs.map(({ name }) => name)).not.toContain('disabledAction')
+    expect(result.refs.map(({ name }) => name)).toContain('select')
   })
 
   it('indexes Aura bundles, members, controller actions, and component references', () => {
