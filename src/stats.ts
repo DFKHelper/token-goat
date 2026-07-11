@@ -354,6 +354,21 @@ function _totalsLines(summary: StatsSummary): string[] {
  * fuller breakdowns. This is the bare ``token-goat stats`` default (both TTY
  * and non-TTY use this -- the short output needs no rich-TUI treatment).
  */
+/**
+ * Whether stats output should use the rich, ANSI-colored renderer.
+ * `isTTY === true` is an explicit, unambiguous terminal -- always rich. When
+ * `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at
+ * all -- see 9f8589a5) treat it as rich too, but not when `CI` is set: CI
+ * runners are also non-TTY and would otherwise be misread as Claude Code's
+ * terminal, sending colorized box-table output through what test/log
+ * consumers expect to be plain text.
+ */
+function _useRichStats(): boolean {
+  if (process.env['NO_COLOR']) return false
+  if (process.stdout.isTTY === true) return true
+  return process.stdout.isTTY === undefined && !process.env['CI']
+}
+
 function _renderShortTotals(summary: StatsSummary): void {
   const lines = [
     ..._totalsLines(summary),
@@ -481,7 +496,7 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string 
     return
   }
 
-  const useTty = process.stdout.isTTY !== false && !process.env['NO_COLOR']
+  const useTty = _useRichStats()
   if (!useTty) {
     _renderShortTotals(summary)
     return
@@ -500,7 +515,7 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
     return
   }
 
-  const useTty = process.stdout.isTTY !== false && !process.env['NO_COLOR']
+  const useTty = _useRichStats()
   if (!useTty) {
     _plainTextStats(summary)
     return
