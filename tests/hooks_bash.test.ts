@@ -1266,6 +1266,20 @@ describe('preBashHandler — sed line-range interception', () => {
       expect(result.context).toContain('docs/report.md@13-31')
     }
   })
+
+  it('treats Salesforce Apex, metadata, and markup as symbol-bearing surgical reads', () => {
+    for (const file of [
+      'force-app/main/default/classes/ExampleController.cls',
+      'force-app/main/default/flows/Example.flow-meta.xml',
+      'force-app/main/default/aura/example/example.cmp',
+    ]) {
+      const result = preBashHandler(makeBashEvent(`sed -n '10,40p' ${file}`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('token-goat symbol')
+      }
+    }
+  })
 })
 
 describe('preBashHandler — rg indented def patterns', () => {

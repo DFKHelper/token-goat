@@ -987,6 +987,25 @@ Some content that makes the file large enough`
     }
   })
 
+  it('recognizes Salesforce source and metadata files for symbol-aware re-read guidance', () => {
+    for (const suffix of ['.cls', '.cmp', '.flow-meta.xml']) {
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}${suffix}`,
+      )
+      fs.writeFileSync(p, suffix === '.cls' ? 'public class Example {}' : '<Example/>')
+      tmpFiles.push(p)
+
+      expect(preReadHandler(readEvent(p)).hookType).toBe('pass')
+      expect(preReadHandler(readEvent(p)).hookType).toBe('context')
+      const third = preReadHandler(readEvent(p))
+      expect(third.hookType).toBe('deny')
+      if (third.hookType === 'deny') {
+        expect(third.message).toContain('token-goat skeleton')
+      }
+    }
+  })
+
   it('does not recognize .swift as a source extension for the count-based re-read deny (regression: .swift was hardcoded into SOURCE_EXT_RE despite parser_types.ts having no adapter for it, so a 3rd read produced the skeleton/outline-pointing deny message even though those commands would return nothing for a .swift file)', () => {
     const p = path.join(
       os.tmpdir(),

@@ -38,12 +38,39 @@ describe('detectLanguage', () => {
   it('classifies Salesforce Apex and source-format metadata', () => {
     expect(detectLanguage('force-app/main/default/classes/ExampleController.cls')).toBe('apex')
     expect(detectLanguage('force-app/main/default/triggers/ExampleTrigger.trigger')).toBe('apex')
-    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls-meta.xml')).toBe('unknown')
+    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
     expect(detectLanguage('force-app/main/default/objects/Example__c/Example__c.object-meta.xml')).toBe(
       'salesforce_metadata',
     )
     expect(detectLanguage('force-app/main/default/flows/Example_Flow.flow-meta.xml')).toBe(
       'salesforce_metadata',
     )
+    expect(detectLanguage('force-app\\main\\default\\permissionsetgroups\\Sales.PERMISSIONS ETGROUP-META.XML')).toBe(
+      'salesforce_metadata',
+    )
+    expect(detectLanguage('force-app/main/default/unknown/Future.futureType-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
+  })
+
+  it('classifies Aura and Visualforce markup', () => {
+    for (const extension of [
+      'cmp',
+      'app',
+      'evt',
+      'intf',
+      'design',
+      'auradoc',
+      'tokens',
+      'page',
+      'component',
+      'email',
+    ]) {
+      expect(detectLanguage(`force-app\\main\\default\\ui\\Example.${extension.toUpperCase()}`)).toBe(
+        'salesforce_markup',
+      )
+    }
   })
 })

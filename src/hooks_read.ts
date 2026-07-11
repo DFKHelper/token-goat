@@ -43,6 +43,7 @@ import { isImagePath } from './image_shrink.js'
 import { compactPathFor, isCompactFresh, readCompactBody } from './doc_compact.js'
 import { getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from './notebook_compact.js'
 import { dataDir } from './constants.js'
+import { detectLanguage } from './parser_types.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -286,7 +287,9 @@ const SOURCE_EXT_RE =
   /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb|php|kt|kts|cpp|cc|cxx|hpp|hxx|c|h|cs)$/i
 
 function isSourceExtension(basename: string): boolean {
-  return SOURCE_EXT_RE.test(basename)
+  if (SOURCE_EXT_RE.test(basename)) return true
+  const language = detectLanguage(basename)
+  return language === 'apex' || language === 'salesforce_metadata' || language === 'salesforce_markup'
 }
 
 // Extensions dispatchFileTypeHandler() (hints/file_type_handler.ts) recognizes and gives
