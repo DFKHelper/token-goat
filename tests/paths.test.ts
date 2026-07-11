@@ -3,7 +3,13 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { lowercaseDriveLetter, normalizePath, resolveIndexPath, safeJoin } from '../src/paths.js'
+import {
+  lowercaseDriveLetter,
+  normalizeDarwinSystemAlias,
+  normalizePath,
+  resolveIndexPath,
+  safeJoin,
+} from '../src/paths.js'
 
 describe('safeJoin', () => {
   it('joins normally when no part contains a colon', () => {
@@ -202,6 +208,20 @@ describe('lowercaseDriveLetter', () => {
 
   it('leaves a UNC-shaped string with no share segment unchanged (no match, falls through)', () => {
     expect(lowercaseDriveLetter('//FileServer')).toBe('//FileServer')
+  })
+})
+
+describe('normalizeDarwinSystemAlias', () => {
+  it('normalizes only the /var path boundary on macOS', () => {
+    const expectedRoot = process.platform === 'darwin' ? '/private/var' : '/var'
+    const expectedChild = process.platform === 'darwin' ? '/private/var/folders/example' : '/var/folders/example'
+    expect(normalizeDarwinSystemAlias('/var')).toBe(expectedRoot)
+    expect(normalizeDarwinSystemAlias('/var/folders/example')).toBe(expectedChild)
+    expect(normalizeDarwinSystemAlias('/VAR/FOLDERS/example')).toBe(
+      process.platform === 'darwin' ? '/private/VAR/FOLDERS/example' : '/VAR/FOLDERS/example',
+    )
+    expect(normalizeDarwinSystemAlias('/private/var/folders/example')).toBe('/private/var/folders/example')
+    expect(normalizeDarwinSystemAlias('/variant/example')).toBe('/variant/example')
   })
 })
 
