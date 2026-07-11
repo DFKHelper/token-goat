@@ -521,6 +521,8 @@ describe('stats', () => {
       ).run(now, 'image_shrink', 1000, 5000)
       db.close()
 
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       let output = ''
       const originalLog = console.log
       console.log = (msg: string) => {
@@ -530,6 +532,7 @@ describe('stats', () => {
         _renderStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
         closeAllDbs()
         fs.rmSync(customHome, { recursive: true, force: true })
       }
@@ -573,6 +576,8 @@ describe('stats', () => {
       ).run(now, 'image_shrink', 1000, 5000)
       db.close()
 
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       let output = ''
       const originalLog = console.log
       console.log = (msg: string) => {
@@ -582,6 +587,7 @@ describe('stats', () => {
         _renderShortStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
         closeAllDbs()
         fs.rmSync(customHome, { recursive: true, force: true })
       }
