@@ -19,6 +19,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } fr
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
@@ -58,7 +59,8 @@ function readFileText(p: string): string | null {
 }
 
 function emit(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const out = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(out))
 }
 
 function emitErr(text: string): void {
@@ -825,7 +827,9 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       return 0
     }
     if (opts.json === true) {
-      emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
+      const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+      const capped = guardJsonRows(rowsJson)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
     } else {
       emit(formatCsvTable(result))
     }
@@ -1049,7 +1053,8 @@ export function runListSections(opts: ListSectionsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(sections, null, 2))
+    const capped = guardJsonRows(sections)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
@@ -1171,7 +1176,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
       return 0
     }
     if (opts.json === true) {
-      emit(JSON.stringify(allSymbols, null, 2))
+      const capped = guardJsonRows(allSymbols)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
       return 0
     }
     for (const s of allSymbols) {
@@ -1181,7 +1187,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(changedFiles, null, 2))
+    const capped = guardJsonRows(changedFiles)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
   for (const f of changedFiles) {
@@ -1666,7 +1673,8 @@ export function runImports(opts: ImportsExportsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(imports, null, 2))
+    const capped = guardJsonRows(imports)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
