@@ -14,6 +14,7 @@ vi.mock('node:os', async (importOriginal) => {
 })
 
 import { tok, pct, findClaudeMdFiles, findMemoryMd, runContextStats } from '../src/cli_context_stats.js'
+import { canonicalize } from '../src/project.js'
 
 describe('cli_context_stats', () => {
   let tempDir: string
@@ -220,7 +221,12 @@ describe('cli_context_stats', () => {
       const projectRoot = path.join(tempDir, 'fix-project')
       fs.mkdirSync(projectRoot)
 
-      const slug = path.resolve(projectRoot).replace(/[^A-Za-z0-9]/g, '-')
+      // runContextStats routes projectRoot through resolveProjectRoot() (src/project.ts),
+      // which canonicalizes it -- including 8.3 short-name expansion on a Windows machine
+      // whose %TEMP% is pinned to short form (e.g. CI's RUNNER~1) -- before findMemoryMd
+      // ever sees it. The expected slug here must be derived the same way, not via a raw
+      // path.resolve() of the un-canonicalized projectRoot.
+      const slug = path.resolve(canonicalize(projectRoot)).replace(/[^A-Za-z0-9]/g, '-')
       const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
       fs.mkdirSync(memDir, { recursive: true })
       const memFile = path.join(memDir, 'MEMORY.md')

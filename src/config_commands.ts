@@ -21,7 +21,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync } from './util.js'
+import { ensureNewline, ensureDirSync, withFileLock, sleepSync } from './util.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 
@@ -190,41 +190,67 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (opts.value === undefined) {
       throw new Error('config set requires a value')
     }
-    const parts = opts.key.split('.')
-    const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
-    const ref = walkParent(cfg, parts)
-    if (!ref) {
-      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
-    }
-    const existing = ref.parent[ref.leaf]
-    if (existing === undefined) {
-      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
-    }
-    if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
-      throw new Error(`config set: '${opts.key}' is a section, not a settable field — set an individual key within it instead (e.g. ${opts.key}.<field>)`)
-    }
-    const defaultAtKey = walkGet(defaultConfig() as unknown as Record<string, unknown>, parts)
-    const coerced = coerce(opts.value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
-    ref.parent[ref.leaf] = coerced
-    if (typeof coerced === 'number') {
-      // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
-      // overlay, so the check reflects the value actually being written). If the field clamps
-      // to something else, the input was out of its documented range — reject instead of
-      // silently writing an invalid value that only gets clamped (with no feedback) next load.
-      const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
-      const revalidatedResult = walkGet(revalidated, parts)
-      if (revalidatedResult.found && revalidatedResult.value !== coerced) {
-        throw new Error(`config set: ${opts.key} = ${coerced} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
+    const key = opts.key
+    const value = opts.value
+    const parts = key.split('.')
+    // The load->mutate->save below is a genuine read-modify-write: two concurrent `config
+    // set` calls (even on different keys) can each load the pre-update file, mutate their
+    // own in-memory copy, and save -- whichever save lands last silently clobbers the
+    // other's change, with no error. A short-lived lockfile around just this section
+    // serializes concurrent setters, same pattern as session_store.ts's saveSessionState.
+    // Losing the race to acquire the lock in time falls back to the old unprotected
+    // read-modify-write instead of dropping the update outright.
+    const applySet = (): unknown => {
+      const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
+      // Test-only seam: widens the load->save window so a regression test can deterministically
+      // force a second concurrent `config set` to land its own load+save inside it, instead of
+      // relying on OS process-start jitter to (unreliably) produce a collision. No-op unless a
+      // test explicitly sets this env var; never set in normal operation.
+      const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_RMW_DELAY_MS'] ?? '')
+      if (Number.isFinite(testDelayMs) && testDelayMs > 0) sleepSync(testDelayMs)
+      const ref = walkParent(cfg, parts)
+      if (!ref) {
+        throw new Error(`key not found: ${key}${didYouMeanKeySuffix(key)}`)
       }
+      const existing = ref.parent[ref.leaf]
+      if (existing === undefined) {
+        throw new Error(`key not found: ${key}${didYouMeanKeySuffix(key)}`)
+      }
+      if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
+        throw new Error(`config set: '${key}' is a section, not a settable field — set an individual key within it instead (e.g. ${key}.<field>)`)
+      }
+      const defaultAtKey = walkGet(defaultConfig() as unknown as Record<string, unknown>, parts)
+      const coercedValue = coerce(value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
+      ref.parent[ref.leaf] = coercedValue
+      if (typeof coercedValue === 'number') {
+        // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
+        // overlay, so the check reflects the value actually being written). If the field clamps
+        // to something else, the input was out of its documented range — reject instead of
+        // silently writing an invalid value that only gets clamped (with no feedback) next load.
+        const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
+        const revalidatedResult = walkGet(revalidated, parts)
+        if (revalidatedResult.found && revalidatedResult.value !== coercedValue) {
+          throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
+        }
+      }
+      saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
+      return coercedValue
     }
-    saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
+    // Must exist before the lock file itself can be created (writeFileSync 'wx' throws ENOENT,
+    // not EEXIST, against a missing directory -- withFileLock treats that as "can't lock at
+    // all" and silently falls back to running unprotected, defeating the lock entirely on a
+    // machine that has never run `config set` before).
+    ensureDirSync(path.dirname(configPath()))
+    const lockPath = path.join(path.dirname(configPath()), '.config.lock')
+    const lockResult = withFileLock(lockPath, applySet)
+    const coerced = lockResult === undefined ? applySet() : lockResult
     invalidateConfigCache()
     // The write above only ever touches the env-free persisted config, so if an env var
     // currently overrides this same key, loadConfig() (env-layered, same as `get`/`list`)
     // will keep returning the env-forced value instead of what was just saved — surface
     // that shadowing here or the user is told the change succeeded when it has no runtime
     // effect until the env var is unset.
-    const envOverrides = CONFIG_KEY_ENV_OVERRIDES[opts.key]
+    const envOverrides = CONFIG_KEY_ENV_OVERRIDES[key]
     if (envOverrides !== undefined) {
       const effective = walkGet(loadConfig() as unknown as Record<string, unknown>, parts)
       if (effective.found && effective.value !== coerced) {
@@ -233,14 +259,14 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
           return raw !== undefined && raw.trim() !== ''
         })
         const envVar = active ?? envOverrides[0]
-        emitErr(`config set: warning: ${opts.key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
+        emitErr(`config set: warning: ${key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
       }
     }
     if (opts.json === true) {
-      emit(JSON.stringify({ key: opts.key, value: coerced }, null, 2))
+      emit(JSON.stringify({ key, value: coerced }, null, 2))
       return
     }
-    emit(`${opts.key} = ${JSON.stringify(coerced)}`)
+    emit(`${key} = ${JSON.stringify(coerced)}`)
     return
   }
 

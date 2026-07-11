@@ -143,8 +143,9 @@ export function collectElements(node: unknown, tag: string): unknown[] {
         if (key === tag) {
           if (Array.isArray(val)) out.push(...val)
           else out.push(val)
+        } else if (val !== null && typeof val === 'object') {
+          walk(val)
         }
-        if (val !== null && typeof val === 'object') walk(val)
       }
     }
   }

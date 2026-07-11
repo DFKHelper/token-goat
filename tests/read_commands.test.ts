@@ -151,11 +151,13 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
-      const parsed = JSON.parse(stdout) as unknown[]
-      expect(Array.isArray(parsed)).toBe(true)
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(Array.isArray(parsed.items)).toBe(true)
+      expect(parsed.truncated).toBe(false)
+      expect(parsed.totalCount).toBe(1)
     })
 
-    it('caps --json output at overflow_guard.max_tokens, wrapping with truncated/totalCount instead of emitting an unbounded array (regression: JSON mode had no overflow guard at all, unlike the text branch\'s guardText)', () => {
+    it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array (regression: JSON mode had no overflow guard at all, unlike the text branch\'s guardText)', () => {
       mockLoadConfig.mockReturnValue({
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
@@ -171,13 +173,13 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
-      const parsed = JSON.parse(stdout) as { results: unknown[]; truncated: boolean; totalCount: number }
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.truncated).toBe(true)
       expect(parsed.totalCount).toBe(50)
-      expect(parsed.results.length).toBeLessThan(50)
+      expect(parsed.items.length).toBeLessThan(50)
     })
 
-    it('does not wrap --json output when overflow_guard is disabled, even for a large result set', () => {
+    it('uses the same items/truncated/totalCount envelope even when overflow_guard is disabled and nothing was truncated (uniform --json shape regardless of truncation)', () => {
       mockLoadConfig.mockReturnValue({
         overflow_guard: { enabled: false, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
@@ -193,9 +195,10 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
-      const parsed = JSON.parse(stdout) as unknown[]
-      expect(Array.isArray(parsed)).toBe(true)
-      expect(parsed.length).toBe(50)
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.truncated).toBe(false)
+      expect(parsed.totalCount).toBe(50)
+      expect(parsed.items.length).toBe(50)
     })
 
     it('reconstructs an empty indexed body from its source span for the preview', () => {
@@ -764,6 +767,20 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
+    it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Swift/Scala/Lua/etc. are indistinguishable from an empty file)', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runSkeleton({ file: 'missing.swift' })
+      expect(code).toBe(1)
+      expect(text).toContain('Swift')
+      expect(text).toContain('no symbol extractor yet')
+    })
+
+    it('does not claim an unsupported language for a plain empty result on a supported extension', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text } = runSkeleton({ file: 'missing.ts' })
+      expect(text).not.toContain('no symbol extractor yet')
+    })
+
     it('prints skeleton header with symbol count', () => {
       const syms: MockSymbol[] = [
         { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
@@ -796,12 +813,12 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10, json: true })
-      const parsed = JSON.parse(stdout) as Array<{ name: string }>
-      expect(parsed).toHaveLength(1)
-      expect(parsed[0]?.name).toBe('large')
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string }> }
+      expect(parsed.items).toHaveLength(1)
+      expect(parsed.items[0]?.name).toBe('large')
     })
 
-    it('caps --json output at overflow_guard.max_tokens, wrapping with symbols/truncated/totalCount instead of emitting an unbounded array', () => {
+    it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array', () => {
       mockLoadConfig.mockReturnValue({
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
@@ -817,10 +834,10 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', json: true })
-      const parsed = JSON.parse(stdout) as { symbols: unknown[]; truncated: boolean; totalCount: number }
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.truncated).toBe(true)
       expect(parsed.totalCount).toBe(50)
-      expect(parsed.symbols.length).toBeLessThan(50)
+      expect(parsed.items.length).toBeLessThan(50)
     })
 
     it('reports the true max lineEnd across all symbols, not the last-by-lineStart symbol (nested-symbol regression)', () => {
@@ -843,6 +860,14 @@ describe('read_commands', () => {
   // ---- runOutline ---------------------------------------------------------
 
   describe('runOutline', () => {
+    it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Swift/Scala/Lua/etc. are indistinguishable from an empty file)', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runOutline({ file: 'empty.dart' })
+      expect(code).toBe(1)
+      expect(text).toContain('Dart')
+      expect(text).toContain('no symbol extractor yet')
+    })
+
     it('returns 1 when no symbols found', () => {
       mockQuerySymbols.mockReturnValue([])
       const { code } = runOutline({ file: 'empty.ts' })
@@ -868,12 +893,12 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.ts', minLines: 10, json: true })
-      const parsed = JSON.parse(stdout) as Array<{ name: string }>
-      expect(parsed).toHaveLength(1)
-      expect(parsed[0]?.name).toBe('large')
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string }> }
+      expect(parsed.items).toHaveLength(1)
+      expect(parsed.items[0]?.name).toBe('large')
     })
 
-    it('caps --json output at overflow_guard.max_tokens, wrapping with symbols/truncated/totalCount instead of emitting an unbounded array', () => {
+    it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array', () => {
       mockLoadConfig.mockReturnValue({
         overflow_guard: { enabled: true, max_tokens: 60 },
       } as unknown as ReturnType<typeof loadConfig>)
@@ -889,10 +914,10 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runOutline({ file: 'f.ts', json: true })
-      const parsed = JSON.parse(stdout) as { symbols: unknown[]; truncated: boolean; totalCount: number }
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.truncated).toBe(true)
       expect(parsed.totalCount).toBe(50)
-      expect(parsed.symbols.length).toBeLessThan(50)
+      expect(parsed.items.length).toBeLessThan(50)
     })
   })
 
@@ -906,9 +931,9 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
       const { text: stdout } = runOutline({ file: 'f.ts', stats: true, json: true })
-      const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
-      const used = parsed.find((p) => p.name === 'used')
-      const unused = parsed.find((p) => p.name === 'unused')
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string; refCount?: number; hasDoc?: boolean }> }
+      const used = parsed.items.find((p) => p.name === 'used')
+      const unused = parsed.items.find((p) => p.name === 'unused')
       expect(used?.refCount).toBe(2)
       expect(used?.hasDoc).toBe(true)
       expect(unused?.refCount).toBe(0)
@@ -924,9 +949,9 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map([['used', 2]]))
       const { text: stdout } = runSkeleton({ file: 'f.ts', stats: true, json: true })
-      const parsed = JSON.parse(stdout) as Array<{ name: string; refCount?: number; hasDoc?: boolean }>
-      const used = parsed.find((p) => p.name === 'used')
-      const unused = parsed.find((p) => p.name === 'unused')
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string; refCount?: number; hasDoc?: boolean }> }
+      const used = parsed.items.find((p) => p.name === 'used')
+      const unused = parsed.items.find((p) => p.name === 'unused')
       expect(used?.refCount).toBe(2)
       expect(used?.hasDoc).toBe(true)
       expect(unused?.refCount).toBe(0)
@@ -956,6 +981,32 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       runOutline({ file: 'f.ts' })
       expect(mockQueryRefCounts).not.toHaveBeenCalled()
+    })
+
+    // Regression: global.db is a single machine-wide index shared across every project ever
+    // indexed (constants.ts). runOutline/runSkeleton used to call queryRefCounts with no
+    // project-root argument, so --stats ref counts summed references across every project
+    // sharing a symbol name.
+    it('runOutline --stats scopes queryRefCounts to the current project root', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      runOutline({ file: 'f.ts', stats: true })
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
+    })
+
+    it('runSkeleton --stats scopes queryRefCounts to the current project root', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      runSkeleton({ file: 'f.ts', stats: true })
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
     })
   })
 
@@ -1409,6 +1460,28 @@ describe('read_commands', () => {
       })
       expect(stdout).toContain('col1,col2')
     })
+
+    // Regression: an empty or header-only CSV silently produced zero stdout output (just a
+    // blank/empty header line from formatCsvTable) instead of a clear message, unlike every
+    // other format handler's "not found"/no-match miss (section, read, symbol, xlsx-sheets,
+    // pdf-meta).
+    it('prints a clear message instead of silent empty output for a fully empty CSV', () => {
+      const f = path.join(tempDir, 'empty.csv')
+      fs.writeFileSync(f, '')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvQuery({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
+
+    it('prints a clear message instead of silent empty output for a header-only CSV', () => {
+      const f = path.join(tempDir, 'headeronly.csv')
+      fs.writeFileSync(f, 'id,name,status\n')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvQuery({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
   })
 
   // ---- runCsvProfile ---------------------------------------------------
@@ -1427,6 +1500,24 @@ describe('read_commands', () => {
     it('returns 1 when the file does not exist', () => {
       const code = runCsvProfile({ file: path.join(tempDir, 'missing.csv') })
       expect(code).toBe(1)
+    })
+
+    it('prints a clear message instead of silent empty output for a fully empty CSV', () => {
+      const f = path.join(tempDir, 'profile-empty.csv')
+      fs.writeFileSync(f, '')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvProfile({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
+    })
+
+    it('prints a clear message instead of silent empty output for a header-only CSV', () => {
+      const f = path.join(tempDir, 'profile-headeronly.csv')
+      fs.writeFileSync(f, 'id,name,status\n')
+      let code = -1
+      const { stdout } = capture(() => { code = runCsvProfile({ file: f }) })
+      expect(stdout).toContain(`No data rows found in ${f}`)
+      expect(code).toBe(0)
     })
   })
 
@@ -1920,7 +2011,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).not.toContain('login:')
   })
 
-  it('caps a single-symbol --json output at overflow_guard.max_tokens, wrapping with references/truncated/totalCount instead of an unbounded array', () => {
+  it('caps a single-symbol --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of an unbounded array', () => {
     mockLoadConfig.mockReturnValue({
       overflow_guard: { enabled: true, max_tokens: 60 },
     } as unknown as ReturnType<typeof loadConfig>)
@@ -1929,10 +2020,10 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
       const code = runRefs({ spec: 'login', json: true })
       expect(code).toBe(0)
     })
-    const parsed = JSON.parse(stdout) as { references: unknown[]; truncated: boolean; totalCount: number }
+    const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
     expect(parsed.truncated).toBe(true)
     expect(parsed.totalCount).toBe(50)
-    expect(parsed.references.length).toBeLessThan(50)
+    expect(parsed.items.length).toBeLessThan(50)
   })
 
   it('merges several symbols, each under its own header, in one call', () => {
@@ -1970,18 +2061,22 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(names).toEqual(['sym1', 'sym2'])
   })
 
-  it('emits a per-symbol map under --json', () => {
+  it('emits a per-symbol map under --json, each entry using the items/truncated/totalCount envelope', () => {
     mockQueryRefs.mockImplementation((opts: { name: string }) =>
       opts.name === 'login' ? [ref('src/auth.ts', 10, 'login()')] : [],
     )
     const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
-    const parsed = JSON.parse(stdout) as Record<string, unknown[]>
+    const parsed = JSON.parse(stdout) as Record<string, { items: unknown[]; truncated: boolean; totalCount: number }>
     expect(Object.keys(parsed)).toEqual(['login', 'refresh'])
-    expect(parsed.login).toHaveLength(1)
-    expect(parsed.refresh).toHaveLength(0)
+    expect(parsed.login?.items).toHaveLength(1)
+    expect(parsed.login?.truncated).toBe(false)
+    expect(parsed.login?.totalCount).toBe(1)
+    expect(parsed.refresh?.items).toHaveLength(0)
+    expect(parsed.refresh?.truncated).toBe(false)
+    expect(parsed.refresh?.totalCount).toBe(0)
   })
 
-  it('caps a per-symbol entry under --json at overflow_guard.max_tokens, wrapping that entry with references/truncated/totalCount instead of an unbounded array', () => {
+  it('caps a per-symbol entry under --json at overflow_guard.max_tokens, wrapping that entry with items/truncated/totalCount instead of an unbounded array', () => {
     mockLoadConfig.mockReturnValue({
       overflow_guard: { enabled: true, max_tokens: 60 },
     } as unknown as ReturnType<typeof loadConfig>)
@@ -1991,13 +2086,16 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
         : [ref('src/auth.ts', 1, 'refresh()')],
     )
     const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
-    const parsed = JSON.parse(stdout) as Record<string, unknown[] | { references: unknown[]; truncated: boolean; totalCount: number }>
-    const login = parsed.login as { references: unknown[]; truncated: boolean; totalCount: number }
+    const parsed = JSON.parse(stdout) as Record<string, { items: unknown[]; truncated: boolean; totalCount: number }>
+    const login = parsed.login as { items: unknown[]; truncated: boolean; totalCount: number }
     expect(login.truncated).toBe(true)
     expect(login.totalCount).toBe(50)
-    expect(login.references.length).toBeLessThan(50)
-    // The untruncated symbol keeps the original bare-array shape.
-    expect(Array.isArray(parsed.refresh)).toBe(true)
+    expect(login.items.length).toBeLessThan(50)
+    // Every entry uses the same envelope, even when nothing was truncated.
+    const refresh = parsed.refresh as { items: unknown[]; truncated: boolean; totalCount: number }
+    expect(Array.isArray(refresh.items)).toBe(true)
+    expect(refresh.truncated).toBe(false)
+    expect(refresh.totalCount).toBe(1)
   })
 
   it('returns exit 1 when no symbol in a multi-spec has any references', () => {

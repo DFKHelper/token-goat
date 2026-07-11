@@ -301,11 +301,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-xlsx-')
     const xlsxPath = path.join(dir, 'book.xlsx')
     execFileSync(process.execPath, ['-e', `
-      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
-      XLSX.utils.book_append_sheet(wb, ws, 'People');
-      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+      const ExcelJS = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'exceljs'))});
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('People');
+      ws.addRow(['name','age']);
+      ws.addRow(['Alice','30']);
+      wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
     `])
     const r = run(['xlsx-sheets', xlsxPath])
     expect(r.status, r.stderr).toBe(0)
@@ -315,11 +316,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-xlsxh-')
     const xlsxPath = path.join(dir, 'book.xlsx')
     execFileSync(process.execPath, ['-e', `
-      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
-      XLSX.utils.book_append_sheet(wb, ws, 'People');
-      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+      const ExcelJS = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'exceljs'))});
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('People');
+      ws.addRow(['name','age']);
+      ws.addRow(['Alice','30']);
+      wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
     `])
     const r = run(['xlsx-head', xlsxPath, '--sheet', 'People'])
     expect(r.status, r.stderr).toBe(0)
@@ -329,11 +331,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-xlsxr-')
     const xlsxPath = path.join(dir, 'book.xlsx')
     execFileSync(process.execPath, ['-e', `
-      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet([['name','age'],['Alice','30']]);
-      XLSX.utils.book_append_sheet(wb, ws, 'People');
-      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+      const ExcelJS = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'exceljs'))});
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('People');
+      ws.addRow(['name','age']);
+      ws.addRow(['Alice','30']);
+      wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
     `])
     const r = run(['xlsx-range', xlsxPath, '--sheet', 'People', '--range', 'A1:B2'])
     expect(r.status, r.stderr).toBe(0)
@@ -343,11 +346,13 @@ const cases: Record<string, () => void | Promise<void>> = {
     const dir = mkIsolated('tg-matrix-xlsxq-')
     const xlsxPath = path.join(dir, 'book.xlsx')
     execFileSync(process.execPath, ['-e', `
-      const XLSX = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'xlsx'))});
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet([['name','status'],['Alice','active'],['Bob','inactive']]);
-      XLSX.utils.book_append_sheet(wb, ws, 'People');
-      XLSX.writeFile(wb, ${JSON.stringify(xlsxPath)});
+      const ExcelJS = require(${JSON.stringify(path.join(ROOT, 'node_modules', 'exceljs'))});
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('People');
+      ws.addRow(['name','status']);
+      ws.addRow(['Alice','active']);
+      ws.addRow(['Bob','inactive']);
+      wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
     `])
     const r = run(['xlsx-query', xlsxPath, '--sheet', 'People', '--where', 'status=active'])
     expect(r.status, r.stderr).toBe(0)

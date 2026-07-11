@@ -76,3 +76,17 @@ describe('semantic command output is capped by the overflow guard (#5 follow-up)
     expect(text).toContain('--limit')
   })
 })
+
+describe('semantic command scopes searchSemantic to the current project (regression: cross-project leakage)', () => {
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts). runSemantic used to call searchSemantic with no project-root argument at
+  // all, so results silently mixed in chunks from unrelated projects sharing the same index.
+  it('passes process.cwd() as the rootDir (6th) argument to searchSemantic', async () => {
+    searchSemanticMock.mockResolvedValue([])
+
+    await runSemantic('any query', {})
+
+    const call = searchSemanticMock.mock.calls[0]
+    expect(call?.[5]).toBe(process.cwd())
+  })
+})

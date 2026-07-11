@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, runDoctor } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, runDoctor } from '../src/cli_doctor.js'
+import { getDb } from '../src/db.js'
+import { clearModuleCaches } from '../src/reset.js'
 
 describe('cli_doctor', () => {
   let tempDir: string
@@ -12,6 +14,9 @@ describe('cli_doctor', () => {
   })
 
   afterEach(() => {
+    // checkSymbolCount opens the db via getDb, which caches an open handle per path;
+    // close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
+    clearModuleCaches()
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
@@ -63,6 +68,65 @@ describe('cli_doctor', () => {
       expect(result.status).not.toBe('ok')
       expect(result.status).toBe('fail')
       expect(result.message).toContain('not a valid SQLite file')
+    })
+  })
+
+  // Regression (round 10 #37): guards against the worker-draining-to-a-stub-callback
+  // failure mode documented in CLAUDE.md's "Critical path" section — a release once
+  // shipped with the queue drain wired to a default stub, so files were marked
+  // indexed while the parser never ran and `symbols` stayed permanently empty. No
+  // existing doctor check caught this because checkDbExists only validates the
+  // SQLite header, not table contents.
+  describe('checkSymbolCount', () => {
+    it('returns ok (no database yet) when global.db does not exist', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const result = checkSymbolCount(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when files are indexed and symbols exist', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
+        'src/main.ts',
+        'sha',
+        1,
+        'typescript',
+        1,
+      )
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('src/main.ts', 'main', 'function', 1, 2, '', '')
+
+      const result = checkSymbolCount(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('1 symbol')
+    })
+
+    it('returns ok when the database is empty (no files indexed yet, nothing to expect)', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      getDb(dbPath) // creates the schema but inserts nothing
+      const result = checkSymbolCount(dbPath)
+      expect(result.status).toBe('ok')
+    })
+
+    it('warns when files are indexed but the symbols table is empty (stub-callback regression)', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
+        'src/main.ts',
+        'sha',
+        1,
+        'typescript',
+        1,
+      )
+      // Deliberately no INSERT into symbols — simulates the worker draining files
+      // into a stub callback that never invoked the parser.
+
+      const result = checkSymbolCount(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('0 symbols extracted')
     })
   })
 

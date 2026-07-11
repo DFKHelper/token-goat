@@ -356,15 +356,24 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
   const changedNew = newLines.slice(prefix, newSuffix)
 
   const MAX_LINES = 50
-  const out: string[] = [
-    `--- ${label} (prev)`,
-    `+++ ${label} (current)`,
-    `@@ -${prefix + 1},${changedOld.length} +${prefix + 1},${changedNew.length} @@`,
-  ]
-
   const removedLines = changedOld.map(l => `-${l}`)
   const addedLines = changedNew.map(l => `+${l}`)
   const allChanges = [...removedLines, ...addedLines]
+
+  // The header's hunk counts must describe what the body actually shows, not the
+  // pre-truncation totals -- otherwise `@@ -x,{changedOld.length} +x,{changedNew.length} @@`
+  // overstates the line counts on any diff over MAX_LINES, breaking any consumer that
+  // trusts the header (a real unified-diff parser, or a human eyeballing it) instead of
+  // recounting the body itself. Derive the shown removed/added counts from the same slice
+  // point used for the body below.
+  const shownRemoved = Math.min(removedLines.length, MAX_LINES)
+  const shownAdded = Math.max(0, Math.min(addedLines.length, MAX_LINES - shownRemoved))
+
+  const out: string[] = [
+    `--- ${label} (prev)`,
+    `+++ ${label} (current)`,
+    `@@ -${prefix + 1},${shownRemoved} +${prefix + 1},${shownAdded} @@`,
+  ]
 
   if (allChanges.length <= MAX_LINES) {
     out.push(...allChanges)
@@ -597,7 +606,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
       if (headings.length >= 3) {
         const alreadyRead = wasFileReadThisSession(normalized)
         const hintText = formatHeadingTree(headings, normalized)
-        const wellKnown = getWellKnownSections(basename)
+        // Filter the hardcoded per-basename shortcut list down to headings that actually
+        // exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started'
+        // gets a hint recommending a `section` command that will just 404.
+        const headingTextsLower = new Set(headings.map((h) => h.text.trim().toLowerCase()))
+        const wellKnown = getWellKnownSections(basename).filter((s) => headingTextsLower.has(s.trim().toLowerCase()))
         const wellKnownText =
           wellKnown.length > 0
             ? '\nQuick access: ' +
@@ -612,7 +625,16 @@ export function preReadHandler(event: HookEvent): HookOutput {
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
-        const tooLargeForFirstRead = markdownSize !== null && markdownSize >= largeFileDenyBytes()
+        // A genuine, bounded offset/limit request gates on the requested slice's size
+        // instead of the whole file's, same as the generic large-file gate and the
+        // file-type dispatcher further below — a small window into a huge markdown file
+        // should be let through rather than hard-denied.
+        const slice = estimateRequestedSlice(event, normalized)
+        const gateSize =
+          slice.kind === 'bytes' && markdownSize !== null
+            ? Math.min(slice.bytes, markdownSize)
+            : markdownSize
+        const tooLargeForFirstRead = gateSize !== null && gateSize >= largeFileDenyBytes()
         if (alreadyRead || tooLargeForFirstRead) {
           // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not
           // alreadyRead) never actually happened, so don't record it against re-read dedup --

@@ -196,3 +196,36 @@ export function detectLanguage(filePath: string): Language {
   const ext = path.extname(base).toLowerCase()
   return EXTENSION_LANGUAGE.get(ext) ?? 'unknown'
 }
+
+/**
+ * Extensions for languages token-goat recognizes by name but has neither a tree-sitter
+ * grammar nor a regex-fallback extractor for (see {@link NO_TREE_SITTER_EXTRACTORS} in
+ * parser.ts). These are not part of the {@link Language} union -- detectLanguage() maps them
+ * to `'unknown'` -- so a file in one of these languages indexes to zero symbols exactly like
+ * a genuinely empty or unrecognized file, with nothing to tell the two apart. This map exists
+ * purely to make that distinction visible in diagnostics (index/outline/skeleton), not to
+ * change indexing behavior.
+ */
+export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['.swift', 'Swift'],
+  ['.scala', 'Scala'],
+  ['.sc', 'Scala'],
+  ['.lua', 'Lua'],
+  ['.ex', 'Elixir'],
+  ['.exs', 'Elixir'],
+  ['.dart', 'Dart'],
+  ['.zig', 'Zig'],
+  ['.r', 'R'],
+])
+
+/**
+ * Returns a human-readable language name (e.g. `'Swift'`) if `filePath` is a recognized but
+ * unsupported language -- one token-goat has no symbol extractor for at all -- so callers can
+ * surface a distinct diagnostic instead of silently reporting "no symbols" indistinguishably
+ * from an empty file. Returns `undefined` for anything else, including genuinely unrecognized
+ * extensions and languages that do have an extractor.
+ */
+export function unsupportedLanguageName(filePath: string): string | undefined {
+  const ext = path.extname(filePath).toLowerCase()
+  return UNSUPPORTED_LANGUAGE_EXTENSIONS.get(ext)
+}

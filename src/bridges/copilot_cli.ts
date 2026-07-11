@@ -66,6 +66,8 @@ export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // request/response schema to/from token-goat's internal hook protocol.
 'use strict'
 const { spawnSync } = require('node:child_process')
+const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
 // HOOK_EVENTS). Only these six have a token-goat handler; every other real
@@ -164,7 +166,27 @@ function remapToolInput(copilotToolName, input) {
   return Object.assign({}, input, { file_path: input[pathKey] })
 }
 
-function main() {
+// Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of
+// the baked token-goat entry path, built with zero load-time side effects -- unlike
+// the CLI entry, which runs the full argv-parsing CLI as a side effect of being
+// loaded) and calls its exported relayInProcess() directly, avoiding a second node
+// process spawn entirely. Returns undefined (triggering the spawnSync fallback below)
+// when entryPath is absent, the sibling file doesn't exist (an older install predating
+// this file), or anything else goes wrong -- this must never throw.
+async function tryInProcess(entryPath, tgEvent, canonical) {
+  if (!entryPath) return undefined
+  try {
+    const hookLibPath = path.join(path.dirname(entryPath), 'token-goat-hook.mjs')
+    if (!require('node:fs').existsSync(hookLibPath)) return undefined
+    const mod = await import(pathToFileURL(hookLibPath).href)
+    process.env.TOKEN_GOAT_HARNESS_OVERRIDE = 'copilot_cli'
+    return await mod.relayInProcess(tgEvent, canonical)
+  } catch {
+    return undefined
+  }
+}
+
+async function main() {
   const copilotEvent = process.argv[2] || ''
 
   if (copilotEvent === 'sessionStart') {
@@ -236,28 +258,43 @@ function main() {
   // template string) is safe here specifically because entryPath and tgEvent never touch a
   // shell -- no DEP0190 concern, unlike the shell:true fallback below.
   const entryPath = process.argv[3]
-  const res = entryPath
-    ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent], {
-        input: JSON.stringify(canonical),
-        encoding: 'utf8',
-        windowsHide: true,
-        env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
-      })
-    : spawnSync('token-goat hook ' + tgEvent, {
-        input: JSON.stringify(canonical),
-        encoding: 'utf8',
-        shell: true,
-        windowsHide: true,
-        env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
-      })
-  if (res.status !== 0 || !res.stdout) {
-    process.stdout.write('{}')
-    return
+  // Try the in-process hook lib first (tryInProcess above), which avoids spawning a
+  // second node process altogether. If that's unavailable, invoking the entry directly
+  // via process.execPath sidesteps PATH/cmd.exe resolution for this inner call, per the
+  // note above this function's original single-spawn form documented. A 3000ms
+  // timeout/killSignal on both spawnSync fallbacks keeps them well under Copilot CLI's
+  // own hook timeout budget (~30000ms), so token-goat degrades to its own fail-open
+  // '{}' rather than being force-killed by Copilot first.
+  let stdout = await tryInProcess(entryPath, tgEvent, canonical)
+  if (stdout === undefined) {
+    const res = entryPath
+      ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent], {
+          input: JSON.stringify(canonical),
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 3000,
+          killSignal: 'SIGKILL',
+          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+        })
+      : spawnSync('token-goat hook ' + tgEvent, {
+          input: JSON.stringify(canonical),
+          encoding: 'utf8',
+          shell: true,
+          windowsHide: true,
+          timeout: 3000,
+          killSignal: 'SIGKILL',
+          env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli' }),
+        })
+    if (res.status !== 0 || !res.stdout) {
+      process.stdout.write('{}')
+      return
+    }
+    stdout = res.stdout
   }
 
   let resp
   try {
-    resp = JSON.parse(res.stdout)
+    resp = JSON.parse(stdout)
   } catch {
     process.stdout.write('{}')
     return
@@ -329,14 +366,15 @@ function extractContext(resp) {
 // process exits 0. process.exitCode is set explicitly and unconditionally at
 // the very end of every path so nothing upstream (e.g. an unhandled-rejection
 // warning in some Node versions nudging exit-code inference) can flip it.
-try {
-  main()
-} catch {
-  try {
-    process.stdout.write('{}')
-  } catch {
-    // stdout itself is broken; nothing more can be done here.
-  }
-}
-process.exitCode = 0
+main()
+  .catch(() => {
+    try {
+      process.stdout.write('{}')
+    } catch {
+      // stdout itself is broken; nothing more can be done here.
+    }
+  })
+  .finally(() => {
+    process.exitCode = 0
+  })
 `

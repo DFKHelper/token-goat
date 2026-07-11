@@ -19,7 +19,9 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } fr
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
+import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
+import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { resolveCallers } from './graph_commands.js'
@@ -159,7 +161,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    const payload = capped.truncated ? { results: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
@@ -558,7 +560,10 @@ export function runRefs(opts: RefsOptions): number {
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
-  const jsonOut: Record<string, RefEntry[] | { references: RefEntry[]; truncated: true; totalCount: number }> = {}
+  // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/
+  // `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated —
+  // a JSON consumer should never have to branch on shape depending on truncation.
+  const jsonOut: Record<string, { items: RefEntry[]; truncated: boolean; totalCount: number }> = {}
   let anyFound = false
   const lines: string[] = []
   for (const sym of symbols) {
@@ -572,9 +577,7 @@ export function runRefs(opts: RefsOptions): number {
     if (results.length > 0) anyFound = true
     if (opts.json === true) {
       const capped = guardJsonRows(results)
-      jsonOut[sym] = capped.truncated
-        ? { references: capped.items, truncated: true, totalCount: capped.totalCount }
-        : capped.items
+      jsonOut[sym] = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
       continue
     }
     if (results.length === 0) {
@@ -615,7 +618,7 @@ function runRefsSingle(opts: RefsOptions): number {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    const payload = capped.truncated ? { references: capped.items, truncated: true, totalCount: capped.totalCount } : results
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     emit(JSON.stringify(payload, null, 2))
     return 0
   }
@@ -658,6 +661,21 @@ export interface SkeletonOptions {
   stats?: boolean
 }
 
+/**
+ * "No indexed symbols" is ambiguous on its own: a genuinely empty file, an unrecognized
+ * extension, and a recognized-but-unsupported language (Swift, Scala, Lua, Elixir, Dart,
+ * Zig, R -- see {@link unsupportedLanguageName}) all currently produce zero symbol rows and
+ * look identical from the CLI's perspective. Callers get a clearer diagnostic distinguishing
+ * "token-goat can't parse this language at all yet" from a plain empty-index result.
+ */
+function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
+  const lang = unsupportedLanguageName(resolvedPath)
+  if (lang !== undefined) {
+    return `No indexed symbols found in '${displayPath}' -- ${lang} has no symbol extractor yet, so this file always indexes to 0 symbols regardless of its contents`
+  }
+  return `No indexed symbols found in '${displayPath}'`
+}
+
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const resolved = resolveIndexPath(opts.file)
@@ -667,7 +685,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
+    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
   }
 
   const filtered =
@@ -675,7 +693,8 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
-  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+  const refCounts =
+    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -688,7 +707,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : {}),
     }))
     const capped = guardJsonRows(rows)
-    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
@@ -724,7 +743,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    return { text: `No indexed symbols found in '${opts.file}'`, code: 1 }
+    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
   }
 
   const filtered =
@@ -732,7 +751,8 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
-  const refCounts = opts.stats === true ? queryRefCounts(filtered.map((s) => s.name)) : undefined
+  const refCounts =
+    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
 
   if (opts.json === true) {
     const rows =
@@ -744,7 +764,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
           }))
         : filtered
     const capped = guardJsonRows(rows)
-    const payload = capped.truncated ? { symbols: capped.items, truncated: true, totalCount: capped.totalCount } : rows
+    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
     return { text: JSON.stringify(payload, null, 2), code: 0 }
   }
 
@@ -800,6 +820,10 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
+    if (result.header.length === 0) {
+      emit(`No data rows found in ${opts.file}`)
+      return 0
+    }
     if (opts.json === true) {
       emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
     } else {
@@ -829,6 +853,10 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       ...(opts.delimiter !== undefined ? { delimiter: opts.delimiter } : {}),
       ...(opts.noHeader === true ? { noHeader: true } : {}),
     })
+    if (profiles.length === 0) {
+      emit(`No data rows found in ${opts.file}`)
+      return 0
+    }
     emit(formatCsvProfile(profiles))
     return 0
   } catch (e) {
@@ -976,7 +1004,7 @@ export function runFind(opts: FindOptions): number {
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT })
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: process.cwd() })
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
@@ -1088,13 +1116,11 @@ export function runChanged(opts: ChangedOptions = {}): number {
   // `git diff --name-only` always reports paths relative to the repo top-level, regardless
   // of which directory git was invoked from. Resolving those paths against `cwd` (which may
   // be a subdirectory when this command is invoked from e.g. `src/`) doubles the subdirectory
-  // segment and never matches the index. Resolve the actual top-level via `rev-parse` and use
-  // that as the base for `resolveIndexPath` below; `cwd` is still fine to pass to `runGit`
-  // since git resolves the repo from any subdirectory on its own. If `rev-parse` fails (not a
-  // git repo, or git unavailable), fall back to `cwd` — the subsequent `git diff` call below
-  // will fail the same way it always did and surface the existing error.
-  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd })
-  const projectRoot = toplevel.exitCode === 0 ? toplevel.stdout.trim() : cwd
+  // segment and never matches the index. `resolveProjectRoot` resolves the actual top-level
+  // (via `rev-parse --show-toplevel`, falling back to `findProject`/`cwd`) starting from `cwd`
+  // as its base, and that is what `resolveIndexPath` below is anchored to; `cwd` is still fine
+  // to pass to `runGit` since git resolves the repo from any subdirectory on its own.
+  const projectRoot = resolveProjectRoot({ project: cwd })
 
   let changedFiles: string[]
   try {
@@ -1707,6 +1733,14 @@ function symbolHeader(s: SymbolEntry): string {
 
 interface SemanticOptions {
   limit?: number
+  /**
+   * Project root to scope the search to. Defaults to `process.cwd()`; same field name as
+   * {@link ChangedOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g. an
+   * MCP server launched by a client from an opaque directory) should pass the actual
+   * workspace root explicitly -- otherwise the search silently scopes to the wrong project
+   * (or the whole machine-wide index yields nothing under it).
+   */
+  projectRoot?: string
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -1727,7 +1761,14 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
   // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const rawHits = await searchSemantic(getDb(globalDbPath()), query, overFetchForMerge)
+  const rawHits = await searchSemantic(
+    getDb(globalDbPath()),
+    query,
+    overFetchForMerge,
+    undefined,
+    undefined,
+    opts.projectRoot ?? process.cwd(),
+  )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
     const blocks = hits.map(
