@@ -409,9 +409,7 @@ export function saveSessionState(sessionId: string): void {
     // merge it with their own view, and write -- whichever write lands last silently
     // clobbers the other's update, with no error. A short-lived lockfile around just this
     // read-merge-write section serializes concurrent savers, so each one's disk read
-    // reflects every write that already landed. Losing the race to acquire the lock in
-    // time falls back to the old unprotected write instead of dropping the update
-    // outright, so this can never block or break the caller's real hook.
+    // reflects every write that already landed.
     const writeMerged = (): true => {
       const disk = readDiskState(p)
       const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
@@ -424,7 +422,19 @@ export function saveSessionState(sessionId: string): void {
       atomicWriteText(p, JSON.stringify(merged))
       return true
     }
-    if (withFileLock(`${p}.lock`, writeMerged) === undefined) writeMerged()
+    // Two concurrent hook processes for the same session_id contend on this lock for their
+    // *entire* lifetime (every save re-acquires it), not just once -- so under real machine
+    // load (e.g. a parallel test run competing for CPU), the default withFileLock budget
+    // (2s) can plausibly miss its deadline even though no lock holder is actually stuck.
+    // Falling back to an unprotected write on that miss would reintroduce the exact clobber
+    // this lock exists to prevent, precisely when contention (and therefore risk) is
+    // highest, so give this hot, contended call site a much larger wait budget instead --
+    // an actually-wedged holder still gets its lock stolen well before this via
+    // withFileLock's own staleMs abandonment check, so this only lengthens the wait for
+    // *genuine*, resolving contention, not a real hang. The unprotected fallback remains
+    // only for withFileLock's other undefined case: a hard failure (e.g. missing dir) that
+    // waiting longer cannot fix.
+    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: 15_000 }) === undefined) writeMerged()
   } catch {
     // fail-soft: never let persistence break a hook
   }
