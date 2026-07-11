@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
-import { resolveIndexPath } from '../src/paths.js'
+import { normalizeDarwinSystemAlias } from '../src/paths.js'
 
 let TMP: string
 let origCwd: string
@@ -31,7 +31,7 @@ describe('settingsPath', () => {
 
   it('project scope ends in settings.json under cwd/.claude', () => {
     const p = settingsPath('project')
-    expect(p).toBe(path.join(resolveIndexPath(TMP), '.claude', 'settings.json'))
+    expect(p).toBe(path.join(normalizeDarwinSystemAlias(TMP), '.claude', 'settings.json'))
   })
 })
 
