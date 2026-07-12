@@ -277,6 +277,15 @@ describe('doc_compact', () => {
       expect(compact).not.toContain('## Next')
     })
 
+    it('matches a closed-ATX heading (trailing hash run) against a plain heading target', () => {
+      // Regression: the greedy `(.*)` capture swallowed the closing `##`, so the captured text
+      // for `## Setup ##` was "Setup ##" instead of "Setup", failing exact-equality against the
+      // target and returning '' (silent not-found) for any doc using closed-ATX style.
+      const body = 'Intro\n## Setup ##\nCompact content'
+      const compact = extractDocCompact(body, 'Setup')
+      expect(compact).toContain('Compact content')
+    })
+
     it('returns empty string when marker not found', () => {
       const body = 'Content without marker'
       const compact = extractDocCompact(body)
