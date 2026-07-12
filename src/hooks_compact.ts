@@ -8,6 +8,8 @@
  * compact — aim well under 2000 chars — and is emitted as a `context` output.
  */
 
+import { spawnSync } from 'node:child_process'
+
 import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns } from './session.js'
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
@@ -17,6 +19,9 @@ import { listSiblingSessionStates } from './session_store.js'
 import { foldPath } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
+
+/** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
+const MEM_EPOCH_TIMEOUT_MS = 800
 
 /** Cap on read/edit/web rows so a huge session can't blow the token budget. */
 const MAX_ROWS = 40
@@ -131,6 +136,7 @@ export function buildManifest(sessionId?: string): string {
   }
 
   lines.push(...buildSafeToDiscardSection(files))
+  lines.push(...buildMemEpochSection())
 
   return lines.join('\n')
 }
@@ -215,6 +221,48 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
     if (cachedOutputRows.length > MAX_ROWS) lines.push('- ...and ' + (cachedOutputRows.length - MAX_ROWS) + ' more')
   }
   return lines
+}
+
+/**
+ * Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into
+ * the compaction manifest, so a resumed session can tell whether mem's fact store has advanced
+ * since this transcript was captured.
+ *
+ * FINDING (searched for at implementation time): this codebase has no existing tracking of a
+ * "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem
+ * currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web
+ * fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state.
+ * Per spec, that gap is reported rather than papered over with a fabricated block-tracking
+ * mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that
+ * no live TGMEM block is tracked in this session.
+ *
+ * Must fail open: `mem` may be absent from PATH, may error, or may hang. `spawnSync` bounds the
+ * wait to {@link MEM_EPOCH_TIMEOUT_MS} (same spawnSync-with-timeout pattern as
+ * checkCopilotCli in cli_doctor.ts) and any failure -- ENOENT, non-zero exit, timeout kill,
+ * unparsable stdout -- silently omits the section. No error is ever surfaced and compaction
+ * never blocks or fails because of this.
+ */
+function buildMemEpochSection(): string[] {
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawnSync('mem', ['epoch'], {
+      encoding: 'utf-8',
+      timeout: MEM_EPOCH_TIMEOUT_MS,
+      windowsHide: true,
+    })
+  } catch {
+    return []
+  }
+  if (result.error !== undefined || result.status !== 0) return []
+
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : ''
+  if (!/^\d+$/.test(stdout)) return []
+
+  return [
+    '',
+    '### mem epoch',
+    `mem epoch: ${stdout} (no live TGMEM block is tracked in this session -- only the epoch counter is folded in; see buildMemEpochSection's doc comment)`,
+  ]
 }
 
 /**

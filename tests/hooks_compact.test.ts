@@ -2,13 +2,22 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { buildManifest, preCompactHandler } from '../src/hooks_compact.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordFileRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
+
+// `mem epoch` (Item I) shells out via spawnSync -- mocked so the suite is deterministic
+// regardless of whether a real `mem` binary happens to be on the machine running it, and so
+// the ENOENT/non-zero/timeout fail-open paths can be exercised without a real absent/hanging
+// binary.
+const spawnSyncMock = vi.fn()
+vi.mock('node:child_process', () => ({
+  spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
+}))
 
 const tmpFiles: string[] = []
 
@@ -32,6 +41,10 @@ const compactEvent: HookEvent = {
 
 beforeEach(() => {
   clearModuleCaches()
+  spawnSyncMock.mockReset()
+  // Default: `mem` absent from PATH (ENOENT), matching most dev/CI machines and keeping
+  // pre-existing tests that don't care about mem epoch from seeing the new section.
+  spawnSyncMock.mockReturnValue({ error: new Error('ENOENT'), status: null, stdout: '' })
 })
 
 afterEach(() => {
@@ -199,5 +212,68 @@ describe('SAFE_TO_DISCARD section', () => {
 
     const manifest = buildManifest()
     expect(manifest).toContain('SAFE_TO_DISCARD (2 items')
+  })
+})
+
+describe('mem epoch section', () => {
+  it('includes the epoch value when `mem epoch` succeeds', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 0, stdout: '42\n' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).toContain('### mem epoch')
+    expect(manifest).toContain('mem epoch: 42')
+    expect(manifest).toContain('no live TGMEM block is tracked')
+    expect(spawnSyncMock).toHaveBeenCalledWith('mem', ['epoch'], expect.objectContaining({ timeout: expect.any(Number) }))
+  })
+
+  it('omits the section cleanly when `mem` is absent from PATH (ENOENT)', () => {
+    spawnSyncMock.mockReturnValue({ error: new Error('spawnSync mem ENOENT'), status: null, stdout: '' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when `mem epoch` exits non-zero', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 1, stdout: '' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when `mem epoch` times out', () => {
+    // node's spawnSync surfaces a timeout as result.error with code ETIMEDOUT and status null.
+    const err = Object.assign(new Error('spawnSync mem ETIMEDOUT'), { code: 'ETIMEDOUT' })
+    spawnSyncMock.mockReturnValue({ error: err, status: null, stdout: '', signal: 'SIGTERM' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when spawnSync itself throws', () => {
+    spawnSyncMock.mockImplementation(() => {
+      throw new Error('unexpected spawn failure')
+    })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when stdout is not a bare integer', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 0, stdout: 'not-a-number\n' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('never throws or hangs the manifest build when mem is absent', () => {
+    spawnSyncMock.mockReturnValue({ error: new Error('ENOENT'), status: null, stdout: '' })
+
+    expect(() => buildManifest()).not.toThrow()
   })
 })
