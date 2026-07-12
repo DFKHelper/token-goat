@@ -799,10 +799,64 @@ function calleeName(call: TsNode, language: Language): string | null {
 }
 
 /**
- * Walk a tree-sitter tree collecting call-site references.
+ * Bare-identifier "value position" usages of a name, scoped to `node` itself (not recursive --
+ * the caller's own tree walk already visits every descendant, so this only needs to recognise
+ * the specific container shapes below whenever `node` happens to be one of them).
+ *
+ * A call-site walk alone (see extractRefs) misses a symbol that is used without being invoked
+ * directly -- passed as a callback (`arr.map(myHelperFunction)`), assigned to a binding (`const
+ * x = myHelperFunction`), or stored as an object-literal value (`{ onClick: myHelperFunction
+ * }`). Those reads are real usages: `dead` should not flag the symbol as unreferenced, and
+ * `refs`/`callers` should surface them. Scoped to TypeScript/JavaScript/Python (the languages in
+ * REF_LANGUAGES with directly analogous grammar shapes for these three patterns);
+ * Go/Rust/Java/C/C++/Ruby keep call-site-only extraction for now.
+ *
+ * Deliberately narrow: only a bare `identifier` sitting directly in one of these three field
+ * positions counts. A nested expression (`a.b`, `a + b`, a call result, a string/comment) never
+ * matches, since tree-sitter already gives those their own distinct node types -- this needs no
+ * separate string/comment-stripping pass the way a regex-based extractor would.
+ */
+function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
+  const isJs = language === 'typescript' || language === 'javascript'
+  const isPy = language === 'python'
+  if (!isJs && !isPy) return []
+
+  const result: TsNode[] = []
+
+  // Direct call/constructor argument passed by bare name: arr.map(myHelperFunction).
+  if ((isJs && node.type === 'arguments') || (isPy && node.type === 'argument_list')) {
+    for (const child of node.namedChildren) {
+      if (child.type === 'identifier') result.push(child)
+    }
+  }
+
+  // Assignment of an existing binding to a variable: const x = myHelperFunction /
+  // x = myHelperFunction. Arrow/function-expression values are handled separately by
+  // scopeName() as a new scope, not a reference to an existing one, so they're excluded here
+  // by only matching a plain `identifier` value.
+  if (isJs && (node.type === 'variable_declarator' || node.type === 'assignment_expression')) {
+    const value = node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+  if (isPy && node.type === 'assignment') {
+    const value = node.childForFieldName('right')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  // Object-literal value bound to an existing name: { onClick: myHelperFunction }.
+  if (isJs && node.type === 'pair') {
+    const value = node.childForFieldName('value')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  return result
+}
+
+/**
+ * Walk a tree-sitter tree collecting call-site and value-position references.
  *
  * Maintains a stack of enclosing scope names (functions / methods / classes) so
- * each reference records its innermost enclosing symbol in `context` — the data
+ * each reference records its innermost enclosing symbol in `context` -- the data
  * `refs --callers` groups on. References are deduplicated per (name, line) and
  * single-character / builtin callees are dropped to keep the index focused.
  */
@@ -816,26 +870,32 @@ function extractRefs(root: TsNode, filePath: string, language: Language): RefEnt
       : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
   const stack: string[] = []
 
+  const record = (name: string, node: TsNode): void => {
+    if (name.length <= 1 || noise.has(name)) return
+    const line = node.startPosition.row + 1
+    const key = `${name}\0${line}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      filePath,
+      name,
+      line,
+      col: node.startPosition.column,
+      context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
+    })
+  }
+
   const visit = (node: TsNode): void => {
     const enclosing = scopeName(node, language)
     if (enclosing !== null && enclosing !== '') stack.push(enclosing)
 
     if (callTypes.has(node.type)) {
       const callee = calleeName(node, language)
-      if (callee !== null && callee.length > 1 && !noise.has(callee)) {
-        const line = node.startPosition.row + 1
-        const key = `${callee}\0${line}`
-        if (!seen.has(key)) {
-          seen.add(key)
-          out.push({
-            filePath,
-            name: callee,
-            line,
-            col: node.startPosition.column,
-            context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
-          })
-        }
-      }
+      if (callee !== null) record(callee, node)
+    }
+
+    for (const idNode of valueRefIdentifiers(node, language)) {
+      record(idNode.text, idNode)
     }
 
     for (const child of node.namedChildren) visit(child)
