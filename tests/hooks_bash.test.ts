@@ -2819,3 +2819,35 @@ describe('preBashHandler — config-driven bash_compress.timeout_seconds', () =>
     }
   })
 })
+
+// Regression (bug #242): a backgrounded or newline-separated command must never be
+// rewritten into `token-goat compress -c '<cmd>'`. compress's `bash_runner.run` uses
+// spawnSync with piped stdio, which blocks until the pipes close; the backgrounded
+// grandchild inherits stdout, so the call hangs until it exits or the wrapper's 600s
+// timeout kills the whole process tree the user wanted kept running in the background.
+describe('preBashHandler — backgrounded/multi-line commands are never compress-wrapped', () => {
+  it('does not wrap a backgrounded dev-server command', () => {
+    const result = preBashHandler(makeBashEvent('vite dev &'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a backgrounded watch command', () => {
+    const result = preBashHandler(makeBashEvent('tsc --watch &'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not wrap a newline-separated compound command', () => {
+    const result = preBashHandler(makeBashEvent('echo one\necho two'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still wraps an ordinary single command with no background operator', () => {
+    const result = preBashHandler(makeBashEvent('npm test'))
+    expect(result.hookType).toBe('rewriteInput')
+  })
+
+  it('still rejects an already-rejected && compound', () => {
+    const result = preBashHandler(makeBashEvent('git log && git status'))
+    expect(result.hookType).toBe('pass')
+  })
+})

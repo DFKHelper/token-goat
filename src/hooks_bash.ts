@@ -17,7 +17,7 @@ import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.j
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
+import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync } from 'node:fs'
@@ -955,6 +955,7 @@ function isCompressibleSingleCommand(cmd: string): boolean {
   if (['&&', '||', '$(', '`'].some((op) => cmd.includes(op))) return false
   if (cmd.includes('|') || cmd.includes(';')) return false
   if (/[<>]/.test(cmd)) return false
+  if (hasBareBackgroundOrNewline(cmd)) return false
   return true
 }
 
