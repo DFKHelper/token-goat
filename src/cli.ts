@@ -596,10 +596,7 @@ function cmdWorkerStatus(): void {
 }
 
 function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean } = {}): void {
-  const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
-  if (!Number.isFinite(windowDays) || windowDays < 0) {
-    throw new CliError('--window-days must be a non-negative number')
-  }
+  const windowDays = opts.windowDays !== undefined ? requireNonNegativeInt('--window-days', opts.windowDays) : 30
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
     windowDays,

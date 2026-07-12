@@ -369,3 +369,18 @@ describe('bash-output --head/--tail validation', () => {
     }
   })
 })
+
+// Regression guard: `stats --window-days` was bare-parsed via
+// `opts.windowDays ? parseInt(opts.windowDays, 10) : 30`, so a value with trailing garbage
+// ("30abc") parsed to 30 and was silently accepted instead of erroring, inconsistent with the
+// strict requireInt-style validation used by the other flags fixed in this file. Route it
+// through requireNonNegativeInt so trailing-garbage input errors cleanly instead of silently
+// truncating.
+describe('stats --window-days validation', () => {
+  it('rejects trailing garbage instead of silently truncating to the numeric prefix', async () => {
+    captureStderr()
+    const code = await runCli(['stats', '--window-days', '30abc'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--window-days')
+  })
+})
