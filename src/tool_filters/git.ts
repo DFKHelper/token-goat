@@ -142,7 +142,11 @@ const _GIT_LOG_COMMIT_RE = /^commit [0-9a-f]{7,}/
 // `diff --git ` for normal diffs; `diff --cc ` for combined diffs (merge-commit
 // conflict resolutions, e.g. `git diff --cc <merge-sha>` / `git show --cc <merge-sha>`).
 const _GIT_DIFF_FILE_RE = /^diff --(?:git|cc) /
-const _GIT_DIFF_HUNK_RE = /^@@\s/
+// `@@ -a,b +c,d @@` for normal diffs; combined diffs (`diff --cc`) use one extra `@` per
+// parent being merged, e.g. `@@@ -a,b -c,d +e,f @@@` for a 2-parent merge. Without this,
+// large-hunk truncation never engages on a combined diff's hunks -- they're indistinguishable
+// from plain content and the whole (potentially huge) hunk passes through untouched.
+const _GIT_DIFF_HUNK_RE = /^@{2,}\s/
 const _GIT_STATUS_HEADER_RE =
   /^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|Unmerged paths|Changes to be committed|nothing to commit)/
 
