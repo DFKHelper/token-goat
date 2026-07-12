@@ -14,17 +14,21 @@ export function* eachUnfencedLine(lines: readonly string[]): Generator<[number, 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
-    const fm = /^\s*(`{3,}|~{3,})/.exec(line)
+    const fm = /^\s*(`{3,}|~{3,})(.*)$/.exec(line)
     if (fm !== null && fm[1] !== undefined) {
       const run = fm[1]
       const ch = run[0] ?? ''
+      const rest = fm[2] ?? ''
       if (fence === null) {
+        // An opening fence may carry an info string (e.g. ```js).
         fence = { ch, len: run.length }
-      } else if (ch === fence.ch && run.length >= fence.len) {
+      } else if (ch === fence.ch && run.length >= fence.len && rest.trim() === '') {
         // Per CommonMark, a fence only closes on a run of the same character
-        // with length >= the opening run's length; a shorter same-char run
-        // (e.g. a nested ``` example inside an outer ```` fence) is literal
-        // content, not a closing delimiter.
+        // with length >= the opening run's length AND no trailing info string.
+        // A shorter same-char run, a mismatched char, or a marker-looking line
+        // with trailing content (e.g. a ```js line immediately following an
+        // already-open fence) is literal fenced content, not a closing
+        // delimiter, and must not desync the open/closed state.
         fence = null
       }
       continue
