@@ -21,7 +21,7 @@ import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -491,10 +491,13 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
-  const manifestHint = buildPackageManifestHint({ file_path: normalized })
-  if (manifestHint) {
-    recordActualRead(event, normalized)
-    return contextOutput(manifestHint.text)
+  if (!wasFileReadThisSession(normalized)) {
+    const manifestHint = buildPackageManifestHint({ file_path: normalized })
+    if (manifestHint) {
+      recordActualRead(event, normalized)
+      markHintShown('manifest-hint:' + normalized)
+      return contextOutput(manifestHint.text)
+    }
   }
 
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
