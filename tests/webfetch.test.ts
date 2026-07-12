@@ -641,3 +641,81 @@ describe('webfetch', () => {
     });
   });
 
+  describe('performHttpFetch cross-origin redirect header stripping (regression: performHttpFetch recursed with {...opts} on redirect, forwarding requestHeaders verbatim to whatever host the Location pointed at, which would leak an Authorization/API-key header cross-origin)', () => {
+    function respondWith(fakeReq: EventEmitter, statusCode: number, headers: Record<string, string>): void {
+      fakeReq.end = vi.fn(() => {
+        const fakeRes = new EventEmitter();
+        fakeRes.statusCode = statusCode;
+        fakeRes.statusMessage = statusCode === 200 ? 'OK' : 'Found';
+        fakeRes.headers = headers;
+        fakeRes.resume = vi.fn();
+        queueMicrotask(() => {
+          fakeReq.emit('response', fakeRes);
+          if (statusCode === 200) fakeRes.emit('end');
+        });
+      });
+    }
+
+    it('drops requestHeaders when the redirect target is a different host', async () => {
+      const capturedHeaders: Record<string, unknown>[] = [];
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 302, { location: 'http://other-host.example.test/y' });
+        return fakeReq;
+      });
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 200, {});
+        return fakeReq;
+      });
+
+      const result = await performHttpFetch('http://original-host.example.test/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: { Authorization: 'Bearer secret-token' },
+        redirectsLeft: 5,
+      });
+
+      expect(result.status).toBe(200);
+      expect(capturedHeaders).toHaveLength(2);
+      expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
+      expect(capturedHeaders[1]?.['Authorization']).toBeUndefined();
+    });
+
+    it('still forwards requestHeaders when the redirect target is the same host', async () => {
+      const capturedHeaders: Record<string, unknown>[] = [];
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 302, { location: 'http://same-host.example.test/y' });
+        return fakeReq;
+      });
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 200, {});
+        return fakeReq;
+      });
+
+      const result = await performHttpFetch('http://same-host.example.test/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: { Authorization: 'Bearer secret-token' },
+        redirectsLeft: 5,
+      });
+
+      expect(result.status).toBe(200);
+      expect(capturedHeaders).toHaveLength(2);
+      expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
+      expect(capturedHeaders[1]?.['Authorization']).toBe('Bearer secret-token');
+    });
+  });
+
