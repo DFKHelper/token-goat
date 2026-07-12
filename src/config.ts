@@ -454,6 +454,101 @@ function section(raw: Record<string, unknown>, key: string): Record<string, unkn
     : {}
 }
 
+// Numeric field bounds for targeted validation (config set on numbers). Extracted from _buildConfig.
+const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: string}> = {
+  'compact_assist.min_events': {min: 0, max: 1000},
+  'compact_assist.max_manifest_tokens': {min: 50, max: 10000},
+  'compact_assist.auto_trigger_multiplier': {min: 1.0, max: 10.0},
+  'compact_assist.compact_skip_ttl_secs': {min: 1.0, max: 3600.0},
+  'compact_assist.noise_floor_tokens': {min: 0, max: 10000},
+  'compact_assist.edited_dir_group_threshold': {min: 0, max: 100},
+  'compact_assist.max_section_lines': {min: 0, max: 10000},
+  'compact_assist.wide_session_threshold': {min: 1, max: 10000},
+  'compact_assist.orchestrator_commit_threshold': {min: 1, max: 10000},
+  'compact_assist.max_manifest_chars': {min: 0, max: 16000},
+  'bash_compress.max_lines': {min: 50, max: 100_000},
+  'bash_compress.max_bytes': {min: 1024, max: 16 * 1024 * 1024},
+  'bash_compress.timeout_seconds': {min: 5, max: 7200},
+  'bash_compress.cache_min_bytes': {min: 0, max: 100 * 1024 * 1024},
+  'bash_compress.cache_max_file_count': {min: 1, max: 1_000_000},
+  'bash_compress.cache_max_bytes': {min: 1024, max: 4 * 1024 * 1024 * 1024},
+  'bash_compress.cache_max_bytes_per_output': {min: 1024, max: 4 * 1024 * 1024 * 1024, clampTo: 'bash_compress.cache_max_bytes'},
+  'bash_diff.max_hunks_per_file': {min: 1, max: 10000},
+  'bash_severity_log.context_lines': {min: 0, max: 100},
+  'bash_severity_log.score_threshold': {min: 0.0, max: 1.0},
+  'post_read_code_compress.min_lines': {min: 0, max: 1_000_000},
+  'skill_preservation.max_cache_bytes': {min: 64 * 1024, max: 512 * 1024 * 1024},
+  'skill_preservation.orphan_age_secs': {min: 1, max: 2_592_000},
+  'skill_preservation.truncation_budget_tokens': {min: 0, max: 8000},
+  'skill_preservation.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
+  'image_shrink.jpeg_quality': {min: 1, max: 100},
+  'image_shrink.max_image_pixels': {min: 0, max: 1_000_000_000},
+  'curator.min_samples': {min: 0, max: 10000},
+  'curator.threshold_pct': {min: 0, max: 100},
+  'hint_budget.max_per_session': {min: 0, max: 1_000_000},
+  'hint_budget.max_structured_per_session': {min: 0, max: 1_000_000},
+  'hint_budget.max_index_only_per_session': {min: 0, max: 1_000_000},
+  'repomap.compact_file_threshold': {min: 0, max: 100_000},
+  'overflow_guard.max_tokens': {min: 1000, max: 1_000_000},
+  'hints.suppress_after_ignored': {min: 0, max: 1000},
+  'hints.verbose_until_seen_count': {min: 0, max: 10000},
+  'hints.min_file_lines_for_hint': {min: 0, max: 1_000_000},
+  'hints.bash_dedup_min_bytes': {min: 0, max: 100_000},
+  'hints.web_dedup_min_bytes': {min: 0, max: 100_000},
+  'hints.grep_dedup_min_matches': {min: 0, max: 100_000},
+  'hints.git_hint_max_ms': {min: 0, max: 10000},
+  'hints.min_session_hint_savings_bytes': {min: 0, max: 1_000_000},
+  'hints.diff_hint_min_tokens_saved': {min: 0, max: 100_000},
+  'hints.large_read_redirect_bytes': {min: 0, max: 100_000_000},
+  'hints.reread_deny_min_bytes': {min: 0, max: 100_000_000},
+  'hints.baseline_budget_tokens': {min: 0, max: 10_000_000},
+  'hints.truncated_read_min_lines': {min: 0, max: 1_000_000},
+  'hints.protect_recent_reads': {min: 0, max: 100},
+  'hints.cross_session_read_dedup_ttl_secs': {min: 1, max: 86400},
+  'hints.mcp_dedup_ttl_secs': {min: 1, max: 3600},
+  'hooks.watchdog_ms': {min: 100, max: 30000},
+  'webfetch.max_file_count': {min: 0, max: 10_000_000},
+  'webfetch.max_bytes': {min: 0, max: 100 * 1024 * 1024 * 1024},
+  'webfetch.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
+  'worker.max_pool_workers': {min: 1, max: 8},
+  'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
+  'indexing.large_file_skip_kb': {min: 1, max: 1048576},
+  'context.model_window_tokens': {min: 10_000, max: 10_000_000},
+}
+
+/**
+ * Validate a single numeric config field against its documented bounds and cross-field constraints.
+ * Used by config set to reject out-of-range values without rebuilding the entire config tree.
+ * Returns the clamped value if validation passes, or undefined if the field is not numeric/known.
+ */
+function walkGetNumeric(obj: Record<string, unknown>, parts: string[]): number | undefined {
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (typeof cur !== 'object' || cur === null) return undefined
+    cur = (cur as Record<string, unknown>)[part]
+    if (cur === undefined) return undefined
+  }
+  return typeof cur === 'number' ? cur : undefined
+}
+
+export function validateNumericField(fieldKey: string, value: number, cfg: Record<string, unknown>): number | undefined {
+  const bounds = NUMERIC_FIELD_BOUNDS[fieldKey]
+  if (!bounds) return undefined
+
+  // Apply simple min/max clamping (matching validatedInt/validatedFloat logic)
+  let clamped = Math.max(bounds.min, Math.min(bounds.max, value))
+
+  // Apply cross-field constraints if present
+  if (bounds.clampTo) {
+    const clampToValue = walkGetNumeric(cfg, bounds.clampTo.split('.'))
+    if (typeof clampToValue === 'number') {
+      clamped = Math.min(clamped, clampToValue)
+    }
+  }
+
+  return clamped
+}
+
 // ---------------------------------------------------------------------------
 // Env fingerprint + mtime cache
 // ---------------------------------------------------------------------------

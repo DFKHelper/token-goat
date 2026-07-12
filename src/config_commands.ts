@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -225,14 +225,12 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       const coercedValue = coerce(value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
       ref.parent[ref.leaf] = coercedValue
       if (typeof coercedValue === 'number') {
-        // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
-        // overlay, so the check reflects the value actually being written). If the field clamps
-        // to something else, the input was out of its documented range — reject instead of
-        // silently writing an invalid value that only gets clamped (with no feedback) next load.
-        const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
-        const revalidatedResult = walkGet(revalidated, parts)
-        if (revalidatedResult.found && revalidatedResult.value !== coercedValue) {
-          throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
+        // Validate using targeted field validator rather than rebuilding entire config tree.
+        // This checks the field's documented bounds and any cross-field constraints (e.g., per-output
+        // max must not exceed total max).
+        const clamped = validateNumericField(key, coercedValue, cfg as unknown as Record<string, unknown>)
+        if (clamped !== undefined && clamped !== coercedValue) {
+          throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(clamped)}); rejected`)
         }
       }
       saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
