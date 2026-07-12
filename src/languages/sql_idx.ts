@@ -14,7 +14,6 @@ import {
   offsetToLine,
   propagateEndLinesToSymbols,
   stripCstyleComments,
-  stripSqlLineComments,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -58,18 +57,29 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
 ]
 
 /**
- * Blank the contents of SQL single-quoted string literals, replacing interior characters with
- * spaces (keeping the quote delimiters and any newlines) so DDL keywords that merely appear
- * inside a string value (e.g. dynamic SQL passed to `EXECUTE '...'`) are never matched by the
- * `CREATE ...` patterns below. Double-quoted spans are left untouched since double quotes
- * delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string literals - blanking them
- * would destroy legitimate delimited names. Length- and offset-preserving, like the other
- * `strip*` helpers in `common.ts`, so `match.index` positions stay valid for line lookup.
+ * Blank the contents of SQL single-quoted string literals and `--` line comments in a single
+ * linear scan, replacing interior characters with spaces (keeping the quote delimiters and any
+ * newlines) so DDL keywords that merely appear inside a string value (e.g. dynamic SQL passed to
+ * `EXECUTE '...'`) are never matched by the `CREATE ...` patterns below, and `--` never gets
+ * treated as a comment marker while inside an open string literal. Double-quoted spans are left
+ * untouched since double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string
+ * literals - blanking them would destroy legitimate delimited names. Length- and
+ * offset-preserving, like the other `strip*` helpers in `common.ts`, so `match.index` positions
+ * stay valid for line lookup.
  *
  * SQL's standard escape for a literal quote inside a string is a doubled quote (`''` inside a
  * `'...'` string, `""` inside a `"..."` string) rather than a backslash - `common.ts`'s
  * `isInsideStringLiteral`/`stripStringLiterals` assume backslash escaping, so they don't fit SQL's
  * rule and this file needs its own quote-aware scanner.
+ *
+ * `--` comment handling used to live in a separate line-scoped pre-pass (`stripSqlLineComments`,
+ * run before this function) whose quote-tracking reset at every newline, with no awareness that
+ * the current line started mid-way through an already-open multi-line string literal from a
+ * prior line - so a `--` inside a multi-line string got treated as a comment marker, blanking
+ * out whatever closing quote followed it on that line and flipping string-parity tracking for
+ * the rest of the file. Folding `--` handling into this single stateful scan (which already
+ * tracks whether a string is open across line boundaries) fixes that: `--` is only treated as a
+ * comment start when the scanner is not currently inside an open string.
  */
 function stripSqlStringLiterals(text: string): string {
   let out = ''
@@ -102,6 +112,16 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
+    if (ch === '-' && text[i + 1] === '-') {
+      // `--` line comment: only recognized outside a string literal (guaranteed here, since the
+      // branch above consumes any open `'...'` span in full before returning to this point).
+      // Blank to end of line, preserving the newline itself.
+      while (i < text.length && text[i] !== '\n') {
+        out += ' '
+        i++
+      }
+      continue
+    }
     out += ch
     i++
   }
@@ -126,10 +146,11 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const seen = new Set<string>()
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
-  let stripped = stripSqlLineComments(content)
-  stripped = stripCstyleComments(stripped)
+  const stripped = stripCstyleComments(content)
   const totalLines = content.split('\n').length
   const lineIndex = buildLineIndex(stripped)
+  // Blanks string literals AND `--` line comments in one linear scan, so `--` inside a
+  // multi-line string literal is never mistaken for a comment marker (see docstring below).
   const noStrings = stripSqlStringLiterals(stripped)
 
   for (const [pattern, kind] of PATTERNS) {

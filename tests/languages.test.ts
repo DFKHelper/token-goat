@@ -834,6 +834,44 @@ class Bar {
     expect(z?.docstring).toBe('Named')
   })
 
+  it('does not index a function-local class as a member of the enclosing class', () => {
+    // Regression: the class/companion detection branch had no depthInClass gate, unlike the
+    // method/const branch just below it -- so a class declared inside a method body (a
+    // function-local class, legal Kotlin) got emitted as a real nested class member of the
+    // enclosing class instead of being skipped as function-local.
+    const content = `class Outer {
+    fun makeThing(): Foo {
+        class LocalHelper {
+            fun help() {}
+        }
+        return LocalHelper()
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Outer.kt')
+    const localHelper = symbols.find((s) => s.name === 'LocalHelper')
+    expect(localHelper).toBeUndefined()
+    const help = symbols.find((s) => s.name === 'help')
+    expect(help).toBeUndefined()
+    const makeThing = symbols.find((s) => s.name === 'makeThing')
+    expect(makeThing?.kind).toBe('method')
+    expect(makeThing?.docstring).toBe('Outer')
+  })
+
+  it('does not index a function-local companion object as a member of the enclosing class', () => {
+    const content = `class Outer {
+    fun makeThing() {
+        companion object {
+            fun help() {}
+        }
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Outer.kt')
+    expect(symbols.find((s) => s.name === 'Companion')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'help')).toBeUndefined()
+  })
+
   it('detects .kt language via parseFile', async () => {
     const file = tmp('Foo.kt', 'fun main() {}')
     const result = await parseFile(file)
@@ -1214,6 +1252,24 @@ CREATE TABLE "order" (id int);
     const names = symbols.map((s) => s.name)
     expect(names).toContain('user')
     expect(names).toContain('order')
+  })
+
+  it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
+    // Regression: a `--` inside a multi-line string literal used to be blanked out by a
+    // line-scoped comment pre-pass that ran before string-literal stripping and had no
+    // awareness the line started mid-string, taking the closing quote with it and flipping
+    // string-parity tracking for the rest of the file.
+    const content = `
+EXECUTE 'CREATE TABLE ghost (id int)
+-- text');
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('ghost')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
   })
 
   it('reports correct line numbers for many scattered CREATE TABLE statements', () => {
