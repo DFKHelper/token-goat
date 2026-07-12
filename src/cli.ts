@@ -120,7 +120,7 @@ import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, 
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
 import { stripAnsi } from './render/ansi.js'
-import { loadConfig } from './config.js'
+import { loadConfig, getLastConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -1851,6 +1851,14 @@ export function buildProgram(): Command {
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
       process.exitCode = undefined
+      // loadConfig() silently falls back to defaults on a config.toml parse failure, same as
+      // when the file is simply missing -- surface the distinction here, once per invocation,
+      // so a corrupt config doesn't look identical to "no config yet" for every command.
+      loadConfig()
+      const parseErr = getLastConfigParseError()
+      if (parseErr !== null) {
+        err(`token-goat: config.toml failed to parse (${parseErr}); using defaults — run \`token-goat config validate\` for details`)
+      }
       try {
         await fn(...(args as never[]))
         if (process.exitCode === undefined) {

@@ -1153,3 +1153,68 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 })
+
+// ── corrupt config.toml surfaces a warning at the CLI entry point (#249 regression) ──────────
+
+describe('a corrupt config.toml warns on stderr instead of silently falling back like a missing file', () => {
+  function runWithDataDir(args: string[], dataDir: string): RunResult {
+    const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: dataDir,
+        USERPROFILE: dataDir,
+        LOCALAPPDATA: dataDir,
+        XDG_DATA_HOME: dataDir,
+      },
+    })
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+
+  function configTomlPath(dataDir: string): string {
+    return path.join(dataDir, 'dfk-helper', 'token-goat', 'config.toml')
+  }
+
+  it('warns on stderr and points at `config validate` when config.toml exists but fails to parse', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgwarn-'))
+    try {
+      const cfgPath = configTomlPath(dataDir)
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+      fs.writeFileSync(cfgPath, 'this is not [ valid toml ===\n', 'utf8')
+
+      const r = runWithDataDir(['config', 'get', 'compact_assist.enabled'], dataDir)
+      expect(r.stderr).toMatch(/config\.toml.*(failed to parse|parse)/i)
+      expect(r.stderr).toMatch(/config validate/)
+      // The command itself still succeeds using defaults -- a corrupt config warns, it doesn't
+      // block every other command from working.
+      expect(r.stdout.trim()).toBe('true')
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not warn when config.toml is simply absent', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgwarn-absent-'))
+    try {
+      const r = runWithDataDir(['config', 'get', 'compact_assist.enabled'], dataDir)
+      expect(r.stderr).not.toMatch(/failed to parse/i)
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not warn when config.toml is valid', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgwarn-valid-'))
+    try {
+      const cfgPath = configTomlPath(dataDir)
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+      fs.writeFileSync(cfgPath, '[compact_assist]\nenabled = false\n', 'utf8')
+
+      const r = runWithDataDir(['config', 'get', 'compact_assist.enabled'], dataDir)
+      expect(r.stderr).not.toMatch(/failed to parse/i)
+      expect(r.stdout.trim()).toBe('false')
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+})

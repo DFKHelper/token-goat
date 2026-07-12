@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -213,6 +213,21 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     // read-modify-write instead of dropping the update outright.
     const applySet = (): unknown => {
       const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
+      // loadPersistedConfig() falls back to defaults on a parse failure exactly like it does
+      // for a missing file, so without this check the save below would silently clobber a
+      // corrupt-but-possibly-hand-edited config.toml with defaults + this one key, destroying
+      // whatever was recoverable in it. Back up the original bytes first so nothing is lost.
+      const parseErrAtLoad = getLastConfigParseError()
+      if (parseErrAtLoad !== null) {
+        try {
+          fs.copyFileSync(configPath(), `${configPath()}.bak`)
+          emitErr(`config set: warning: config.toml failed to parse (${parseErrAtLoad}); backed up the original to config.toml.bak and rewriting it from defaults`)
+        } catch {
+          // best-effort — e.g. the file vanished between load and copy; proceed with the set
+          // regardless, since refusing outright would leave the user unable to fix a corrupt
+          // config via `config set` at all.
+        }
+      }
       // Test-only seam: widens the load->save window so a regression test can deterministically
       // force a second concurrent `config set` to land its own load+save inside it, instead of
       // relying on OS process-start jitter to (unreliably) produce a collision. No-op unless a
@@ -337,6 +352,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         }
       }
     }
+
+    // A non-empty findings list (including a parse_error) means the config is not clean --
+    // exit non-zero so `config validate` is usable as a CI/script gate, not just a human-read
+    // report that always looks "successful" regardless of what it found.
+    if (findings.length > 0) process.exitCode = 1
 
     if (opts.json === true) {
       emit(JSON.stringify({ findings, ok: findings.length === 0 }, null, 2))
