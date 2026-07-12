@@ -239,6 +239,31 @@ describe('ESLintFilter', () => {
     expect(result.text).toMatch(/ESLint/i)
   })
 
+  // Regression: ESLint exits 0 whenever there are no *errors*, even when warnings were emitted
+  // (unless --max-warnings is set). The clean-exit fast path used to blindly search for a
+  // "✖ N problems" summary line and fall back to a blanket "ESLint: no errors" otherwise --
+  // silently discarding real warning lines whenever the output has no stylish-style summary
+  // footer (e.g. --format unix, or a summary line the caller stripped).
+  it('surfaces warning lines instead of a false "no errors" when exit code is 0 but warnings were emitted (no summary footer)', () => {
+    const header = '/project/src/foo.ts'
+    const warning = "  12:8  warning  'x' is defined but never used  no-unused-vars"
+    const input = [header, warning].join('\n')
+    const result = eslintFilter.apply(input, '', 0, ['eslint', 'src/'])
+    expect(result.text).not.toMatch(/no errors/i)
+    expect(result.text).toContain(header)
+    expect(result.text).toContain(warning)
+  })
+
+  it('surfaces warning lines instead of a false "no errors" when exit code is 0 with a stylish summary footer showing only warnings', () => {
+    const header = '/project/src/foo.ts'
+    const warning = "  12:8  warning  'x' is defined but never used  no-unused-vars"
+    const summary = '✖ 1 problem (0 errors, 1 warning)'
+    const input = [header, warning, '', summary].join('\n')
+    const result = eslintFilter.apply(input, '', 0, ['eslint', 'src/'])
+    expect(result.text).toContain(warning)
+    expect(result.text).toContain(summary)
+  })
+
   it('deduplicates warnings by rule, keeping first 3, noting more', () => {
     const header = '/project/src/foo.ts'
     const issues = Array.from(

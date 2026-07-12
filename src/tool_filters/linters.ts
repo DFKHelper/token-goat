@@ -415,14 +415,18 @@ class ESLintFilter extends ToolFilter {
 
   override compress(stdout: string, stderr: string, exitCode: number, _argv: string[]): string {
     const merged = this.combineOutput(stdout, stderr)
+    const lines = merged.split('\n')
 
-    // Fast path: clean exit
-    if (exitCode === 0) {
-      const summary = merged.split('\n').find((ln) => _ESLINT_SUMMARY_RE.test(ln.trim()))
+    // Fast path: truly clean exit -- zero problems, not just zero errors. ESLint exits 0
+    // whenever there are no *errors*, even when warnings were emitted (unless --max-warnings
+    // is set), so exitCode alone can't tell "nothing to report" from "warnings only". Only
+    // take the elide-everything shortcut when no line looks like an actual issue (stylish,
+    // compact, or unix format); otherwise fall through to the same grouping logic used for a
+    // non-zero exit so warning text is never silently dropped.
+    if (exitCode === 0 && !lines.some((ln) => _eslintIssueSeverity(ln) !== null)) {
+      const summary = lines.find((ln) => _ESLINT_SUMMARY_RE.test(ln.trim()))
       return summary ?? 'ESLint: no errors'
     }
-
-    const lines = merged.split('\n')
     const out: string[] = []
     let currentFileHeader: string | null = null
     let currentIssues: string[] = []
