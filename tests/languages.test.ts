@@ -1664,6 +1664,19 @@ clean::
     expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
   })
 
+  it('splits a multi-target rule into separate symbols instead of fusing the names', () => {
+    // Regression: `all clean:` used to capture the whole "all clean" run as a single symbol
+    // name, so `token-goat symbol clean` returned nothing for a target visibly in the source.
+    const content = `all clean:\n\techo done\n`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).toContain('clean')
+    expect(names).not.toContain('all clean')
+    expect(symbols.find((s) => s.name === 'all')?.kind).toBe('makefile_target')
+    expect(symbols.find((s) => s.name === 'clean')?.kind).toBe('makefile_target')
+  })
+
   it('does not emit a spurious target for a colon-bearing line inside a define...endef block', () => {
     const content = `define PRINT_HELP_PYSCRIPT
 import re, sys
