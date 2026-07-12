@@ -760,6 +760,10 @@ describe('GitFilter fallback', () => {
   it('git rev-parse routes to generic git filter', () => {
     expect(selectFilter(['git', 'rev-parse', 'HEAD'])?.name).toBe('git')
   })
+
+  it('git grep routes to the grep filter, not the generic git catch-all', () => {
+    expect(selectFilter(['git', 'grep', 'TODO'])?.name).toBe('grep')
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -1281,7 +1281,13 @@ function _compressGitRemote(stdout: string, stderr: string): string {
 
 export class GitFilter extends GitBaseFilter {
   readonly name = 'git'
-  // No subcommands set — matches any git command as catch-all.
+  // No subcommands set — matches any git command as catch-all, except `git
+  // grep`, which is excluded here so dispatch falls through to GrepFilter
+  // (registered after GIT_FILTERS) and its per-file match-count summarizer.
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    return positionalArgs(argv.slice(1))[0] !== 'grep'
+  }
 
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
     const positionals = positionalArgs(argv.slice(1))
