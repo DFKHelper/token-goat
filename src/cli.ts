@@ -660,12 +660,10 @@ function _applyFiltersAndPrint(
   }
 
   if (opts.grep !== undefined && opts.maxMatches !== undefined) {
-    const cap = Number.parseInt(opts.maxMatches, 10)
-    if (Number.isFinite(cap) && cap > 0) {
-      const matched = content === '' ? [] : content.split(/\r?\n/)
-      if (matched.length > cap) {
-        content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
-      }
+    const cap = requireNonNegativeInt('--max-matches', opts.maxMatches)
+    const matched = content === '' ? [] : content.split(/\r?\n/)
+    if (matched.length > cap) {
+      content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
     }
   }
 
