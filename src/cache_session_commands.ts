@@ -12,7 +12,7 @@ import { isInstalled } from './install.js'
 import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
-import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline } from './util.js'
 
 function emitErr(text: string): void {
@@ -356,12 +356,20 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
 // ── baseline ──────────────────────────────────────────────────────────────────
 
 /** Emit the project baseline map. --subagent = terser compact variant. */
-export function cmdBaseline(opts: { subagent?: boolean; json?: boolean }): void {
+export function cmdBaseline(opts: { subagent?: boolean; json?: boolean; suggestMem?: boolean }): void {
   const compact = opts.subagent === true
   const map = buildProjectMap(process.cwd(), { compact })
+  const suggestMem = opts.suggestMem === true
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(map, null, 2) + '\n')
+    const jsonOut: Record<string, unknown> = { ...map }
+    if (suggestMem) jsonOut['memSuggestions'] = findMemSuggestionCandidates(process.cwd())
+    process.stdout.write(JSON.stringify(jsonOut, null, 2) + String.fromCharCode(10))
     return
   }
-  process.stdout.write(formatProjectMap(map, compact) + '\n')
+  let out = formatProjectMap(map, compact)
+  if (suggestMem) {
+    const suggestions = formatMemSuggestions(process.cwd())
+    if (suggestions !== '') out = out + String.fromCharCode(10) + suggestions
+  }
+  process.stdout.write(out + String.fromCharCode(10))
 }
