@@ -2451,6 +2451,40 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).toContain('nope1: (no references found)')
     expect(stdout).toContain('nope2: (no references found)')
   })
+
+  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has references would
+  // otherwise be reported as "no references found" -- a wrong answer, not just a permissive
+  // input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs, for
+  // both the single-symbol path and the multi-symbol merged path.
+  it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no references found" (single symbol)', () => {
+    mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
+    const { stderr } = capture(() => {
+      const code = runRefs({ spec: 'login', limit: 0 })
+      expect(code).toBe(1)
+    })
+    expect(stderr).not.toContain('No references found')
+    expect(stderr.toLowerCase()).toContain('limit')
+    expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
+
+  it('rejects limit: 0 as an explicit invalid-argument error for a multi-symbol spec', () => {
+    mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
+    const { stderr } = capture(() => {
+      const code = runRefs({ spec: 'login,refresh', limit: 0 })
+      expect(code).toBe(1)
+    })
+    expect(stderr.toLowerCase()).toContain('limit')
+    expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
+
+  it('rejects a negative limit as an explicit invalid-argument error', () => {
+    const { stderr } = capture(() => {
+      const code = runRefs({ spec: 'login', limit: -1 })
+      expect(code).toBe(1)
+    })
+    expect(stderr.toLowerCase()).toContain('limit')
+    expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
 })
 
 // A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the

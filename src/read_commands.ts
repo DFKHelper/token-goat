@@ -651,6 +651,16 @@ function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: 
 
 /** Handle ``token-goat refs <spec>``. A comma-separated spec (`a,b,c` or `file::a,b`) merges the references of several symbols into one call, each group headed by its symbol name; a single symbol keeps the original behavior verbatim via {@link runRefsSingle}. */
 export function runRefs(opts: RefsOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether references exist -- silently reporting "no references found"
+  // for a symbol that's actually referenced. Reject it explicitly instead of querying with it.
+  // Both callers (this multi-symbol path and the single-symbol runRefsSingle it delegates to)
+  // are covered by this one check since runRefsSingle is never called from outside this file.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 

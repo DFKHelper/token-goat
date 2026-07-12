@@ -163,6 +163,14 @@ export function resolveCallers(name: string, limit?: number): CallerEntry[] {
 }
 
 export function runCallers(opts: CallersOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether callers exist -- silently reporting "no references found" for
+  // a symbol that's actually called. Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const entries = resolveCallers(opts.symbol, opts.limit)
   if (entries.length === 0) {
     emitErr(`No references found for '${opts.symbol}'`)
