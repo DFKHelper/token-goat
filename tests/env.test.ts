@@ -76,6 +76,11 @@ describe('env parsers', () => {
       expect(envInt(KEY, 0)).toBe(8)
     })
 
+    it('trims surrounding whitespace before parsing, like envStr/envBool', () => {
+      process.env[KEY] = ' 42 '
+      expect(envInt(KEY, 0)).toBe(42)
+    })
+
     it('does not clamp when min/max are omitted (unchanged behavior)', () => {
       process.env[KEY] = '99999999'
       expect(envInt(KEY, 10)).toBe(99999999)
