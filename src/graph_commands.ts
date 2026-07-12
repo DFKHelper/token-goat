@@ -658,20 +658,30 @@ export function runTestFor(opts: TestForOptions): number {
   const symbols = querySymbols({ filePath, limit: 10000 })
 
   const testFileMap = new Map<string, Set<string>>()
+  const getSyms = buildFileSymCache()
 
   for (const sym of symbols) {
     const refs = queryRefs({ name: sym.name, limit: 500 })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())
+      // Record which test function actually exercises the target file's symbol, so the Set
+      // narrows testFunctions to the ones that reference the target -- not every test-prefixed
+      // symbol that merely happens to live in the same file.
+      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
+      if (enc !== null) {
+        testFileMap.get(ref.filePath)!.add(enc.name)
+      }
     }
   }
 
   const results: TestForEntry[] = []
 
-  for (const [tf] of testFileMap) {
+  for (const [tf, referencingFns] of testFileMap) {
     const testSyms = querySymbols({ filePath: tf, limit: 10000 })
-    const testFns = testSyms.filter((s) => /^(test|Test|spec|describe|it)/.test(s.name)).map((s) => s.name)
+    const testFns = testSyms
+      .filter((s) => /^(test|Test|spec|describe|it)/.test(s.name) && referencingFns.has(s.name))
+      .map((s) => s.name)
     results.push({ testFile: tf, testFunctions: testFns })
   }
 
