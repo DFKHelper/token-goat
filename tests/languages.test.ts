@@ -500,6 +500,26 @@ implements Bar, Baz
     expect(method1?.kind).toBe('method')
     expect(method1?.docstring).toBe('Foo')
   })
+
+  it('classifies kind correctly when the declared name is itself a substring of the keyword', () => {
+    // Regression: kind was derived from `stripped.split(name)[0]` then checking
+    // includes('interface'|'trait'|'enum'). When the name is a case-sensitive substring of the
+    // keyword itself (e.g. an interface literally named "face", so the source reads
+    // "interface face"), split(name) lands its split point INSIDE the keyword text, corrupting
+    // the substring check and misclassifying the symbol as kind 'class'.
+    const content = `<?php
+interface face {
+    public function look();
+}
+enum num {
+}
+`
+    const { symbols } = extractPhp(content, 'weird.php')
+    const face = symbols.find((s) => s.name === 'face')
+    expect(face?.kind).toBe('interface')
+    const num = symbols.find((s) => s.name === 'num')
+    expect(num?.kind).toBe('enum')
+  })
 })
 
 // ---------------------------------------------------------------------------
