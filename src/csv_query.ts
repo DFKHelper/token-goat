@@ -7,7 +7,7 @@
 
 import { parse } from 'csv-parse/sync'
 
-export type CsvWhereOp = '=' | '!=' | '>' | '<' | '~='
+export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
 
 export interface CsvWhere {
   column: string
@@ -38,15 +38,15 @@ export interface CsvQueryResult {
   totalRows: number
 }
 
-const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|=|>|<)(.*)$/
+const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|>=|<=|=|>|<)(.*)$/
 
-/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col~=regex` specs from
- * repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
+/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col>=value`/`col<=value`/`col~=regex`
+ * specs from repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
 export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undefined {
   if (specs === undefined || specs.length === 0) return undefined
   return specs.map((spec) => {
     const m = WHERE_SPEC_RE.exec(spec)
-    if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, or col~=regex)`)
+    if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, col>=value, or col<=value, or col~=regex)`)
     return { column: (m[1] as string).trim(), op: m[2] as CsvWhereOp, value: m[3] as string }
   })
 }
@@ -61,13 +61,24 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
     case '~=':
       return new RegExp(where.value).test(cell)
     case '>':
-    case '<': {
+    case '<':
+    case '>=':
+    case '<=': {
       const cellNum = Number(cell)
       const valNum = Number(where.value)
-      if (!Number.isNaN(cellNum) && !Number.isNaN(valNum)) {
-        return where.op === '>' ? cellNum > valNum : cellNum < valNum
+      const useNum = !Number.isNaN(cellNum) && !Number.isNaN(valNum)
+      const lhs: number | string = useNum ? cellNum : cell
+      const rhs: number | string = useNum ? valNum : where.value
+      switch (where.op) {
+        case '>':
+          return lhs > rhs
+        case '<':
+          return lhs < rhs
+        case '>=':
+          return lhs >= rhs
+        case '<=':
+          return lhs <= rhs
       }
-      return where.op === '>' ? cell > where.value : cell < where.value
     }
   }
 }
