@@ -61,10 +61,26 @@ export function extractIni(content: string, filePath: string): SymbolEntry[] {
   })
 }
 
+/** Returns true if the quote char `q` at index `i` in `line` is escaped: an odd count of
+ * consecutive backslashes immediately precedes it (each `\\` pair is one literal backslash, so
+ * only an odd run actually escapes the quote — an escaped backslash before the quote must not
+ * count as escaping it). Single quotes have no escape semantics in dotenv/POSIX, so this check
+ * is skipped entirely for them — any `'` closes the value regardless of what precedes it. */
+function _isEscapedQuote(line: string, i: number, q: string): boolean {
+  if (q === "'") return false
+  let backslashes = 0
+  let j = i - 1
+  while (j >= 0 && line[j] === '\\') {
+    backslashes++
+    j--
+  }
+  return backslashes % 2 === 1
+}
+
 /** Returns true if `line` contains an unescaped occurrence of the open quote char `q`, closing it. */
 function _lineClosesQuote(line: string, q: string): boolean {
   for (let i = 0; i < line.length; i++) {
-    if (line[i] === q && line[i - 1] !== '\\') return true
+    if (line[i] === q && !_isEscapedQuote(line, i, q)) return true
   }
   return false
 }
@@ -76,7 +92,7 @@ function _detectOpenQuote(value: string): string | null {
   const q = trimmed[0]
   if (q !== '"' && q !== "'") return null
   for (let i = 1; i < trimmed.length; i++) {
-    if (trimmed[i] === q && trimmed[i - 1] !== '\\') return null
+    if (trimmed[i] === q && !_isEscapedQuote(trimmed, i, q)) return null
   }
   return q
 }
