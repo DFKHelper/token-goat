@@ -39,6 +39,23 @@ beforeAll(async () => {
   ws5.getRow(2).values = ['first', 1]
   // row 3 intentionally left untouched/blank
   ws5.getRow(4).values = ['last', 2]
+  // Formula cells whose cached result is a Date or an error object (regression test for
+  // cellText's object/formula branch falling through to `String(obj.result)`, which produces
+  // a JS locale string for a Date result and the literal text "[object Object]" for an error
+  // result).
+  const ws6 = wb.addWorksheet('FormulaResults')
+  ws6.addRow(['label', 'value'])
+  const formulaDateRow = ws6.addRow(['launch', null])
+  formulaDateRow.getCell(2).value = { formula: 'A1', result: new Date(Date.UTC(2025, 0, 1)) }
+  const formulaErrorRow = ws6.addRow(['broken', null])
+  formulaErrorRow.getCell(2).value = { formula: 'A1/0', result: { error: '#N/A' } }
+  // Sheet where the last data row has empty trailing cells, so `row.eachCell` stops earlier
+  // than the sheet's actual width (regression test for sheetToCsv producing ragged CSV rows
+  // that csv-parse's strict column-count check rejects with "Invalid Record Length").
+  const ws7 = wb.addWorksheet('Ragged')
+  ws7.addRow(['a', 'b', 'c', 'd', 'e'])
+  ws7.addRow(['1', '2', '3', '4', '5'])
+  ws7.addRow(['6', '7', '8'])
   await wb.xlsx.writeFile(file)
 })
 
@@ -49,7 +66,15 @@ afterAll(() => {
 describe('listSheets', () => {
   it('lists sheet names with dimensions', async () => {
     const sheets = await listSheets(file)
-    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData', 'Dates', 'Gaps'])
+    expect(sheets.map((s) => s.name)).toEqual([
+      'Employees',
+      'Empty',
+      'WideData',
+      'Dates',
+      'Gaps',
+      'FormulaResults',
+      'Ragged',
+    ])
     const employees = sheets.find((s) => s.name === 'Employees')
     expect(employees?.rows).toBe(4)
     expect(employees?.cols).toBe(3)
@@ -112,6 +137,27 @@ describe('headSheet', () => {
     expect(lines[1]).not.toContain('Coordinated Universal Time')
   })
 
+  // Regression: a formula cell's cached result can itself be a Date or an error object.
+  // cellText's object/formula branch stringified `obj.result` directly, so a Date result
+  // produced a JS locale string (not the clean ISO format the plain-Date branch already
+  // produces) and an error-shaped result (`{error: '#N/A'}`) produced the literal text
+  // "[object Object]".
+  it('renders a formula cell whose cached result is a Date as a clean date, not a locale string', async () => {
+    const text = await headSheet(file, 'FormulaResults', 10)
+    const lines = text.split('\n')
+    expect(lines[0]).toBe('label,value')
+    expect(lines[1]).toBe('launch,2025-01-01')
+    expect(lines[1]).not.toContain('GMT')
+    expect(lines[1]).not.toContain('Coordinated Universal Time')
+  })
+
+  it('renders a formula cell whose cached result is an error object as the error text, not [object Object]', async () => {
+    const text = await headSheet(file, 'FormulaResults', 10)
+    const lines = text.split('\n')
+    expect(lines[2]).toBe('broken,#N/A')
+    expect(lines[2]).not.toContain('[object Object]')
+  })
+
   it('does not drop a trailing data row that comes after an interior blank row', async () => {
     const text = await headSheet(file, 'Gaps', 10)
     const lines = text.split('\n')
@@ -146,5 +192,18 @@ describe('querySheet', () => {
     const result = await querySheet(file, 'Employees', { columns: ['name'] })
     expect(result.header).toEqual(['name'])
     expect(result.rows).toEqual([['Alice'], ['Bob'], ['Carol']])
+  })
+
+  // Regression: sheetToCsv emitted each row only up to that row's own last non-empty column,
+  // so a row with empty/unset trailing cells produced fewer CSV fields than the header --
+  // csv-parse's default strict column-count check then threw "Invalid Record Length" instead
+  // of returning results.
+  it('does not throw on a sheet where a data row has empty trailing cells', async () => {
+    const result = await querySheet(file, 'Ragged', {})
+    expect(result.header).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(result.rows).toEqual([
+      ['1', '2', '3', '4', '5'],
+      ['6', '7', '8', '', ''],
+    ])
   })
 })
