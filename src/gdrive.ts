@@ -35,7 +35,7 @@ function validateFileId(fileId: string): void {
 
 function buildExportUrl(fileId: string): string {
   validateFileId(fileId)
-  return `${GDRIVE_EXPORT_BASE}/${fileId}/export?format=txt`
+  return `${GDRIVE_EXPORT_BASE}/${fileId}/export?format=markdown`
 }
 
 async function fetchDocFromApi(url: string): Promise<string> {
@@ -99,7 +99,14 @@ function parseDocSections(text: string): GdriveSection[] {
         sections.push(currentSection)
       }
       const level = match[1]!.length as 1 | 2 | 3 | 4 | 5 | 6
-      const heading = match[2]!.trim()
+      // Google Docs' markdown export renders a heading like "# **Introduction** {#introduction}":
+      // the text wrapped in bold markers, followed by a trailing anchor-slug suffix. Strip both
+      // so the extracted heading matches the doc's actual visible heading text.
+      const heading = match[2]!
+        .trim()
+        .replace(/\s*\{#[^}]*\}\s*$/, '')
+        .replace(/^\*\*(.*)\*\*$/, '$1')
+        .trim()
       currentSection = {
         heading,
         level,
