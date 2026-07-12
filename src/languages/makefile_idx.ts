@@ -8,7 +8,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { assignFlatEndLines, makeSymbolEmitter, propagateEndLinesToSymbols } from './common.js'
+import { assignFlatEndLines, buildLineIndex, makeSymbolEmitter, offsetToLine, propagateEndLinesToSymbols } from './common.js'
 
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 120
@@ -51,6 +51,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
 
   const stripped = stripComments(content)
   const totalLines = content.split('\n').length
+  const lineIndex = buildLineIndex(stripped)
 
   // Targets (scan a copy with define...endef bodies masked out, so script content embedded
   // in a define block is never mistaken for a target declaration)
@@ -59,7 +60,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
     const rawTarget = m[1]?.trim() ?? ''
     if (!rawTarget) continue
     if (SPECIAL_TARGETS.has(rawTarget)) continue
-    const line = stripped.slice(0, m.index ?? 0).split('\n').length
+    const line = offsetToLine(lineIndex, m.index ?? 0)
     emit(rawTarget, 'makefile_target', line)
   }
 
@@ -67,7 +68,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   for (const m of stripped.matchAll(DEFINE_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, 'makefile_define', line)
     }
   }

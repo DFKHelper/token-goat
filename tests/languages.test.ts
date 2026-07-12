@@ -984,6 +984,26 @@ type Foo {
     expect(imports).toHaveLength(0)
   })
 
+  it('reports correct line numbers for many scattered type declarations', () => {
+    // Regression guard for a quadratic slice+split line-number bug: with many matches spread
+    // across a large file, each declaration's reported lineStart must match its real 1-based
+    // line, not drift or degrade under a stale/incremental offset calculation.
+    const blockCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < blockCount; i++) {
+      lines.push('', `type Type${i} {`, `  field${i}: String`, `}`)
+      // "type Type{i} {" lands 2 lines after the blank separator we just pushed.
+      expectedLines.set(`Type${i}`, lines.length - 2)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractGraphql(content, 'many.graphql')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
+  })
+
   it('detects .graphql language via parseFile', async () => {
     const file = tmp('schema.graphql', 'type Query { hello: String }')
     const result = await parseFile(file)
@@ -1084,6 +1104,23 @@ CREATE TABLE "order" (id int);
     const names = symbols.map((s) => s.name)
     expect(names).toContain('user')
     expect(names).toContain('order')
+  })
+
+  it('reports correct line numbers for many scattered CREATE TABLE statements', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the sql adapter.
+    const tableCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < tableCount; i++) {
+      lines.push('', `CREATE TABLE table${i} (id int);`)
+      expectedLines.set(`table${i}`, lines.length)
+    }
+    const content = lines.join('\n')
+    const symbols = extractSql(content, 'many.sql')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('returns empty array for empty input', () => {
@@ -1354,6 +1391,23 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
+  it('reports correct line numbers for many scattered targets', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the makefile adapter.
+    const targetCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < targetCount; i++) {
+      lines.push('', `target${i}:`, `\techo ${i}`)
+      expectedLines.set(`target${i}`, lines.length - 1)
+    }
+    const content = lines.join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
+  })
+
   it('returns empty array for empty input', () => {
     expect(extractMakefile('', 'Makefile')).toHaveLength(0)
   })
@@ -1404,6 +1458,23 @@ service UserService {
     expect(symbols.find((s) => s.name === 'UserService')?.kind).toBe('proto_service')
     expect(symbols.find((s) => s.name === 'GetUser')?.kind).toBe('proto_rpc')
     expect(imports.some((i) => i.target === 'google/protobuf/timestamp.proto')).toBe(true)
+  })
+
+  it('reports correct line numbers for many scattered message declarations', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the proto adapter.
+    const blockCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < blockCount; i++) {
+      lines.push('', `message Msg${i} {`, `  string field${i} = 1;`, `}`)
+      expectedLines.set(`Msg${i}`, lines.length - 2)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractProto(content, 'many.proto')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('returns empty arrays for empty input', () => {
