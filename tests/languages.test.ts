@@ -746,6 +746,25 @@ describe('liquid adapter', () => {
     expect(sections).toHaveLength(0)
   })
 
+  it('detects whitespace-control tags ({%- ... -%})', () => {
+    // Regression: INCLUDE_RE/SECTION_RE/RENDER_RE/SCHEMA_RE all required a plain `{%`
+    // opener, so Shopify's dominant whitespace-control form `{%- render 'x' -%}` never
+    // matched and was silently dropped.
+    const content = `{%- render 'wsc-render' -%}
+{%- include 'wsc-include' -%}
+{%- section 'wsc-section' -%}
+{%- schema -%}
+{ "name": "WSC Schema" }
+{%- endschema -%}
+{% render 'plain-render' %}`
+    const { symbols, imports } = extractLiquid(content, 'wsc.liquid', 'wsc.liquid')
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'wsc-render')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_include' && i.target === 'wsc-include')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_section' && i.target === 'wsc-section')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'plain-render')).toBe(true)
+    expect(symbols.some((s) => s.kind === 'liquid_schema' && s.name === 'WSC Schema')).toBe(true)
+  })
+
   it('detects .liquid language via parseFile', async () => {
     const file = tmp('test.liquid', '{% include "foo" %}')
     const result = await parseFile(file)
