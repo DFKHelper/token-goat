@@ -59,9 +59,15 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   for (const m of strippedForTargets.matchAll(TARGET_RE)) {
     const rawTarget = m[1]?.trim() ?? ''
     if (!rawTarget) continue
-    if (SPECIAL_TARGETS.has(rawTarget)) continue
     const line = offsetToLine(lineIndex, m.index ?? 0)
-    emit(rawTarget, 'makefile_target', line)
+    // A rule may declare multiple space-separated targets on one line (e.g. `all clean:`),
+    // each of which is a real, independently-lookup-able target — emit them individually
+    // rather than fusing them into one bogus "all clean" symbol.
+    for (const target of rawTarget.split(/\s+/)) {
+      if (!target) continue
+      if (SPECIAL_TARGETS.has(target)) continue
+      emit(target, 'makefile_target', line)
+    }
   }
 
   // define blocks
