@@ -259,6 +259,48 @@ describe('config set concurrent writes (regression: unlocked read-modify-write c
     expect(raw).toMatch(/compact_assist[\s\S]*enabled\s*=\s*false/)
     expect(raw).toMatch(/bash_compress[\s\S]*enabled\s*=\s*false/)
   })
+
+  // Regression for the withFileLock(lockPath, applySet) call omitting `waitMs`, which fell
+  // back to util.ts's LOCK_WAIT_MS default (2s) instead of the hardened budget applied to
+  // session_store.ts's analogous saveSessionState call site (LOCK_WAIT_MS_HARDENED, 15s). A
+  // lock holder taking longer than 2s but well under 15s (e.g. this test's own
+  // TOKEN_GOAT_TEST_RMW_DELAY_MS seam simulating machine load, not a crash) is entirely
+  // legitimate -- it must never be treated as abandoned. Before the fix, the waiter's
+  // withFileLock call above timed out at 2s, fell through to an unprotected `applySet()`, and
+  // raced the still-lock-holding slow process's eventual write: the slow process's snapshot
+  // (captured before the fast process's unprotected write landed) then silently clobbered it
+  // on save. After the fix, the waiter's much larger budget covers the full 3s hold, so it
+  // waits for the real lock release instead of falling back, and both keys survive.
+  it('key set by the fast process survives a slow holder past the pre-fix 2s default wait (regression: missing waitMs falls back to an unprotected write)', async () => {
+    const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfg-race-'))
+    const env = { ...process.env, LOCALAPPDATA: tmpDataDir, XDG_DATA_HOME: tmpDataDir }
+    const configFile = process.platform === 'win32'
+      ? path.join(tmpDataDir, 'dfk-helper', 'token-goat', 'config.toml')
+      : path.join(tmpDataDir, 'token-goat', 'config.toml')
+
+    const spawnOne = (key: string, value: string, extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [BUNDLE, 'config', 'set', key, value], { env: { ...env, ...extraEnv } })
+        let stderr = ''
+        child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+        child.on('error', reject)
+        child.on('close', (code) => resolve({ code, stderr }))
+      })
+
+    const slow = spawnOne('compact_assist.enabled', 'false', { TOKEN_GOAT_TEST_RMW_DELAY_MS: '3000' })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const fast = spawnOne('bash_compress.enabled', 'false')
+    const [r1, r2] = await Promise.all([slow, fast])
+
+    expect(r1.code, r1.stderr).toBe(0)
+    expect(r2.code, r2.stderr).toBe(0)
+
+    const raw = fs.readFileSync(configFile, 'utf8')
+    // Both writers' keys must be present -- pre-fix, the fast process's unprotected fallback
+    // write was clobbered by the slow process's later, lock-protected write.
+    expect(raw).toMatch(/compact_assist[\s\S]*enabled\s*=\s*false/)
+    expect(raw).toMatch(/bash_compress[\s\S]*enabled\s*=\s*false/)
+  }, 20_000)
 })
 
 // ── config set input validation hardening (#M23, #M24, #M28) ────────────────

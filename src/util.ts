@@ -257,6 +257,16 @@ export function backupFile(p: string): void {
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
 
+// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's
+// saveSessionState, config_commands.ts's `config set`) where the default LOCK_WAIT_MS can
+// plausibly be missed under real machine load even though no lock holder is actually stuck.
+// Falling back to an unprotected write on that miss reintroduces the exact clobber the lock
+// exists to prevent, precisely when contention (and therefore risk) is highest -- so these
+// call sites wait much longer instead. An actually-wedged holder still gets its lock stolen
+// well before this via withFileLock's own staleMs abandonment check, so this only lengthens
+// the wait for genuine, resolving contention, not a real hang.
+export const LOCK_WAIT_MS_HARDENED = 15_000
+
 // Heartbeat run in a separate OS process while the lock is held. fn() is synchronous and may
 // block the holder's own thread for its entire duration (slow sync disk I/O, a GC pause, a
 // long-running synchronous computation, ...) -- a setInterval/setTimeout in the holder's own

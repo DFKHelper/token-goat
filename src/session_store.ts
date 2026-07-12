@@ -24,7 +24,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { atomicWriteText, foldPath, withFileLock } from './util.js'
+import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
@@ -434,7 +434,7 @@ export function saveSessionState(sessionId: string): void {
     // *genuine*, resolving contention, not a real hang. The unprotected fallback remains
     // only for withFileLock's other undefined case: a hard failure (e.g. missing dir) that
     // waiting longer cannot fix.
-    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: 15_000 }) === undefined) writeMerged()
+    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: LOCK_WAIT_MS_HARDENED }) === undefined) writeMerged()
   } catch {
     // fail-soft: never let persistence break a hook
   }
