@@ -284,6 +284,55 @@ public class Foo {
     expect(bar).toBeDefined()
     expect(bar?.docstring).toBe('Foo')
   })
+
+  it('does not phantom-capture a nested generic type argument as the method name', () => {
+    // Regression: METHOD_RE's name-suffix pattern was `[<(]` (matches any `<` or `(`), so a
+    // generic return type followed by another generic type argument let the lazy name-capture
+    // group stop at the FIRST `<` it saw - inside the return type itself - phantom-capturing
+    // the inner type name ("List") instead of the real method name ("GetMap"). A `readonly`
+    // field also got miscaptured as a method because `readonly` was absent from the modifier
+    // alternation, so the field's type name ("Dictionary") was phantom-captured as a method too.
+    const content = `public class Foo {
+    public Dictionary<string, List<int>> GetMap() { return null; }
+    private static readonly Dictionary<string, Func<int>> Handlers = new();
+    public T Parse<T>(string s) { return default; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    const methods = symbols.filter((s) => s.kind === 'method').map((s) => s.name)
+    expect(methods).toContain('GetMap')
+    expect(methods).not.toContain('List')
+    expect(methods).not.toContain('Dictionary')
+    expect(methods).not.toContain('Handlers')
+    expect(methods).toContain('Parse')
+  })
+
+  it('assigns distinct symbol kinds for struct/interface/enum instead of collapsing all to class', () => {
+    // Regression: CLASS_HEADER_RE only captured the type name, never the class/struct/interface/
+    // enum/record keyword itself, so the usage site hardcoded kind to the literal string 'class'
+    // for every one of these constructs.
+    const content = `public struct Point {
+    public int X;
+}
+
+public interface IWidget {
+    void Render();
+}
+
+public enum Color {
+    Red,
+    Green,
+}
+
+public record Vector(int X, int Y);
+`
+    const { symbols } = extractCsharp(content, 'Shapes.cs')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'IWidget')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+    // record is class-like, so it still maps to 'class'.
+    expect(symbols.find((s) => s.name === 'Vector')?.kind).toBe('class')
+  })
 })
 
 // ---------------------------------------------------------------------------
