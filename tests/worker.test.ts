@@ -41,13 +41,14 @@ function writeQueue(dir: string, lines: string[]): void {
 }
 
 // Reads files.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via
-// foldPath()/pathEqClause() -- so this observes the exact same row a real transient-failure
-// requeue bumps.
+// normalizePath()/foldPath()/pathEqClause() -- so this observes the exact same row a real
+// transient-failure requeue bumps, regardless of which textual form (backslash or normalized)
+// the caller passes in.
 function getRetryCount(dbPath: string, absPath: string): number {
   const db = getDb(dbPath)
-  const row = db.prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`).get(foldPath(absPath)) as
-    | { retry_count: number | null }
-    | undefined
+  const row = db
+    .prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`)
+    .get(foldPath(normalizePath(absPath))) as { retry_count: number | null } | undefined
   return row?.retry_count ?? 0
 }
 
@@ -330,6 +331,40 @@ describe('processDirtyBatch', () => {
     const log = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
     expect(log).toContain(lockedPath)
     expect(log).toContain('transient read failure')
+  })
+
+  // Regression: bumpRetryCount/clearRetryCount used to fold the RAW absPath as given by the
+  // caller instead of normalizing it first. The files.path column is always written in
+  // normalizePath()'d (forward-slash) form by every real writer, so a caller that referenced
+  // the same file via a native-separator (backslash) path on a second call would never match
+  // the row written under the normalized form, silently falling into the INSERT branch instead
+  // of incrementing the existing row's retry_count. Drive two real transient-read failures on
+  // the SAME file, one queued in its native path.join() form and one in its normalizePath()'d
+  // form, and confirm they share one counter (accumulates to 2) instead of each starting a
+  // fresh row at 1.
+  it('accumulates retry_count on one shared row across calls that reference the same file via different path forms (backslash vs normalized)', () => {
+    const lockedPath = path.join(DIR, 'locked-crossform.ts')
+    fs.mkdirSync(lockedPath) // exists, but reading it as a file throws EISDIR (transient failure)
+    const lockedPathNormalized = normalizePath(lockedPath)
+    const dbPath = path.join(DIR, 'global.db')
+
+    processDirtyBatch([lockedPath], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+    processDirtyBatch([lockedPathNormalized], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(2)
+  })
+
+  it('resetTransientRetryCount clears the counter even when called with a differently-formed path than the one that wrote it', () => {
+    const lockedPath = path.join(DIR, 'locked-reset.ts')
+    fs.mkdirSync(lockedPath)
+    const dbPath = path.join(DIR, 'global.db')
+
+    processDirtyBatch([lockedPath], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+    resetTransientRetryCount(normalizePath(lockedPath), dbPath)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(0)
   })
 
   // Regression (worker requeueDirtyPath had no retry cap/backoff): a permanently stuck path
