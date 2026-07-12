@@ -10,7 +10,9 @@ import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
 import {
   assignFlatEndLines,
+  buildLineIndex,
   makeSymbolEmitter,
+  offsetToLine,
   propagateEndLinesToSymbols,
   stripCstyleComments,
   stripLineComment,
@@ -69,7 +71,12 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
 // nested child, and an innermost/last-in-file nested block over-extends to EOF instead of
 // stopping at its own closing brace. For these block kinds we know the exact offset of the
 // opening `{` (each regex ends with `\{`), so find the true matching closing brace instead.
-function findBlockEndLine(content: string, openBraceIndex: number, totalLines: number): number {
+function findBlockEndLine(
+  content: string,
+  openBraceIndex: number,
+  totalLines: number,
+  lineIndex: readonly number[],
+): number {
   let depth = 0
   // Track single/double-quoted string literals (backslash-escape aware) so a brace character
   // inside a quoted default value or option (e.g. `option (x) = "{"`) is never miscounted as
@@ -88,7 +95,7 @@ function findBlockEndLine(content: string, openBraceIndex: number, totalLines: n
     else if (ch === '}') {
       depth--
       if (depth === 0) {
-        return content.slice(0, i).split('\n').length
+        return offsetToLine(lineIndex, i)
       }
     }
   }
@@ -107,6 +114,7 @@ export function extractProto(
 
   const stripped = stripComments(content)
   const totalLines = content.split('\n').length
+  const lineIndex = buildLineIndex(stripped)
 
   // name+lineStart -> true end line for block kinds whose opening `{` offset is known, so
   // nested message/enum/extend/oneof blocks get a correct end line regardless of the flat
@@ -117,7 +125,7 @@ export function extractProto(
   for (const m of stripped.matchAll(IMPORT_RE)) {
     const target = m[1]?.trim() ?? ''
     if (target) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       imports.push({ kind: 'import', target, line })
     }
   }
@@ -128,9 +136,9 @@ export function extractProto(
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
       const kind = KIND_MAP.get(keyword) ?? 'proto_message'
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, kind, line)
     }
   }
@@ -139,9 +147,9 @@ export function extractProto(
   for (const m of stripped.matchAll(EXTEND_RE)) {
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, 'proto_extend', line)
     }
   }
@@ -150,7 +158,7 @@ export function extractProto(
   for (const m of stripped.matchAll(RPC_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, 'proto_rpc', line)
     }
   }
@@ -159,9 +167,9 @@ export function extractProto(
   for (const m of stripped.matchAll(ONEOF_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, 'proto_oneof', line)
     }
   }

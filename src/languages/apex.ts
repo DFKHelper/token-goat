@@ -87,7 +87,7 @@ function findBlockEndLine(code: string, lineIndex: readonly number[], fromOffset
       depth += 1
     } else if (ch === '}') {
       depth -= 1
-      if (depth === 0) return offsetToLine([...lineIndex], i)
+      if (depth === 0) return offsetToLine(lineIndex, i)
     }
   }
   return null
@@ -102,7 +102,7 @@ function spanForMatch(
 ): Span {
   const blockEndLine = findBlockEndLine(code, lineIndex, startOffset)
   const startOffsetForBody = lineStartOffset(lineIndex, bodyStartLine)
-  const endLine = blockEndLine ?? offsetToLine([...lineIndex], startOffset)
+  const endLine = blockEndLine ?? offsetToLine(lineIndex, startOffset)
   const endOffset = lineEndOffset(content, lineIndex, endLine)
   return {
     startLine: bodyStartLine,
@@ -139,7 +139,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const name = match[1] ?? ''
     const objectName = match[2] ?? ''
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, line), objectName)
   }
 
@@ -148,7 +148,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const typeKind = match[1] ?? ''
     const name = match[2] ?? ''
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line))
@@ -158,7 +158,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const name = match[1] ?? ''
     if (CONTROL_NAMES.has(name)) continue
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     if (overlapsExisting(symbols, line)) continue
     const bodyStartLine = annotationStartLine(rawLines, line)
     const kind = typeNames.has(name) ? 'apex_constructor' : 'apex_method'

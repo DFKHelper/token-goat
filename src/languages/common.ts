@@ -27,7 +27,7 @@ export function buildLineIndex(text: string): number[] {
 /**
  * Convert a character offset to a 1-based line number using binary search.
  */
-export function offsetToLine(lineIndex: number[], offset: number): number {
+export function offsetToLine(lineIndex: readonly number[], offset: number): number {
   let lo = 0
   let hi = lineIndex.length - 1
   while (lo < hi) {

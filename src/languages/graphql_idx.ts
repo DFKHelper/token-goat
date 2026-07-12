@@ -11,7 +11,9 @@ import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, MultilineStringState } from './common.js'
 import {
   assignFlatEndLines,
+  buildLineIndex,
   makeSymbolEmitter,
+  offsetToLine,
   propagateEndLinesToSymbols,
   stripHashComments,
   stripMultilineStringSpan,
@@ -93,17 +95,20 @@ export function extractGraphql(
   const imports: GraphqlImport[] = []
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
+  const contentLineIndex = buildLineIndex(content)
+
   // Extract imports BEFORE stripping comments — #import pragmas live in comment lines
   for (const m of content.matchAll(GRAPHQL_IMPORT_RE)) {
     const target = m[1]?.trim() ?? ''
     if (target) {
-      const line = content.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(contentLineIndex, m.index ?? 0)
       imports.push({ kind: 'import', target, line })
     }
   }
 
   const stripped = stripGraphqlDescriptions(stripHashComments(content))
   const totalLines = content.split('\n').length
+  const lineIndex = buildLineIndex(stripped)
 
   // type / interface / input / enum / union / scalar (+ extend variants)
   for (const m of stripped.matchAll(TYPE_RE)) {
@@ -112,7 +117,7 @@ export function extractGraphql(
     const isExtend = Boolean(m[1])
     if (name) {
       const kind = isExtend ? 'graphql_extend' : (KIND_MAP.get(keyword) ?? 'graphql_type')
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, kind, line)
     }
   }
@@ -121,7 +126,7 @@ export function extractGraphql(
   for (const m of stripped.matchAll(DIRECTIVE_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(`@${name}`, 'graphql_directive', line)
     }
   }
@@ -130,7 +135,7 @@ export function extractGraphql(
   for (const m of stripped.matchAll(FRAGMENT_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, 'graphql_fragment', line)
     }
   }
@@ -140,14 +145,14 @@ export function extractGraphql(
     const op = m.groups?.['op'] ?? ''
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, `graphql_${op}`, line)
     }
   }
 
   // schema { }
   for (const m of stripped.matchAll(SCHEMA_RE)) {
-    const line = stripped.slice(0, m.index ?? 0).split('\n').length
+    const line = offsetToLine(lineIndex, m.index ?? 0)
     emit('schema', 'graphql_schema', line)
   }
 

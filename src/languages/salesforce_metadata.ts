@@ -85,8 +85,8 @@ function spanFromOffsets(
   startOffset: number,
   endOffset: number,
 ): Span {
-  const startLine = offsetToLine([...lineIndex], startOffset)
-  const endLine = offsetToLine([...lineIndex], Math.max(startOffset, endOffset - 1))
+  const startLine = offsetToLine(lineIndex, startOffset)
+  const endLine = offsetToLine(lineIndex, Math.max(startOffset, endOffset - 1))
   return {
     startLine,
     endLine,

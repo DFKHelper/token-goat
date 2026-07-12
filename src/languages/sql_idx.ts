@@ -9,7 +9,9 @@ import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
 import {
   assignFlatEndLines,
+  buildLineIndex,
   makeSymbolEmitter,
+  offsetToLine,
   propagateEndLinesToSymbols,
   stripCstyleComments,
   stripSqlLineComments,
@@ -127,6 +129,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   let stripped = stripSqlLineComments(content)
   stripped = stripCstyleComments(stripped)
   const totalLines = content.split('\n').length
+  const lineIndex = buildLineIndex(stripped)
   const noStrings = stripSqlStringLiterals(stripped)
 
   for (const [pattern, kind] of PATTERNS) {
@@ -137,7 +140,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
       if (rawName) {
         const name = unquote(rawName).trim()
         if (name) {
-          const line = stripped.slice(0, m.index ?? 0).split('\n').length
+          const line = offsetToLine(lineIndex, m.index ?? 0)
           emit(name, kind, line)
         }
       }
