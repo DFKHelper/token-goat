@@ -20,7 +20,6 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { atomicWriteBytes } from './util.js'
-import { resetTransientRetryCount } from './worker.js'
 import type { HookOutput } from './types.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
@@ -54,7 +53,19 @@ export function appendDirtyPath(normalizedPath: string): void {
     // File doesn't exist yet (first append) -- nothing to guard against.
   }
   fs.appendFileSync(queuePath, `${leadingNewline}${normalizedPath}\n`)
-  resetTransientRetryCount(normalizedPath)
+  // Deliberately NOT calling resetTransientRetryCount here anymore: doing so unconditionally
+  // opened a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
+  // load attempt) via getDb() on every single edit hook invocation -- and could even create
+  // global.db from scratch if it did not exist yet -- just to run a retry-counter reset that is
+  // a no-op for virtually every file. The daemon's own dequeue logic already covers this: every
+  // path whose fingerprintFile read succeeds during a drain has its retry_count cleared right
+  // there (see processDirtyBatch's clearRetryCount call in worker.ts), so a freshly-edited file
+  // gets its retry budget restored automatically the next time it is read successfully -- no
+  // separate reset needed on the hot hook path. The only case this trades away is a file whose
+  // retry budget was already exhausted from an earlier transient-lock episode AND that fails to
+  // fingerprint again on the very first drain immediately following this edit: it will not be
+  // requeued that one cycle, but the next edit re-enqueues it and the cycle repeats -- it is
+  // never permanently lost, only occasionally slower to recover a mid-collision retry.
 }
 
 /**
