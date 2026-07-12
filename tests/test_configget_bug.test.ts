@@ -84,4 +84,54 @@ describe('configGet section scoping bug', () => {
     process.stdout.write = oldWrite
     expect(stdout.trim()).toBe('3.0')
   })
+
+  it('should strip inline comments from values, not just section headers', () => {
+    const content = ['[project]', 'name = "goat" # this is a comment'].join('\n')
+    const f = tmpFile('pyproject.toml', content)
+
+    let stdout = ''
+    const oldWrite = process.stdout.write
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'project.name' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe('goat')
+  })
+
+  it('should not corrupt a value with an inline ; comment', () => {
+    const content = ['[project]', 'name = "goat" ; ini-style comment'].join('\n')
+    const f = tmpFile('setup.cfg', content)
+
+    let stdout = ''
+    const oldWrite = process.stdout.write
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'project.name' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe('goat')
+  })
+
+  it('should only strip a quote pair when both ends actually match', () => {
+    const content = [
+      '[project]',
+      "plural = dogs'",
+      "mismatched = \"foo'",
+    ].join('\n')
+    const f = tmpFile('pyproject.toml', content)
+    const oldWrite = process.stdout.write
+
+    // A legitimate trailing apostrophe with no matching leading quote must survive intact --
+    // the old independent-single-end regex stripped the trailing "'" even though the leading
+    // character isn't a quote at all.
+    let stdout = ''
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'project.plural' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe("dogs'")
+
+    // Mismatched quote characters at each end must not be independently stripped.
+    stdout = ''
+    process.stdout.write = ((s: string) => { stdout += s; return true }) as typeof process.stdout.write
+    runConfigGet({ file: f, key: 'project.mismatched' })
+    process.stdout.write = oldWrite
+    expect(stdout.trim()).toBe("\"foo'")
+  })
 })
