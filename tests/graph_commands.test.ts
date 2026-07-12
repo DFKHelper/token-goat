@@ -1103,6 +1103,56 @@ describe('runTestFor', () => {
     expect(code).toBe(0)
     expect(captured).toMatch(/test/)
   })
+
+  it('narrows testFunctions to only the test symbols that actually reference the target file (not every test-prefixed symbol in the test file)', () => {
+    // Regression test for the unpopulated testFileMap Set: previously every test-prefixed
+    // symbol in a candidate test file was listed regardless of whether it referenced the
+    // target file's symbols at all.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-'))
+    try {
+      const srcFile = normalizePath(join(dir, 'testForTarget.ts'))
+      const testFile = normalizePath(join(dir, 'testForTarget.test.ts'))
+
+      writeFileSync(srcFile, 'export function __testForBugTargetFn_9f2a1c() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(
+        testFile,
+        [
+          "import { __testForBugTargetFn_9f2a1c } from './testForTarget'",
+          '',
+          'function test_usesTarget() {',
+          '  __testForBugTargetFn_9f2a1c()',
+          '}',
+          '',
+          'function test_unrelated() {',
+          '  return 2',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      indexFileSync(srcFile)
+      indexFileSync(testFile)
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runTestFor({ file: srcFile, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+
+      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const entry = results.find((r) => r.testFile === testFile)
+      expect(entry).toBeDefined()
+      expect(entry!.testFunctions).toContain('test_usesTarget')
+      expect(entry!.testFunctions).not.toContain('test_unrelated')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- runCoverageGaps (integration) ------------------------------------------

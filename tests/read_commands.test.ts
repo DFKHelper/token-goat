@@ -1265,6 +1265,33 @@ describe('read_commands', () => {
       expect(parsed.truncated).toBe(true)
     })
 
+    it('reports the true uncapped caller count via queryRefCounts, not the length of resolveCallers own (internally-capped) list', () => {
+      // Regression: resolveCallers(name) with no explicit limit still applies its own internal
+      // default cap (500, in graph_commands.ts's queryRefs call). A prior version of runBrief
+      // trusted callers.length as "the true count" (per a since-corrected comment claiming
+      // resolveCallers was queried with "its own much larger default limit"), so once a symbol
+      // had more references than that cap, totalCallers silently reported the capped number
+      // instead of the real one. Here resolveCallers is mocked to return a small capped-looking
+      // list while queryRefCounts (the real uncapped COUNT(*) query) reports a much larger true
+      // total -- proving runBrief reads the count from queryRefCounts, not callers.length.
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const cappedCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
+      mockResolveCallers.mockReturnValue(cappedCallers)
+      mockQueryRefCounts.mockReturnValue(new Map([['myFunc', 800]]))
+      mockFindContainingSection.mockReturnValue(null)
+
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5 }) })
+      expect(stdout).toContain('Callers (800):')
+      expect(stdout).toContain('...(795 more elided)')
+
+      const { stdout: jsonOut } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5, json: true }) })
+      const parsed = JSON.parse(jsonOut) as { totalCallers: number; truncated: boolean }
+      expect(parsed.totalCallers).toBe(800)
+      expect(parsed.truncated).toBe(true)
+    })
+
     it('re-reads the body from disk when the indexed symbol has an empty body (regression)', () => {
       // Regression: symbols with an empty stored `body` exist by construction -- e.g. HTML/Liquid
       // heading symbols produced by `sectionsToHeadingSymbols` (parser.ts) always store
