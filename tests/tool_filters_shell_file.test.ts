@@ -91,9 +91,13 @@ describe('GrepFilter compression', () => {
 describe('RgFilter dispatch', () => {
   const f = new RgFilter()
 
-  it('matches rg', () => expect(f.matches(['rg', 'foo', '.'])).toBe(true))
+  it('matches rg with a context flag', () => expect(f.matches(['rg', '-C', '3', 'foo', '.'])).toBe(true))
   it('matches grep (context-line stripping role)', () => expect(f.matches(['grep', '-C', '3', 'foo'])).toBe(true))
   it('does not match empty argv', () => expect(f.matches([])).toBe(false))
+  it('does not match rg/grep without a context flag (GrepFilter handles those)', () => {
+    expect(f.matches(['rg', 'foo', '.'])).toBe(false)
+    expect(f.matches(['grep', '-rn', 'TODO', '.'])).toBe(false)
+  })
 })
 
 describe('RgFilter compression', () => {
@@ -878,13 +882,23 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(SHELL_FILE_FILTERS).toHaveLength(20)
   })
 
-  // RgFilter is registered before GrepFilter and also claims 'grep', so selectFilter(['grep', ...]) dispatches to RgFilter, not GrepFilter.
-  it('selectFilter dispatches grep to RgFilter (RgFilter precedes GrepFilter in registry)', () => {
-    expect(selectFilter(['grep', '-r', 'TODO', '.'])).toBeInstanceOf(RgFilter)
+  // RgFilter is registered before GrepFilter and also claims 'grep'/'rg', but its matches()
+  // now gates on context flags (-A/-B/-C/--context), so a plain grep/rg with no context
+  // flags falls through to GrepFilter's per-file match-count summarizer.
+  it('selectFilter dispatches plain grep (no context flags) to GrepFilter', () => {
+    expect(selectFilter(['grep', '-r', 'TODO', '.'])).toBeInstanceOf(GrepFilter)
   })
 
-  it('selectFilter dispatches rg', () => {
-    expect(selectFilter(['rg', 'TODO'])).toBeInstanceOf(RgFilter)
+  it('selectFilter dispatches grep with a context flag to RgFilter', () => {
+    expect(selectFilter(['grep', '-C', '3', 'TODO', '.'])).toBeInstanceOf(RgFilter)
+  })
+
+  it('selectFilter dispatches plain rg (no context flags) to GrepFilter', () => {
+    expect(selectFilter(['rg', 'TODO'])).toBeInstanceOf(GrepFilter)
+  })
+
+  it('selectFilter dispatches rg with a context flag to RgFilter', () => {
+    expect(selectFilter(['rg', '-C', '3', 'TODO'])).toBeInstanceOf(RgFilter)
   })
 
   it('selectFilter dispatches ls to LsFilter', () => {

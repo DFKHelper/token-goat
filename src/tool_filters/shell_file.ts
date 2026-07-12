@@ -1,6 +1,6 @@
 // Shell / file-tool filter family (Batch H): grep/rg, ls/eza/tree/fd, wc, bat, delta, fzf, lazygit, jq, yq, curl/wget, rsync, diff, ffmpeg, xxd/hexdump, file, ps/top.
 //
-// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep` but RgFilter is registered first to handle context-line stripping; GrepFilter is the catch-all for ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
+// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
 
 import { ToolFilter } from './base.js'
 import {
@@ -135,6 +135,25 @@ export class RgFilter extends ToolFilter {
 
   private static _isCountOnly(argv: string[]): boolean {
     return argv.some(a => a === '-c' || a === '--count')
+  }
+
+  /** True when argv carries an actual context flag (-A/-B/-C/--[after|before]-context/--context, short or long form). */
+  private static _hasContextFlags(argv: string[]): boolean {
+    const longFlags = ['--after-context', '--before-context', '--context']
+    for (const a of argv) {
+      if (a === '-A' || a === '-B' || a === '-C') return true
+      if (/^-[ABC]\d+$/.test(a)) return true
+      if (longFlags.some((f) => a === f || a.startsWith(f + '='))) return true
+    }
+    return false
+  }
+
+  // RgFilter only handles context-block output (-A/-B/-C/--context); a plain
+  // grep/rg with no context flags falls through to GrepFilter's per-file
+  // match-count summarizer, which produces dramatically smaller output.
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    return RgFilter._hasContextFlags(argv)
   }
 
   private _compressGroups(groups: string[]): string {
