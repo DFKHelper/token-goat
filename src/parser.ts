@@ -1605,6 +1605,7 @@ export async function indexFileEmbeddings(
   filePath: string,
   dbPath: string = globalDbPath(),
   sha?: string,
+  onError?: (err: unknown) => void,
 ): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) {
     // Stamp a disabled-marker embed_sha even though no embedding actually ran, so
@@ -1650,9 +1651,13 @@ export async function indexFileEmbeddings(
     // vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this
     // file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
     stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
-  } catch {
+  } catch (err) {
     // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is
-    // deliberately left unstamped here (see doc comment above).
+    // deliberately left unstamped here (see doc comment above). `onError`, when provided, lets a
+    // caller (worker.ts's embedFileSerialized) record this failure somewhere discoverable --
+    // this function itself never throws, matching its documented best-effort contract for
+    // callers like cli.ts's foreground bulk-index loop that await it directly with no try/catch.
+    onError?.(err)
   }
 }
 
@@ -1670,7 +1675,20 @@ function stampEmbedSha(
   makeValue: (sha: string) => string,
 ): void {
   if (sha === undefined) return
-  db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(makeValue(sha), foldPath(filePath))
+  // Optimistic-concurrency guard: also require files.sha to still equal the sha this embed run
+  // started from. inFlightEmbeddings (worker.ts) only serializes concurrent embed calls WITHIN a
+  // single process -- it cannot see a second process (e.g. a slow foreground `token-goat index`
+  // racing the background daemon) embedding the same file at the same time. Without this WHERE
+  // clause, a slow writer that started against an older `sha` can still commit its stamp AFTER a
+  // faster writer already reindexed and re-embedded a newer version, overwriting the fresher
+  // embed_sha with a stale one and leaving embeddings silently out of sync with no way to detect
+  // it. Requiring sha = ? makes a stale writer's stamp a no-op instead: the row's `sha` will have
+  // already moved on to the newer value by the time the stale writer's UPDATE runs.
+  db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')} AND sha = ?`).run(
+    makeValue(sha),
+    foldPath(filePath),
+    sha,
+  )
 }
 
 function safeSha(filePath: string): string {
