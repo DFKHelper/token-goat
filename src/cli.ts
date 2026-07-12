@@ -23,13 +23,14 @@ import type { StdioServerTransport as StdioServerTransportClass } from '@modelco
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { formatLocalTimestamp } from './stats.js'
-import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
+import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, disabledEmbedSha, isParseSkipEligible, wouldSkipFileEmbedding } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
-import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
+import { pruneDeletedFiles } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
@@ -118,6 +119,7 @@ import {
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 import { loadConfig } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
@@ -132,7 +134,7 @@ import {
 } from './pack.js'
 import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
-import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
+import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
@@ -142,7 +144,8 @@ import { runWasteCommand } from './cli_waste.js'
 class CliError extends Error {}
 
 function out(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(payload))
 }
 
 function err(text: string): void {
@@ -213,7 +216,6 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     files = collectWalkIndexFiles(root)
   }
   const blockedRoots = loadConfig().worker.blocked_roots
-  const ixCfg = loadConfig().indexing
   let indexed = 0
   let failed = 0
   let skipped = 0
@@ -224,21 +226,6 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
-    // indexing.skip_dirs / indexing.large_file_skip_kb: filter here, before the sha/entry work
-    // below, so a file under a skipped directory or over the size cap is never marked "indexed"
-    // (indexFileSync/indexFileEmbeddings would silently no-op for it internally, but without
-    // this pre-filter its files.sha row would never get created, so parseUnchanged would stay
-    // false forever and the same no-op work would repeat -- and get counted -- on every run).
-    if (isParseSkipEligible(key, ixCfg)) {
-      // A file previously indexed while still eligible must have its stale symbols/refs/files
-      // row AND any orphaned chunk_vectors/chunks embedding rows cleared now that skip_dirs or
-      // large_file_skip_kb covers it -- deleteFileRows alone left embeddings behind forever (not
-      // reachable by pruneDeletedFiles either, since the file still exists on disk), so
-      // `semantic` kept matching content from a file meant to be fully excluded.
-      removeFileFromIndex(getDb(dbPath), key)
-      continue
-    }
-
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
     // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
     // for every tracked file on every invocation, even ones byte-identical to what was already
@@ -258,11 +245,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // embeddings are re-enabled or the file's exclusion reason no longer applies, and mirror
     // makeIndexer's identical gate in worker.ts.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped
+    // only because the optional model/sqlite-vec deps were absent) treated as stale so it is
+    // re-embedded once the deps are installed, instead of looking permanently fresh.
+    const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
     const embedUnchanged =
       parseUnchanged &&
       sha !== null &&
-      entry?.embedSha ===
-        (embeddingsEnabled && !wouldSkipFileEmbedding(key, ixCfg) ? sha : disabledEmbedSha(sha))
+      isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue
@@ -308,13 +298,8 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
 
 function cmdMap(opts: { compact?: boolean }): void {
   const compact = opts.compact === true
-  if (compact) {
-    const entries = buildCompactMap(2000, process.cwd())
-    out(formatMap(entries, { compact: true }))
-  } else {
-    const map = buildProjectMap(process.cwd(), { compact: false })
-    out(formatProjectMap(map, false))
-  }
+  const map = buildProjectMap(process.cwd(), { compact })
+  out(formatProjectMap(map, compact))
 }
 
 // Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The
@@ -618,15 +603,13 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean } = {}): void {
-  const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
-  if (!Number.isFinite(windowDays) || windowDays < 0) {
-    throw new CliError('--window-days must be a non-negative number')
-  }
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean } = {}): void {
+  const windowDays = opts.windowDays !== undefined ? requireNonNegativeInt('--window-days', opts.windowDays) : 30
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
     windowDays,
     full: opts.full === true,
+    short: opts.short === true,
   }
   if (opts.homeDir !== undefined) {
     statsOpts.homeDir = opts.homeDir
@@ -695,18 +678,16 @@ function _applyFiltersAndPrint(
   }
 
   if (opts.grep !== undefined && opts.maxMatches !== undefined) {
-    const cap = Number.parseInt(opts.maxMatches, 10)
-    if (Number.isFinite(cap) && cap > 0) {
-      const matched = content === '' ? [] : content.split(/\r?\n/)
-      if (matched.length > cap) {
-        content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
-      }
+    const cap = requireNonNegativeInt('--max-matches', opts.maxMatches)
+    const matched = content === '' ? [] : content.split(/\r?\n/)
+    if (matched.length > cap) {
+      content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
     }
   }
 
   const lines = content.split(/\r?\n/)
-  const headN = opts.head ? (() => { const n = Number.parseInt(opts.head, 10); return Number.isFinite(n) && n > 0 ? n : 30 })() : 30
-  const tailN = opts.tail ? (() => { const n = Number.parseInt(opts.tail, 10); return Number.isFinite(n) && n > 0 ? n : 80 })() : 80
+  const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
+  const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
 
   const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
 
@@ -779,6 +760,29 @@ function cmdWebOutput(
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
   _applyFiltersAndPrint(content, opts)
+}
+
+// MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed
+// ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already
+// resolves one — this command exists for discoverability (the id printed in a
+// `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail
+// clearly on a non-MCP id rather than silently serving whatever bash-output happens
+// to be stored under it.
+function cmdMcpOutput(
+  id: string | undefined,
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+): void {
+  if (id === undefined) {
+    throw new CliError('provide an mcp-output <id>')
+  }
+  if (!id.startsWith('mcp_')) {
+    throw new CliError(`not an mcp-output id: ${id} (expected an id starting with 'mcp_')`)
+  }
+  const entry = getBashOutput(id)
+  if (entry === null) {
+    throw new CliError(`no cached mcp output for id: ${id}. The cache may have expired; re-run the MCP tool call to repopulate it.`)
+  }
+  _applyFiltersAndPrint(entry.output, opts)
 }
 
 async function cmdPdfExtract(
@@ -1029,7 +1033,7 @@ function cmdCompress(opts: {
       process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout))
       return
     }
-    const maxTokens = opts.maxTokens ? parseInt(opts.maxTokens, 10) || 0 : 0
+    const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
     process.exitCode = bashRunner.run(opts.cmd, {
       filterName: opts.filter,
       timeout: parseTimeout(opts.timeout),
@@ -1682,15 +1686,16 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
 }
 
-async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
+async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
+  const fetchOpts = { fresh: opts.fresh === true }
   if (opts.heading !== undefined) {
-    const content = await getSectionContent(fileId, opts.heading)
+    const content = await getSectionContent(fileId, opts.heading, fetchOpts)
     if (content === null) {
       throw new CliError(`section '${opts.heading}' not found in document ${fileId}`)
     }
     out(`# ${opts.heading}\n${content}`)
   } else {
-    const sections = await getDocSections(fileId)
+    const sections = await getDocSections(fileId, fetchOpts)
     const formatted = formatSections(sections)
     out(formatted)
   }
@@ -1849,7 +1854,7 @@ function cmdBudget(
     if (opts.json === true) {
       out(JSON.stringify(result, null, 2))
     } else {
-      const contextK = opts.context !== undefined ? Number.parseInt(opts.context, 10) : undefined
+      const contextK = opts.context !== undefined ? requirePositiveInt('--context', opts.context) : undefined
       out(formatBudgetText(result, contextK))
     }
     process.exitCode = 0
@@ -2079,8 +2084,9 @@ export function buildProgram(): Command {
   program
     .command('stats')
     .description('show session statistics (bare = totals only; --full for the breakdown)')
-    .option('--json', 'output JSON')
+    .option('-j, --json', 'output as JSON')
     .option('--full', 'show the full breakdown (by source, by command, by day)')
+    .option('--short', 'force the rich short KPI view even when stdout is not a TTY (e.g. piped)')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))
@@ -2090,7 +2096,7 @@ export function buildProgram(): Command {
     .command('context-stats')
     .description('show context statistics')
     .option('--project <path>', 'project root to analyze')
-    .option('--json', 'output JSON')
+    .option('-j, --json', 'output as JSON')
     .option('--fix', 'apply automatic fixes')
     .action(guard(cmdContextStats))
 
@@ -2133,6 +2139,16 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
     .action(guard(cmdWebOutput))
+
+  program
+    .command('mcp-output [id]')
+    .description('retrieve a cached MCP tool result by ID (the id an MCP post_tool_use hook cached, or a `[token-goat: compressed, full via mcp-output <id>]` label points here)')
+    .option('--head <n>', 'show first N lines')
+    .option('--tail <n>', 'show last N lines')
+    .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
+    .option('--section <heading>', 'extract a specific section from the result')
+    .action(guard(cmdMcpOutput))
 
   program
     .command('exports <file>')
@@ -2537,6 +2553,13 @@ export function buildProgram(): Command {
     .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdWebHistory(opts))())
 
   program
+    .command('mcp-history')
+    .description('list cached MCP tool result entries, newest first')
+    .option('-l, --limit <n>', 'max results (default: 30)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdMcpHistory(opts))())
+
+  program
     .command('clean-cache')
     .description('prune all cache subdirs to default retention limits (200 entries, 24 h)')
     .option('-j, --json', 'output as JSON')
@@ -2602,8 +2625,16 @@ export function buildProgram(): Command {
     .command('project <action> [path]')
     .description('manage indexed project roots (list|exclude|prune). list = active project + blocked roots; exclude <path> = add to block list; prune = remove stale entries.')
     .option('-j, --json', 'output as JSON')
-    .action((action: string, pathArg: string | undefined, opts: { json?: boolean }) =>
-      guard(() => cmdProject({ action, ...(pathArg !== undefined ? { pathArg } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+    .option('--dry-run', 'with prune, preview removals without touching the config file')
+    .action((action: string, pathArg: string | undefined, opts: { json?: boolean; dryRun?: boolean }) =>
+      guard(() =>
+        cmdProject({
+          action,
+          ...(pathArg !== undefined ? { pathArg } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.dryRun === true ? { dryRun: true } : {}),
+        }),
+      )())
 
   program
     .command('compact-doc <path>')
@@ -2831,6 +2862,7 @@ export function buildProgram(): Command {
     .command('gdrive-sections <file-id>')
     .description('fetch and list sections from a public Google Doc')
     .option('--heading <name>', 'get content of one named section')
+    .option('--fresh', 'skip the on-disk cache and force a live fetch')
     .action(guard(cmdGdriveSections))
 
   program
@@ -2861,12 +2893,15 @@ export function buildProgram(): Command {
  * let the process exit naturally so buffered stdout flushes first.
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
-  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts).
-  // It is not a registered commander option or command anywhere in buildProgram, so it must be
-  // intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an
-  // unknown option and the freshly-spawned daemon child exits immediately, silently disabling
-  // the entire detached background-indexing feature (`token-goat worker start`).
-  if (argv.includes('--worker-daemon')) {
+  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts):
+  // `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered
+  // commander option or command anywhere in buildProgram, so it must be intercepted here, before
+  // parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the
+  // freshly-spawned daemon child exits immediately, silently disabling the entire detached
+  // background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than
+  // "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal
+  // string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
+  if (argv[2] === '--worker-daemon') {
     runDetachedWorkerDaemon()
     return
   }

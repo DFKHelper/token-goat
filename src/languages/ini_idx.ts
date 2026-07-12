@@ -61,14 +61,60 @@ export function extractIni(content: string, filePath: string): SymbolEntry[] {
   })
 }
 
+/** Returns true if the quote char `q` at index `i` in `line` is escaped: an odd count of
+ * consecutive backslashes immediately precedes it (each `\\` pair is one literal backslash, so
+ * only an odd run actually escapes the quote — an escaped backslash before the quote must not
+ * count as escaping it). Single quotes have no escape semantics in dotenv/POSIX, so this check
+ * is skipped entirely for them — any `'` closes the value regardless of what precedes it. */
+function _isEscapedQuote(line: string, i: number, q: string): boolean {
+  if (q === "'") return false
+  let backslashes = 0
+  let j = i - 1
+  while (j >= 0 && line[j] === '\\') {
+    backslashes++
+    j--
+  }
+  return backslashes % 2 === 1
+}
+
+/** Returns true if `line` contains an unescaped occurrence of the open quote char `q`, closing it. */
+function _lineClosesQuote(line: string, q: string): boolean {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === q && !_isEscapedQuote(line, i, q)) return true
+  }
+  return false
+}
+
+/** If a value's leading char is a quote that isn't closed again later on the same line, returns
+ * that quote char (the value continues, embedded-newline-style, onto following lines); else null. */
+function _detectOpenQuote(value: string): string | null {
+  const trimmed = value.replace(/^\s+/, '')
+  const q = trimmed[0]
+  if (q !== '"' && q !== "'") return null
+  for (let i = 1; i < trimmed.length; i++) {
+    if (trimmed[i] === q && !_isEscapedQuote(trimmed, i, q)) return null
+  }
+  return q
+}
+
 export function extractEnv(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const lines = content.split(/\r?\n/)
+  // Tracks a quote char opened on a prior line whose multi-line value hasn't closed yet, so a
+  // continuation line's content (which can look like its own `KEY=value` assignment) is never
+  // re-scanned as a new key.
+  let openQuote: string | null = null
 
   for (let i = 0; i < lines.length; i++) {
     if (symbols.length >= MAX_ENV_KEYS) break
     const line = lines[i] ?? ''
+
+    if (openQuote !== null) {
+      if (_lineClosesQuote(line, openQuote)) openQuote = null
+      continue
+    }
+
     if (!line || line[0] === '#' || line[0] === ';' || line[0] === ' ' || line[0] === '\t') continue
     const m = ENV_KEY_RE.exec(line)
     if (m === null) continue
@@ -78,6 +124,7 @@ export function extractEnv(content: string, filePath: string): SymbolEntry[] {
     if (seen.has(key)) continue
     seen.add(key)
     symbols.push(makeSymbol(filePath, name, 'env_key', i + 1))
+    openQuote = _detectOpenQuote(line.slice(m[0].length))
   }
 
   return symbols

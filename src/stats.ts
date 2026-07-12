@@ -7,7 +7,11 @@
  *
  * Public API:
  * - summarize(windowDays?) — load all stat rows from the global DB and return a
- *   StatsSummary with aggregations by kind, day, project, source, and command.
+ *   StatsSummary with aggregations by kind, day, source, and command. `by_project`
+ *   is always `[]`: the `stats` table (see GLOBAL_SCHEMA_SQL below) has no
+ *   project-identifying column to aggregate by, so this dimension was never wired
+ *   up. The field is kept on StatsSummary/the `--json` output for compatibility
+ *   with callers that may depend on its presence, not because it carries data.
  * - renderShortStats(opts?) — print just the totals block + a hint to run --full.
  * - renderStats(opts?) — compute and print the full formatted breakdown to stdout.
  */
@@ -15,7 +19,7 @@
 import * as path from 'node:path'
 import type Database from 'better-sqlite3'
 import { getDb } from './db.js'
-import { dataDir } from './constants.js'
+import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
 import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import type { StatsData } from './render/types.js'
@@ -186,23 +190,8 @@ CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
 
-/**
- * Compute the data directory path for a given home directory.
- * Replicates the logic from constants.ts::defaultDataDir but uses the provided homeDir.
- */
-function computeDataDir(homeDir: string): string {
-  const platform = process.platform
-  if (platform === 'win32') {
-    return path.join(homeDir, 'dfk-helper', 'token-goat')
-  }
-  if (platform === 'darwin') {
-    return path.join(homeDir, 'Library', 'Application Support', 'token-goat')
-  }
-  return path.join(homeDir, '.local', 'share', 'token-goat')
-}
-
 function getGlobalDb(homeDir?: string): Database.Database {
-  const basePath = homeDir ? computeDataDir(homeDir) : dataDir()
+  const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
   const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
   if (!_globalSchemaApplied.has(dbPath)) {
@@ -310,6 +299,10 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database, h
     .map(([date, bucket]) => ({ ...bucket, date }))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
+  // Always empty by design, not a bug: the `stats` table has no project-identifying
+  // column (see GLOBAL_SCHEMA_SQL), so there is no data source to aggregate by project
+  // from. Kept on StatsSummary/the `--json` output for shape compatibility — see the
+  // module docstring above.
   const byProjectList: ProjectRow[] = []
 
   const t1 = Date.now()
@@ -354,6 +347,21 @@ function _totalsLines(summary: StatsSummary): string[] {
  * fuller breakdowns. This is the bare ``token-goat stats`` default (both TTY
  * and non-TTY use this -- the short output needs no rich-TUI treatment).
  */
+/**
+ * Whether stats output should use the rich, ANSI-colored renderer.
+ * `isTTY === true` is an explicit, unambiguous terminal -- always rich. When
+ * `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at
+ * all -- see 9f8589a5) treat it as rich too, but not when `CI` is set: CI
+ * runners are also non-TTY and would otherwise be misread as Claude Code's
+ * terminal, sending colorized box-table output through what test/log
+ * consumers expect to be plain text.
+ */
+function _useRichStats(): boolean {
+  if (process.env['NO_COLOR']) return false
+  if (process.stdout.isTTY === true) return true
+  return process.stdout.isTTY === undefined && !process.env['CI']
+}
+
 function _renderShortTotals(summary: StatsSummary): void {
   const lines = [
     ..._totalsLines(summary),
@@ -383,6 +391,18 @@ function _plainTextStats(summary: StatsSummary): void {
     for (const row of summary.by_command) {
       lines.push(
         `  ${row.command.padEnd(12)} ${row.events.toString().padStart(6)} events  ${fmtBytes(row.bytes_saved).padStart(8)}  ${row.tokens_saved.toString().padStart(8)} tokens`,
+      )
+    }
+  } else {
+    // Hints fired but no direct command was ever invoked -- surface this as a
+    // gap instead of letting the section vanish silently (see CHANGELOG).
+    const hintBucket = summary.by_source[SOURCE_HINT]
+    if (hintBucket && hintBucket.events > 0) {
+      lines.push(
+        '',
+        '## By Command',
+        `  0 direct command invocations this window -- ${hintBucket.events} hint(s) fired but not acted on.`,
+        '  Run token-goat symbol/read/section/semantic/outline/skeleton directly to capture these savings.',
       )
     }
   }
@@ -472,7 +492,7 @@ function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
  * section as ``--full`` (just without the detail sections); on a pipe it
  * stays flat plain text.
  */
-export function renderShortStats(opts?: { windowDays?: number; homeDir?: string }): void {
+export function renderShortStats(opts?: { windowDays?: number; homeDir?: string; force?: boolean }): void {
   const windowDays = opts?.windowDays ?? 30
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
@@ -481,7 +501,11 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string 
     return
   }
 
-  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent
+  // caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it
+  // can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still
+  // wins even when forced: an explicit no-color preference should never be overridden.
+  const useTty = process.env['NO_COLOR'] ? false : opts?.force === true ? true : _useRichStats()
   if (!useTty) {
     _renderShortTotals(summary)
     return
@@ -500,7 +524,7 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
     return
   }
 
-  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  const useTty = _useRichStats()
   if (!useTty) {
     _plainTextStats(summary)
     return

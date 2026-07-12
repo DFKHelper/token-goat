@@ -24,6 +24,18 @@ describe('detectLanguage', () => {
     expect(detectLanguage('noextension')).toBe('unknown')
   })
 
+  it('returns markdown for .md / .markdown / .mdx, but unknown for .rst', () => {
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so detectLanguage returned 'unknown' for
+    // it and the indexer (cmdIndex) skipped .mdx files entirely -- no headings ever got into the
+    // symbol index. MDX heading syntax is plain ATX and works with the existing markdown
+    // extractor, unlike .rst, which genuinely needs an underline-style heading parser that isn't
+    // implemented, so 'unknown' remains correct there.
+    expect(detectLanguage('README.md')).toBe('markdown')
+    expect(detectLanguage('README.markdown')).toBe('markdown')
+    expect(detectLanguage('docs/Guide.mdx')).toBe('markdown')
+    expect(detectLanguage('docs/notes.rst')).toBe('unknown')
+  })
+
   it('classifies named files (Dockerfile, pyproject.toml) by basename', () => {
     expect(detectLanguage('Dockerfile')).toBe('dockerfile')
     expect(detectLanguage('repo/pyproject.toml')).toBe('toml')
@@ -35,15 +47,57 @@ describe('detectLanguage', () => {
     expect(detectLanguage('Bar.TS')).toBe('typescript')
   })
 
+  it('classifies any ".env.<suffix>" variant as env_file, not just an enumerated list', () => {
+    // FILENAME_LANGUAGE used to enumerate a fixed list of dotenv variants (.env.local,
+    // .env.example, .env.sample, .env.test, .env.production) -- any suffix a project actually
+    // uses that wasn't on that list (.env.development, .env.staging, .env.ci, .env.docker, ...)
+    // silently fell through to 'unknown'.
+    expect(detectLanguage('.env')).toBe('env_file')
+    expect(detectLanguage('.env.local')).toBe('env_file')
+    expect(detectLanguage('.env.development')).toBe('env_file')
+    expect(detectLanguage('.env.staging')).toBe('env_file')
+    expect(detectLanguage('.env.ci')).toBe('env_file')
+    expect(detectLanguage('backend/.env.docker')).toBe('env_file')
+    // .envrc (direnv) has no dot after "env" and must stay distinct from the .env.<suffix> family.
+    expect(detectLanguage('.envrc')).toBe('env_file')
+  })
+
   it('classifies Salesforce Apex and source-format metadata', () => {
     expect(detectLanguage('force-app/main/default/classes/ExampleController.cls')).toBe('apex')
     expect(detectLanguage('force-app/main/default/triggers/ExampleTrigger.trigger')).toBe('apex')
-    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls-meta.xml')).toBe('unknown')
+    expect(detectLanguage('force-app/main/default/classes/ExampleController.cls-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
     expect(detectLanguage('force-app/main/default/objects/Example__c/Example__c.object-meta.xml')).toBe(
       'salesforce_metadata',
     )
     expect(detectLanguage('force-app/main/default/flows/Example_Flow.flow-meta.xml')).toBe(
       'salesforce_metadata',
     )
+    expect(detectLanguage('force-app\\main\\default\\permissionsetgroups\\Sales.PERMISSIONS ETGROUP-META.XML')).toBe(
+      'salesforce_metadata',
+    )
+    expect(detectLanguage('force-app/main/default/unknown/Future.futureType-meta.xml')).toBe(
+      'salesforce_metadata',
+    )
+  })
+
+  it('classifies Aura and Visualforce markup', () => {
+    for (const extension of [
+      'cmp',
+      'app',
+      'evt',
+      'intf',
+      'design',
+      'auradoc',
+      'tokens',
+      'page',
+      'component',
+      'email',
+    ]) {
+      expect(detectLanguage(`force-app\\main\\default\\ui\\Example.${extension.toUpperCase()}`)).toBe(
+        'salesforce_markup',
+      )
+    }
   })
 })

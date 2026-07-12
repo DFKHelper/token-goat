@@ -87,7 +87,7 @@ function findBlockEndLine(code: string, lineIndex: readonly number[], fromOffset
       depth += 1
     } else if (ch === '}') {
       depth -= 1
-      if (depth === 0) return offsetToLine([...lineIndex], i)
+      if (depth === 0) return offsetToLine(lineIndex, i)
     }
   }
   return null
@@ -102,7 +102,7 @@ function spanForMatch(
 ): Span {
   const blockEndLine = findBlockEndLine(code, lineIndex, startOffset)
   const startOffsetForBody = lineStartOffset(lineIndex, bodyStartLine)
-  const endLine = blockEndLine ?? offsetToLine([...lineIndex], startOffset)
+  const endLine = blockEndLine ?? offsetToLine(lineIndex, startOffset)
   const endOffset = lineEndOffset(content, lineIndex, endLine)
   return {
     startLine: bodyStartLine,
@@ -120,11 +120,21 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   const seen = new Set<string>()
   const lineIndex = buildLineIndex(content)
   const rawLines = content.split(/\r?\n/)
+  // Block comments must be stripped BEFORE string-literal blanking, not after: `stripCstyleComments`
+  // already skips a `/*` opener that falls inside an open quote (isInsideStringLiteral), so it does
+  // not need string-free input to find real comment spans. Doing it the other way around - as this
+  // used to - lets a lone apostrophe from a contraction inside a `/* */` comment (e.g. "won't") get
+  // misread by `stripStringLiterals` as a string opener, blanking from the apostrophe to end-of-line
+  // and eating the comment's own same-line closing `*/` along with it. `stripCstyleComments` then
+  // finds an orphaned unclosed `/*` and blanks everything through EOF. Stripping block comments
+  // first removes the apostrophe (and the rest of the comment body) before `stripStringLiterals`
+  // ever sees it, so it can no longer be mistaken for a string opener.
+  const blockCommentFree = stripCstyleComments(content)
   // String literals must be blanked BEFORE `//` line-comment stripping: stripCstyleComments's
   // `lineCommentRe` application is not quote-aware, so a `//` inside a string (e.g. a URL literal
   // like 'https://example.com') would otherwise be treated as a real comment starter and blank
   // everything through end-of-line, corrupting any code that follows on the same line.
-  const stringFree = stripStringLiterals(content)
+  const stringFree = stripStringLiterals(blockCommentFree)
   const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
 
   const emit = (name: string, kind: string, span: Span, docstring = ''): void => {
@@ -139,7 +149,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const name = match[1] ?? ''
     const objectName = match[2] ?? ''
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, line), objectName)
   }
 
@@ -148,7 +158,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const typeKind = match[1] ?? ''
     const name = match[2] ?? ''
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line))
@@ -158,7 +168,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const name = match[1] ?? ''
     if (CONTROL_NAMES.has(name)) continue
     const startOffset = match.index ?? 0
-    const line = offsetToLine([...lineIndex], startOffset)
+    const line = offsetToLine(lineIndex, startOffset)
     if (overlapsExisting(symbols, line)) continue
     const bodyStartLine = annotationStartLine(rawLines, line)
     const kind = typeNames.has(name) ? 'apex_constructor' : 'apex_method'

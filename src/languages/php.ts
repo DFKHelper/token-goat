@@ -21,13 +21,13 @@ export interface PhpImport {
 }
 
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/
-const CLASS_RE = /^(?:(?:abstract|final)\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
+const CLASS_RE = /^(?:(?:abstract|final)\s+)?(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
 const METHOD_RE = new RegExp(
   '^(?:(?:public|protected|private|static|abstract|final)\\s+)*' +
   'function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
 )
 const ANON_FN_RE = /^\s*function\s*\(/
-const CONST_RE = /^(?:(?:public|protected|private|static)\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)/
+const CONST_RE = /^(?:(?:public|protected|private|static|final)\s+)*const\s+([A-Za-z_][A-Za-z0-9_]*)/
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
 const PROP_RE = new RegExp(
   '^(?:(?:public|protected|private|static|readonly)\\s+)+' +
@@ -149,12 +149,8 @@ export function extractPhp(
     // class/interface/trait/enum
     const clsM = CLASS_RE.exec(stripped)
     if (clsM) {
-      const name = clsM[1] ?? ''
-      const beforeName = stripped.split(name)[0] ?? ''
-      const kind = beforeName.includes('interface') ? 'interface'
-        : beforeName.includes('trait') ? 'trait'
-        : beforeName.includes('enum') ? 'enum'
-        : 'class'
+      const kind = clsM[1] ?? 'class'
+      const name = clsM[2] ?? ''
       const parent = currentClass()
       symbols.push(makeSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
       contextStack.push([name, braceDepth - openB + closeB, false])

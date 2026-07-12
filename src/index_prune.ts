@@ -9,9 +9,17 @@ import { foldPath } from './util.js'
 type DbHandle = ReturnType<typeof getDb>
 
 // Remove every indexed row (symbols, refs, files) and embedding chunk for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on.
+// Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash
+// or thrown error between the two deletes can never leave orphaned chunks/chunk_vectors rows for
+// a files row that no longer exists -- nothing else ever cleans those up, since
+// pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete
+// alone (without the second) would already have removed the file from.
 export function removeFileFromIndex(db: DbHandle, filePath: string): void {
-  deleteFileRows(db, filePath)
-  deleteFileEmbeddings(db, filePath)
+  const tx = db.transaction(() => {
+    deleteFileRows(db, filePath)
+    deleteFileEmbeddings(db, filePath)
+  })
+  tx()
 }
 
 // A drive root (`c:/`) or empty prefix would scope the prune to an entire drive across every project in the shared global DB; refuse it so a malformed root can never mass-delete another project's rows.

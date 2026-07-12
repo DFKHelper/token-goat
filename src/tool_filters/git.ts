@@ -7,13 +7,51 @@
 // CRLF warning stripping runs via postNormalise on every stream before the per-subcommand compressor sees the text — the base class pipeline calls it after normalise() on both stdout and stderr.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
   dedupeCombinedOutput,
-  positionalArgs,
+  pathName,
+  pathStem,
   splitBlocks,
   squeezeBlankLines,
 } from './helpers.js'
+
+// git flags that take a value in the following token. When scanning argv for
+// subcommand-identifying positional tokens (matches()/compress() subcommand detection), the
+// value token of one of these must be skipped entirely, not scanned for a word that happens to
+// match another filter's subcommand keyword -- e.g. `git commit -m "please push and rebase"`
+// must never be mistaken for a `push`/`rebase` command just because that word appears inside
+// the message text.
+const _GIT_VALUE_FLAGS = new Set([
+  '-m',
+  '--message',
+  '-c',
+  '--reuse-message',
+  '-C',
+  '--reedit-message',
+  '-F',
+  '--file',
+  '--author',
+  '--date',
+])
+
+/** Positional (non-flag) args for git argv, skipping the value token of known value-taking git
+ * flags (`-m <msg>`, `--message <msg>`, ...) so a word inside a flag's value can never be
+ * mistaken for a subcommand keyword by the `<=3`-token subcommand scan in `matches()`. */
+function gitPositionalArgs(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('-')) {
+      const flag = a.includes('=') ? a.slice(0, a.indexOf('=')) : a
+      if (!a.includes('=') && _GIT_VALUE_FLAGS.has(flag)) i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
+}
 
 // ---------------------------------------------------------------------------
 // CRLF warning stripping (git.postNormalise)
@@ -76,6 +114,22 @@ function _stripGitCrlfWarnings(text: string): string {
 abstract class GitBaseFilter extends ToolFilter {
   override readonly binaries = new Set(['git'])
 
+  // Overrides ToolFilter.matches() to scan gitPositionalArgs() instead of the generic
+  // positionalArgs() -- git's subcommand-identifying tokens must skip the value of -m/--message
+  // and other value-taking flags, or a word inside a commit message could be mistaken for
+  // another filter's subcommand keyword.
+  override matches(argv: string[]): boolean {
+    if (argv.length === 0) return false
+    const first = argv[0]!
+    const stem = pathStem(first).toLowerCase()
+    const name = pathName(first).toLowerCase()
+    if (!this.binaries.has(stem) && !this.binaries.has(name)) return false
+    if (this.subcommands.size === 0) return true
+    return gitPositionalArgs(argv.slice(1))
+      .slice(0, 3)
+      .some((tok) => this.subcommands.has(tok))
+  }
+
   override postNormalise(text: string): string {
     return _stripGitCrlfWarnings(text)
   }
@@ -86,8 +140,14 @@ abstract class GitBaseFilter extends ToolFilter {
 // ---------------------------------------------------------------------------
 
 const _GIT_LOG_COMMIT_RE = /^commit [0-9a-f]{7,}/
-const _GIT_DIFF_FILE_RE = /^diff --git /
-const _GIT_DIFF_HUNK_RE = /^@@\s/
+// `diff --git ` for normal diffs; `diff --cc ` for combined diffs (merge-commit
+// conflict resolutions, e.g. `git diff --cc <merge-sha>` / `git show --cc <merge-sha>`).
+const _GIT_DIFF_FILE_RE = /^diff --(?:git|cc) /
+// `@@ -a,b +c,d @@` for normal diffs; combined diffs (`diff --cc`) use one extra `@` per
+// parent being merged, e.g. `@@@ -a,b -c,d +e,f @@@` for a 2-parent merge. Without this,
+// large-hunk truncation never engages on a combined diff's hunks -- they're indistinguishable
+// from plain content and the whole (potentially huge) hunk passes through untouched.
+const _GIT_DIFF_HUNK_RE = /^@{2,}\s/
 const _GIT_STATUS_HEADER_RE =
   /^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|Unmerged paths|Changes to be committed|nothing to commit)/
 
@@ -96,6 +156,10 @@ const _GIT_STATUS_HEADER_RE =
 // ---------------------------------------------------------------------------
 
 const _GIT_LOG_ONELINE_RE = /^[0-9a-f]{7,}\s/
+// Same as _GIT_LOG_ONELINE_RE but tolerant of a leading `--graph` ASCII-art prefix
+// (e.g. `| * `, `|/  `, `*   `), so connector-only lines (no commit hash) aren't
+// mistaken for commit lines when counting/capping oneline commits.
+const _GIT_LOG_ONELINE_GRAPH_RE = /^[|\\/* ]*[0-9a-f]{7,}\s/
 const _GIT_LOG_MERGE_RE = /^Merge:/
 const _GIT_LOG_AUTHOR_RE = /^Author:\s+(.+)/
 const _GIT_LOG_DATE_RE = /^Date:\s+(.+)/
@@ -275,7 +339,12 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[])
         .filter((b) => b.trim())
         .map((b) => (isPatch ? _capPatchLinesInBlock(b, MAX_PATCH_LINES) : _capStatLinesInBlock(b, MAX_STAT_FILES)))
     } else {
-      blocks = stdout.split('\n').filter((ln) => ln.trim())
+      // `--graph` prefixes each commit's oneline entry with ASCII-art connector characters
+      // (e.g. `| * `, `*   `) and also emits connector-only lines (`|\  `, `|/  `) with no
+      // commit hash at all. Counting every non-empty line as a commit overcounts the
+      // elided-commit tally by however many connector-only lines exist, so only count/cap
+      // lines that actually carry a commit hash (with or without a graph prefix).
+      blocks = stdout.split('\n').filter((ln) => ln.trim() && _GIT_LOG_ONELINE_GRAPH_RE.test(ln))
     }
 
     let keptLines: string[]
@@ -309,7 +378,10 @@ export class GitLogFilter extends GitBaseFilter {
 // GitDiffFilter — "git diff", "git show"
 // ---------------------------------------------------------------------------
 
-const _GIT_DIFF_BINARY_RE = /^Binary files? .+ (?:and .+ )?differ$/
+// Matches both the plain two-filename binary message ("Binary files a/x and b/x differ") and
+// the combined-diff (`git diff --cc` / `git show --cc`) form, which omits filenames entirely
+// ("Binary files differ") -- the filename segment is optional so both shapes match.
+const _GIT_DIFF_BINARY_RE = /^Binary files?(?: .+)? differ$/
 const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+\d+/
 const _GIT_DIFF_STAT_SUMMARY_RE = /^\s*\d+ files? changed/
 const _DIFF_STAT_DIR_ROLLUP_THRESHOLD = 20
@@ -1281,15 +1353,32 @@ function _compressGitRemote(stdout: string, stderr: string): string {
 
 export class GitFilter extends GitBaseFilter {
   readonly name = 'git'
-  // No subcommands set — matches any git command as catch-all.
+  // No subcommands set — matches any git command as catch-all, except `git
+  // grep`, which is excluded here so dispatch falls through to GrepFilter
+  // (registered after GIT_FILTERS) and its per-file match-count summarizer.
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    return gitPositionalArgs(argv.slice(1))[0] !== 'grep'
+  }
 
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
-    const positionals = positionalArgs(argv.slice(1))
+    const positionals = gitPositionalArgs(argv.slice(1))
     const subcommand = positionals[0] ?? ''
     if (subcommand === 'status') return _compressGitStatus(stdout, stderr)
     if (subcommand === 'log') return _compressGitLogSimple(stdout, stderr)
-    if (subcommand === 'diff' || subcommand === 'show')
-      return _compressGitDiffSimple(stdout, stderr)
+    if (subcommand === 'diff' || subcommand === 'show') {
+      // [bash_diff] max_hunks_per_file (default 10); falls back to this
+      // function's own built-in default (3) on config load failure.
+      let maxHunksPerFile: number | undefined
+      try {
+        maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
+      } catch {
+        maxHunksPerFile = undefined
+      }
+      return maxHunksPerFile === undefined
+        ? _compressGitDiffSimple(stdout, stderr)
+        : _compressGitDiffSimple(stdout, stderr, maxHunksPerFile)
+    }
     if (subcommand === 'ls-files' || subcommand === 'ls-tree')
       return _truncateListing(stdout, stderr, 100)
     if (

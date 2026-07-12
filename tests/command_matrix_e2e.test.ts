@@ -437,6 +437,15 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout).toMatch(/mod|src/)
+
+    // `--compact` must route through the same real indexed data as the plain
+    // form (buildProjectMap), not the legacy repomap.ts path -- so it should
+    // surface a real fixture symbol (alphaSym, defined in src/mod.ts) rather
+    // than an alphabetical file listing with no symbol data.
+    const compact = run(['map', '--compact'])
+    expect(compact.status, compact.stderr).toBe(0)
+    expect(compact.stdout).toContain('alphaSym')
+    expect(compact.stdout.length).toBeLessThan(r.stdout.length)
   },
   'bash-output': () => {
     // --file reads a regular file, giving a deterministic real-output check.
@@ -451,6 +460,16 @@ const cases: Record<string, () => void | Promise<void>> = {
     const all = r.stdout + r.stderr
     expect(all.length).toBeGreaterThan(0)
     expect(all).not.toMatch(/unknown command|is not a function|Cannot find package/)
+  },
+  'mcp-output': () => {
+    // A well-formed but uncached mcp_ id is a graceful cache-miss (exit 1).
+    const r = run(['mcp-output', 'mcp_0000000000000000'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout + r.stderr).toContain('no cached mcp output for id')
+    // A non-mcp_ id is rejected up front, distinctly from a cache miss.
+    const rBad = run(['mcp-output', 'not-an-mcp-id'])
+    expect(rBad.status).not.toBe(0)
+    expect(rBad.stdout + rBad.stderr).toContain('not an mcp-output id')
   },
   compress: () => {
     // Real output: the generic filter collapses the 6 identical lines to one.
@@ -942,6 +961,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     const arr = JSON.parse(rj.stdout) as unknown[]
     expect(Array.isArray(arr)).toBe(true)
   },
+  'mcp-history': () => {
+    // Isolated home so no mcp blobs exist; must exit 0 and report empty cache.
+    const cacheDir = mkIsolated('tg-mhist-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['mcp-history'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('No mcp output entries cached.')
+    const rj = run(['mcp-history', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const arr = JSON.parse(rj.stdout) as unknown[]
+    expect(Array.isArray(arr)).toBe(true)
+  },
   'clean-cache': () => {
     // Isolated home; nothing to prune; must exit 0 and report 0 removed total.
     const cacheDir = mkIsolated('tg-clean-')
@@ -1141,13 +1172,11 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     expect(r.stderr).not.toContain('sharp unavailable')
 
     const out = JSON.parse(r.stdout) as {
-      hookSpecificOutput?: { updatedInput?: { file_path?: string } }
+      hookSpecificOutput?: { additionalContext?: string }
     }
-    const rewrittenPath = out.hookSpecificOutput?.updatedInput?.file_path
-    expect(typeof rewrittenPath).toBe('string')
-    expect(rewrittenPath).not.toBe(imgPath)
-    const rewrittenSize = fs.statSync(rewrittenPath as string).size
-    expect(rewrittenSize).toBeLessThan(jpegBuf.length)
+    const context = out.hookSpecificOutput?.additionalContext ?? ''
+    expect(context).toContain('smaller')
+    expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
   }, 30000)
 })
 

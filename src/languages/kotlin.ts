@@ -47,6 +47,18 @@ const CLASS_HEADER_RE = new RegExp(
   '(?:class|interface|object|enum\\s+class)\\s+([A-Za-z_][A-Za-z0-9_]*)',
 )
 
+// A companion object precedes `object` with the `companion` keyword, which is not a member of
+// CLASS_HEADER_RE's modifier list, so `companion object { ... }` never matches CLASS_HEADER_RE --
+// no frame gets pushed for it, yet its brace still increments braceDepth, silently dropping every
+// member declared inside it from the index (depthInClass never comes back to 1 relative to the
+// enclosing class). A companion object may optionally carry a name (`companion object Named { }`);
+// when unnamed, Kotlin's own implicit name for it is `Companion`, used here as the fallback so
+// members still resolve to a stable, real, referenceable parent name.
+const COMPANION_RE = new RegExp(
+  '^(?:(?:public|internal|protected|private)\\s+)*' +
+  'companion\\s+object(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\b',
+)
+
 const TOP_FUN_RE = new RegExp(
   '^(?:(?:public|internal|private|suspend|inline|infix|operator|' +
   'external|actual|expect)\\s+)*' +
@@ -131,8 +143,27 @@ export function extractKotlin(
     // also matching arbitrarily indented top-level code that has no enclosing class.
     // Match against the trimmed line: CLASS_HEADER_RE is column-0-anchored (`^`), so an
     // indented nested class header would never match against the raw, still-indented line.
-    const cm = (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
-    if (cm) {
+    // Companion objects only occur nested inside a class/object body (classStack non-empty), and
+    // are checked ahead of CLASS_HEADER_RE since the `companion` keyword would otherwise prevent
+    // CLASS_HEADER_RE from matching at all (see COMPANION_RE comment above).
+    // Function-local classes/companion objects (declared inside a method body) must not be
+    // indexed as members of the enclosing class -- matches the depthInClass === 1 gate already
+    // applied correctly to the method/const branch below (and to csharp.ts/powershell_idx.ts).
+    // classStack.length === 0 covers the top-level case (no enclosing class at all); otherwise
+    // the current position must be exactly one brace level inside the innermost class/companion
+    // frame's body (depthInClass === 1) -- a class/companion header nested two or more levels
+    // in (e.g. inside a method body) is function-local, not a real class member.
+    const outerFrame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
+    const outerDepthInClass = outerFrame !== null ? braceDepth - outerFrame.braceDepth : 0
+    const classDetectionGateOk = classStack.length === 0 || outerDepthInClass === 1
+    const companionM = classStack.length > 0 && classDetectionGateOk ? COMPANION_RE.exec(stripped) : null
+    const cm = companionM === null && classDetectionGateOk && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
+    if (companionM) {
+      const cname = companionM[1] ?? 'Companion'
+      const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
+      symbols.push(makeSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
+      classStack.push({ name: cname, braceDepth, bodyEntered: false })
+    } else if (cm) {
       const cname = cm[1] ?? ''
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))

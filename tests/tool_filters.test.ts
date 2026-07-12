@@ -178,6 +178,19 @@ describe('helpers: command parsing', () => {
     expect(stripPrefixes(['npx', 'jest'])).toEqual(['jest'])
     expect(stripPrefixes(['FOO=bar', 'eslint', '.'])).toEqual(['eslint', '.'])
   })
+
+  it('stripPrefixes strips a leading env assignment whose value is a path', () => {
+    expect(stripPrefixes(['PATH=/usr/local/bin', 'git', 'log'])).toEqual(['git', 'log'])
+  })
+
+  it('stripPrefixes strips env assignments that follow a passthrough wrapper', () => {
+    expect(stripPrefixes(['env', 'FOO=bar', 'git', 'log'])).toEqual(['git', 'log'])
+  })
+
+  it('stripPrefixes treats -i as a valueless flag for sudo/env (no value to consume)', () => {
+    expect(stripPrefixes(['sudo', '-i', 'docker', 'ps'])).toEqual(['docker', 'ps'])
+    expect(stripPrefixes(['env', '-i', 'cargo', 'build'])).toEqual(['cargo', 'build'])
+  })
 })
 
 describe('CompressedOutput', () => {
@@ -314,6 +327,23 @@ describe('dispatch: detection + compound handling', () => {
     expect(det?.argv).toEqual(['mytool', 'run'])
   })
 
+  // Regression (bug #242): a bare `&` backgrounds the command; spawnSync's piped
+  // stdio then blocks on the backgrounded grandchild's inherited stdout until it
+  // exits or the wrapper's timeout kills the process tree the user wanted kept
+  // running. Newline-separated compounds slip past the `&&`/`|`/`;` checks the
+  // same way and must be rejected too.
+  it('detectFromCommand rejects a backgrounded command and a newline-separated compound', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand('mytool run &')).toBeNull()
+    expect(detectFromCommand('mytool run&')).toBeNull()
+    expect(detectFromCommand('mytool a\nmytool b')).toBeNull()
+    // A literal & inside a quoted argument is not a background operator.
+    const det = detectFromCommand('mytool -m "a & b"')
+    expect(det?.filter.name).toBe('echo-test')
+    // Legitimate && is still rejected, unaffected by the new check.
+    expect(detectFromCommand('mytool a && mytool b')).toBeNull()
+  })
+
   it('tryWrapCompoundSegments wraps each recognised && segment', () => {
     TOOL_FILTERS.push(new EchoFilter())
     const out = tryWrapCompoundSegments('mytool a && echo done', (name, seg) => `wrap[${name}](${seg})`)
@@ -322,6 +352,15 @@ describe('dispatch: detection + compound handling', () => {
 
   it('tryWrapCompoundSegments returns null when no segment matches', () => {
     expect(tryWrapCompoundSegments('echo a && echo b', () => 'x')).toBeNull()
+  })
+
+  // Regression: the previous implementation split on a naive `/\s*&&\s*/` regex with no
+  // quote-awareness, so a `&&` embedded inside a quoted argument (e.g. a commit message) was
+  // treated as a segment boundary and corrupted on rejoin -- "a&&b" became "a && b".
+  it('tryWrapCompoundSegments does not split or corrupt a && embedded inside a quoted segment argument', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const out = tryWrapCompoundSegments('mytool -m "a&&b" && echo done', (name, seg) => `wrap[${name}](${seg})`)
+    expect(out).toBe('wrap[echo-test](mytool -m "a&&b") && echo done')
   })
 })
 

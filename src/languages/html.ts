@@ -14,7 +14,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, stripXmlComments } from './common.js'
 
 export interface HtmlImport {
   readonly kind: string
@@ -29,9 +29,11 @@ export interface HtmlSection {
   readonly endLine: number
 }
 
-// id and class attributes
-const ID_RE = /id=["']([^"']+)["']/gi
-const CLASS_RE = /class=["']([^"']+)["']/gi
+// id and class attributes. The negative lookbehind requires a proper left boundary (not
+// preceded by a word char or hyphen) so this only matches a bare `id=`/`class=` attribute,
+// not the tail of a longer attribute name like `data-id=`, `data-testid=`, `data-class=`, etc.
+const ID_RE = /(?<![\w-])id=["']([^"']+)["']/gi
+const CLASS_RE = /(?<![\w-])class=["']([^"']+)["']/gi
 
 // Link and script imports
 const LINK_RE = /<link[^>]*href=["']([^"']+)["']/gi
@@ -57,6 +59,11 @@ function isNoise(name: string): boolean {
   return NOISE_IDS_CLASSES.has(name.toLowerCase())
 }
 
+// Cap on total html_id/html_class symbols emitted, consistent with the MAX_SYMBOLS convention
+// used by the other language adapters (e.g. powershell_idx.ts, ini_idx.ts) - minified or
+// framework-generated HTML can otherwise emit thousands of duplicate symbol rows.
+const MAX_SYMBOLS = 500
+
 export function extractHtml(
   content: string,
   filePath: string,
@@ -64,10 +71,15 @@ export function extractHtml(
   const symbols: SymbolEntry[] = []
   const imports: HtmlImport[] = []
   const sections: MiniSection[] = []
-  const lineIndex = buildLineIndex(content)
+  // Blank out `<!-- ... -->` comment spans (offset-preserving, mirrors stripCstyleComments'
+  // approach in common.ts) before running any extraction regexes, so commented-out markup
+  // isn't indexed as live symbols/sections/imports and doesn't corrupt section line-range
+  // bookkeeping for the real markup that follows it.
+  const code = stripXmlComments(content)
+  const lineIndex = buildLineIndex(code)
 
   // Headings → sections
-  for (const m of content.matchAll(HEADING_RE)) {
+  for (const m of code.matchAll(HEADING_RE)) {
     const level = parseInt(m[1] ?? '1', 10)
     const raw = m[2] ?? ''
     const heading = raw.replace(TAG_STRIP_RE, '').trim()
@@ -77,7 +89,7 @@ export function extractHtml(
     }
     // Check for id anchor inside the tag
     const tagPart = m[0] ?? ''
-    const idM = /id=["']([^"']+)["']/i.exec(tagPart)
+    const idM = /(?<![\w-])id=["']([^"']+)["']/i.exec(tagPart)
     if (idM) {
       const anchorId = idM[1] ?? ''
       if (anchorId && !isNoise(anchorId)) {
@@ -89,33 +101,49 @@ export function extractHtml(
 
   // Sort and assign end-lines
   sections.sort((a, b) => a.line - b.line)
-  const totalLines = content.split('\n').length
+  const totalLines = code.split('\n').length
   assignFlatEndLines(sections, totalLines)
 
+  // id and class attributes. Deduped by (name, line) - first occurrence wins, mirroring
+  // makeSymbolEmitter's `${name}\0${line}` key semantics in common.ts - and capped at
+  // MAX_SYMBOLS total, consistent with the other language adapters.
+  const seenIdClass = new Set<string>()
+
   // id attributes
-  for (const m of content.matchAll(ID_RE)) {
+  for (const m of code.matchAll(ID_RE)) {
+    if (symbols.length >= MAX_SYMBOLS) break
     const idVal = m[1] ?? ''
     if (idVal && !isNoise(idVal)) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
-      symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '' })
+      const key = `${idVal}\0${line}`
+      if (!seenIdClass.has(key)) {
+        seenIdClass.add(key)
+        symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '' })
+      }
     }
   }
 
   // class attributes
-  for (const m of content.matchAll(CLASS_RE)) {
+  for (const m of code.matchAll(CLASS_RE)) {
+    if (symbols.length >= MAX_SYMBOLS) break
     const classVal = m[1] ?? ''
     if (classVal) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       for (const cls of classVal.split(/\s+/)) {
+        if (symbols.length >= MAX_SYMBOLS) break
         if (cls && !isNoise(cls)) {
-          symbols.push({ filePath, name: cls, kind: 'html_class', lineStart: line, lineEnd: line, body: '', docstring: '' })
+          const key = `${cls}\0${line}`
+          if (!seenIdClass.has(key)) {
+            seenIdClass.add(key)
+            symbols.push({ filePath, name: cls, kind: 'html_class', lineStart: line, lineEnd: line, body: '', docstring: '' })
+          }
         }
       }
     }
   }
 
   // link href
-  for (const m of content.matchAll(LINK_RE)) {
+  for (const m of code.matchAll(LINK_RE)) {
     const href = m[1] ?? ''
     if (href) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
@@ -124,7 +152,7 @@ export function extractHtml(
   }
 
   // script src
-  for (const m of content.matchAll(SCRIPT_RE)) {
+  for (const m of code.matchAll(SCRIPT_RE)) {
     const src = m[1] ?? ''
     if (src) {
       const line = offsetToLine(lineIndex, m.index ?? 0)

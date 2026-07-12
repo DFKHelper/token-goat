@@ -1,7 +1,12 @@
 // Batch D golden tests — git filter family. Faithfully ported from the Python suite (test_bash_compress_git.py and test_bash_compress_git_commit_push.py). These are the regression spec for the 7 filters in src/tool_filters/git.ts.
 
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { configPath } from '../src/constants.js'
 import {
   GIT_FILTERS,
   GitBlameFilter,
@@ -139,6 +144,29 @@ describe('GitLogFilter oneline', () => {
     const text = makeOneline(51)
     const result = apply(gitLogFilter, text, ['git', 'log', '--oneline'])
     expect(result).toContain('+1 more commits')
+  })
+
+  // Regression: `git log --graph --oneline` intersperses real commit lines (each prefixed with
+  // ASCII-art connectors like `* `/`| * `) with connector-only lines that carry no commit hash
+  // (e.g. `|\  `, `|/  `, from a merge). The old cap counted every non-empty line as a commit,
+  // so those connector-only lines inflated both the truncation point and the "+N more commits"
+  // tally past the real commit count.
+  it('--graph --oneline: connector-only lines are not counted as commits', () => {
+    const commitLines = Array.from(
+      { length: 55 },
+      (_, i) => `* abc${String(i).padStart(4, '0')}ef Short commit message ${i}`,
+    )
+    // Splice in graph connector-only lines (no commit hash) that a real merge produces.
+    const lines = [...commitLines]
+    lines.splice(10, 0, '|\\  ')
+    lines.splice(30, 0, '|/  ')
+    const text = lines.join('\n')
+
+    const result = apply(gitLogFilter, text, ['git', 'log', '--graph', '--oneline'])
+    // 55 real commits, cap 50 -> exactly 5 elided, not 7 (which the connector-line-inflated
+    // count would have reported).
+    expect(result).toContain('+5 more commits')
+    expect(result).not.toContain('+7 more commits')
   })
 })
 
@@ -367,6 +395,61 @@ describe('GitDiffFilter large hunk', () => {
     expect(result).toContain('diff --git a/big.py')
     expect(result).toContain('--- a/big.py')
     expect(result).toContain('+++ b/big.py')
+  })
+
+  // Regression: `git diff --cc` (combined diffs from a merge-commit conflict resolution) use a
+  // `diff --cc <path>` file-boundary line instead of `diff --git a/<path> b/<path>`. The file
+  // boundary regex used to only recognize `diff --git `, so combined diffs never got split into
+  // per-file blocks here at all -- the whole diff fell through as a single unprocessed block and
+  // large-hunk compression never applied, even for a single huge hunk.
+  it('git diff --cc gets per-file compression (binary collapse) like a normal diff', () => {
+    const text =
+      'diff --cc image.png\n' +
+      'index abc123,def456..0000000\n' +
+      'Binary files a/image.png and b/image.png differ\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc image.png')
+    expect(result).toContain('Binary files a/image.png and b/image.png differ')
+    // The `index` metadata line is dropped only when the block was recognized as a combined-diff
+    // file boundary and ran through binary collapse (header + binary-summary line only). Before
+    // the fix, `diff --cc` never matched the file-boundary regex, so the whole block (including
+    // this line) fell through unprocessed.
+    expect(result).not.toContain('index abc123,def456..0000000')
+  })
+
+  // Regression: _GIT_DIFF_BINARY_RE only matched the plain two-filename binary message
+  // ("Binary files a/x and b/x differ"). Real `git diff --cc`/`git show --cc` binary-conflict
+  // output omits filenames entirely ("Binary files differ"), so that combined-diff form never
+  // matched and binary collapse never triggered for --cc binary conflicts.
+  it('collapses a combined-diff (--cc) binary message that omits filenames', () => {
+    const text =
+      'diff --cc image.png\n' +
+      'index abc123,def456..0000000\n' +
+      'Binary files differ\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc image.png')
+    expect(result).toContain('Binary files differ')
+    expect(result).not.toContain('index abc123,def456..0000000')
+  })
+
+  // Regression: real `git diff --cc`/`git show --cc` output for a text conflict uses a
+  // triple-`@` combined-diff hunk header (`@@@ -a,b -c,d +e,f @@@`), one extra `@` per merged
+  // parent -- not the plain-diff `@@ -a,b +c,d @@`. Confirmed against a real merge-commit combined
+  // diff (`git show --cc <merge-sha>`) during dogfooding: with only the file-boundary fix, a large
+  // conflict hunk still passed through byte-identical to the pre-fix output, because
+  // _GIT_DIFF_HUNK_RE never split it into hunks in the first place. Both the file-boundary AND the
+  // hunk-boundary regex need to recognize the combined-diff format for large-hunk truncation to
+  // actually engage on `--cc` output.
+  it('git diff --cc: large combined-diff hunk (triple-@ header) gets truncated like a normal diff', () => {
+    const changedLines = Array.from({ length: 80 }, (_, i) => `+line ${i}`).join('\n')
+    const text =
+      'diff --cc conflict.py\n' +
+      'index abc123,def456..0000000\n' +
+      '--- a/conflict.py\n+++ b/conflict.py\n@@@ -1,3 -1,3 +1,83 @@@\n  context\n' +
+      changedLines
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc conflict.py')
+    expect(result).toContain('omitted by token-goat')
   })
 })
 
@@ -760,6 +843,10 @@ describe('GitFilter fallback', () => {
   it('git rev-parse routes to generic git filter', () => {
     expect(selectFilter(['git', 'rev-parse', 'HEAD'])?.name).toBe('git')
   })
+
+  it('git grep routes to the grep filter, not the generic git catch-all', () => {
+    expect(selectFilter(['git', 'grep', 'TODO'])?.name).toBe('grep')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -789,6 +876,22 @@ describe('GitCommitFilter dispatch', () => {
 
   it('matches git commit --fixup=abc', () => {
     expect(gitCommitFilter.matches(['git', 'commit', '--fixup=abc'])).toBe(true)
+  })
+
+  // Regression: a word inside a -m/--message value that happens to equal another filter's
+  // subcommand keyword (e.g. "log", "push") must not hijack dispatch away from git-commit --
+  // the tokenizer must skip the value token of value-taking git flags entirely, not scan it
+  // for subcommand-looking words.
+  it('routes to git-commit, not git-log, when the message value is the word "log"', () => {
+    expect(selectFilter(['git', 'commit', '-m', 'log'])?.name).toBe('git-commit')
+  })
+
+  it('routes to git-commit, not git-push, when the message contains the word "push"', () => {
+    expect(selectFilter(['git', 'commit', '-m', 'please push this and rebase later'])?.name).toBe('git-commit')
+  })
+
+  it('routes to git-commit when --message contains a subcommand-looking word', () => {
+    expect(selectFilter(['git', 'commit', '--message', 'push and rebase'])?.name).toBe('git-commit')
   })
 })
 
@@ -1214,5 +1317,64 @@ describe('GitBlameFilter with filename column', () => {
     expect(result).toContain('Alice')
     expect(result).toContain('Bob')
     expect(result).toContain('more lines by Alice')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GitFilter (generic catch-all) diff/show branch — [bash_diff].max_hunks_per_file
+//
+// Note: in production, `selectFilter` picks GitDiffFilter (registered before
+// GitFilter in GIT_FILTERS, subcommands ['diff', 'show']) for real `git diff`/
+// `git show` invocations, so this branch inside GitFilter.compress is not
+// reached via the live dispatch path. It remains real, directly-testable
+// code (exercised here the same way the rest of this suite exercises
+// GitFilter), so the hardcoded-vs-config behavior is still verified against
+// the actual compression function, per this project's precedent for
+// tool-filter internals with no CLI-level exercise path.
+// ---------------------------------------------------------------------------
+
+function makeMultiHunkDiff(nHunks: number): string {
+  const hunks: string[] = []
+  for (let h = 0; h < nHunks; h++) {
+    hunks.push(`@@ -${h * 10 + 1},3 +${h * 10 + 1},3 @@`)
+    hunks.push(' context line')
+    hunks.push(`-old line ${h}`)
+    hunks.push(`+new line ${h}`)
+  }
+  return ['diff --git a/big.py b/big.py', '--- a/big.py', '+++ b/big.py', ...hunks].join('\n')
+}
+
+describe('GitFilter diff/show honors [bash_diff].max_hunks_per_file (not hardcoded 3)', () => {
+  // saveConfig does not create configPath()'s parent directory itself; make
+  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(configPath())
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('a configured max_hunks_per_file lower than the hardcoded default of 3 elides more hunks', () => {
+    const cfg = defaultConfig()
+    cfg.bash_diff.max_hunks_per_file = 2 // config.ts's validated floor is 1
+    saveConfig(cfg)
+
+    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
+    // With the hardcoded default of 3, this 6-hunk diff would elide 3 hunks
+    // ("+3 more hunks..."); a configured cap of 2 must elide 4 instead.
+    expect(out).toContain('[token-goat: +4 more hunks in this file elided]')
+    expect(out).not.toContain('+3 more hunks in this file elided')
+  })
+
+  it('an unconfigured (default) max_hunks_per_file of 10 keeps all hunks of a 6-hunk diff, unlike the old hardcoded 3', () => {
+    invalidateConfigCache()
+    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
+    expect(out).not.toContain('more hunks in this file elided')
+    expect(out).toContain('new line 0')
+    expect(out).toContain('new line 5')
   })
 })

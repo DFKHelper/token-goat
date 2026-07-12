@@ -74,6 +74,11 @@ export function walkProject(rootDir: string, opts: { excludeTests?: boolean } = 
   const languages: Record<string, number> = {}
   const stack: string[] = [rootDir]
   const excludeTests = opts.excludeTests === true
+  // indexing.skip_dirs (config.toml `[indexing] skip_dirs = [...]`, see config.ts's
+  // IndexingConfig) merges with the always-skipped SKIP_DIRS set above, so project-specific
+  // generated directories can be excluded from a non-git walk the same way they already are
+  // from a git-tracked `index` run (see isUnderSkipDir in parser.ts).
+  const extraSkipDirs = loadConfig().indexing.skip_dirs
 
   while (stack.length > 0 && files.length < MAX_FILES_SCANNED) {
     const dir = stack.pop()
@@ -89,7 +94,7 @@ export function walkProject(rootDir: string, opts: { excludeTests?: boolean } = 
     for (const entry of entries) {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue
+        if (SKIP_DIRS.has(entry.name) || extraSkipDirs.includes(entry.name)) continue
         if (entry.name.startsWith('.') && entry.name !== '.') {
           // Skip hidden dirs (dotfiles dirs) other than the root itself.
           continue
@@ -236,8 +241,10 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     }
   }
 
+
   return lines.join(String.fromCharCode(10))
 }
+
 /** A bullet line that isn't itself a heading, list continuation, or blank -- a lightweight, single-line markdown bullet. */
 const BULLET_LINE_RE = /^[-*]\s+\S.*$/
 /** Heading text naming an obviously-structural section (Architecture, File Structure, ...) whose bullets are inventory/reference content, not preference-shaped. */

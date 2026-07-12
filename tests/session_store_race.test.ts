@@ -20,14 +20,10 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { ROOT } from './helpers/bundle.js'
+import { tsxProcessArgs } from './helpers/tsx_process.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const WORKER = path.join(HERE, 'fixtures', 'session_race_worker.ts')
-// Spawn tsx's own CLI entry via `node`, not the node_modules/.bin/tsx(.cmd) shim -- the
-// shim is a shell script / batch file on POSIX/Windows respectively, and Node's spawn()
-// cannot exec those directly without shell:true.
-const TSX_CLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-
 let tmpHome: string
 
 beforeEach(() => {
@@ -45,7 +41,9 @@ afterEach(() => {
 /** Spawn one race worker process; resolves on a clean exit, rejects otherwise. */
 function runWorker(sessionId: string, prefix: string, count: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [TSX_CLI, WORKER, sessionId, prefix, String(count)], {
+    // Loading tsx through Node avoids the tsx CLI's IPC socket, which is denied
+    // in restricted macOS sandboxes even though the worker itself needs no IPC.
+    const child = spawn(process.execPath, tsxProcessArgs(WORKER, sessionId, prefix, String(count)), {
       cwd: ROOT,
       env: { ...process.env, TOKEN_GOAT_HOME: tmpHome },
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -179,11 +179,26 @@ describe('isPiInstalled / uninstallPi', () => {
     expect(uninstallPi({ local: true })).toBe(false)
   })
 
-  it('uninstalling the global scope leaves a local install untouched', () => {
+  // Regression: uninstallPi used to require the caller to pass the exact scope
+  // opts it was installed with -- since the CLI's --pi uninstall always forced
+  // { local: opts.local === true } (never left undefined), a plain
+  // `token-goat uninstall --pi` (no --local) could never clean up a --local
+  // install; the user had to remember to also pass --local, or it silently
+  // survived. uninstallPi() with no explicit local now cleans up wherever the
+  // extension actually is, both scopes at once.
+  it('uninstallPi() with no explicit scope removes both a global and a local install', () => {
+    const globalResult = installPi()
     const localResult = installPi({ local: true })
-    installPi()
-    uninstallPi()
-    expect(fs.existsSync(localResult.extensionPath)).toBe(true)
+    expect(uninstallPi()).toBe(true)
+    expect(fs.existsSync(globalResult.extensionPath)).toBe(false)
+    expect(fs.existsSync(localResult.extensionPath)).toBe(false)
+  })
+
+  it('uninstallPi({ local: true }) narrows removal to the local scope, leaving a global install untouched', () => {
+    const globalResult = installPi()
+    installPi({ local: true })
+    uninstallPi({ local: true })
+    expect(fs.existsSync(globalResult.extensionPath)).toBe(true)
   })
 })
 

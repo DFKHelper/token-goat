@@ -56,4 +56,25 @@ npm install
     expect(headings[0].text).toBe('Real')
     expect(headings[1].text).toBe('Another Real')
   })
+
+  it('should not close a fence on a line with a trailing info string', () => {
+    const content = `# Real Heading
+
+\`\`\`
+# Not a heading
+\`\`\`json
+# Actually inside the code block
+\`\`\`
+
+## Truly Next Heading`
+    const headings = extractMarkdownHeadings(content)
+
+    // The fence opened by the first ``` stays open through the ```json line
+    // (it has a trailing info string, so per CommonMark it cannot close the
+    // fence) and only closes on the second bare ``` line. Both # lines inside
+    // are code content, not headings.
+    expect(headings).toHaveLength(2)
+    expect(headings[0].text).toBe('Real Heading')
+    expect(headings[1].text).toBe('Truly Next Heading')
+  })
 })

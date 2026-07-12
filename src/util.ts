@@ -10,7 +10,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -245,10 +245,38 @@ export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array)
  * overwrite, so a bad merge or corrupt rewrite has a recovery copy. No-op if `p`
  * doesn't exist yet (nothing to back up).
  */
+// Caps how many timestamped backups pile up per file. backupFile runs on every install/
+// uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts,
+// gemini_install.ts, openclaw_install.ts), so a config directory a user re-installs into
+// repeatedly would otherwise accumulate one .bak.<timestamp> file forever.
+const MAX_BACKUPS_PER_FILE = 5
+
 export function backupFile(p: string): void {
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   copyFileSync(p, `${p}.bak.${stamp}`)
+  pruneOldBackups(p)
+}
+
+function pruneOldBackups(p: string): void {
+  const dir = path.dirname(p)
+  const prefix = `${path.basename(p)}.bak.`
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return
+  }
+  // ISO-with-dashes timestamps sort lexicographically in chronological order.
+  const backups = entries.filter((e) => e.startsWith(prefix)).sort()
+  const excess = backups.length - MAX_BACKUPS_PER_FILE
+  for (const stale of backups.slice(0, Math.max(0, excess))) {
+    try {
+      unlinkSync(path.join(dir, stale))
+    } catch {
+      // Best-effort cleanup; a failed unlink here shouldn't fail the caller's backup.
+    }
+  }
 }
 
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs
@@ -256,6 +284,16 @@ export function backupFile(p: string): void {
 // holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
+
+// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's
+// saveSessionState, config_commands.ts's `config set`) where the default LOCK_WAIT_MS can
+// plausibly be missed under real machine load even though no lock holder is actually stuck.
+// Falling back to an unprotected write on that miss reintroduces the exact clobber the lock
+// exists to prevent, precisely when contention (and therefore risk) is highest -- so these
+// call sites wait much longer instead. An actually-wedged holder still gets its lock stolen
+// well before this via withFileLock's own staleMs abandonment check, so this only lengthens
+// the wait for genuine, resolving contention, not a real hang.
+export const LOCK_WAIT_MS_HARDENED = 15_000
 
 // Heartbeat run in a separate OS process while the lock is held. fn() is synchronous and may
 // block the holder's own thread for its entire duration (slow sync disk I/O, a GC pause, a
@@ -405,6 +443,19 @@ export function basename(p: string): string {
   return path.basename(p)
 }
 
+/**
+ * Swap `filePath`'s extension for `format` (e.g. `'jpeg'` -> `.jpg`, `'webp'` -> `.webp`),
+ * preserving its directory and basename. Used after `shrinkImage()` re-encodes a capture to a
+ * different container format, so the extension actually reflects the bytes written -- writing
+ * JPEG bytes under a caller-requested `.png` path would otherwise silently mislabel the file.
+ */
+export function withExtension(filePath: string, format: string): string {
+  const ext = format === 'jpeg' ? '.jpg' : `.${format}`
+  const dir = path.dirname(filePath)
+  const base = path.basename(filePath, path.extname(filePath))
+  return path.join(dir, `${base}${ext}`)
+}
+
 /** Ensure text ends with a newline; no-op if already present. Extracted from 5 call sites. */
 export function ensureNewline(text: string): string {
   return text.endsWith('\n') ? text : text + '\n'
@@ -413,6 +464,41 @@ export function ensureNewline(text: string): string {
 /** Extract readable message string from unknown error type. Extracted from 6 call sites. */
 export function extractErrorMessage(err: unknown, fallback: string = ''): string {
   return err instanceof Error ? err.message : (fallback || String(err))
+}
+
+// Parses a numeric CLI flag value, rejecting anything but an exact integer literal (optional
+// leading minus, followed by digits) instead of letting a bare Number.parseInt/parseFloat accept
+// trailing garbage ("30x" -> 30) or exponential notation ("1e3" -> 1). Mirrors cli.ts's
+// requireInt/requireNonNegativeInt/requirePositiveInt for command modules cli.ts itself imports
+// (config_commands.ts, cache_session_commands.ts) — those can't import cli.ts back without a
+// circular dependency, so this shared, dependency-free copy lives in util.ts instead.
+export function requireStrictInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  return n
+}
+
+/** Same as {@link requireStrictInt}, plus a sign check: rejects a strictly-negative value. */
+export function requireNonNegativeStrictInt(flag: string, raw: string): number {
+  const n = requireStrictInt(flag, raw)
+  if (n < 0) {
+    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
+}
+
+/** Same as {@link requireStrictInt}, plus a sign check: rejects zero or a negative value. */
+export function requirePositiveStrictInt(flag: string, raw: string): number {
+  const n = requireStrictInt(flag, raw)
+  if (n <= 0) {
+    throw new Error(`${flag} must be a positive number, got: "${raw}"`)
+  }
+  return n
 }
 
 /** Check if a line is a code fence delimiter (``` or ~~~). Extracted from 7 call sites in skill_cache.ts. */

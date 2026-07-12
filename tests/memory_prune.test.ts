@@ -122,6 +122,56 @@ describe('pruneIndex', () => {
     expect(result.kept).toBe(1)
   })
 
+  // Regression (bug #243): path.join(memoryDir, target) mangles both a URL
+  // target and an absolute-path target into a bogus path that always reports
+  // as missing, so genuinely-valid entries were silently classified as dead
+  // and deleted with no confirmation. A URL is never resolvable locally (and
+  // is not "dead" by that measure); an absolute path must be existsSync-checked
+  // directly rather than joined onto memoryDir.
+  it('does not flag a URL-target entry as dead', () => {
+    const memoryMd = `- [Spec](https://github.com/example/repo/blob/main/SPEC.md)
+`
+    fs.writeFileSync(path.join(tempDir, 'MEMORY.md'), memoryMd)
+
+    const result = pruneIndex(tempDir)
+
+    expect(result.removedDead).toHaveLength(0)
+    expect(result.kept).toBe(1)
+    expect(result.changed).toBe(false)
+  })
+
+  it('does not flag an absolute-path-target entry as dead when the real file exists', () => {
+    const absDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-abs-'))
+    const absTarget = path.join(absDir, 'abs-note.md')
+    fs.writeFileSync(absTarget, 'content')
+    try {
+      const posixAbsTarget = absTarget.split(path.sep).join('/')
+      const memoryMd = `- [Abs Note](${posixAbsTarget})
+`
+      fs.writeFileSync(path.join(tempDir, 'MEMORY.md'), memoryMd)
+
+      const result = pruneIndex(tempDir)
+
+      expect(result.removedDead).toHaveLength(0)
+      expect(result.kept).toBe(1)
+      expect(result.changed).toBe(false)
+    } finally {
+      fs.rmSync(absDir, { recursive: true, force: true })
+    }
+  })
+
+  it('still flags a genuinely broken relative-path entry as dead', () => {
+    const memoryMd = `- [Missing](does-not-exist.md)
+`
+    fs.writeFileSync(path.join(tempDir, 'MEMORY.md'), memoryMd)
+
+    const result = pruneIndex(tempDir)
+
+    expect(result.removedDead).toHaveLength(1)
+    expect(result.removedDead[0]?.target).toBe('does-not-exist.md')
+    expect(result.changed).toBe(true)
+  })
+
   it('rewrites MEMORY.md when dry_run is false', () => {
     const memoryMd = `- [Entry 1](exists.md)
 - [Entry 2](missing.md)

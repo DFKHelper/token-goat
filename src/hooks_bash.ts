@@ -17,7 +17,7 @@ import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.j
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
+import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync } from 'node:fs'
@@ -439,7 +439,7 @@ function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonl
 
 // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
 const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
-  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell',
+  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell', 'apex', 'salesforce_metadata', 'salesforce_markup',
 ])
 
 // Builds the recall hint for a `sed -n 'N,Mp' file` read, tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range.
@@ -751,12 +751,18 @@ function extractCurlUrl(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
-/** Match a `token-goat symbol|read|section|skill-body|skill-compact <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact dedup on the raw remainder. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
+/** Match a `token-goat symbol|read|section|skill-body|skill-compact|map <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact/map dedup on the raw remainder (map's remainder is just an optional `--compact` flag, or empty). `stats` is intentionally excluded -- its output changes as the session progresses, so deduping it would suppress a legitimately different result. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
 function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; spec: string; filePath: string | null } | null {
-  const m = /^token-goat\s+(symbol|read|section|skill-body|skill-compact)\s+(.+)$/.exec(cmd)
+  const m = /^token-goat\s+(symbol|read|section|skill-body|skill-compact|map)(?:\s+(.*))?$/.exec(cmd)
   if (!m) return null
   const sub = m[1]!
-  const rest = m[2]!.trim()
+  const rest = (m[2] ?? '').trim()
+
+  // map takes no file::symbol spec, only an optional --compact flag (or nothing) -- dedup on the
+  // raw remainder, same as skill-body/skill-compact without a --path.
+  if (sub === 'map') {
+    return { sub, spec: rest, filePath: null }
+  }
 
   // skill-body/skill-compact take a name (or --path/--all flags), not a file::symbol spec.
   if (sub === 'skill-body' || sub === 'skill-compact') {
@@ -949,6 +955,7 @@ function isCompressibleSingleCommand(cmd: string): boolean {
   if (['&&', '||', '$(', '`'].some((op) => cmd.includes(op))) return false
   if (cmd.includes('|') || cmd.includes(';')) return false
   if (/[<>]/.test(cmd)) return false
+  if (hasBareBackgroundOrNewline(cmd)) return false
   return true
 }
 

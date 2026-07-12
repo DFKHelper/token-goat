@@ -343,6 +343,36 @@ describe('Stats rendering', () => {
     expect(result).not.toContain('By command')
   })
 
+  it('renderStats flags hints fired with zero direct command invocations', () => {
+    const stats = {
+      ...minimalStats,
+      by_command: [],
+      by_source: [{ source: 'hint', bytes: 9200000, tokens: 2423072, events: 723 }],
+    }
+    const result = renderStats(stats)
+    expect(result).toContain('0 direct commands')
+    expect(result).toContain('723')
+    expect(result).toContain('hint(s) fired but not acted on')
+  })
+
+  it('renderStats stays silent about hints when direct commands were used', () => {
+    const stats = {
+      ...minimalStats,
+      by_source: [
+        { source: 'hint', bytes: 9200000, tokens: 2423072, events: 723 },
+        { source: 'read', bytes: 30000, tokens: 3000, events: 60 },
+      ],
+    }
+    const result = renderStats(stats)
+    expect(result).not.toContain('hint(s) fired but not acted on')
+  })
+
+  it('renderStats does not flag hints when by_source has no hint entries at all', () => {
+    const stats = { ...minimalStats, by_command: [] }
+    const result = renderStats(stats)
+    expect(result).not.toContain('hint(s) fired but not acted on')
+  })
+
   it('renderStats handles zero deltas', () => {
     const stats = { ...minimalStats }
     stats.totals.events_delta = null

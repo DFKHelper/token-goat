@@ -75,4 +75,5 @@ export function postEditHandler(event: HookEvent): HookOutput {
 
 registerHook('post_tool_use', postEditHandler, { toolName: 'Write' })
 registerHook('post_tool_use', postEditHandler, { toolName: 'Edit' })
+registerHook('post_tool_use', postEditHandler, { toolName: 'MultiEdit' })
 registerHook('post_tool_use', postEditHandler, { toolName: 'NotebookEdit' })

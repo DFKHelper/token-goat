@@ -10,15 +10,18 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
-import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
+import { appendDirtyPath } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
@@ -29,6 +32,7 @@ import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
+import { recordStat } from './stats.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -57,8 +61,47 @@ function readFileText(p: string): string | null {
   }
 }
 
+/**
+ * Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by
+ * `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by
+ * line range instead of rendering blank. Shared by runSymbol, runRead, and runBrief so all
+ * three read surfaces resolve empty-body symbols the same way.
+ */
+function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number }): string {
+  if (entry.body !== '') return entry.body
+  const source = readFileText(entry.filePath)
+  if (source === null) return entry.body
+  return source
+    .split(/\r?\n/)
+    .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
+    .join('\n')
+}
+
+// The one-line warning prepended by staleWarning() when the on-disk file has changed since the
+// index last saw it. Reuses fingerprintFile/files.sha -- the same sha the worker's dirty-queue
+// gate (makeIndexer in worker.ts) compares against -- so "stale" here means exactly what it means
+// there, rather than reinventing a second freshness signal.
+const STALE_WARNING =
+  "⚠ STALE: index is older than the file on disk (worker hasn't reindexed yet — retry shortly, or read the file directly)"
+
+/**
+ * Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk
+ * SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, or
+ * '' when they match, the file isn't indexed, or the on-disk file can't be read. Cheap by design:
+ * a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/
+ * skeleton/symbol lookup.
+ */
+function staleWarning(resolvedPath: string): string {
+  const entry = getFileEntry(resolvedPath)
+  if (entry === null || entry.sha === '') return ''
+  const diskSha = fingerprintFile(resolvedPath)
+  if (diskSha === null || diskSha === entry.sha) return ''
+  return `${STALE_WARNING}\n`
+}
+
 function emit(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const out = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(out))
 }
 
 function emitErr(text: string): void {
@@ -93,6 +136,39 @@ function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { items: [...items], truncated: false, totalCount: items.length }
   return capJsonRows(items, cfg.overflow_guard.max_tokens)
+}
+
+/**
+ * Sum of on-disk byte sizes for a set of file paths, deduplicated so a command that matched
+ * several symbols/refs/hits in the same file only counts that file's size once. Used as the
+ * "full source" side of a stat's bytes-saved calculation. Best-effort: a path that no longer
+ * exists on disk (stale index entry) or can't be stat'd contributes 0 rather than throwing --
+ * stat recording must never turn a successful read into a hard error.
+ */
+function sumFileSizes(filePaths: Iterable<string>): number {
+  let total = 0
+  for (const fp of new Set(filePaths)) {
+    try {
+      total += fs.statSync(fp).size
+    } catch {
+      // Stale index entry pointing at a deleted/moved file — contributes nothing.
+    }
+  }
+  return total
+}
+
+/**
+ * Records a surgical-read stat event: bytes saved is the full on-disk source size minus the
+ * emitted slice, floored at 1 (mirrors image_shrink.ts's recordStat call and the retired
+ * Python read_commands.py's `max(1, saved // 3 + 1)` -- this repo drops the //3 constant-token
+ * fudge factor in favor of the same bytes/4 approximation image_shrink already uses, for
+ * consistency across every recordStat call site). Fail-soft via recordStat itself: never
+ * blocks or fails a read on a stats-recording error.
+ */
+function recordReadStat(kind: string, fullSourceBytes: number, emittedText: string, detail?: string): void {
+  const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
+  const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
+  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4), undefined, detail)
 }
 
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
@@ -143,15 +219,33 @@ export interface SymbolOptions {
   limit?: number
   json?: boolean
   context?: number
+  /**
+   * Project root to scope the search to. Defaults to `process.cwd()`; same field name as
+   * {@link SemanticOptions.projectRoot}. When `file` is a relative path, this is the base it
+   * resolves against. When no `file` filter is given, this also scopes a bare-name search to
+   * the given project instead of matching a same-named symbol anywhere across the machine-wide
+   * index -- relevant for callers (e.g. an MCP server) whose cwd is not the workspace root.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat symbol <name>``. */
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether the symbol exists -- silently reporting "no matches" for a
+  // symbol that's actually indexed. Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+  }
+
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
-  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file)
+  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
+  // path there's nothing left to disambiguate across projects.
+  if (opts.file === undefined && opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
 
   const results = querySymbols(queryOpts)
 
@@ -159,29 +253,27 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     return { text: `No matches for '${opts.name ?? '*'}'`, code: 1 }
   }
 
+  const fullSourceBytes = sumFileSizes(results.map((s) => s.filePath))
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+    return { text, code: 0 }
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
     const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
-    let body = sym.body
-    if (body === '') {
-      const source = readFileText(sym.filePath)
-      if (source !== null) {
-        body = source
-          .split(/\r?\n/)
-          .slice(Math.max(0, sym.lineStart - 1), sym.lineEnd)
-          .join('\n')
-      }
-    }
+    const body = resolveBody(sym)
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
-  return { text: guardText(blocks.join('\n\n'), 'symbol'), code: 0 }
+  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
+  const text = guardText(warning + blocks.join('\n\n'), 'symbol')
+  recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+  return { text, code: 0 }
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -191,6 +283,14 @@ export interface ReadOptions {
   json?: boolean
   contextLines?: number
   forceRefresh?: boolean
+  /**
+   * Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name
+   * as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g.
+   * an MCP server launched from an opaque directory) should pass the actual workspace root
+   * explicitly -- otherwise a bare/partial file spec can resolve against the wrong project,
+   * or an ambiguous symbol name can match a same-named definition in an unrelated project.
+   */
+  projectRoot?: string
 }
 
 function parseReadSpec(spec: string): { file: string; symbol?: string } {
@@ -333,13 +433,38 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   return lines.join('\n')
 }
 
-function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResolution {
+/**
+ * After a `--force-refresh` reparse (`indexFileSync`), enqueue the file to the dirty queue so
+ * the background worker re-embeds it on its next drain.
+ *
+ * `indexFileSync` -> `writeParseResult` deletes and reinserts the file's `files` row without an
+ * `embed_sha` value, so a forced synchronous reparse here always wipes `embed_sha` to NULL --
+ * without this enqueue, nothing would ever re-stamp it and `token-goat semantic` would keep
+ * serving stale embedded content (or silently stop matching this file at all) until some
+ * unrelated future edit happened to touch it again. Mirrors what `cmdReplace` (cli.ts) already
+ * does after its own write: appending to the dirty queue is enough, since the worker's own
+ * embed-freshness gate (`isEmbedFresh`) will see the wiped `embed_sha` as stale and re-embed on
+ * its next drain -- semantic search tolerates that lag the same way it tolerates the worker's
+ * normal incremental drain latency. Fail-soft: a queue-append failure must not turn a successful
+ * force-refresh read into a hard error.
+ */
+function enqueueDirtyPathSafe(filePath: string): void {
+  try {
+    appendDirtyPath(filePath)
+  } catch {
+    // Fail-soft: the reparse already landed either way, just not re-embedded until the next
+    // `token-goat index` or edit touches this file again.
+  }
+}
+
+function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') return { kind: 'none' }
 
-  const resolved = resolveIndexPath(file)
+  const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
+    enqueueDirtyPathSafe(resolved)
   }
 
   // Collapse a raw candidate list into a final resolution. Distinct definitions are keyed by
@@ -391,7 +516,11 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResoluti
     // codebase (index_prune.ts, walk_index.ts, worker.ts) — this filter runs in plain JS, not
     // SQL, so it is not covered by querySymbols' own COLLATE NOCASE and needs its own fold.
     const foldedFile = foldPath(file)
-    candidates = querySymbols({ name: lookupName, limit: 50 }).filter((s) => {
+    candidates = querySymbols({
+      name: lookupName,
+      limit: 50,
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    }).filter((s) => {
       const foldedFilePath = foldPath(s.filePath)
       return (
         foldedFilePath === foldedFile ||
@@ -406,7 +535,11 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResoluti
   // each with their own `refresh`), narrow to candidates whose line range falls inside a
   // symbol named symBase in the same file — otherwise the wrong class's method can win.
   if (methodName !== undefined && candidates.length > 1) {
-    const containers = querySymbols({ name: symBase, limit: 50 })
+    const containers = querySymbols({
+      name: symBase,
+      limit: 50,
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    })
     // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
     // class symbol with lineEnd === lineStart (single-line span at the class header, not the
     // full body), so the line-containment check below always misses for them -- they instead
@@ -446,7 +579,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text: guardText(text, 'symbol'), code: 0 }
   }
 
-  const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh)
+  const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh, opts.projectRoot)
 
   if (resolution.kind === 'ambiguous') {
     // Genuine same-file ambiguity (a bare name matching several classes' methods, or a
@@ -460,35 +593,32 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 
   if (resolution.kind === 'none') {
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
-    const resolved = resolveIndexPath(file)
+    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
     return { text: messages.join('\n'), code: 1 }
   }
 
   const match = resolution.entry
+  const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
-    return { text: JSON.stringify(match, null, 2), code: 0 }
+    const text = JSON.stringify(match, null, 2)
+    recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+    return { text, code: 0 }
   }
 
-  let body = match.body
-  if (body === '') {
-    const source = readFileText(match.filePath)
-    if (source !== null) {
-      body = source
-        .split(/\r?\n/)
-        .slice(Math.max(0, match.lineStart - 1), match.lineEnd)
-        .join('\n')
-    }
-  }
+  const body = resolveBody(match)
 
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
     body,
   ]
-  return { text: guardText(trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
+  const warning = staleWarning(match.filePath)
+  const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol')
+  recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+  return { text, code: 0 }
 }
 
 // ---- section ----------------------------------------------------------------
@@ -496,6 +626,13 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 export interface SectionOptions {
   spec: string
   json?: boolean
+  /**
+   * Project root a relative file spec resolves against. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative file spec would otherwise
+   * resolve on disk relative to the wrong directory.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat section "file::Heading"``. */
@@ -504,36 +641,46 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   if (colonIdx === -1) {
     return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
   }
-  const filePath = opts.spec.slice(0, colonIdx)
+  const specFilePath = opts.spec.slice(0, colonIdx)
+  // Only resolve against projectRoot when explicitly given and the spec's file part is
+  // relative -- an absolute path, or the no-projectRoot default, stays byte-identical to the
+  // pre-existing behavior (readSection/listAllSections resolve a relative path against
+  // process.cwd() themselves, same as the CLI always has).
+  const filePath =
+    opts.projectRoot !== undefined && !path.isAbsolute(specFilePath)
+      ? path.resolve(opts.projectRoot, specFilePath)
+      : specFilePath
   const heading = opts.spec.slice(colonIdx + 2)
 
   const result = readSection(filePath, heading)
   if (result === null) {
     const messages = [`Section '${heading}' not found in '${filePath}'`]
     const available = listAllSections(filePath)
-    if (available.length > 0) {
-      const lines = ['Available sections:']
-      for (const s of available) {
-        lines.push(`  - ${s}`)
-      }
-      messages.push(lines.join('\n'))
-    }
+    if (available.length > 0) messages.push(didYouMean(available))
     return { text: messages.join('\n'), code: 1 }
   }
 
+  // A prefix-redirected match (readSection resolved a different heading than the one asked
+  // for) is recorded as section_replacement rather than a plain section_read, mirroring the
+  // "replacement" framing used by read_replacement for a substituted read elsewhere in this
+  // file.
+  const kind = result.redirectedFrom !== undefined ? 'section_replacement' : 'section_read'
+  const fullSourceBytes = sumFileSizes([filePath])
+
   if (opts.json === true) {
-    return { text: JSON.stringify(result, null, 2), code: 0 }
+    const text = JSON.stringify(result, null, 2)
+    recordReadStat(kind, fullSourceBytes, text, heading)
+    return { text, code: 0 }
   }
 
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  return {
-    text: guardText(
-      `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
-      'heading',
-    ),
-    code: 0,
-  }
+  const text = guardText(
+    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
+    'heading',
+  )
+  recordReadStat(kind, fullSourceBytes, text, heading)
+  return { text, code: 0 }
 }
 
 // ---- refs -------------------------------------------------------------------
@@ -557,6 +704,16 @@ function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: 
 
 /** Handle ``token-goat refs <spec>``. A comma-separated spec (`a,b,c` or `file::a,b`) merges the references of several symbols into one call, each group headed by its symbol name; a single symbol keeps the original behavior verbatim via {@link runRefsSingle}. */
 export function runRefs(opts: RefsOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether references exist -- silently reporting "no references found"
+  // for a symbol that's actually referenced. Reject it explicitly instead of querying with it.
+  // Both callers (this multi-symbol path and the single-symbol runRefsSingle it delegates to)
+  // are covered by this one check since runRefsSingle is never called from outside this file.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
@@ -566,6 +723,7 @@ export function runRefs(opts: RefsOptions): number {
   const jsonOut: Record<string, { items: RefEntry[]; truncated: boolean; totalCount: number }> = {}
   let anyFound = false
   const lines: string[] = []
+  const refFilePaths: string[] = []
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to
@@ -575,6 +733,7 @@ export function runRefs(opts: RefsOptions): number {
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
     const results = queryRefs(queryOpts)
     if (results.length > 0) anyFound = true
+    refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
       const capped = guardJsonRows(results)
       jsonOut[sym] = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
@@ -591,11 +750,16 @@ export function runRefs(opts: RefsOptions): number {
       for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
     }
   }
+  const fullSourceBytes = sumFileSizes(refFilePaths)
   if (opts.json === true) {
-    emit(JSON.stringify(jsonOut, null, 2))
+    const text = JSON.stringify(jsonOut, null, 2)
+    emit(text)
+    if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
     return anyFound ? 0 : 1
   }
-  emitGuarded(lines.join('\n'), 'symbol')
+  const text = lines.join('\n')
+  emitGuarded(text, 'symbol')
+  if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
   return anyFound ? 0 : 1
 }
 
@@ -616,10 +780,14 @@ function runRefsSingle(opts: RefsOptions): number {
     return 1
   }
 
+  const fullSourceBytes = sumFileSizes(results.map((r) => r.filePath))
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    emit(JSON.stringify(payload, null, 2))
+    const text = JSON.stringify(payload, null, 2)
+    emit(text)
+    recordReadStat('symbol_read', fullSourceBytes, text, symName)
     return 0
   }
 
@@ -627,7 +795,9 @@ function runRefsSingle(opts: RefsOptions): number {
     opts.callers === true
       ? renderCallerGroups(results)
       : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
-  emitGuarded(lines.join('\n'), 'symbol')
+  const text = lines.join('\n')
+  emitGuarded(text, 'symbol')
+  recordReadStat('symbol_read', fullSourceBytes, text, symName)
   return 0
 }
 
@@ -659,6 +829,13 @@ export interface SkeletonOptions {
   minLines?: number
   forceRefresh?: boolean
   stats?: boolean
+  /**
+   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
+   * to the wrong absolute index key and silently match nothing.
+   */
+  projectRoot?: string
 }
 
 /**
@@ -678,9 +855,10 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file)
+  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
+    enqueueDirtyPathSafe(resolved)
   }
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
@@ -694,7 +872,11 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       : symbols
 
   const refCounts =
-    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
+    opts.stats === true
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
+      : undefined
+
+  const fullSourceBytes = sumFileSizes([resolved])
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -708,7 +890,9 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
     }))
     const capped = guardJsonRows(rows)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('stub_view', fullSourceBytes, text, opts.file)
+    return { text, code: 0 }
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
@@ -721,7 +905,9 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : ''
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
+  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  recordReadStat('stub_view', fullSourceBytes, text, opts.file)
+  return { text, code: 0 }
 }
 
 // ---- outline ----------------------------------------------------------------
@@ -732,13 +918,21 @@ export interface OutlineOptions {
   minLines?: number
   forceRefresh?: boolean
   stats?: boolean
+  /**
+   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
+   * to the wrong absolute index key and silently match nothing.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat outline file``. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file)
+  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
+    enqueueDirtyPathSafe(resolved)
   }
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
@@ -752,7 +946,11 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       : symbols
 
   const refCounts =
-    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
+    opts.stats === true
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
+      : undefined
+
+  const fullSourceBytes = sumFileSizes([resolved])
 
   if (opts.json === true) {
     const rows =
@@ -765,7 +963,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : filtered
     const capped = guardJsonRows(rows)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('outline', fullSourceBytes, text, opts.file)
+    return { text, code: 0 }
   }
 
   const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
@@ -780,10 +980,44 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
-  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
+  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  recordReadStat('outline', fullSourceBytes, text, opts.file)
+  return { text, code: 0 }
 }
 
 // ---- csv / pdf / screenshot --------------------------------------------------
+
+// Mirrors cli.ts's requireNonNegativeInt (same regex-only-integer validation plus a sign
+// check) so csv's `--head` gets the same error behavior as xlsx's `--head`: a clean thrown
+// error on a non-numeric or negative value instead of `parseInt` silently producing NaN
+// (which downstream `.slice(0, NaN)` turns into "0 rows returned") or a negative count
+// (which `.slice(0, -N)` silently reinterprets as "all but the last N rows").
+function requireNonNegativeInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
+}
+
+// Same numeric parse as requireNonNegativeInt, plus a strictly-positive check. Used for
+// screenshot --width/--height: parseInt's bare `NaN` result isn't nullish, so it survives the
+// `?? 1280`-style fallback in takeScreenshot and reaches Chrome DevTools Protocol, producing an
+// opaque `Protocol error (Emulation.setDeviceMetricsOverride)` failure after a full browser
+// launch. Validating up front fails fast with a clear CLI error before that launch happens.
+function requirePositiveInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${flag} must be a positive number, got: "${raw}"`)
+  }
+  return n
+}
 
 interface CsvQueryCliOptions {
   file: string
@@ -809,7 +1043,13 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
         .filter(Boolean)
     : undefined
 
-  const head = opts.head !== undefined ? parseInt(opts.head, 10) : undefined
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(e instanceof Error ? e.message : String(e))
+    return 1
+  }
 
   try {
     const wheres = parseWhereSpecs(opts.where)
@@ -825,7 +1065,9 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       return 0
     }
     if (opts.json === true) {
-      emit(JSON.stringify(result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))))
+      const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+      const capped = guardJsonRows(rowsJson)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
     } else {
       emit(formatCsvTable(result))
     }
@@ -907,8 +1149,8 @@ export async function runScreenshot(
 ): Promise<string> {
   const screenshotOpts: Parameters<typeof takeScreenshot>[2] = {}
   if (opts.executablePath !== undefined) screenshotOpts.executablePath = opts.executablePath
-  if (opts.width !== undefined) screenshotOpts.width = parseInt(opts.width, 10)
-  if (opts.height !== undefined) screenshotOpts.height = parseInt(opts.height, 10)
+  if (opts.width !== undefined) screenshotOpts.width = requirePositiveInt('--width', opts.width)
+  if (opts.height !== undefined) screenshotOpts.height = requirePositiveInt('--height', opts.height)
   if (opts.fullPage !== undefined) screenshotOpts.fullPage = opts.fullPage
   const result = await takeScreenshot(url, destPath, screenshotOpts)
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
@@ -933,6 +1175,14 @@ interface BriefResult {
  * and its containing doc section (if the file has heading structure) into one response --
  * cutting the common "understand this function" pattern from 2-3 round-trips to 1. */
 export function runBrief(opts: BriefOptions): number {
+  // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently
+  // slice the caller list down to zero entries instead of surfacing a clear "you asked for
+  // nothing" error, consistent with every other --limit flag in this codebase.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const resolution = resolveSymbolSpec(opts.spec)
   if (resolution.kind === 'ambiguous') {
     emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
@@ -944,21 +1194,24 @@ export function runBrief(opts: BriefOptions): number {
   }
   const match = resolution.entry
 
-  // Query with resolveCallers's own (much larger) default limit so we learn the true
-  // caller count, then apply the display limit ourselves — otherwise the DB query and
-  // the display slice are capped at the same value and the "more elided" message can
-  // never fire even when far more callers exist than are shown.
-  const callers = resolveCallers(match.name)
+  // resolveCallers(name) with no explicit limit still applies its own internal default cap
+  // (500, in graph_commands.ts's queryRefs call) -- so callers.length is NOT the true count
+  // once more than 500 references exist, despite what an earlier version of this comment
+  // claimed. Get the real uncapped total via a separate COUNT(*) query (queryRefCounts,
+  // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
+  const callers = resolveCallers(match.name, undefined, match.filePath)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const totalCallers = queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
   const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd)
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
-  const truncated = callers.length > shown.length
+  const truncated = totalCallers > shown.length
 
   if (opts.json === true) {
     const result: BriefResult = {
       symbol: match,
       callers: shown,
-      totalCallers: callers.length,
+      totalCallers,
       truncated,
       section,
     }
@@ -966,20 +1219,21 @@ export function runBrief(opts: BriefOptions): number {
     return 0
   }
 
+  const body = resolveBody(match)
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     `# ${match.name}  ${match.kind}  ${match.filePath}:${match.lineStart}-${match.lineEnd}`,
-    `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
-    match.body,
+    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
+    body,
     '',
   ]
 
-  lines.push(`Callers (${callers.length}):`)
+  lines.push(`Callers (${totalCallers}):`)
   for (const c of shown) {
     lines.push(`  ${c.caller}\t${c.file}:${c.line}`)
   }
   if (truncated) {
-    lines.push(`  ...(${callers.length - shown.length} more elided)`)
+    lines.push(`  ...(${totalCallers - shown.length} more elided)`)
   }
 
   if (section !== null) {
@@ -1001,10 +1255,18 @@ export interface FindOptions {
 
 /** Handle ``token-goat find <pattern>``. */
 export function runFind(opts: FindOptions): number {
+  // A limit of 0 (or negative) would make the `.slice(0, opts.limit)` below always return zero
+  // files regardless of whether any match -- silently reporting "no indexed files match" for a
+  // pattern that's actually indexed. Reject it explicitly instead of slicing with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: process.cwd() })
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: resolveProjectRoot({ project: process.cwd() }) })
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
@@ -1049,7 +1311,8 @@ export function runListSections(opts: ListSectionsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(sections, null, 2))
+    const capped = guardJsonRows(sections)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
@@ -1171,7 +1434,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
       return 0
     }
     if (opts.json === true) {
-      emit(JSON.stringify(allSymbols, null, 2))
+      const capped = guardJsonRows(allSymbols)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
       return 0
     }
     for (const s of allSymbols) {
@@ -1181,7 +1445,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(changedFiles, null, 2))
+    const capped = guardJsonRows(changedFiles)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
   for (const f of changedFiles) {
@@ -1324,6 +1589,46 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// Splits off a trailing inline comment (# or ;) from a TOML/INI value, but only when the
+// marker occurs outside a quoted region -- so `"value # not a comment"` keeps its full
+// quoted content, while `value # real comment` (unquoted) gets truncated at the marker.
+// This mirrors the intent of the section-header comment stripping above, but is quote-aware
+// so it doesn't corrupt quoted values that legitimately contain '#' or ';'.
+function stripInlineComment(s: string): string {
+  let inQuote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      inQuote = ch
+      continue
+    }
+    if (ch === '#' || ch === ';') {
+      return s.slice(0, i)
+    }
+  }
+  return s
+}
+
+// Strips a leading+trailing quote pair from a value only when both ends are present and
+// match the same quote character -- e.g. `"value"` -> `value`, but `O'Brien's` (a legitimate
+// trailing apostrophe with no matching leading quote) and `"foo'` (mismatched quote
+// characters) are both left untouched, since stripping either end independently would
+// silently corrupt the value.
+function stripPairedQuotes(s: string): string {
+  if (s.length >= 2) {
+    const first = s[0]
+    const last = s[s.length - 1]
+    if ((first === '"' || first === "'") && first === last) {
+      return s.slice(1, -1)
+    }
+  }
+  return s
+}
+
 /**
  * Resolve a scalar value at a dotted path in a YAML document, line-based (no YAML
  * library). Handles flat keys, indentation-nested keys at any consistent indent
@@ -1348,10 +1653,13 @@ function lookupYaml(lines: readonly string[], key: string): string | null {
     const k = trimmed.slice(0, colon).trim()
     if (k !== parts[depth]) continue
     if (depth === parts.length - 1) {
-      return trimmed
-        .slice(colon + 1)
-        .trim()
-        .replace(/^["']|["']$/g, '')
+      // Same paired-quote-stripping logic as the TOML/INI path below: YAML's own quoting
+      // rules (doubled-quote escapes, flow scalars, etc.) are already out of scope per this
+      // function's doc comment, but the independent-single-end stripping this replaced had
+      // the identical bug -- e.g. `name: O'Brien's` lost its trailing apostrophe. Paired
+      // stripping is strictly safer (it only strips when both ends match), so unifying the
+      // fix here cannot regress any previously-correct case.
+      return stripPairedQuotes(trimmed.slice(colon + 1).trim())
     }
     parentIndent = indent
     childIndent = -1
@@ -1470,7 +1778,8 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     // embedding in a RegExp. `\s*` (not `\s+`) preserves the zero-space case.
     if (new RegExp(`^${escapeRegExp(leafKey)}\\s*=`).test(trimmed)) {
       const eqIdx = trimmed.indexOf('=')
-      emit(trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, ''))
+      const rawValue = stripInlineComment(trimmed.slice(eqIdx + 1)).trim()
+      emit(stripPairedQuotes(rawValue))
       return 0
     }
   }
@@ -1559,14 +1868,20 @@ export function runExports(opts: ImportsExportsOptions): number {
     return 0
   }
 
+  const fullSourceBytes = sumFileSizes([opts.file])
+
   if (opts.json === true) {
-    emit(JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2))
+    const jsonText = JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2)
+    emit(jsonText)
+    recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
     return 0
   }
 
-  for (const n of names) {
-    emit(`${kindOf(n).padEnd(10)} ${n}`)
+  const outLines = names.map((n) => `${kindOf(n).padEnd(10)} ${n}`)
+  for (const line of outLines) {
+    emit(line)
   }
+  recordReadStat('exports', fullSourceBytes, outLines.join('\n'), opts.file)
   return 0
 }
 
@@ -1666,7 +1981,8 @@ export function runImports(opts: ImportsExportsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(imports, null, 2))
+    const capped = guardJsonRows(imports)
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
@@ -1748,7 +2064,28 @@ interface SemanticOptions {
 // no-matches miss instead of returning a code. The "token-goat: " prefix is baked into the
 // returned text here so the CLI's output stays byte-identical to that historical path.
 async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
+  // Same reasoning as runSymbol above: a limit of 0 (or negative) would silently query for
+  // zero results instead of surfacing a clear "you asked for nothing" error.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+  }
+
   const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
+
+  // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise
+  // searchSemantic silently finds nothing under the bogus root and this function falls back to
+  // the (now project-scoped) FTS search using that same bogus root, which also finds nothing,
+  // and the caller gets a plain "no matches" instead of a clear signal that the scope they asked
+  // for doesn't exist. Fail loudly instead of silently widening/losing scope.
+  if (opts.projectRoot !== undefined) {
+    if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
+      return {
+        text: `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`,
+        code: 1,
+      }
+    }
+  }
+  const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
 
   // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
   // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
@@ -1767,25 +2104,29 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     overFetchForMerge,
     undefined,
     undefined,
-    opts.projectRoot ?? process.cwd(),
+    rootDir,
   )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
     const blocks = hits.map(
       (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
     )
-    return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
+    const text = guardText(blocks.join('\n\n'), 'semantic')
+    recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
+    return { text, code: 0 }
   }
 
   // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
   // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
   // distance threshold.
-  const results = searchSymbolsFts(query, n)
+  const results = searchSymbolsFts(query, n, undefined, rootDir)
   if (results.length === 0) {
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
   }
   const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
-  return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
+  const text = guardText(blocks.join('\n\n'), 'semantic')
+  recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
+  return { text, code: 0 }
 }
 
 export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections, runSemantic }

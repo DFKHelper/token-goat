@@ -52,14 +52,31 @@ function commandsFor(settings: GeminiSettingsShape, event: string): string[] {
 }
 
 let TMP: string
+let originalArgv1: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gemini-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
+  // installGemini/isGeminiInstalled/uninstallGemini identify their own hook commands by
+  // checking whether process.argv[1] (the entry path baked into the written command) contains
+  // a "token-goat" path segment (GEMINI_ENTRY_PATH_MARKER_PATTERN in gemini_install.ts) -- a
+  // real npm install always places the entry under a `node_modules/token-goat/...` directory,
+  // so this is reliable in production. Under vitest's fork pool, though, process.argv[1] is
+  // tinypool's own internal worker script (node_modules/tinypool/dist/entry/process.js), which
+  // has nothing to do with token-goat's identity -- whether it happens to also satisfy the
+  // marker depends entirely on whether the repo's checkout *directory* incidentally contains
+  // "token-goat" somewhere in its path (true for this repo's usual checkout locations, false
+  // for e.g. an arbitrarily-named scratch clone), making the suite pass or fail for reasons
+  // unrelated to the code under test. Stub argv[1] to a realistic token-goat entry path so
+  // these tests exercise real install/uninstall behavior deterministically, independent of
+  // where the repo happens to be checked out.
+  originalArgv1 = process.argv[1]
+  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
 })
 
 afterEach(() => {
+  process.argv[1] = originalArgv1
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
@@ -134,6 +151,36 @@ describe('installGemini', () => {
     }
   })
 
+  // Regression: a token-goat hook command bakes in process.argv[1] (the running
+  // entry path) as a trailing arg. That path goes stale whenever the entry
+  // moves -- an npm reinstall, switching from a local checkout to a global
+  // install, etc. installGemini used to only check whether a token-goat entry
+  // was PRESENT (groupHasTokenGoat), never whether its baked path was still
+  // CURRENT, so a stale entry was treated as already installed and left
+  // pointing at a path that may no longer exist, forever.
+  it('repairs a stale baked entry path in an existing token-goat hook command instead of leaving it in place', () => {
+    installGemini()
+    const p = geminiSettingsPath()
+    // JSON.stringify doubles each backslash in a string, so a Windows entry
+    // path's on-disk representation has \\ where process.argv[1] has \.
+    const jsonEscapedEntryPath = process.argv[1]!.replace(/\\/g, '\\\\')
+    const entryPathPattern = new RegExp(jsonEscapedEntryPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+    const staleContent = fs.readFileSync(p, 'utf8').replace(entryPathPattern, '/some/stale/old-install-path/token-goat.mjs')
+    fs.writeFileSync(p, staleContent)
+    expect(readSettings().hooks?.['BeforeTool']).toBeDefined()
+
+    const result = installGemini()
+
+    expect(result.alreadyInstalled).toBe(false)
+    const settings = readSettings()
+    for (const event of ['BeforeTool', 'AfterTool', 'PreCompress']) {
+      for (const command of commandsFor(settings, event)) {
+        expect(command).not.toContain('old-install-path')
+        expect(command).toContain(`"${process.argv[1]}"`)
+      }
+    }
+  })
+
   it('preserves pre-existing unrelated settings.json keys and hook entries', () => {
     const p = geminiSettingsPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
@@ -201,6 +248,51 @@ describe('installGemini', () => {
     expect(() => installGemini()).toThrow(GeminiSettingsParseError)
     expect(() => installGemini()).toThrow(/does not contain a JSON object/)
     expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
+  })
+
+  it('upgrades a legacy bare "token-goat hook <event>" command to the current exec-path-hardened form on re-install, instead of treating it as already installed (regression: installGemini used to gate on isGeminiTokenGoatCommand, which also matches the legacy form, so a pre-hardening install never got upgraded)', () => {
+    const p = geminiSettingsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const legacySettings = {
+      hooks: {
+        BeforeTool: [
+          { matcher: '^(run_shell_command)$', hooks: [{ type: 'command', command: 'token-goat hook pre_tool_use' }] },
+        ],
+        AfterTool: [
+          { matcher: '^(run_shell_command)$', hooks: [{ type: 'command', command: 'token-goat hook post_tool_use' }] },
+        ],
+        PreCompress: [{ hooks: [{ type: 'command', command: 'token-goat hook pre_compact' }] }],
+      },
+    }
+    fs.writeFileSync(p, JSON.stringify(legacySettings, null, 2))
+
+    const result = installGemini()
+    expect(result.alreadyInstalled).toBe(false)
+
+    const settings = readSettings()
+    const allCommands = [
+      ...commandsFor(settings, 'BeforeTool'),
+      ...commandsFor(settings, 'AfterTool'),
+      ...commandsFor(settings, 'PreCompress'),
+    ]
+    // The legacy bare command must be gone entirely -- upgraded in place, not left as a dead duplicate.
+    expect(allCommands.some((c) => c === 'token-goat hook pre_tool_use')).toBe(false)
+    expect(allCommands.some((c) => c === 'token-goat hook post_tool_use')).toBe(false)
+    expect(allCommands.some((c) => c === 'token-goat hook pre_compact')).toBe(false)
+    // Every remaining matcher's ^(run_shell_command)$ / no-matcher group now carries the current, hardened form.
+    for (const command of commandsFor(settings, 'BeforeTool')) {
+      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(`"${process.argv[1]}"`)
+    }
+    for (const command of commandsFor(settings, 'AfterTool')) {
+      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(`"${process.argv[1]}"`)
+    }
+    // Not asserting isGeminiInstalled() here: it requires process.argv[1] to
+    // literally contain a "token-goat" path segment, which the test runner's
+    // own entry path does not -- a pre-existing, unrelated environment
+    // limitation also hit by the "fresh install" test above, not something
+    // this fix changes.
   })
 })
 

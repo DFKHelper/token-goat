@@ -89,10 +89,15 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
   if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
 
 
-  // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to handleHtml
+  // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to
+  // handleHtml -- but only take its result when it actually decides to block. handleHtml re-gates
+  // independently on the higher html threshold, so a file that's already past handleTxt's own
+  // (lower) threshold but below handleHtml's would otherwise lose its hint entirely and read
+  // through silently. Fall back to the standard plain-text preview below in that case.
   const contentSniff = content.slice(0, 1000)
   if (/^\s*<!DOCTYPE\s+html|^\s*<html[\s>]/i.test(contentSniff)) {
-    return handleHtml(filePath, content, contentLengthHint)
+    const htmlResult = handleHtml(filePath, content, contentLengthHint)
+    if (htmlResult.shouldBlock) return htmlResult
   }
   const lines = content.split('\n')
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || filePath.includes('/logs/')

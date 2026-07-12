@@ -66,9 +66,11 @@ export function envFloat(key: string, defaultVal: number): number {
  */
 export function envInt(key: string, defaultVal: number, min?: number, max?: number): number {
   const raw = process.env[key]
-  if (raw === undefined || raw === '') return defaultVal
-  if (!/^[+-]?\d+$/.test(raw)) return defaultVal
-  const val = parseInt(raw, 10)
+  if (raw === undefined) return defaultVal
+  const norm = raw.trim()
+  if (norm === '') return defaultVal
+  if (!/^[+-]?\d+$/.test(norm)) return defaultVal
+  const val = parseInt(norm, 10)
   if (!Number.isFinite(val)) return defaultVal
   let clamped = val
   if (min !== undefined) clamped = Math.max(min, clamped)

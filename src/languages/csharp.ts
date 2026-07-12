@@ -53,15 +53,20 @@ const CONSTRUCTOR_RE = new RegExp(
 )
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial)\\s+)*' +
-  '(?:class|struct|interface|enum|record)\\s+([A-Za-z_][A-Za-z0-9_]*)',
+  '(class|struct|interface|enum|record)\\s+([A-Za-z_][A-Za-z0-9_]*)',
 )
 // Methods may have no access modifier (implicitly private) or only a return type (e.g. `void Run()`), so the modifier group is zero-or-more. The leading negative-lookahead rejects statement-starting keywords in the return-type slot so a no-modifier match cannot mistake `return Helper();`-style lines for a method; `new` is omitted from the guard because it is also a valid method modifier (`new void Foo()`). Method detection only runs at one brace level inside a class body, where bare statements cannot legally appear, so this stays safe.
+// The name-suffix requires either a bare `(` or a generic-arg list `<...>` immediately followed
+// by `(` (e.g. `Parse<T>(`), rather than any `<` or `(` - otherwise a generic RETURN type
+// containing a nested generic (e.g. `Dictionary<string, List<int>> GetMap()`) lets the lazy
+// name-capture group stop early at the first `<`, phantom-capturing the inner type name
+// (`List`) instead of the real method name (`GetMap`).
 const METHOD_RE = new RegExp(
   '^\\s+(?!(?:return|throw|yield|await|if|else|while|for|foreach|do|switch|case|' +
   'lock|using|fixed|checked|unchecked|goto|var)\\b)' +
   '(?:(?:public|protected|private|internal|static|virtual|override|abstract|' +
-  'sealed|new|async|extern|partial)\\s+)*' +
-  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*[<(]',
+  'sealed|new|async|extern|partial|readonly)\\s+)*' +
+  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:<[^<>]*>\\s*)?\\(',
 )
 
 function makeSymbol(
@@ -145,9 +150,17 @@ export function extractCsharp(
     // their own start depth instead of being silently folded into the enclosing class.
     const cm = CLASS_HEADER_RE.exec(stripped)
     if (cm) {
-      const cname = cm[1] ?? ''
+      const keyword = cm[1] ?? 'class'
+      const cname = cm[2] ?? ''
+      // `record` is class-like (a record is still fundamentally a reference/value class), so it
+      // maps to kind 'class' like the other adapters map their closest analog. struct/interface/
+      // enum get their own distinct kinds instead of all collapsing to 'class'.
+      const kind = keyword === 'struct' ? 'struct'
+        : keyword === 'interface' ? 'interface'
+        : keyword === 'enum' ? 'enum'
+        : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent))
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
       openedFrameThisLine = true
     }
@@ -164,8 +177,10 @@ export function extractCsharp(
           symbols.push(makeSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
         // property
+        let isPropertyLine = false
         const propM = PROPERTY_RE.exec(line)
         if (propM) {
+          isPropertyLine = true
           symbols.push(makeSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
         } else {
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
@@ -176,12 +191,14 @@ export function extractCsharp(
             const braceLineNext = (lines[i + 1] ?? '').trim()
             const accessorLine = (lines[i + 2] ?? '').trim()
             if (braceLineNext === '{' && ALLMAN_ACCESSOR_RE.test(accessorLine)) {
+              isPropertyLine = true
               symbols.push(makeSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
             }
           }
         }
-        // method
-        const methM = METHOD_RE.exec(line)
+        // method - skipped when the property detection above already matched this line, so a
+        // property/auto-property declaration is never double-processed as a phantom method too.
+        const methM = isPropertyLine ? null : METHOD_RE.exec(line)
         if (methM) {
           const mname = methM[1] ?? ''
           if (mname && mname !== frame.name) {

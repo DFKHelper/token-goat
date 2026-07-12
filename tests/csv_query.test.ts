@@ -29,6 +29,20 @@ describe('queryCsv', () => {
     expect(result.rows[0]).toEqual(['Alice', 'active']);
   });
 
+  // Regression: Excel/PowerShell "Save As UTF-8" on Windows (the primary platform for this
+  // tool) prefixes the file with a UTF-8 BOM. Without `bom: true` on csv-parse, the
+  // BOM stays glued to the first header cell (a BOM-prefixed 'id' instead of 'id'), silently breaking
+  // --columns/--where lookups on that column even though the file looks fine in a text editor.
+  it('strips a leading UTF-8 BOM from the first header so --columns/--where match on it', () => {
+    const bomCsv = '\uFEFF' + CSV;
+    const result = queryCsv(bomCsv, { columns: ['id', 'name'] });
+    expect(result.header).toEqual(['id', 'name']);
+    expect(result.rows[0]).toEqual(['1', 'Alice']);
+
+    const filtered = queryCsv(bomCsv, { wheres: [{ column: 'id', op: '=', value: '1' }] });
+    expect(filtered.totalRows).toBe(1);
+  });
+
   it('filters rows by equality', () => {
     const result = queryCsv(CSV, { wheres: [{ column: 'status', op: '=', value: 'active' }] });
     expect(result.totalRows).toBe(2);
@@ -43,6 +57,36 @@ describe('queryCsv', () => {
   it('filters rows by numeric comparison', () => {
     const result = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '>', value: '28' }] });
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+  });
+
+  // Regression: `Number('')` is 0, not NaN, so a blank cell in a numeric column was silently
+  // coerced to the literal value 0 instead of being treated as "no value". That made a blank
+  // cell wrongly match `age<10` (0 < 10) and wrongly match `age>-1` (0 > -1) -- a row with no
+  // age data should never satisfy either filter.
+  it('excludes blank cells from a numeric comparison instead of coercing them to 0', () => {
+    const csvWithBlank = `id,name,age\n1,Alice,30\n2,Blank,\n3,Carol,40\n`;
+
+    const lt10 = queryCsv(csvWithBlank, { wheres: [{ column: 'age', op: '<', value: '10' }] });
+    expect(lt10.rows.map((r) => r[1])).not.toContain('Blank');
+    expect(lt10.totalRows).toBe(0);
+
+    const gtNeg1 = queryCsv(csvWithBlank, { wheres: [{ column: 'age', op: '>', value: '-1' }] });
+    expect(gtNeg1.rows.map((r) => r[1])).not.toContain('Blank');
+    expect(gtNeg1.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+  });
+
+  it('still matches a genuinely zero-valued cell against a numeric comparison', () => {
+    const csvWithZero = `id,name,age\n1,Alice,30\n2,Zero,0\n3,Carol,40\n`;
+    const lt10 = queryCsv(csvWithZero, { wheres: [{ column: 'age', op: '<', value: '10' }] });
+    expect(lt10.rows.map((r) => r[1])).toEqual(['Zero']);
+  });
+
+  it('filters rows by >= and <=', () => {
+    const gte = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '>=', value: '30' }] });
+    expect(gte.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+
+    const lte = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '<=', value: '25' }] });
+    expect(lte.rows.map((r) => r[1])).toEqual(['Bob']);
   });
 
   it('filters rows by regex', () => {
@@ -86,6 +130,21 @@ describe('queryCsv', () => {
     expect(result.header).toEqual(['col1', 'col2']);
     expect(result.rows[0]).toEqual(['1', 'Alice']);
   });
+
+  it('resolves a --where spec against the correct column when a header name contains operator characters', () => {
+    // Regression: WHERE_SPEC_RE's column capture excludes = < > ~ ! outright, so it always
+    // splits at the FIRST operator-class character. With headers `a` and `a<b`, the spec
+    // "a<b=x" naively parses as column "a", op "<", value "b=x" -- and since column "a"
+    // genuinely exists, the query used to run silently against the wrong column instead of
+    // targeting the real "a<b" column or erroring.
+    const csv = 'a,a<b\nfoo,x\nbar,y\n';
+    const wheres = parseWhereSpecs(['a<b=x']);
+    const result = queryCsv(csv, { wheres });
+    // Correct behavior: this targets column "a<b" with op "=" and value "x", matching only the
+    // first row. The old behavior (column "a", op "<", value "b=x") would run a string
+    // comparison "a" < "b=x" against both rows' "a" values ("foo" and "bar"), matching neither.
+    expect(result.rows).toEqual([['foo', 'x']]);
+  });
 });
 
 describe('parseWhereSpecs', () => {
@@ -100,6 +159,11 @@ describe('parseWhereSpecs', () => {
     expect(parseWhereSpecs(['age>18'])).toEqual([{ column: 'age', op: '>', value: '18' }]);
     expect(parseWhereSpecs(['age<18'])).toEqual([{ column: 'age', op: '<', value: '18' }]);
     expect(parseWhereSpecs(['name~=^A'])).toEqual([{ column: 'name', op: '~=', value: '^A' }]);
+  });
+
+  it('parses >= and <= without misreading them as > or < with a leading = in the value', () => {
+    expect(parseWhereSpecs(['age>=18'])).toEqual([{ column: 'age', op: '>=', value: '18' }]);
+    expect(parseWhereSpecs(['age<=18'])).toEqual([{ column: 'age', op: '<=', value: '18' }]);
   });
 
   it('throws on a spec with no recognized operator', () => {

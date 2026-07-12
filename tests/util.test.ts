@@ -34,15 +34,12 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import type * as fs from 'node:fs'
 
-import { atomicWriteBytes, atomicWriteText, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
+import { tsxProcessArgs } from './helpers/tsx_process.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const LOCK_HOLDER = path.join(HERE, 'fixtures', 'lock_holder.ts')
-// Spawn tsx's own CLI entry via `node`, not the node_modules/.bin/tsx(.cmd) shim -- the shim
-// is a shell script / batch file on POSIX/Windows respectively, and Node's spawn() cannot
-// exec those directly without shell:true (same rationale as tests/session_store_race.test.ts).
-const TSX_CLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -230,10 +227,14 @@ describe('withFileLock', () => {
       const holdMs = 8000
       const staleMs = 4000
       const holderExit = new Promise<string>((resolve, reject) => {
-        const child = spawn(process.execPath, [TSX_CLI, LOCK_HOLDER, lockPath, String(holdMs), String(staleMs)], {
-          cwd: ROOT,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
+        const child = spawn(
+          process.execPath,
+          tsxProcessArgs(LOCK_HOLDER, lockPath, String(holdMs), String(staleMs)),
+          {
+            cwd: ROOT,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
@@ -423,5 +424,43 @@ describe('ensureDirSync', () => {
     const nestedDir = path.join(testDir, 'a', 'b', 'c')
     ensureDirSync(nestedDir)
     expect(existsSync(nestedDir)).toBe(true)
+  })
+})
+
+describe('backupFile', () => {
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = mkdtempSync(path.join(tmpdir(), 'tg-backup-'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  it('prunes older backups beyond a fixed cap instead of accumulating one per call forever', () => {
+    // Regression: backupFile ran on every install/uninstall of a harness's hook config
+    // (install.ts, codex_install.ts, copilot_cli_install.ts, gemini_install.ts,
+    // openclaw_install.ts) and wrote a new .bak.<timestamp> sibling with no cleanup, so a
+    // config directory a user re-installs into repeatedly accumulated one backup forever.
+    const target = path.join(testDir, 'config.json')
+    writeFileSync(target, 'v0')
+
+    vi.useFakeTimers()
+    const base = new Date('2026-01-01T00:00:00.000Z').getTime()
+    for (let i = 0; i < 8; i++) {
+      vi.setSystemTime(base + i * 1000)
+      backupFile(target)
+    }
+    vi.useRealTimers()
+
+    const backups = readdirSync(testDir)
+      .filter((f) => f.startsWith('config.json.bak.'))
+      .sort()
+    expect(backups.length).toBe(5)
+    // Keeps the newest ones (i=3..7), not the oldest (i=0..2).
+    expect(backups[0]).toContain('2026-01-01T00-00-03')
+    expect(backups[4]).toContain('2026-01-01T00-00-07')
   })
 })

@@ -280,11 +280,26 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     expect(fs.readFileSync(unrelatedPath, 'utf8')).toBe('{"version":1,"hooks":{}}\n')
   })
 
-  it('uninstalling the user scope leaves a project-scope install untouched', () => {
+  // Regression: uninstallCopilotCli used to require the caller to pass the exact
+  // scope opts it was installed with -- since the CLI's --copilot uninstall always
+  // forced { local: opts.local === true } (never left undefined), a plain
+  // `token-goat uninstall --copilot` (no --local) could never clean up a --local
+  // install; the user had to remember to also pass --local, or it silently
+  // survived. uninstallCopilotCli() with no explicit local now cleans up wherever
+  // the hook config actually is, both scopes at once.
+  it('uninstallCopilotCli() with no explicit scope removes both a user-scope and a project-scope install', () => {
+    const userResult = installCopilotCli()
     const localResult = installCopilotCli({ local: true })
-    installCopilotCli()
-    uninstallCopilotCli()
-    expect(fs.existsSync(localResult.configPath)).toBe(true)
+    expect(uninstallCopilotCli()).toBe(true)
+    expect(fs.existsSync(userResult.configPath)).toBe(false)
+    expect(fs.existsSync(localResult.configPath)).toBe(false)
+  })
+
+  it('uninstallCopilotCli({ local: true }) narrows removal to the project scope, leaving a user-scope install untouched', () => {
+    const userResult = installCopilotCli()
+    installCopilotCli({ local: true })
+    uninstallCopilotCli({ local: true })
+    expect(fs.existsSync(userResult.configPath)).toBe(true)
   })
 })
 

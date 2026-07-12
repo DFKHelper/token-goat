@@ -50,6 +50,13 @@ try {
 }
 process.env['LOCALAPPDATA'] = dataHome
 process.env['XDG_DATA_HOME'] = dataHome
+// macOS ignores LOCALAPPDATA/XDG_DATA_HOME and derives Application Support
+// from HOME. Redirect it too so DATA_DIR never points at the developer's live
+// index or worker. USERPROFILE keeps spawned cross-platform tests consistent.
+if (process.platform === 'darwin') {
+  process.env['HOME'] = dataHome
+  process.env['USERPROFILE'] = dataHome
+}
 process.on('exit', () => {
   try {
     fs.rmSync(dataHome, { recursive: true, force: true })

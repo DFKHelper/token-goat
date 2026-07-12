@@ -32,7 +32,36 @@ function safeEnvDir(value: string): string | undefined {
 }
 
 /**
- * Compute the platform-appropriate data directory.
+ * Compute the platform-appropriate data directory purely from a given home
+ * directory, ignoring the current process's real env-var overrides.
+ *
+ * This is the structural, home-relative equivalent of what `LOCALAPPDATA` /
+ * `XDG_DATA_HOME` normally resolve to on a real install:
+ *   - Windows:   <home>\AppData\Local\dfk-helper\token-goat
+ *   - macOS:     <home>/Library/Application Support/token-goat
+ *   - Linux/BSD: <home>/.local/share/token-goat
+ *
+ * Deliberately does not consult `process.env` — callers that need the data
+ * dir for an arbitrary *other* home directory (e.g. `stats --home-dir`) must
+ * get a path derived only from that home, not from the current process's own
+ * ambient LOCALAPPDATA/XDG_DATA_HOME (which belong to the real caller's home
+ * and would otherwise silently override/ignore the requested one). Exported
+ * so callers can reuse this exact platform branching instead of duplicating
+ * it and drifting out of sync.
+ */
+export function dataDirForHome(homeDir: string): string {
+  const platform = process.platform
+  if (platform === 'win32') {
+    return path.join(homeDir, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+  }
+  if (platform === 'darwin') {
+    return path.join(homeDir, 'Library', 'Application Support', 'token-goat')
+  }
+  return path.join(homeDir, '.local', 'share', 'token-goat')
+}
+
+/**
+ * Compute the platform-appropriate data directory for the *current* process.
  *
  * Matches platformdirs.user_data_dir("token-goat", "dfk-helper"):
  *   - Windows:   %LOCALAPPDATA%\dfk-helper\token-goat
@@ -40,7 +69,8 @@ function safeEnvDir(value: string): string | undefined {
  *   - Linux/BSD: $XDG_DATA_HOME/token-goat (falls back to ~/.local/share/token-goat)
  *
  * Env-var overrides are validated via `safeEnvDir`; malformed values fall back
- * to the home-based default so a crafted env var cannot redirect data paths.
+ * to the home-based default (via `dataDirForHome`) so a crafted env var
+ * cannot redirect data paths.
  */
 function defaultDataDir(): string {
   const platform = process.platform
@@ -50,10 +80,10 @@ function defaultDataDir(): string {
     if (base !== undefined) {
       return path.join(base, 'dfk-helper', 'token-goat')
     }
-    return path.join(os.homedir(), 'dfk-helper', 'token-goat')
+    return dataDirForHome(os.homedir())
   }
   if (platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'token-goat')
+    return dataDirForHome(os.homedir())
   }
   // Linux / BSD / WSL — honour XDG_DATA_HOME.
   const xdg = process.env['XDG_DATA_HOME'] ?? ''
@@ -61,7 +91,7 @@ function defaultDataDir(): string {
   if (base !== undefined) {
     return path.join(base, 'token-goat')
   }
-  return path.join(os.homedir(), '.local', 'share', 'token-goat')
+  return dataDirForHome(os.homedir())
 }
 
 // Computed once at module load: the data directory never changes within a process lifetime, so caching avoids repeated env reads on the hot hook path.
@@ -96,14 +126,12 @@ export const ENV_KEYS = {
   SESSION_BRIEF: 'TOKEN_GOAT_SESSION_BRIEF',
   SKILL_PRESERVATION: 'TOKEN_GOAT_SKILL_PRESERVATION',
   ORPHAN_SWEEP: 'TOKEN_GOAT_ORPHAN_SWEEP',
-  CURATOR: 'TOKEN_GOAT_CURATOR',
   HINT_BUDGET: 'TOKEN_GOAT_HINT_BUDGET',
   HINT_JSON_SIDECAR: 'TOKEN_GOAT_HINT_JSON_SIDECAR',
   BASH_DEDUP_MIN_BYTES: 'TOKEN_GOAT_BASH_DEDUP_MIN_BYTES',
   WEB_DEDUP_MIN_BYTES: 'TOKEN_GOAT_WEB_DEDUP_MIN_BYTES',
   GREP_DEDUP_MIN_MATCHES: 'TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES',
   LARGE_READ_BYTES: 'TOKEN_GOAT_LARGE_READ_BYTES',
-  BASELINE_BUDGET_TOKENS: 'TOKEN_GOAT_BASELINE_BUDGET_TOKENS',
   REPOMAP_COMPACT_THRESHOLD: 'TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD',
   WEB_CACHE_MAX_FILES: 'TOKEN_GOAT_WEB_CACHE_MAX_FILES',
   WEB_CACHE_MAX_BYTES: 'TOKEN_GOAT_WEB_CACHE_MAX_BYTES',

@@ -11,12 +11,29 @@ import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, MultilineStringState } from './common.js'
 import {
   assignFlatEndLines,
+  buildLineIndex,
+  isInsideStringLiteral,
   makeSymbolEmitter,
+  offsetToLine,
   propagateEndLinesToSymbols,
   stripHashComments,
   stripMultilineStringSpan,
   stripStringLiterals,
 } from './common.js'
+
+// Finds the index of the first `#` on `line` that isn't sitting inside an open single- or
+// double-quoted string literal on that same line - i.e. a real line-comment start. Used by
+// `stripGraphqlDescriptions` to decide, when not already inside an open block description,
+// whether a `#` or a `"""` description opener comes first on the line: whichever comes first
+// wins, since a `#` before any opener starts a real comment (and any `"""`-looking text after it
+// is just comment prose, not a real opener), while an opener before any `#` means the rest of the
+// line - `#` included - is description content, not a comment.
+function findUnquotedHash(line: string): number {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '#' && !isInsideStringLiteral(line, i)) return i
+  }
+  return -1
+}
 
 // ---------------------------------------------------------------------------
 // Import pragma: # import FragmentName from "path.graphql"
@@ -64,11 +81,30 @@ const MAX_HEADING_LEN = 120
  * being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter
  * as Kotlin's raw strings, so the `'kotlin'` `MultilineStringLang` is reused rather than adding a
  * new one.
+ *
+ * Also resolves precedence against `#` line comments on lines where no description is
+ * currently open: a real `#` comment can textually contain a `"""`-looking sequence (e.g. `#
+ * see """ for details`), which must not be misread as a real description opener. On such a
+ * line, `findUnquotedHash` locates the earliest real `#`; if it comes before any `"""` on the
+ * line, only the portion of the line before the `#` is scanned for a description opener, and the
+ * `#`-onward remainder is left untouched here for the later `stripHashComments` pass to strip as
+ * an ordinary comment.
  */
 function stripGraphqlDescriptions(text: string): string {
   let state: MultilineStringState | null = null
   const outLines: string[] = []
   for (const line of text.split('\n')) {
+    if (state === null) {
+      const hashPos = findUnquotedHash(line)
+      const tripleOpenerPos = line.indexOf('"""')
+      if (hashPos !== -1 && (tripleOpenerPos === -1 || hashPos < tripleOpenerPos)) {
+        const head = line.slice(0, hashPos)
+        const { code, state: nextState } = stripMultilineStringSpan(head, null, 'kotlin')
+        state = nextState
+        outLines.push(stripStringLiterals(code) + line.slice(hashPos))
+        continue
+      }
+    }
     const { code, state: nextState } = stripMultilineStringSpan(line, state, 'kotlin')
     state = nextState
     // Also blank single-line double-quoted descriptions that aren't part of a triple-quoted span.
@@ -93,17 +129,31 @@ export function extractGraphql(
   const imports: GraphqlImport[] = []
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
+  const contentLineIndex = buildLineIndex(content)
+
   // Extract imports BEFORE stripping comments — #import pragmas live in comment lines
   for (const m of content.matchAll(GRAPHQL_IMPORT_RE)) {
     const target = m[1]?.trim() ?? ''
     if (target) {
-      const line = content.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(contentLineIndex, m.index ?? 0)
       imports.push({ kind: 'import', target, line })
     }
   }
 
-  const stripped = stripGraphqlDescriptions(stripHashComments(content))
+  // Mask "\"\"\"...\"\"\""/"..." descriptions BEFORE stripping `#` comments, not after.
+  // stripHashComments's own quote-awareness (common.ts's isInsideStringLiteral) only tracks
+  // quote parity within a single line, so a `#` inside a still-open """..."""` block description
+  // - one whose opening """` is on an earlier line - looks "not inside a string" on the
+  // description's own content lines and gets treated as a real comment marker. If that happens
+  // to blank out the description's closing """` too (e.g. a `#` earlier on the same line as the
+  // closer), stripGraphqlDescriptions never finds a matching closer for the rest of the file,
+  // and its carried-over "still open" state masks every real declaration after it as description
+  // content, silently dropping all of them. Running stripGraphqlDescriptions first means the
+  // whole description span - `#` characters included - is already blanked to spaces before
+  // stripHashComments ever sees it, so there is no comment marker left inside it to misread.
+  const stripped = stripHashComments(stripGraphqlDescriptions(content))
   const totalLines = content.split('\n').length
+  const lineIndex = buildLineIndex(stripped)
 
   // type / interface / input / enum / union / scalar (+ extend variants)
   for (const m of stripped.matchAll(TYPE_RE)) {
@@ -112,7 +162,7 @@ export function extractGraphql(
     const isExtend = Boolean(m[1])
     if (name) {
       const kind = isExtend ? 'graphql_extend' : (KIND_MAP.get(keyword) ?? 'graphql_type')
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, kind, line)
     }
   }
@@ -121,7 +171,7 @@ export function extractGraphql(
   for (const m of stripped.matchAll(DIRECTIVE_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(`@${name}`, 'graphql_directive', line)
     }
   }
@@ -130,7 +180,7 @@ export function extractGraphql(
   for (const m of stripped.matchAll(FRAGMENT_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, 'graphql_fragment', line)
     }
   }
@@ -140,14 +190,14 @@ export function extractGraphql(
     const op = m.groups?.['op'] ?? ''
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
-      const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const line = offsetToLine(lineIndex, m.index ?? 0)
       emit(name, `graphql_${op}`, line)
     }
   }
 
   // schema { }
   for (const m of stripped.matchAll(SCHEMA_RE)) {
-    const line = stripped.slice(0, m.index ?? 0).split('\n').length
+    const line = offsetToLine(lineIndex, m.index ?? 0)
     emit('schema', 'graphql_schema', line)
   }
 

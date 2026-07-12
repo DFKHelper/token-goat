@@ -15,6 +15,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
 import { loadConfig } from '../src/config.js'
+import { resolveProjectRoot } from '../src/project.js'
 
 vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
@@ -81,12 +82,16 @@ describe('semantic command scopes searchSemantic to the current project (regress
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts). runSemantic used to call searchSemantic with no project-root argument at
   // all, so results silently mixed in chunks from unrelated projects sharing the same index.
-  it('passes process.cwd() as the rootDir (6th) argument to searchSemantic', async () => {
+  it('passes the resolved project root (not the raw cwd) as the rootDir (6th) argument to searchSemantic', async () => {
+    // Regression: the default fell back to the raw `process.cwd()` instead of resolving it up
+    // to the actual project root, so running from a subdirectory scoped searches to that
+    // subtree only. `resolveProjectRoot` (already used for this exact default elsewhere in
+    // read_commands.ts, e.g. runFind/runChanged) is the correct resolution.
     searchSemanticMock.mockResolvedValue([])
 
     await runSemantic('any query', {})
 
     const call = searchSemanticMock.mock.calls[0]
-    expect(call?.[5]).toBe(process.cwd())
+    expect(call?.[5]).toBe(resolveProjectRoot({ project: process.cwd() }))
   })
 })

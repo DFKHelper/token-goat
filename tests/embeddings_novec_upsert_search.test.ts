@@ -26,7 +26,9 @@ describe('upsertChunks and searchSemantic tolerate a missing chunk_vectors table
   it('upsertChunks does not throw and inserts nothing when chunk_vectors is absent', async () => {
     const db = getDb(path.join(TMP, 'index.db'))
     db.prepare('DROP TABLE IF EXISTS chunk_vectors').run()
-    await expect(upsertChunks(db, [chunk])).resolves.toBeUndefined()
+    // With chunk_vectors absent, upsertChunks skips embedding and reports 'unavailable' so the
+    // caller can mark the file for re-embedding once the optional dep is installed.
+    await expect(upsertChunks(db, [chunk])).resolves.toBe('unavailable')
     const left = db.prepare('SELECT COUNT(*) c FROM chunks').get() as { c: number }
     expect(left.c).toBe(0)
   })

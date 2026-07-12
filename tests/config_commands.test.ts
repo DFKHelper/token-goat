@@ -11,11 +11,25 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import type * as WebfetchModule from '../src/webfetch.js'
+import type * as ImageShrinkModule from '../src/image_shrink.js'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BUNDLE } from './helpers/bundle.js'
 
 const performHttpFetchMock = vi.hoisted(() => vi.fn())
+const shrinkImageMock = vi.hoisted(() => vi.fn())
+const atomicWriteBytesMock = vi.hoisted(() => vi.fn())
+
+// vi.mock is hoisted — stub image_shrink.js's shrinkImage so fetch-image extension-correction
+// tests can force a format-changing shrink without needing a real decodable image. By default
+// this delegates straight through to the real implementation, so any test that doesn't layer
+// a mockImplementationOnce/mockResolvedValueOnce on top gets real behavior for free (which for
+// the fake, non-image byte payloads used elsewhere in this file resolves to null / "not shrunk").
+vi.mock('../src/image_shrink.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ImageShrinkModule>()
+  shrinkImageMock.mockImplementation((buf: Buffer) => actual.shrinkImage(buf))
+  return { ...actual, shrinkImage: shrinkImageMock }
+})
 
 // vi.mock is hoisted — redirect configPath() for config tests.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -39,11 +53,22 @@ vi.mock('../src/webfetch.js', async (importOriginal) => {
   return { ...actual, performHttpFetch: performHttpFetchMock }
 })
 
+import type * as UtilModule from '../src/util.js'
+
+// vi.mock is hoisted — spy on util.js's atomicWriteBytes (delegating straight through to the
+// real implementation) so the fetch-image atomic-write regression test can assert cmdFetchImage
+// routes its disk write through the shared atomic helper instead of a bare fs.writeFileSync.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  atomicWriteBytesMock.mockImplementation(actual.atomicWriteBytes)
+  return { ...actual, atomicWriteBytes: atomicWriteBytesMock }
+})
+
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
 
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory, cmdFetchImage } from '../src/config_commands.js'
 import { compactPathFor, isCompactFresh } from '../src/doc_compact.js'
-import { invalidateConfigCache, loadConfig, saveConfig, defaultConfig } from '../src/config.js'
+import { invalidateConfigCache, loadConfig, loadPersistedConfig, saveConfig, defaultConfig } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from '../src/web_cache.js'
@@ -259,6 +284,48 @@ describe('config set concurrent writes (regression: unlocked read-modify-write c
     expect(raw).toMatch(/compact_assist[\s\S]*enabled\s*=\s*false/)
     expect(raw).toMatch(/bash_compress[\s\S]*enabled\s*=\s*false/)
   })
+
+  // Regression for the withFileLock(lockPath, applySet) call omitting `waitMs`, which fell
+  // back to util.ts's LOCK_WAIT_MS default (2s) instead of the hardened budget applied to
+  // session_store.ts's analogous saveSessionState call site (LOCK_WAIT_MS_HARDENED, 15s). A
+  // lock holder taking longer than 2s but well under 15s (e.g. this test's own
+  // TOKEN_GOAT_TEST_RMW_DELAY_MS seam simulating machine load, not a crash) is entirely
+  // legitimate -- it must never be treated as abandoned. Before the fix, the waiter's
+  // withFileLock call above timed out at 2s, fell through to an unprotected `applySet()`, and
+  // raced the still-lock-holding slow process's eventual write: the slow process's snapshot
+  // (captured before the fast process's unprotected write landed) then silently clobbered it
+  // on save. After the fix, the waiter's much larger budget covers the full 3s hold, so it
+  // waits for the real lock release instead of falling back, and both keys survive.
+  it('key set by the fast process survives a slow holder past the pre-fix 2s default wait (regression: missing waitMs falls back to an unprotected write)', async () => {
+    const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfg-race-'))
+    const env = { ...process.env, LOCALAPPDATA: tmpDataDir, XDG_DATA_HOME: tmpDataDir }
+    const configFile = process.platform === 'win32'
+      ? path.join(tmpDataDir, 'dfk-helper', 'token-goat', 'config.toml')
+      : path.join(tmpDataDir, 'token-goat', 'config.toml')
+
+    const spawnOne = (key: string, value: string, extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [BUNDLE, 'config', 'set', key, value], { env: { ...env, ...extraEnv } })
+        let stderr = ''
+        child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+        child.on('error', reject)
+        child.on('close', (code) => resolve({ code, stderr }))
+      })
+
+    const slow = spawnOne('compact_assist.enabled', 'false', { TOKEN_GOAT_TEST_RMW_DELAY_MS: '3000' })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const fast = spawnOne('bash_compress.enabled', 'false')
+    const [r1, r2] = await Promise.all([slow, fast])
+
+    expect(r1.code, r1.stderr).toBe(0)
+    expect(r2.code, r2.stderr).toBe(0)
+
+    const raw = fs.readFileSync(configFile, 'utf8')
+    // Both writers' keys must be present -- pre-fix, the fast process's unprotected fallback
+    // write was clobbered by the slow process's later, lock-protected write.
+    expect(raw).toMatch(/compact_assist[\s\S]*enabled\s*=\s*false/)
+    expect(raw).toMatch(/bash_compress[\s\S]*enabled\s*=\s*false/)
+  }, 20_000)
 })
 
 // ── config set input validation hardening (#M23, #M24, #M28) ────────────────
@@ -286,6 +353,17 @@ describe('cmdConfig set input validation hardening', () => {
     expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10])
   })
 
+  it('rejects a JSON-array value with non-numeric elements on a number-list key instead of silently discarding it', () => {
+    // Pre-fix, the JSON-array branch in coerce() returned JSON.parse(raw) unchecked, so
+    // `config set hints.backoff_thresholds '["a","b"]'` reported success and echoed the bad
+    // value, but the load-time int-list validator (validatedIntList) then silently filtered
+    // it down to [] on the very next load -- a value that "succeeded" but silently vanished.
+    expect(() => cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '["a","b"]' })).toThrow()
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.backoff_thresholds).not.toEqual([])
+  })
+
   it('rejects setting an entire config section to a scalar value instead of corrupting it (#M24)', () => {
     expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow('section')
     expect(capturedErr()).toBe('')
@@ -302,6 +380,32 @@ describe('cmdConfig set input validation hardening', () => {
     expect(capturedErr()).toBe('')
     // The out-of-range value must never reach disk in the first place.
     expect(fs.existsSync(_testConfigPath)).toBe(false)
+  })
+
+  it('rejects a typo\'d compression.profile value instead of silently persisting it and falling back at runtime (#237)', () => {
+    // Pre-fix, coerce() returned the raw string unchanged for any non-boolean/number/array
+    // field with no revalidation, so `config set compression.profile agressive` reported
+    // success and wrote the typo to disk. At runtime, bash_runner.ts's resolveProfile() and
+    // dispatch.ts's PROFILE_CAPS[profile] ?? 200 lookup would then silently fall back to the
+    // 'balanced' cap with no signal the setting had no effect.
+    expect(() => cmdConfig({ action: 'set', key: 'compression.profile', value: 'agressive' })).toThrow('must be one of')
+    expect(capturedErr()).toBe('')
+    // The invalid value must never reach disk in the first place.
+    expect(fs.existsSync(_testConfigPath)).toBe(false)
+  })
+
+  it('accepts every valid compression.profile value', () => {
+    for (const value of ['auto', 'aggressive', 'balanced', 'minimal']) {
+      expect(() => cmdConfig({ action: 'set', key: 'compression.profile', value })).not.toThrow()
+      invalidateConfigCache()
+      expect(loadConfig().compression.profile).toBe(value)
+    }
+  })
+
+  it('rejects an unrecognized compact_assist.harness value the same way', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.harness', value: 'claudecodex' })).toThrow('must be one of')
+    invalidateConfigCache()
+    expect(loadConfig().compact_assist.harness).not.toBe('claudecodex')
   })
 })
 
@@ -444,7 +548,7 @@ describe('cmdConfig unknown action', () => {
 
 describe('cmdProject list', () => {
   it('lists blocked roots from config', () => {
-    const cfg = loadConfig()
+    const cfg = loadPersistedConfig()
     cfg.worker.blocked_roots = ['/some/excluded/path']
     saveConfig(cfg)
     invalidateConfigCache()
@@ -491,7 +595,7 @@ describe('cmdProject prune', () => {
   it('removes non-existent roots and keeps existing ones', () => {
     const real = tmpHome
     const fake = '/this/does/not/exist/ever'
-    const cfg = loadConfig()
+    const cfg = loadPersistedConfig()
     cfg.worker.blocked_roots = [real, fake]
     saveConfig(cfg)
     invalidateConfigCache()
@@ -507,6 +611,42 @@ describe('cmdProject prune', () => {
     const parsed = JSON.parse(captured()) as { pruned: number; blocked_roots: string[] }
     expect(typeof parsed.pruned).toBe('number')
     expect(Array.isArray(parsed.blocked_roots)).toBe(true)
+  })
+
+  it('--dry-run reports what would be pruned without touching the config file', () => {
+    const real = tmpHome
+    const fake = '/this/does/not/exist/ever'
+    const cfg = loadPersistedConfig()
+    cfg.worker.blocked_roots = [real, fake]
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    cmdProject({ action: 'prune', dryRun: true })
+
+    invalidateConfigCache()
+    const after = loadConfig()
+    expect(after.worker.blocked_roots).toContain(real)
+    expect(after.worker.blocked_roots).toContain(fake)
+  })
+
+  it('--dry-run --json reports the would-be-pruned entries without persisting', () => {
+    const real = tmpHome
+    const fake = '/this/does/not/exist/ever'
+    const cfg = loadPersistedConfig()
+    cfg.worker.blocked_roots = [real, fake]
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    cmdProject({ action: 'prune', dryRun: true, json: true })
+    const parsed = JSON.parse(captured()) as { dryRun: boolean; wouldPrune: number; stale: string[]; blocked_roots: string[] }
+    expect(parsed.dryRun).toBe(true)
+    expect(parsed.wouldPrune).toBe(1)
+    expect(parsed.stale).toEqual([fake])
+    expect(parsed.blocked_roots).toEqual([real, fake])
+
+    invalidateConfigCache()
+    const after = loadConfig()
+    expect(after.worker.blocked_roots).toContain(fake)
   })
 })
 
@@ -607,6 +747,20 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
     expect(capturedErr()).toContain('--sentences')
   })
 
+  // #232 regression: the old `Number.parseInt(opts.sentences, 10)` accepted trailing garbage
+  // ("3x" -> 3) and exponential notation ("1e1" -> 1) instead of rejecting them.
+  it('rejects trailing garbage in --sentences instead of silently truncating', () => {
+    const md = writeDoc('garbage-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '3x' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
+  it('rejects exponential notation in --sentences instead of silently truncating', () => {
+    const md = writeDoc('exp-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '1e1' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
   it('reuses a fresh sidecar without --force (rebuilt: false)', () => {
     const md = writeDoc('reuse.md')
     cmdCompactDoc({ filePath: md, json: true })
@@ -694,6 +848,76 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
     await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow()
     expect(capturedErr()).toMatch(/too many redirects/i)
   })
+
+  // Regression: with no --out, the default destination was always `.bin` regardless of the
+  // response's actual content-type, so e.g. a JPEG response landed under a name that hid its
+  // real format. The default extension should come from the content-type header instead.
+  it('derives the default (no --out) extension from the response content-type header', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'image/jpeg' },
+      body: Buffer.from('fake-jpeg-bytes'),
+    }))
+    await cmdFetchImage({ url: 'http://example.test/photo.jpg', json: true })
+    const parsed = JSON.parse(captured()) as { out: string }
+    expect(parsed.out.endsWith('.jpg')).toBe(true)
+    expect(fs.existsSync(parsed.out)).toBe(true)
+  })
+
+  // Regression: same root bug as screenshot.ts's takeScreenshot -- shrinkImage may re-encode
+  // the fetched bytes to a different container format (JPEG/WebP), but the shrunk bytes were
+  // written verbatim under the originally-requested (or default) extension, mislabeling the
+  // file's real format.
+  it('renames the destination extension to match a format-changing shrink', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'image/png' },
+      body: Buffer.from('fake-png-bytes'),
+    }))
+    shrinkImageMock.mockResolvedValueOnce({
+      data: Buffer.from('fake-jpeg-bytes'),
+      format: 'jpeg',
+      shrunkBytes: 15,
+      width: 10,
+      height: 10,
+    })
+    const requestedOut = path.join(tmpHome, 'shrink-format-change.png')
+    await cmdFetchImage({ url: 'http://example.test/image.png', out: requestedOut })
+    const expectedOut = path.join(tmpHome, 'shrink-format-change.jpg')
+    expect(fs.existsSync(expectedOut)).toBe(true)
+    expect(fs.existsSync(requestedOut)).toBe(false)
+    expect(fs.readFileSync(expectedOut).toString()).toBe('fake-jpeg-bytes')
+    expect(captured()).toContain(expectedOut)
+  })
+
+  // Regression: cmdFetchImage wrote the fetched/shrunk bytes to the destination path via a
+  // bare fs.writeFileSync instead of the atomic temp-file+rename helper every other disk-cache
+  // write path in this codebase uses (webfetch.ts's cachePath/shrunkPath, screenshot.ts's
+  // takeScreenshot). A direct writeFileSync truncates the destination in place, so a concurrent
+  // reader of the same --out path (e.g. two overlapping `fetch-image` invocations targeting the
+  // same file, or a hook reading the file while a second fetch is mid-write) can observe a
+  // truncated/partial file instead of either the old or the new complete content.
+  it('writes the fetched image to disk via the atomic write helper, not a direct truncating write', async () => {
+    const fakeBytes = Buffer.from('atomic-write-regression-bytes')
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      body: fakeBytes,
+    }))
+    const out = path.join(tmpHome, 'atomic-write-check.bin')
+
+    await cmdFetchImage({ url: 'http://example.test/atomic.png', out })
+
+    expect(fs.readFileSync(out)).toEqual(fakeBytes)
+    expect(atomicWriteBytesMock).toHaveBeenCalledWith(out, fakeBytes)
+    // No temp-file sibling should be left behind by the atomic write.
+    const dir = path.dirname(out)
+    const leftoverTmp = fs.readdirSync(dir).filter((f) => f.includes('.tmp'))
+    expect(leftoverTmp).toEqual([])
+  })
 })
 
 // ── history ───────────────────────────────────────────────────────────────────
@@ -731,6 +955,24 @@ describe('cmdHistory', () => {
     // Array.prototype.slice(0, NaN) returns [] — so an invalid --limit silently printed "No
     // history entries found" even though entries existed, instead of raising a clear error.
     expect(() => cmdHistory({ limit: 'abc' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  // #232 regression: trailing garbage ("30x" -> 30 via Number.parseInt), exponential notation
+  // ("1e3" -> 1), and a negative value (silently clamped up to 1 by the old Math.max(1, n)) must
+  // all be rejected instead of silently coerced.
+  it('rejects trailing garbage in --limit instead of silently truncating', () => {
+    expect(() => cmdHistory({ limit: '30x' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  it('rejects exponential notation in --limit instead of silently truncating', () => {
+    expect(() => cmdHistory({ limit: '1e3' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  it('rejects a negative --limit instead of silently clamping to 1', () => {
+    expect(() => cmdHistory({ limit: '-5' })).toThrow()
     expect(capturedErr()).toContain('--limit')
   })
 

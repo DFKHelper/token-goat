@@ -192,6 +192,27 @@ steps:
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not treat a line inside a wrapped multi-line quoted value as a real key (regression: extractYamlSymbols had no state tracking for a double/single-quoted flow scalar wrapping across lines, so wrapped prose that happened to contain its own "word:" -shaped text -- e.g. mentioning "ratio: 16:9" -- was misread as a brand new top-level key)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'wrapped.yaml')
+
+      const content = `description: "This spans multiple lines and
+fake_key: this looks like a key but is really string content
+still wrapping"
+real_key: value
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('description')
+      expect(names).toContain('real_key')
+      expect(names).not.toContain('fake_key')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('toml symbols', () => {
@@ -312,6 +333,25 @@ name = "single-line triple quote: """not multiline""" still fine"
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not desync from a single-line """ value whose body contains an odd count of nested \'\'\' (regression: basic/literal triple-quote run counts were tallied independently per line via separate regex matches, so an inert \'\'\' sequence sitting inside an already-closed """..." span was misread as its own real open/close toggle, leaving a phantom multi-line literal-string state open that silently swallowed every key/section until an unrelated \'\'\' happened to appear later in the file)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'nested.toml')
+
+      const content = `[project]
+note = """it's a test, delimiter looks like ''' here"""
+real_key = "yes"
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('note')
+      expect(names).toContain('real_key')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('css symbols', () => {
@@ -367,6 +407,147 @@ name = "single-line triple quote: """not multiline""" still fine"
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('extracts compound, pseudo-class, tag, and attribute selectors (regression: the original regex only matched a bare class/id selector immediately followed by a comma/space/brace, silently skipping compound selectors, pseudo-classes, plain tag/attribute selectors, and anything else it did not directly cover)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'compound.css')
+
+      const content = `.foo.bar {
+  color: red;
+}
+.foo:hover {
+  color: blue;
+}
+div {
+  margin: 0;
+}
+input[type="text"] {
+  border: 1px solid;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.foo.bar')
+      expect(names).toContain('.foo:hover')
+      expect(names).toContain('div')
+      expect(names).toContain('input[type="text"]')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('extracts a selector nested under @media/@supports without treating the at-rule header itself as a selector', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'media.css')
+
+      const content = `@media (min-width: 600px) {
+  .nested {
+    color: green;
+  }
+}
+@supports (display: grid) {
+  .grid-item {
+    display: grid;
+  }
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.nested')
+      expect(names).toContain('.grid-item')
+      expect(names.some((n) => n.startsWith('@media'))).toBe(false)
+      expect(names.some((n) => n.startsWith('@supports'))).toBe(false)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('splits a same-line comma-separated selector list into one symbol per selector', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'commalist.css')
+
+      const content = `.a, .b {
+  padding: 0;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.a')
+      expect(names).toContain('.b')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('indexes every selector in a multi-line comma-separated selector list, not just the brace-bearing line', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'multiline-commalist.css')
+
+      const content = `.btn,
+.btn-primary,
+.btn-secondary {
+  padding: 0;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.btn')
+      expect(names).toContain('.btn-primary')
+      expect(names).toContain('.btn-secondary')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('indexes every selector in a multi-line comma-separated selector list when the opening brace is on its own line (regression: a bare selector-fragment continuation line and a brace-only line both fell through to the discard branch, silently dropping every accumulated fragment)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'brace-own-line.css')
+
+      const content = `.a,
+.b
+{
+  color: red;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.a')
+      expect(names).toContain('.b')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('indexes every selector in a multi-line comma-separated selector list interrupted by an own-line block comment (regression: stripCstyleComments blanks a comment to an all-spaces line, which failed the continuation guard and fell into the discard branch, silently dropping every fragment accumulated before the comment)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'comment-interrupted.css')
+
+      const content = `.a,
+/* primary button */
+.b {
+  padding: 0;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.a')
+      expect(names).toContain('.b')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('dockerfile symbols', () => {
@@ -389,6 +570,39 @@ CMD ["node", "server.js"]
       expect(result.symbols.length).toBeGreaterThan(0)
       const kinds = result.symbols.map((s) => s.kind)
       expect(kinds.every((k) => k === 'directive')).toBe(true)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('extracts ARG/LABEL/VOLUME/USER/HEALTHCHECK/ONBUILD/SHELL/STOPSIGNAL/MAINTAINER directives (regression: extractDockerfileSymbols only recognized FROM/RUN/COPY/ADD/EXPOSE/ENV/WORKDIR/CMD/ENTRYPOINT, silently dropping every other real Dockerfile instruction)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const dockerFile = path.join(tmpDir, 'Dockerfile')
+
+      const content = `FROM node:18-alpine
+ARG BUILD_ENV=production
+LABEL maintainer="team@example.com"
+VOLUME /data
+USER node
+HEALTHCHECK CMD curl -f http://localhost/ || exit 1
+ONBUILD RUN echo hi
+SHELL ["/bin/bash", "-c"]
+STOPSIGNAL SIGTERM
+MAINTAINER Old Style <old@example.com>
+`
+
+      fs.writeFileSync(dockerFile, content)
+      const result = await parseFile(dockerFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names.some((n) => n.startsWith('ARG '))).toBe(true)
+      expect(names.some((n) => n.startsWith('LABEL '))).toBe(true)
+      expect(names.some((n) => n.startsWith('VOLUME '))).toBe(true)
+      expect(names.some((n) => n.startsWith('USER '))).toBe(true)
+      expect(names.some((n) => n.startsWith('HEALTHCHECK '))).toBe(true)
+      expect(names.some((n) => n.startsWith('ONBUILD '))).toBe(true)
+      expect(names.some((n) => n.startsWith('SHELL '))).toBe(true)
+      expect(names.some((n) => n.startsWith('STOPSIGNAL '))).toBe(true)
+      expect(names.some((n) => n.startsWith('MAINTAINER '))).toBe(true)
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })

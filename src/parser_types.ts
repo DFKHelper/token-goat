@@ -78,6 +78,7 @@ export type Language =
   | 'powershell'
   | 'apex'
   | 'salesforce_metadata'
+  | 'salesforce_markup'
   | 'unknown'
 
 /**
@@ -113,6 +114,10 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.bash', 'bash'],
   ['.md', 'markdown'],
   ['.markdown', 'markdown'],
+  // MDX heading syntax is plain ATX and works with the existing markdown extractor as-is,
+  // unlike .rst which genuinely needs an underline-style heading parser this extractor doesn't
+  // implement (left as 'unknown' deliberately).
+  ['.mdx', 'markdown'],
   ['.toml', 'toml'],
   ['.json', 'json'],
   ['.yaml', 'yaml'],
@@ -140,30 +145,17 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.env', 'env_file'],
   ['.cls', 'apex'],
   ['.trigger', 'apex'],
+  ['.cmp', 'salesforce_markup'],
+  ['.app', 'salesforce_markup'],
+  ['.evt', 'salesforce_markup'],
+  ['.intf', 'salesforce_markup'],
+  ['.design', 'salesforce_markup'],
+  ['.auradoc', 'salesforce_markup'],
+  ['.tokens', 'salesforce_markup'],
+  ['.page', 'salesforce_markup'],
+  ['.component', 'salesforce_markup'],
+  ['.email', 'salesforce_markup'],
 ])
-
-const SALESFORCE_METADATA_SUFFIXES = [
-  '.object-meta.xml',
-  '.field-meta.xml',
-  '.validationrule-meta.xml',
-  '.flow-meta.xml',
-  '.permissionset-meta.xml',
-  '.permissionsetgroup-meta.xml',
-  '.profile-meta.xml',
-  '.md-meta.xml',
-  '.layout-meta.xml',
-  '.flexipage-meta.xml',
-  '.app-meta.xml',
-  '.tab-meta.xml',
-  '.labels-meta.xml',
-  '.globalvalueset-meta.xml',
-  '.standardvalueset-meta.xml',
-  '.custompermission-meta.xml',
-  '.recordtype-meta.xml',
-  '.sharingrules-meta.xml',
-  '.workflow-meta.xml',
-  '.duplicaterule-meta.xml',
-]
 
 /**
  * Filenames (no extension or special name) that map directly to a language.
@@ -181,13 +173,15 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['package.json', 'json'],
   ['tsconfig.json', 'json'],
   ['.env', 'env_file'],
-  ['.env.local', 'env_file'],
-  ['.env.example', 'env_file'],
-  ['.env.sample', 'env_file'],
-  ['.env.test', 'env_file'],
-  ['.env.production', 'env_file'],
   ['.envrc', 'env_file'],
 ])
+
+// Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,
+// .production, plus anything a project invents -- .development, .staging, .ci, .docker, ...).
+// A fixed enumeration in FILENAME_LANGUAGE above could only ever cover the variants someone
+// remembered to list, silently falling through to 'unknown' for every other suffix. Does not
+// match ".envrc" (no dot after "env"), which FILENAME_LANGUAGE already handles separately.
+const DOTENV_VARIANT_RE = /^\.env(\..+)?$/
 
 /**
  * Detect the {@link Language} of a file from its path.
@@ -198,10 +192,12 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
  */
 export function detectLanguage(filePath: string): Language {
   const base = path.basename(filePath).toLowerCase()
+  if (DOTENV_VARIANT_RE.test(base)) return 'env_file'
+
   const byName = FILENAME_LANGUAGE.get(base)
   if (byName !== undefined) return byName
 
-  if (SALESFORCE_METADATA_SUFFIXES.some((suffix) => base.endsWith(suffix))) {
+  if (base.endsWith('-meta.xml')) {
     return 'salesforce_metadata'
   }
 

@@ -190,6 +190,27 @@ describe('extractSection — CRLF line endings', () => {
   })
 })
 
+describe('extractSection — key-value fallback does not mistake a bare URL for a heading', () => {
+  it('does not treat a bare URL line as a false "https"/"http" key-value heading', () => {
+    // Regression: KEYVALUE_HEADER_RE matched any "identifier followed by = or :" at column
+    // zero, so a line that's just a URL (e.g. a link on its own line in a plain-text/log file
+    // with no markdown/table headings) was mistaken for a key-value heading named "https" --
+    // the URL's scheme-separating ":" looks identical to a key/value ":" split.
+    const text = ['See docs at:', 'https://example.com/path', '', 'more text below'].join('\n')
+
+    expect(extractSection(text, 'https')).toBeNull()
+    expect(extractSection(text, 'http')).toBeNull()
+  })
+
+  it('still recognizes a real key-value heading that happens to precede a URL value', () => {
+    const text = ['docs_url = https://example.com/path', 'more text below'].join('\n')
+
+    const result = extractSection(text, 'docs_url')
+    expect(result).not.toBeNull()
+    expect(result?.content).toBe('docs_url = https://example.com/path\nmore text below')
+  })
+})
+
 describe('listSections', () => {
   it('returns all headings at all nesting levels from a file', () => {
     const file = tmpFile('doc.md', MD)
@@ -271,6 +292,40 @@ describe('extractSection — normalized heading matching', () => {
     const result = extractSection(MD_DASHES, 'Chain Recipes')
     expect(result).not.toBeNull()
     expect(result?.content).toContain('recipe content')
+  })
+})
+
+describe('extractSection — exact match wins over normalized/stripped tier (#231)', () => {
+  it('resolves the exact-text sibling heading, not an earlier heading that only normalizes to the same text', () => {
+    const md = [
+      '# Setup (Windows)',
+      'windows install steps',
+      '',
+      '# Setup (Linux)',
+      'linux install steps',
+      '',
+    ].join('\n')
+    const result = extractSection(md, 'Setup (Linux)')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Setup (Linux)')
+    expect(result?.content).toContain('linux install steps')
+    expect(result?.content).not.toContain('windows install steps')
+  })
+
+  it('resolves the exact-text sibling heading across an em-dash subtitle that strips to the same text', () => {
+    const md = [
+      '# Overview — legacy',
+      'legacy overview body',
+      '',
+      '# Overview — current',
+      'current overview body',
+      '',
+    ].join('\n')
+    const result = extractSection(md, 'Overview — current')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Overview — current')
+    expect(result?.content).toContain('current overview body')
+    expect(result?.content).not.toContain('legacy overview body')
   })
 })
 
@@ -403,6 +458,31 @@ describe('readSection', () => {
     expect(result?.heading).toBe('Install')
     expect(result?.content).toContain('run the installer')
   })
+
+  it('finds a heading whose text spans multiple lines (matching the indexer\'s dotall, whole-text scan)', () => {
+    // Regression: findHtmlHeaders used a non-dotall regex and scanned line-by-line, so a
+    // heading formatted across multiple lines (as extractHtml/extractLiquid already handled
+    // via a `gis`-flagged whole-text scan) was indexed as a symbol but unreachable via the
+    // live `section` command -- the two implementations had drifted out of sync.
+    const html = ['<h1>', '  Multi-line Title', '</h1>', '<p>body text</p>'].join('\n')
+    const file = tmpFile('multiline.html', html)
+    const result = readSection(file, 'Multi-line Title')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Multi-line Title')
+    expect(result?.content).toContain('body text')
+  })
+
+  it('does not find a heading commented out with <!-- --> (matching the indexer, which masks HTML comments before scanning)', () => {
+    // Regression: findHtmlHeaders never called maskHtmlNoise, so a commented-out heading was
+    // reachable via the live `section` command even though the indexer correctly excludes it
+    // from symbols/sections -- the reverse of the multi-line-heading drift above.
+    const html = ['<!-- <h1>Old Title</h1> -->', '<h2>Real Title</h2>', '<p>real body</p>'].join('\n')
+    const file = tmpFile('commented.html', html)
+    expect(readSection(file, 'Old Title')).toBeNull()
+    const result = readSection(file, 'Real Title')
+    expect(result).not.toBeNull()
+    expect(result?.content).toContain('real body')
+  })
 })
 
 describe('listSections regression: nested headings visibility', () => {
@@ -418,6 +498,32 @@ describe('listSections regression: nested headings visibility', () => {
     expect(sections).toContain('Subsection A1')
     expect(sections).toContain('Section B')
     expect(sections).toContain('Subsection B1')
+  })
+})
+
+describe('adjacent close+open fence markers regression', () => {
+  it('does not promote a fenced comment to a heading and still finds a heading after the fence', () => {
+    const content = [
+      '# Guide',
+      '## Usage',
+      '```',
+      '```js',
+      '# this comment line is fenced content',
+      '```',
+      '',
+      '## Install',
+      'npm i foo',
+      '',
+    ].join('\n')
+    const file = tmpFile('adjacent-fences.md', content)
+    const sections = listSections(file)
+    expect(sections).toEqual(['Guide', 'Usage', 'Install'])
+    expect(sections).not.toContain('this comment line is fenced content')
+
+    const result = readSection(file, 'Install')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Install')
+    expect(result?.content).toBe('## Install\nnpm i foo')
   })
 })
 

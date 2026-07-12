@@ -14,12 +14,14 @@ import { summarize, renderStats, renderShortStats } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 /** Write ``text`` directly to stdout (no colorama buffering layer needed in TS). */
 export function writeRaw(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(payload))
 }
 
 /**
@@ -112,6 +114,12 @@ export interface StatsOptions {
   homeDir?: string
   /** Show the full breakdown (by source/command/day) instead of just totals. */
   full?: boolean
+  /**
+   * Force the rich short KPI view even when stdout isn't a TTY (e.g. piped). Without this, a
+   * non-interactive caller (every AI agent invocation) silently falls back to the flat
+   * plain-text totals dump with no way to opt into the richer view.
+   */
+  short?: boolean
 }
 
 /** Run the ``token-goat stats`` command. */
@@ -128,6 +136,7 @@ export function runStats(opts: StatsOptions = {}): void {
       by_day: summary.by_day,
       by_project: summary.by_project,
       by_command: summary.by_command,
+      by_source: summary.by_source,
       window_days: summary.window_days,
     }
     process.stdout.write(JSON.stringify(out) + '\n')
@@ -138,8 +147,12 @@ export function runStats(opts: StatsOptions = {}): void {
   if (opts.homeDir !== undefined) {
     renderOpts.homeDir = opts.homeDir
   }
-  // Bare `stats` shows totals only; `--full` gates the existing rich/plain breakdown.
-  if (opts.full === true) {
+  // `--short` always wins: it exists specifically to force the short KPI view regardless of
+  // `--full` or TTY status. Otherwise bare `stats` shows totals only; `--full` gates the
+  // existing rich/plain breakdown.
+  if (opts.short === true) {
+    renderShortStats({ ...renderOpts, force: true })
+  } else if (opts.full === true) {
     renderStats(renderOpts)
   } else {
     renderShortStats(renderOpts)

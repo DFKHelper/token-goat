@@ -165,6 +165,20 @@ describe('cmdBashHistory', () => {
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
     expect(() => cmdBashHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
   })
+
+  // #232 regression: a bare Number.parseInt accepts trailing garbage ("30x" -> 30) and
+  // exponential notation ("1e3" -> 1) instead of rejecting them.
+  it('rejects trailing garbage in --limit instead of silently truncating', () => {
+    expect(() => cmdBashHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+  })
+
+  it('rejects exponential notation in --limit instead of silently truncating', () => {
+    expect(() => cmdBashHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+  })
+
+  it('rejects a negative --limit instead of silently clamping to 1', () => {
+    expect(() => cmdBashHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
+  })
 })
 
 // ── web-history ───────────────────────────────────────────────────────────────
@@ -208,6 +222,16 @@ describe('cmdWebHistory', () => {
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
     expect(() => cmdWebHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+  })
+
+  // #232 regression: same trailing-garbage / exponential-notation gap as cmdBashHistory's
+  // --limit (see above).
+  it('rejects trailing garbage in --limit instead of silently truncating', () => {
+    expect(() => cmdWebHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+  })
+
+  it('rejects exponential notation in --limit instead of silently truncating', () => {
+    expect(() => cmdWebHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
   })
 })
 
@@ -283,6 +307,22 @@ describe('cmdPruneCache', () => {
 
   it('rejects a non-numeric --maxCount even when --maxAgeHours is valid', () => {
     expect(() => cmdPruneCache({ maxCount: 'NaN', maxAgeHours: '2' })).toThrow(/--maxCount must be a valid integer/)
+  })
+
+  // #232 regression: Number.parseInt accepts trailing garbage ("5x" -> 5) and exponential
+  // notation ("1e3" -> 1) instead of rejecting them, and the old Math.max(0, parsed) clamp
+  // silently coerced a negative value to 0 (which evicts nearly the whole cache) instead of
+  // erroring -- exactly the wrong-direction failure mode for a destructive eviction bound.
+  it('rejects trailing garbage in --maxCount instead of silently truncating', () => {
+    expect(() => cmdPruneCache({ maxCount: '5x' })).toThrow(/--maxCount must be a valid integer/)
+  })
+
+  it('rejects exponential notation in --maxCount instead of silently truncating', () => {
+    expect(() => cmdPruneCache({ maxCount: '1e3' })).toThrow(/--maxCount must be a valid integer/)
+  })
+
+  it('rejects a negative --maxCount instead of silently clamping to 0', () => {
+    expect(() => cmdPruneCache({ maxCount: '-5' })).toThrow(/--maxCount must be a valid integer/)
   })
 })
 

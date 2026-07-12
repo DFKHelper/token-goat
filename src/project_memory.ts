@@ -4,9 +4,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { dataDir } from './constants.js';
 import { atomicWriteText, ensureDirSync } from './util.js';
 
 const MAX_ENTRIES = 30;
@@ -18,12 +18,12 @@ const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
  * Return the TOML file path for this project's memory entries.
  */
 export function memoryPath(projectHash: string): string {
-  // Import paths dynamically to avoid circular dependency at startup
-  // os.homedir() (not a manual HOME/USERPROFILE-only check) matches the convention used by
-  // tokenGoatHome() in disk_cache.ts: it never silently degrades to a relative '.' path when
-  // both env vars are unset.
-  const dataDir = process.env['XDG_DATA_HOME'] || path.join(os.homedir(), '.local', 'share');
-  return path.join(dataDir, 'token-goat', 'projects', `${projectHash}_memory.toml`);
+  // Uses the shared platform-aware data-dir resolver (constants.ts::dataDir), which
+  // branches Windows (%LOCALAPPDATA%\dfk-helper\token-goat) vs macOS
+  // (~/Library/Application Support/token-goat) vs Linux XDG, and validates any
+  // env-var override via safeEnvDir before using it. constants.ts is a dependency-free
+  // leaf module (only imports version.js), so there is no circular-dependency risk here.
+  return path.join(dataDir(), 'projects', `${projectHash}_memory.toml`);
 }
 
 function validateKey(key: string): void {

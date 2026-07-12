@@ -496,7 +496,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -521,6 +521,8 @@ describe('stats', () => {
       ).run(now, 'image_shrink', 1000, 5000)
       db.close()
 
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       let output = ''
       const originalLog = console.log
       console.log = (msg: string) => {
@@ -530,6 +532,7 @@ describe('stats', () => {
         _renderStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
         closeAllDbs()
         fs.rmSync(customHome, { recursive: true, force: true })
       }
@@ -540,6 +543,61 @@ describe('stats', () => {
       expect(output).toContain('Total events:   1')
       expect(output).toContain('Tokens saved:   1000')
     })
+
+    it('flags zero direct command invocations when hints fired but no commands were run', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-hints-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      // Only hint kinds -- no symbol_lookup/read_replacement/outline/etc -- so
+      // by_command stays empty while by_source[hint] is non-zero.
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'session_hint', 100, 500)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      // Force the plain-text (non-TTY) render path deterministically -- ambient
+      // TTY detection varies by shell/CI runner and must not decide which code
+      // path this test exercises.
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      expect(output).toContain('0 direct command')
+      expect(output).toContain('hint(s) fired but not acted on')
+    })
   })
 
   describe('renderShortStats', () => {
@@ -548,7 +606,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -573,6 +631,8 @@ describe('stats', () => {
       ).run(now, 'image_shrink', 1000, 5000)
       db.close()
 
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       let output = ''
       const originalLog = console.log
       console.log = (msg: string) => {
@@ -582,6 +642,7 @@ describe('stats', () => {
         _renderShortStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
         closeAllDbs()
         fs.rmSync(customHome, { recursive: true, force: true })
       }
@@ -618,7 +679,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -672,6 +733,122 @@ describe('stats', () => {
       expect(output).not.toContain('By command')
       expect(output).not.toContain('By day')
       expect(output).not.toContain('Insights')
+    })
+
+    it('force:true reaches the rich KPI view even when stdout is not a TTY (piped)', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-force-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'image_shrink', 1000, 5000)
+      db.close()
+
+      const origIsTty = process.stdout.isTTY
+      const origNoColor = process.env['NO_COLOR']
+      // The key assertion: isTTY is explicitly false, simulating an agent invoking through a
+      // pipe (no TTY at all) -- exactly the case `--short`/`force` exists to unblock.
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+      delete process.env['NO_COLOR']
+
+      let output = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = ((chunk: string) => {
+        output += chunk
+        return true
+      }) as typeof process.stdout.write
+
+      try {
+        _renderShortStats({ windowDays: 30, homeDir: customHome, force: true })
+      } finally {
+        process.stdout.write = origWrite
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        if (origNoColor !== undefined) process.env['NO_COLOR'] = origNoColor
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      // Same shape as the TTY-rich assertions above: the rich KPI view, not the flat totals dump.
+      expect(output).toContain('token-goat')
+      expect(output).toContain('events')
+      expect(output).toContain('--full')
+      expect(output).not.toContain('By source')
+      expect(output).not.toContain('By command')
+      expect(output).not.toContain('By day')
+      expect(output).not.toContain('Insights')
+    })
+
+    it('force:true still respects an explicit NO_COLOR preference (falls back to flat totals)', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-force-nocolor-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'image_shrink', 1000, 5000)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origNoColor = process.env['NO_COLOR']
+      process.env['NO_COLOR'] = '1'
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderShortStats({ windowDays: 30, homeDir: customHome, force: true })
+      } finally {
+        console.log = originalLog
+        if (origNoColor === undefined) delete process.env['NO_COLOR']
+        else process.env['NO_COLOR'] = origNoColor
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+      // NO_COLOR wins over force -- the flat plain-text totals path (_renderShortTotals), not
+      // the rich KPI renderer.
+      expect(output).toContain('Total events:   1')
+      expect(output).toContain('--full')
     })
   })
 

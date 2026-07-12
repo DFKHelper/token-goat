@@ -603,12 +603,22 @@ export function insertChunkVector(
   stmt.run(BigInt(rowid), packVec(embedding))
 }
 
+/**
+ * Outcome of an embedding attempt, so callers can distinguish a real embed (or a legitimately
+ * empty file) from a skip forced by absent optional deps (@xenova/transformers model or the
+ * sqlite-vec `chunk_vectors` table). The caller (parser.ts::indexFileEmbeddings) stamps a bare
+ * `embed_sha` for `'embedded'` but an `unavailable:`-prefixed marker for `'unavailable'`, so a
+ * file skipped only because deps were missing is re-embedded once the deps are installed instead
+ * of masquerading as permanently fresh. See {@link embeddingsDepsAvailable}.
+ */
+export type EmbedOutcome = 'embedded' | 'unavailable'
+
 export async function upsertChunks(
   db: BetterSqlite3Database,
   chunks: Chunk[],
-): Promise<void> {
+): Promise<EmbedOutcome> {
   if (chunks.length === 0) {
-    return
+    return 'embedded'
   }
   // Every chunk here comes from chunkFile(filePath, content) for one file, so they all
   // share the same filePath - safe to read it once, guarded by the length check above.
@@ -619,13 +629,15 @@ export async function upsertChunks(
     // Still clear the file's stale rows even though we can't reinsert - matches the
     // unconditional cleanup indexFile used to perform before this delete moved here.
     deleteFileEmbeddings(db, filePath)
-    return
+    // Report the skip so the caller stamps an unavailable-marker embed_sha (not a bare sha),
+    // letting this file be re-embedded once the model dependency is installed.
+    return 'unavailable'
   }
 
   // Without the optional sqlite-vec chunk_vectors table (the table is absent when the native binary did not load), semantic indexing is impossible and chunk rows have no independent reader - they are only ever read as JOIN targets of a vector hit - so skip the whole operation rather than inserting unsearchable rows and paying the embedTexts cost. isAvailable() above gates only the model, which installs independently of sqlite-vec.
   if (!chunkVectorsTableExists(db)) {
     deleteFileEmbeddings(db, filePath)
-    return
+    return 'unavailable'
   }
 
   // Embed all chunk texts.
@@ -669,6 +681,7 @@ export async function upsertChunks(
   })
 
   tx()
+  return 'embedded'
 }
 
 // sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no
@@ -963,27 +976,65 @@ export async function indexFile(
   filePath: string,
   content: string,
   boundaries: ChunkBoundary[] = [],
-): Promise<number> {
+): Promise<EmbedOutcome> {
   const chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
   if (chunks.length > 0) {
     // upsertChunks deletes the file's prior chunks/vectors as part of the same
     // transaction as the new insert, so a failed insert can't leave them
-    // deleted-but-not-replaced.
-    await upsertChunks(db, chunks)
-  } else {
-    deleteFileEmbeddings(db, filePath)
+    // deleted-but-not-replaced. It returns 'unavailable' when the optional embedding
+    // deps are absent so the caller can avoid falsely stamping the file as embedded.
+    return upsertChunks(db, chunks)
   }
-  return chunks.length
+  // An empty file has nothing to embed regardless of whether the optional deps are present,
+  // so it is a genuinely terminal 'embedded' state (a bare embed_sha), never 'unavailable'.
+  deleteFileEmbeddings(db, filePath)
+  return 'embedded'
 }
 
-// Does the optional sqlite-vec `chunk_vectors` virtual table exist on this connection? It is created only when the sqlite-vec extension loads (see db.ts), so on a platform without the prebuilt binary it is absent and any reference to it throws "no such table". A vec0 table registers in sqlite_master as a plain `table` row under its exact name (verified), so this name+type probe detects it without matching vec0's shadow tables (chunk_vectors_chunks, chunk_vectors_rowids, ...).
+// Per-connection cache of whether `chunk_vectors` is actually usable (see chunkVectorsTableExists).
+// Keyed on the connection object so it is dropped when the connection is garbage-collected. A
+// connection's vec0 load state is fixed for its lifetime (db.ts loads sqlite-vec once at open),
+// so caching the boolean is safe and avoids re-probing on every embed/prune/search call.
+const _chunkVectorsUsable = new WeakMap<BetterSqlite3Database, boolean>()
+
+// Is the optional sqlite-vec `chunk_vectors` virtual table actually usable on this connection?
+// A plain sqlite_master name probe is not enough: the vec0 table row PERSISTS in sqlite_master
+// once created, but its backing module is registered per-connection by sqlite-vec's runtime
+// load. If global.db was first created while sqlite-vec loaded (so the row exists), then
+// token-goat is reinstalled without the optional native dep (--no-optional, or a native build
+// failure after a Node upgrade), db.ts silently swallows the failed load -- yet the row is still
+// in sqlite_master. A bare name probe would return true, and the next `chunk_vectors` statement
+// would throw "no such module: vec0" at prepare time, aborting whatever transaction it ran in
+// (e.g. removeFileFromIndex, leaking symbols/refs/files rows) and crashing searchSemantic. So
+// probe real usability with a trivial SELECT: it throws "no such table" when the row is absent
+// AND "no such module: vec0" when the row exists but the module did not load, covering both.
 function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
-  return (
-    db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'chunk_vectors'")
-      .get() !== undefined
-  )
+  const cached = _chunkVectorsUsable.get(db)
+  if (cached !== undefined) {
+    return cached
+  }
+  let usable: boolean
+  try {
+    db.prepare('SELECT rowid FROM chunk_vectors LIMIT 1').get()
+    usable = true
+  } catch {
+    usable = false
+  }
+  _chunkVectorsUsable.set(db, usable)
+  return usable
+}
+
+/**
+ * Are BOTH optional embedding dependencies present on this connection: the @xenova/transformers
+ * model ({@link isAvailable}) AND a usable sqlite-vec `chunk_vectors` table
+ * ({@link chunkVectorsTableExists})? A real embed needs both -- upsertChunks reports
+ * `'unavailable'` when either is missing. Freshness gates (worker.ts/cli.ts) use this to decide
+ * whether an `unavailable:`-marked embed_sha must trigger a re-embed (deps now present) or can
+ * still be treated as fresh (deps still absent, so re-embedding would just re-skip).
+ */
+export function embeddingsDepsAvailable(db: BetterSqlite3Database): boolean {
+  return isAvailable() && chunkVectorsTableExists(db)
 }
 
 /**

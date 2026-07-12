@@ -140,6 +140,18 @@ class After {
     expect(state).toBeNull()
   })
 
+  it('registers a genuine second raw-string opener after a first raw string closes mid-line, even when the closed string\'s own content contains an odd (unbalanced) apostrophe (fail-on-buggy: isInsideStringLiteral scanned from index 0 instead of from `from`, so the closed string\'s dangling apostrophe made the second opener look like it was still inside a single-quoted string)', () => {
+    const openState: MultilineStringState = { kind: 'tripleQuote', identifier: '3' }
+    const { state } = stripMultilineStringSpan(`it's""" val b = """`, openState, 'kotlin')
+    // The first `"""` (closing the carried-in raw string) lands right after `it's`; that
+    // content -- not real code, just the already-closed string's own body -- contains a lone
+    // apostrophe. Scanning isInsideStringLiteral from index 0 (pre-fix) reads that dangling
+    // apostrophe as an unclosed single-quoted string spanning all the way to the second `"""`,
+    // wrongly vetoing it as "inside a string literal" and leaving mlState null.
+    expect(state).not.toBeNull()
+    expect(state?.kind).toBe('tripleQuote')
+  })
+
   it('handles a single-line """ raw string without breaking later symbols', () => {
     const content = `class Before {
   fun beforeMethod(): Int {
@@ -259,6 +271,30 @@ public class After {
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
     expect(after?.docstring).toBe('After')
+  })
+
+  it('registers a genuine second verbatim-string opener after a first verbatim string closes mid-line, even when the closed string\'s own content contains an http:// URL (fail-on-buggy: lineCommentStartIndex scanned from index 0 instead of from `from`, so the closed string\'s http:// looked like a real // line comment)', () => {
+    const openState: MultilineStringState = { kind: 'verbatim', identifier: '' }
+    const { state } = stripMultilineStringSpan('http://x"; var b = @"', openState, 'csharp')
+    // The first `"` (closing the carried-in verbatim string) lands right after `http://x`; that
+    // content is the already-closed string's own body, not real code. Scanning
+    // lineCommentStartIndex from index 0 (pre-fix) reads its `http://` as a real `//` line
+    // comment starting at index 5, wrongly vetoing the genuine `var b = @"` opener at index 19
+    // as "inside a comment" and leaving mlState null.
+    expect(state).not.toBeNull()
+    expect(state?.kind).toBe('verbatim')
+  })
+
+  it('registers a genuine second verbatim-string opener after a first verbatim string closes mid-line, even when the closed string\'s own content contains an unbalanced /* (fail-on-buggy: isInsideSameLineBlockComment scanned from index 0 instead of from `from`, so the closed string\'s dangling /* made the second opener look like it was still inside a block comment)', () => {
+    const openState: MultilineStringState = { kind: 'verbatim', identifier: '' }
+    const { state } = stripMultilineStringSpan('/* unterminated"; var b = @"', openState, 'csharp')
+    // The first `"` (closing the carried-in verbatim string) lands right after `/*
+    // unterminated`; that content is the already-closed string's own body, not real code.
+    // Scanning isInsideSameLineBlockComment from index 0 (pre-fix) reads its unbalanced `/*` as
+    // a real block-comment opener with no closer on the line, wrongly vetoing the genuine
+    // `var b = @"` opener as "inside a block comment" and leaving mlState null.
+    expect(state).not.toBeNull()
+    expect(state?.kind).toBe('verbatim')
   })
 })
 
@@ -455,5 +491,110 @@ describe('stripMultilineStringSpan interaction with single-line content', () => 
     expect(masked.join('\n')).not.toContain('{')
     expect(masked.join('\n')).not.toContain('}')
     expect(masked[2]).toBe('   ;')
+  })
+})
+
+// Regression: findMultilineOpener did not check whether opener-shaped text (e.g. `<<<EOT`,
+// `"""`, `@"`) sat inside a real `//`/`#` line comment before treating it as a genuine opener.
+// An opener that never closes (no matching closer anywhere later in the file) then masked
+// every remaining line as string content until EOF, silently dropping every symbol declared
+// after the commented-out example.
+describe('comment-awareness: opener-shaped text inside a real line comment is not a real opener', () => {
+  it('PHP: does not open a heredoc from opener-shaped text inside a // comment', () => {
+    const content = `<?php
+class Before {
+    public function beforeMethod() {
+        return 1;
+    }
+}
+
+// example usage: <<<EOT usage pattern
+class After {
+    public function afterMethod() {
+        return 2;
+    }
+}
+`
+    const { symbols } = extractPhp(content, 'commented_heredoc.php')
+    const after = symbols.find((s) => s.name === 'afterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('Kotlin: does not open a raw string from opener-shaped text inside a // comment', () => {
+    const content = `class Before {
+  fun beforeMethod(): Int {
+    return 1
+  }
+}
+
+// looks risky: """{ but is just a line comment
+class After {
+  fun afterMethod(): Int {
+    return 2
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'commented_raw_string.kt')
+    const after = symbols.find((s) => s.name === 'afterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('C#: does not open a raw string from opener-shaped text inside a // comment', () => {
+    const content = `class Before {
+    public int BeforeMethod() {
+        return 1;
+    }
+}
+
+// looks risky: """{ but is just a line comment
+class After {
+    public int AfterMethod() {
+        return 2;
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'commented_raw_string.cs')
+    const after = symbols.find((s) => s.name === 'AfterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('C#: does not open a verbatim string from opener-shaped text inside a // comment', () => {
+    const content = `class Before {
+    public int BeforeMethod() {
+        return 1;
+    }
+}
+
+// looks risky: @"{ but is just a line comment
+class After {
+    public int AfterMethod() {
+        return 2;
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'commented_verbatim_string.cs')
+    const after = symbols.find((s) => s.name === 'AfterMethod')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('After')
+  })
+
+  it('PowerShell: does not open a here-string from opener-shaped text inside a # comment', () => {
+    const content = `class Before {
+  BeforeMethod() {
+    Write-Host "before"
+  }
+}
+
+# example usage: @"
+function AfterFunction {
+  Write-Host "after"
+}
+`
+    const { symbols } = extractPowershell(content, 'commented_here_string.ps1')
+    const after = symbols.find((s) => s.name === 'AfterFunction')
+    expect(after?.kind).toBe('function')
   })
 })

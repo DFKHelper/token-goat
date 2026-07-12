@@ -36,6 +36,7 @@ const setPlatform = (p: string): void => {
 let TMP: string
 let realPlatform: string
 let origAppData: string | undefined
+let origXdgConfigHome: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-opencode-install-'))
@@ -44,6 +45,7 @@ beforeEach(() => {
 
   realPlatform = process.platform
   origAppData = process.env['APPDATA']
+  origXdgConfigHome = process.env['XDG_CONFIG_HOME']
   // Always sandbox APPDATA into TMP by default, regardless of host platform --
   // on a real Windows host, opencodeGlobalConfigDir()'s win32 branch reads
   // process.env.APPDATA directly, so without this every test here would read
@@ -51,6 +53,9 @@ beforeEach(() => {
   // mock above, which only isolates the non-Windows branch). Individual tests
   // below override this further where they need to exercise a specific branch.
   process.env['APPDATA'] = path.join(TMP, 'appdata')
+  // Sandbox XDG_CONFIG_HOME off by default too, so the ~/.config fallback tests
+  // exercise the actual fallback branch instead of a developer's real override.
+  delete process.env['XDG_CONFIG_HOME']
 })
 
 afterEach(() => {
@@ -60,12 +65,37 @@ afterEach(() => {
   } else {
     process.env['APPDATA'] = origAppData
   }
+  if (origXdgConfigHome === undefined) {
+    delete process.env['XDG_CONFIG_HOME']
+  } else {
+    process.env['XDG_CONFIG_HOME'] = origXdgConfigHome
+  }
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
 describe('opencodePluginPath', () => {
   it('resolves under ~/.config/opencode/plugins on non-Windows', () => {
     setPlatform('linux')
+    expect(opencodePluginPath()).toBe(
+      path.join(TMP, 'home', '.config', 'opencode', 'plugins', 'token-goat.ts'),
+    )
+  })
+
+  // Regression: opencode resolves its plugin root via Global.Path.config, which uses
+  // the xdg-basedir package and honors XDG_CONFIG_HOME on macOS/Linux. token-goat's
+  // installer used to hardcode ~/.config unconditionally, so a user with
+  // XDG_CONFIG_HOME set would have the plugin written somewhere opencode never looks.
+  it('resolves under $XDG_CONFIG_HOME/opencode/plugins on non-Windows when set', () => {
+    setPlatform('linux')
+    process.env['XDG_CONFIG_HOME'] = path.join(TMP, 'xdg-config')
+    expect(opencodePluginPath()).toBe(
+      path.join(TMP, 'xdg-config', 'opencode', 'plugins', 'token-goat.ts'),
+    )
+  })
+
+  it('falls back to ~/.config on non-Windows when XDG_CONFIG_HOME is blank', () => {
+    setPlatform('linux')
+    process.env['XDG_CONFIG_HOME'] = '   '
     expect(opencodePluginPath()).toBe(
       path.join(TMP, 'home', '.config', 'opencode', 'plugins', 'token-goat.ts'),
     )

@@ -11,19 +11,23 @@
  * `../bridges/codex_install.ts`'s `installCodex` and `../bridges/pi_install.ts`'s
  * `installPi`.
  *
- * Single install target: `~/.config/opencode/plugins/token-goat.ts` on
- * macOS/Linux, `%APPDATA%\\opencode\\plugins\\token-goat.ts` on Windows.
- * opencode resolves its global config/plugin root via `Global.Path.config`
+ * Single install target: `$XDG_CONFIG_HOME/opencode/plugins/token-goat.ts`
+ * (falling back to `~/.config/opencode/plugins/token-goat.ts`) on macOS/Linux,
+ * `%APPDATA%\\opencode\\plugins\\token-goat.ts` on Windows. opencode resolves
+ * its global config/plugin root via `Global.Path.config`
  * (packages/core/src/global.ts), which is `path.join(xdgConfig, "opencode")`
  * using the `xdg-basedir` npm package -- on Windows that package resolves
  * `xdgConfig` to `process.env.APPDATA` (not `~/.config`), so the Windows path
  * really is APPDATA-rooted, not a Codex/Gemini/pi-style dotfile-under-homedir
- * path; verified directly against opencode's real source (not assumed by
- * analogy with the other bridges) rather than trusting the docs' Unix-only
- * "~/.config/opencode/plugins/" wording at face value. No `XDG_CONFIG_HOME`
- * override is honored here, matching every other bridge in this file (Codex,
- * Gemini, and pi's writers are all hardcoded to their own tool's conventions
- * with no env-var override either).
+ * path; on macOS/Linux it honors `XDG_CONFIG_HOME` per the XDG base
+ * directory spec, falling back to `~/.config` when unset or blank; verified
+ * directly against opencode's real source (not assumed by analogy with the
+ * other bridges) rather than trusting the docs' Unix-only
+ * "~/.config/opencode/plugins/" wording at face value. Unlike the Windows
+ * `APPDATA` case, this override is opencode-specific: Codex, Gemini, and pi's
+ * writers are all hardcoded to their own tool's conventions with no env-var
+ * override, because none of those tools resolve their config root through
+ * `xdg-basedir`.
  *
  * README documents only a global install for opencode (no `--local` variant
  * the way pi has one), so this module wires only the one path.
@@ -53,6 +57,8 @@ function opencodeGlobalConfigDir(): string {
     if (appData !== undefined && appData.trim() !== '') return appData
     return path.join(os.homedir(), 'AppData', 'Roaming')
   }
+  const xdgConfigHome = process.env['XDG_CONFIG_HOME']
+  if (xdgConfigHome !== undefined && xdgConfigHome.trim() !== '') return xdgConfigHome
   return path.join(os.homedir(), '.config')
 }
 

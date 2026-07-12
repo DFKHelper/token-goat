@@ -166,6 +166,31 @@ function groupHasTokenGoat(groups: CodexMatcherGroup[] | undefined, matcher: str
   return false
 }
 
+/**
+ * True when `groups` already has a token-goat hook entry under `matcher` whose
+ * command text is byte-equal to `expectedCommand` -- the exact string
+ * {@link hookCommandFor} would produce right now. A marker-matched entry whose
+ * baked `process.execPath`/entry-path segment has since gone stale (deleted
+ * dev checkout, nvm/node-version switch) is NOT "already installed": it
+ * matches the marker but not this stricter check, so {@link installCodex} can
+ * tell "current" apart from "stale but marker-shaped" and upgrade the latter
+ * in place instead of skipping it.
+ */
+function groupHasCurrentCodexCommand(
+  groups: CodexMatcherGroup[] | undefined,
+  matcher: string,
+  expectedCommand: string,
+): boolean {
+  if (groups === undefined) return false
+  for (const group of groups) {
+    if (group.matcher !== matcher) continue
+    for (const h of group.hooks ?? []) {
+      if (h.command === expectedCommand) return true
+    }
+  }
+  return false
+}
+
 
 /**
  * Build the shell command Codex should run for one hook entry.
@@ -225,10 +250,34 @@ export function installCodex(): CodexInstallResult {
   let hooksChanged = false
   for (const event of CODEX_HOOK_EVENTS) {
     const eventArg = CODEX_EVENT_ARG[event]
+    const expectedCommand = hookCommandFor(scriptPath, eventArg)
     const groups = [...(hooks[event] ?? [])]
     for (const matcher of CODEX_MATCHERS) {
-      if (groupHasTokenGoat(groups, matcher)) continue
-      groups.push({ matcher, hooks: [{ type: 'command', command: hookCommandFor(scriptPath, eventArg) }] })
+      if (groupHasCurrentCodexCommand(groups, matcher, expectedCommand)) continue
+
+      // A marker-matched entry whose baked command text is no longer current
+      // (stale execPath/entry path from a deleted dev checkout or a node
+      // version switch) is not "already installed" -- strip it before writing
+      // the current command, so a re-install upgrades in place instead of
+      // leaving a dead, unreachable entry next to nothing.
+      const nextGroups: CodexMatcherGroup[] = []
+      for (const group of groups) {
+        if (group.matcher !== matcher) {
+          nextGroups.push(group)
+          continue
+        }
+        const keptHooks = (group.hooks ?? []).filter((h) => !isCodexTokenGoatCommand(h.command))
+        if (keptHooks.length > 0) {
+          nextGroups.push({ ...group, hooks: keptHooks })
+        } else if ((group.hooks ?? []).length === 0) {
+          // A group that had no hooks to begin with is user data; preserve it.
+          nextGroups.push(group)
+        }
+      }
+      groups.length = 0
+      groups.push(...nextGroups)
+
+      groups.push({ matcher, hooks: [{ type: 'command', command: expectedCommand }] })
       hooksChanged = true
     }
     hooks[event] = groups

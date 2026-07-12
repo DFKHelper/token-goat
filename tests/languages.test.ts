@@ -284,6 +284,82 @@ public class Foo {
     expect(bar).toBeDefined()
     expect(bar?.docstring).toBe('Foo')
   })
+
+  it('does not phantom-capture a nested generic type argument as the method name', () => {
+    // Regression: METHOD_RE's name-suffix pattern was `[<(]` (matches any `<` or `(`), so a
+    // generic return type followed by another generic type argument let the lazy name-capture
+    // group stop at the FIRST `<` it saw - inside the return type itself - phantom-capturing
+    // the inner type name ("List") instead of the real method name ("GetMap"). A `readonly`
+    // field also got miscaptured as a method because `readonly` was absent from the modifier
+    // alternation, so the field's type name ("Dictionary") was phantom-captured as a method too.
+    const content = `public class Foo {
+    public Dictionary<string, List<int>> GetMap() { return null; }
+    private static readonly Dictionary<string, Func<int>> Handlers = new();
+    public T Parse<T>(string s) { return default; }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    const methods = symbols.filter((s) => s.kind === 'method').map((s) => s.name)
+    expect(methods).toContain('GetMap')
+    expect(methods).not.toContain('List')
+    expect(methods).not.toContain('Dictionary')
+    expect(methods).not.toContain('Handlers')
+    expect(methods).toContain('Parse')
+  })
+
+  it('assigns distinct symbol kinds for struct/interface/enum instead of collapsing all to class', () => {
+    // Regression: CLASS_HEADER_RE only captured the type name, never the class/struct/interface/
+    // enum/record keyword itself, so the usage site hardcoded kind to the literal string 'class'
+    // for every one of these constructs.
+    const content = `public struct Point {
+    public int X;
+}
+
+public interface IWidget {
+    void Render();
+}
+
+public enum Color {
+    Red,
+    Green,
+}
+
+public record Vector(int X, int Y);
+`
+    const { symbols } = extractCsharp(content, 'Shapes.cs')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'IWidget')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+    // record is class-like, so it still maps to 'class'.
+    expect(symbols.find((s) => s.name === 'Vector')?.kind).toBe('class')
+  })
+
+  it('does not open a phantom verbatim string on an ordinary literal ending in "@"', () => {
+    // Regression: findMultilineOpener's verbatim-string branch (`/\$?@\$?"/`) had no
+    // isInsideStringLiteral guard, unlike the sibling triple-quote branch a few lines above it.
+    // An ordinary string like `"@"` textually matches `@"`, so it was misread as opening a
+    // verbatim string that never closes on this line, masking every subsequent line until a
+    // stray `"` happened to appear anywhere later in the file - swallowing both methods below.
+    const content = `public class ConfigHolder
+{
+    private const string At = "@";
+
+    public void MethodOne()
+    {
+        System.Console.WriteLine("one");
+    }
+
+    public void MethodTwo()
+    {
+        System.Console.WriteLine("two");
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    const methods = symbols.filter((s) => s.kind === 'method').map((s) => s.name)
+    expect(methods).toContain('MethodOne')
+    expect(methods).toContain('MethodTwo')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -316,6 +392,24 @@ function helperFn() {}
     const { symbols, imports } = extractPhp('', 'empty.php')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
+  })
+
+  it('indexes a final class constant, including a final combined with a visibility modifier', () => {
+    // PHP 8.1+ allows `final const`. Regression: the modifier group allowed at most one modifier
+    // and did not include `final` at all, so `final const FOO = 1;` and
+    // `final public const BAR = 2;` silently dropped the constant from the index.
+    const content = `<?php
+class Foo {
+    final const FOO = 1;
+    final public const BAR = 2;
+    public const BAZ = 3;
+}
+`
+    const { symbols } = extractPhp(content, 'Foo.php')
+    const consts = symbols.filter((s) => s.kind === 'const').map((s) => s.name)
+    expect(consts).toContain('FOO')
+    expect(consts).toContain('BAR')
+    expect(consts).toContain('BAZ')
   })
 
   it('pops class scope at the closing brace so later top-level decls are not mis-parented', () => {
@@ -482,6 +576,26 @@ implements Bar, Baz
     expect(method1?.kind).toBe('method')
     expect(method1?.docstring).toBe('Foo')
   })
+
+  it('classifies kind correctly when the declared name is itself a substring of the keyword', () => {
+    // Regression: kind was derived from `stripped.split(name)[0]` then checking
+    // includes('interface'|'trait'|'enum'). When the name is a case-sensitive substring of the
+    // keyword itself (e.g. an interface literally named "face", so the source reads
+    // "interface face"), split(name) lands its split point INSIDE the keyword text, corrupting
+    // the substring check and misclassifying the symbol as kind 'class'.
+    const content = `<?php
+interface face {
+    public function look();
+}
+enum num {
+}
+`
+    const { symbols } = extractPhp(content, 'weird.php')
+    const face = symbols.find((s) => s.name === 'face')
+    expect(face?.kind).toBe('interface')
+    const num = symbols.find((s) => s.name === 'num')
+    expect(num?.kind).toBe('enum')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -556,6 +670,73 @@ describe('html adapter', () => {
     expect(nextHeading?.kind).toBe('heading')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
+
+  it('does not match id=/class= inside a longer attribute name lacking a left boundary', () => {
+    // Regression: ID_RE/CLASS_RE had no left boundary, so they matched inside longer attribute
+    // names like data-id=, data-testid=, gid=, uuid=, valid=, data-class= etc, falsely feeding
+    // html_id/html_class symbols. The same unboundaried pattern was inlined a third time in the
+    // heading-anchor extraction, so a heading like `<h2 data-id="x">` registered a false anchor.
+    const content = `<div data-id="phantom-id" data-testid="phantom-testid" gid="phantom-gid" data-class="phantom-class">real</div>
+<div id="real-id" class="real-class">content</div>
+<h2 data-id="not-an-anchor">Real Heading</h2>`
+    const { symbols, sections } = extractHtml(content, 'boundary.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('phantom-id')
+    expect(names).not.toContain('phantom-testid')
+    expect(names).not.toContain('phantom-gid')
+    expect(names).not.toContain('phantom-class')
+    expect(names).toContain('real-id')
+    expect(names).toContain('real-class')
+    expect(sections.some((s) => s.heading === 'not-an-anchor')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Heading')).toBe(true)
+  })
+
+  it('dedupes and caps id/class symbols instead of emitting one row per occurrence unbounded', () => {
+    // Regression: extractHtml pushed one symbol per id= occurrence and per class token with no
+    // MAX_SYMBOLS cap and no dedup, unlike every other language adapter in this codebase.
+    // Minified/framework-generated HTML can emit thousands of duplicate symbol rows.
+    const lines: string[] = []
+    for (let i = 0; i < 600; i++) {
+      lines.push(`<div id="dup-widget" class="dup-token">item ${i}</div>`)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractHtml(content, 'huge.html')
+    // Each id/class occurrence is on its own line, so (name, line) dedup does not collapse them
+    // - without a cap this would emit 1200 symbol rows (600 ids + 600 classes). The cap must
+    // stop emission at exactly MAX_SYMBOLS.
+    expect(symbols.length).toBe(500)
+    // Duplicate id/class values within the SAME line must be deduped, not just capped.
+    const sameLineContent = '<div id="only-once" class="only-once-cls only-once-cls">x</div>'
+    const { symbols: sameLineSymbols } = extractHtml(sameLineContent, 'sameline.html')
+    const onlyOnceCount = sameLineSymbols.filter((s) => s.name === 'only-once-cls').length
+    expect(onlyOnceCount).toBe(1)
+  })
+
+  it('does not index commented-out markup and preserves the real section line range', () => {
+    // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
+    // script regexes ran, so dead/commented-out markup was indexed identically to live markup -
+    // including corrupting the real subsequent section's start/end-line bookkeeping.
+    const content = `<!--
+<h1>Deprecated Title</h1>
+<div id="dead-panel" class="dead-widget"></div>
+<link href="legacy.css">
+<script src="old-analytics.js"></script>
+-->
+<h1>Real Title</h1>
+<p>content</p>`
+    const { symbols, imports, sections } = extractHtml(content, 'commented.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('dead-panel')
+    expect(names).not.toContain('dead-widget')
+    expect(sections.some((s) => s.heading === 'Deprecated Title')).toBe(false)
+    expect(imports.some((i) => i.target === 'legacy.css')).toBe(false)
+    expect(imports.some((i) => i.target === 'old-analytics.js')).toBe(false)
+
+    const realSection = sections.find((s) => s.heading === 'Real Title')
+    expect(realSection).toBeDefined()
+    expect(realSection?.line).toBe(7)
+    expect(realSection?.endLine).toBe(8)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -589,6 +770,25 @@ describe('liquid adapter', () => {
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
     expect(sections).toHaveLength(0)
+  })
+
+  it('detects whitespace-control tags ({%- ... -%})', () => {
+    // Regression: INCLUDE_RE/SECTION_RE/RENDER_RE/SCHEMA_RE all required a plain `{%`
+    // opener, so Shopify's dominant whitespace-control form `{%- render 'x' -%}` never
+    // matched and was silently dropped.
+    const content = `{%- render 'wsc-render' -%}
+{%- include 'wsc-include' -%}
+{%- section 'wsc-section' -%}
+{%- schema -%}
+{ "name": "WSC Schema" }
+{%- endschema -%}
+{% render 'plain-render' %}`
+    const { symbols, imports } = extractLiquid(content, 'wsc.liquid', 'wsc.liquid')
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'wsc-render')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_include' && i.target === 'wsc-include')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_section' && i.target === 'wsc-section')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'plain-render')).toBe(true)
+    expect(symbols.some((s) => s.kind === 'liquid_schema' && s.name === 'WSC Schema')).toBe(true)
   })
 
   it('detects .liquid language via parseFile', async () => {
@@ -667,6 +867,81 @@ class Config {
     const { symbols, imports } = extractKotlin('', 'empty.kt')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
+  })
+
+  it('indexes members of a modifier-prefixed companion object instead of dropping them', () => {
+    // Regression: CLASS_HEADER_RE's modifier list never included `companion`, so
+    // `companion object { ... }` (with or without a leading visibility modifier) never got a
+    // frame pushed for it at all -- yet its brace still incremented braceDepth, silently dropping
+    // every member declared inside from the index.
+    const content = `class Foo {
+  private companion object {
+    fun x() {}
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    const x = symbols.find((s) => s.name === 'x')
+    expect(x).toBeDefined()
+    expect(x?.kind).toBe('method')
+    expect(x?.docstring).toBe('Companion')
+  })
+
+  it('indexes members of an unmodified and a named companion object', () => {
+    const content = `class Foo {
+  companion object {
+    fun y() {}
+  }
+}
+class Bar {
+  companion object Named {
+    fun z() {}
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    const y = symbols.find((s) => s.name === 'y')
+    expect(y?.docstring).toBe('Companion')
+    const z = symbols.find((s) => s.name === 'z')
+    expect(z?.docstring).toBe('Named')
+  })
+
+  it('does not index a function-local class as a member of the enclosing class', () => {
+    // Regression: the class/companion detection branch had no depthInClass gate, unlike the
+    // method/const branch just below it -- so a class declared inside a method body (a
+    // function-local class, legal Kotlin) got emitted as a real nested class member of the
+    // enclosing class instead of being skipped as function-local.
+    const content = `class Outer {
+    fun makeThing(): Foo {
+        class LocalHelper {
+            fun help() {}
+        }
+        return LocalHelper()
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Outer.kt')
+    const localHelper = symbols.find((s) => s.name === 'LocalHelper')
+    expect(localHelper).toBeUndefined()
+    const help = symbols.find((s) => s.name === 'help')
+    expect(help).toBeUndefined()
+    const makeThing = symbols.find((s) => s.name === 'makeThing')
+    expect(makeThing?.kind).toBe('method')
+    expect(makeThing?.docstring).toBe('Outer')
+  })
+
+  it('does not index a function-local companion object as a member of the enclosing class', () => {
+    const content = `class Outer {
+    fun makeThing() {
+        companion object {
+            fun help() {}
+        }
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Outer.kt')
+    expect(symbols.find((s) => s.name === 'Companion')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'help')).toBeUndefined()
   })
 
   it('detects .kt language via parseFile', async () => {
@@ -906,6 +1181,50 @@ type Foo {
     expect(fooSymbols[0]?.lineStart).toBe(4)
   })
 
+  it('does not drop every symbol after a literal `#` inside an open """..."""` block description', () => {
+    // Regression: extractGraphql used to strip `#` comments BEFORE masking """..."""` block
+    // descriptions. stripHashComments's own quote-awareness only tracks quote parity within a
+    // single line, so a `#` inside a still-open description (whose opening """` is on an
+    // earlier line) looked "not inside a string" and got treated as a real comment - including
+    // when it appeared right before the description's own closing """` on the same line, which
+    // deleted that closer too. With the closer gone, the description-masking pass never found a
+    // matching end for the rest of the file, silently dropping every symbol after it.
+    const content = `"""
+Some text with a # comment marker here """
+type Foo {
+  id: ID!
+}
+
+type Bar {
+  id: ID!
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+  })
+
+  it('does not treat a `"""`-looking sequence inside a real `#` comment as a description opener', () => {
+    // Regression guard for the fix above: masking descriptions before stripping `#` comments
+    // must not itself misread a `"""`-looking sequence that merely appears inside an ordinary
+    // `#` comment (e.g. documentation prose referencing the syntax) as a real opener - that
+    // would wrongly swallow every declaration after it as "still inside a description".
+    const content = `# see """ for details on descriptions
+type Foo {
+  id: ID!
+}
+
+type Bar {
+  id: ID!
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+  })
+
   it('blanks a single-line "..." description containing declaration-like text before matching (defense-in-depth alongside the block-string fix)', () => {
     // A single-line description's own line always starts with the opening quote, so the
     // line-anchored declaration regexes below can't match its content directly today - this
@@ -927,6 +1246,26 @@ type Foo {
     const { symbols, imports } = extractGraphql('', 'empty.graphql')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
+  })
+
+  it('reports correct line numbers for many scattered type declarations', () => {
+    // Regression guard for a quadratic slice+split line-number bug: with many matches spread
+    // across a large file, each declaration's reported lineStart must match its real 1-based
+    // line, not drift or degrade under a stale/incremental offset calculation.
+    const blockCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < blockCount; i++) {
+      lines.push('', `type Type${i} {`, `  field${i}: String`, `}`)
+      // "type Type{i} {" lands 2 lines after the blank separator we just pushed.
+      expectedLines.set(`Type${i}`, lines.length - 2)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractGraphql(content, 'many.graphql')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('detects .graphql language via parseFile', async () => {
@@ -1029,6 +1368,63 @@ CREATE TABLE "order" (id int);
     const names = symbols.map((s) => s.name)
     expect(names).toContain('user')
     expect(names).toContain('order')
+  })
+
+  it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
+    // Regression: a `--` inside a multi-line string literal used to be blanked out by a
+    // line-scoped comment pre-pass that ran before string-literal stripping and had no
+    // awareness the line started mid-string, taking the closing quote with it and flipping
+    // string-parity tracking for the rest of the file.
+    const content = `
+EXECUTE 'CREATE TABLE ghost (id int)
+-- text');
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('ghost')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
+  it('does not drop symbols after a multi-line string containing a `/*`-looking sequence', () => {
+    // Regression: block-comment stripping used to run as a separate pre-pass
+    // (`stripCstyleComments`) before string-literal stripping, and had no awareness that a line
+    // could start mid-way through an already-open multi-line string literal from a prior line.
+    // A `/*` that merely appears inside such a string (e.g. stored as part of a default text
+    // value) was misread as a real comment opener; since no real `*/` ever follows it, the
+    // "comment" never closes and every real statement after it - to EOF - was silently dropped.
+    const content = `CREATE TABLE t (
+  note TEXT DEFAULT 'line one
+/* looks like a comment
+still string' -- trailing
+);
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('t')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
+  it('reports correct line numbers for many scattered CREATE TABLE statements', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the sql adapter.
+    const tableCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < tableCount; i++) {
+      lines.push('', `CREATE TABLE table${i} (id int);`)
+      expectedLines.set(`table${i}`, lines.length)
+    }
+    const content = lines.join('\n')
+    const symbols = extractSql(content, 'many.sql')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('returns empty array for empty input', () => {
@@ -1158,6 +1554,61 @@ KEY=value
     expect(symbols.map((s) => s.name)).not.toContain('This')
   })
 
+  // Regression: extractEnv scanned every line independently for a column-0 `KEY=value`
+  // assignment, with no notion of an open quote carried over from a previous line. A
+  // multi-line double-quoted value whose embedded content happened to look like an
+  // assignment (e.g. `PHANTOM_KEY=phantom`) was misread as a real, separate key.
+  it('does not emit a phantom key from a line embedded inside a multi-line quoted value', () => {
+    const content = `MULTILINE="first line
+PHANTOM_KEY=phantom
+last line"
+REAL_KEY=value
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('MULTILINE')
+    expect(names).toContain('REAL_KEY')
+    expect(names).not.toContain('PHANTOM_KEY')
+    expect(names).toHaveLength(2)
+  })
+
+  it('resumes normal key scanning once the multi-line quoted value closes', () => {
+    const content = `MULTILINE="line one
+line two"
+AFTER=value
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['MULTILINE', 'AFTER'])
+  })
+
+  it('still treats a single-line quoted value normally (no false multi-line carryover)', () => {
+    const content = `A="one"
+B="two"
+`
+    const symbols = extractEnv(content, '.env')
+    expect(symbols.map((s) => s.name)).toEqual(['A', 'B'])
+  })
+
+  // Regression: _lineClosesQuote/_detectOpenQuote treated any char immediately preceding a
+  // quote as escaping it if it was a backslash, with no notion of odd/even backslash runs, and
+  // applied that escape logic to single-quoted values too (which have no escape semantics in
+  // dotenv/POSIX). A single-quoted value ending in a backslash (`DIR='C:\Users\me\'`) was
+  // misread as an escaped, still-open quote, silently swallowing every subsequent key as a
+  // phantom multi-line continuation. A double-quoted value ending in an even run of backslashes
+  // (`WIN="C:\path\\"`, i.e. one literal trailing backslash) closes correctly either way, but is
+  // included here to pin down the odd/even-run distinction for double quotes too.
+  it('closes a single-quoted value on any quote regardless of a trailing backslash, and correctly parses a double-quoted value with an even trailing backslash run', () => {
+    const content = String.raw`DIR='C:\Users\me\'
+API_KEY=abc123
+PORT=8080
+WIN="C:\path\\"
+NEXT=1
+`
+    const symbols = extractEnv(content, '.env')
+    expect(symbols.map((s) => s.name)).toEqual(['DIR', 'API_KEY', 'PORT', 'WIN', 'NEXT'])
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
@@ -1258,6 +1709,19 @@ clean::
     expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
   })
 
+  it('splits a multi-target rule into separate symbols instead of fusing the names', () => {
+    // Regression: `all clean:` used to capture the whole "all clean" run as a single symbol
+    // name, so `token-goat symbol clean` returned nothing for a target visibly in the source.
+    const content = `all clean:\n\techo done\n`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).toContain('clean')
+    expect(names).not.toContain('all clean')
+    expect(symbols.find((s) => s.name === 'all')?.kind).toBe('makefile_target')
+    expect(symbols.find((s) => s.name === 'clean')?.kind).toBe('makefile_target')
+  })
+
   it('does not emit a spurious target for a colon-bearing line inside a define...endef block', () => {
     const content = `define PRINT_HELP_PYSCRIPT
 import re, sys
@@ -1275,6 +1739,29 @@ test:
     expect(symbols.find((s) => s.name === 'test')?.kind).toBe('makefile_target')
     expect(names).toContain('PRINT_HELP_PYSCRIPT')
     expect(symbols.find((s) => s.name === 'PRINT_HELP_PYSCRIPT')?.kind).toBe('makefile_define')
+  })
+
+  it('masks the entire outer define body of a legally nested define...endef block, not just up to the first inner endef', () => {
+    // Regression: DEFINE_BLOCK_RE was non-greedy, so with a nested `define`/`endef` pair the
+    // mask stopped at the FIRST (inner) endef, leaving the rest of the outer define's body
+    // unmasked and scanned as real rule text -- a fake target line left over in that
+    // unmasked tail was wrongly emitted as a real makefile_target symbol.
+    const content = `define outer
+define inner
+endef
+fake-target-inside-outer:
+	echo should not be indexed
+endef
+
+test:
+	go test ./...
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('fake-target-inside-outer')
+    expect(names).toContain('test')
+    expect(names).toContain('outer')
+    expect(symbols.find((s) => s.name === 'outer')?.kind).toBe('makefile_define')
   })
 
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
@@ -1297,6 +1784,23 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     const names = symbols.map((s) => s.name)
     expect(names).toContain('mat_view')
     expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
+  })
+
+  it('reports correct line numbers for many scattered targets', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the makefile adapter.
+    const targetCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < targetCount; i++) {
+      lines.push('', `target${i}:`, `\techo ${i}`)
+      expectedLines.set(`target${i}`, lines.length - 1)
+    }
+    const content = lines.join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('returns empty array for empty input', () => {
@@ -1349,6 +1853,23 @@ service UserService {
     expect(symbols.find((s) => s.name === 'UserService')?.kind).toBe('proto_service')
     expect(symbols.find((s) => s.name === 'GetUser')?.kind).toBe('proto_rpc')
     expect(imports.some((i) => i.target === 'google/protobuf/timestamp.proto')).toBe(true)
+  })
+
+  it('reports correct line numbers for many scattered message declarations', () => {
+    // Regression guard for a quadratic slice+split line-number bug in the proto adapter.
+    const blockCount = 60
+    const lines: string[] = []
+    const expectedLines = new Map<string, number>()
+    for (let i = 0; i < blockCount; i++) {
+      lines.push('', `message Msg${i} {`, `  string field${i} = 1;`, `}`)
+      expectedLines.set(`Msg${i}`, lines.length - 2)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractProto(content, 'many.proto')
+    for (const [name, expectedLine] of expectedLines) {
+      const sym = symbols.find((s) => s.name === name)
+      expect(sym?.lineStart).toBe(expectedLine)
+    }
   })
 
   it('returns empty arrays for empty input', () => {
@@ -1446,6 +1967,23 @@ message M {
     expect(choice?.lineStart).toBe(8)
   })
 
+  it('extracts rpc methods declared at column 0 inside an unindented service body', () => {
+    // Regression: RPC_RE required at least one leading space/tab (`^[ 	]+rpc`), so a
+    // column-0 rpc line inside a column-0 service block was never matched - only the
+    // service itself got indexed.
+    const content = `service Greeter {
+rpc SayHello(HelloRequest) returns (HelloResponse) {}
+rpc SayBye(ByeRequest) returns (ByeResponse) {}
+}
+`
+    const { symbols } = extractProto(content, 'unindented.proto')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('SayHello')
+    expect(names).toContain('SayBye')
+    expect(symbols.find((s) => s.name === 'SayHello')?.kind).toBe('proto_rpc')
+    expect(symbols.find((s) => s.name === 'SayBye')?.kind).toBe('proto_rpc')
+  })
+
   it('extracts a message after a string literal containing // without corrupting its range', () => {
     const content = `message Foo {
   option (my.url) = "https://example.com";
@@ -1536,6 +2074,32 @@ function MyFunction {
     const { symbols } = extractPowershell(content, 'comment_test.ps1')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('MyFunction')
+  })
+
+  it('indexes a scope-qualified function under its real name, not the scope prefix', () => {
+    // `function global:prompt { }` is the canonical PowerShell profile-customization pattern.
+    // Regression: the name regex excluded `:` from the name character class, so `global` (the
+    // scope qualifier) was captured as the function name instead of `prompt`.
+    const content = `function global:prompt {
+  "PS> "
+}
+`
+    const { symbols } = extractPowershell(content, 'profile.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('prompt')
+    expect(names).not.toContain('global')
+    expect(symbols.find((s) => s.name === 'prompt')?.kind).toBe('function')
+  })
+
+  it('indexes local:/script:/private:-scoped function names, not the scope prefix', () => {
+    const content = `function script:Get-Widget {
+  "widget"
+}
+`
+    const { symbols } = extractPowershell(content, 'scoped.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Widget')
+    expect(names).not.toContain('script')
   })
 
   it('does not emit control-flow keywords inside a method body as methods', () => {
@@ -1745,6 +2309,69 @@ function Get-Foo {
     const { symbols } = extractPowershell(content, 'real_singleline_block_comment.ps1')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Get-Foo')
+  })
+
+  it('does not open a phantom here-string on an ordinary literal ending in "@" or \'@\'', () => {
+    // Regression: findMultilineOpener's PowerShell branch (`/@("|')\s*$/`) had no
+    // isInsideStringLiteral guard. A line like `$email = "admin@"` ends with the two characters
+    // `@"`, so it was misread as opening a here-string. PowerShell here-strings never close on
+    // their opening line, and the real closer requires a line that STARTS with `"@` - which
+    // never occurs in ordinary code - so once falsely triggered, the rest of the file was
+    // silently swallowed from the index.
+    const content = `function Get-Email {
+    $email = "admin@"
+    return $email
+}
+
+function Get-Other {
+    return "ok"
+}
+`
+    const { symbols } = extractPowershell(content, 'ordinary_at_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Email')
+    expect(names).toContain('Get-Other')
+  })
+
+  it('still recognizes a real here-string opener and masks its multi-line content', () => {
+    const content = `function Get-Template {
+    $template = @"
+Hello $Name
+This is a multiline string.
+"@
+    return $template
+}
+
+function Get-Other {
+    return "ok"
+}
+`
+    const { symbols } = extractPowershell(content, 'real_here_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Template')
+    expect(names).toContain('Get-Other')
+  })
+
+  it('does not let a trailing backslash before a string literal\'s closing quote desync brace-depth tracking', () => {
+    // Regression: PowerShell strings do not use backslash as an escape character - a backslash
+    // right before the closing quote (e.g. a Windows path literal like "C:\Temp\") is just a
+    // literal character, not an escaped quote. The brace-depth scanner used to reuse common.ts's
+    // C-like `stripStringLiterals`, which treats backslash as an escape and so misread that
+    // trailing backslash as escaping the real closing quote, leaving the string "open" past its
+    // true end and swallowing the rest of the line - including the `}` that follows - as phantom
+    // string content. That desynced braceDepth for every line afterward, dropping AfterSetup.
+    const content = `function Setup {
+  if ($true) { $Path = "C:\\Temp\\" }
+}
+
+function AfterSetup {
+  Write-Host "after"
+}
+`
+    const { symbols } = extractPowershell(content, 'trailing_backslash_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Setup')
+    expect(names).toContain('AfterSetup')
   })
 })
 })

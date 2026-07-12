@@ -1,8 +1,9 @@
 // Shell / file-tool filter family (Batch H): grep/rg, ls/eza/tree/fd, wc, bat, delta, fzf, lazygit, jq, yq, curl/wget, rsync, diff, ffmpeg, xxd/hexdump, file, ps/top.
 //
-// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep` but RgFilter is registered first to handle context-line stripping; GrepFilter is the catch-all for ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
+// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   headTailCompress,
   maybeNote,
@@ -135,6 +136,25 @@ export class RgFilter extends ToolFilter {
 
   private static _isCountOnly(argv: string[]): boolean {
     return argv.some(a => a === '-c' || a === '--count')
+  }
+
+  /** True when argv carries an actual context flag (-A/-B/-C/--[after|before]-context/--context, short or long form). */
+  private static _hasContextFlags(argv: string[]): boolean {
+    const longFlags = ['--after-context', '--before-context', '--context']
+    for (const a of argv) {
+      if (a === '-A' || a === '-B' || a === '-C') return true
+      if (/^-[ABC]\d+$/.test(a)) return true
+      if (longFlags.some((f) => a === f || a.startsWith(f + '='))) return true
+    }
+    return false
+  }
+
+  // RgFilter only handles context-block output (-A/-B/-C/--context); a plain
+  // grep/rg with no context flags falls through to GrepFilter's per-file
+  // match-count summarizer, which produces dramatically smaller output.
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    return RgFilter._hasContextFlags(argv)
   }
 
   private _compressGroups(groups: string[]): string {
@@ -872,7 +892,6 @@ export class RsyncFilter extends ToolFilter {
 
 const _DIFF_FILE_HEADER_RE = /^(?:diff\s|---\s)/
 const _DIFF_HUNK_RE = /^@@ /
-const _DIFF_MAX_HUNKS_PER_FILE = 3
 const _DIFF_MAX_FULL_FILES = 20
 
 function _isDiffAdd(line: string): boolean {
@@ -1039,18 +1058,21 @@ export class DiffFilter extends ToolFilter {
         outParts.push(blockStr)
         continue
       }
-      // Apply density cap (max_hunks=0 means disabled — config not wired in TS yet)
-      const capped = _scoreAndCapHunks(blockLines, 0)
-      const hunkBlocks = _splitIntoHunks(capped)
-      if (hunkBlocks.length <= _DIFF_MAX_HUNKS_PER_FILE + 1) {
-        outParts.push(capped.join('\n'))
-        continue
+      // Apply density cap from [bash_diff] max_hunks_per_file (default 10);
+      // falls back to disabled (0) on config load failure.
+      let maxHunksPerFile = 0
+      try {
+        maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
+      } catch {
+        // use fallback above
       }
-      const head = hunkBlocks.slice(0, _DIFF_MAX_HUNKS_PER_FILE + 1)
-      const elided = hunkBlocks.length - _DIFF_MAX_HUNKS_PER_FILE - 1
-      const flat = head.flat()
-      flat.push(`[token-goat: +${elided} more hunks in this file elided]`)
-      outParts.push(flat.join('\n'))
+      // The config-driven density cap (_scoreAndCapHunks, honoring
+      // [bash_diff] max_hunks_per_file) is the SINGLE source of truth for the
+      // per-file hunk cap, matching git.ts. A former second stage re-capped to
+      // a hardcoded 3 here, shadowing any configured value above 3 (including
+      // the default of 10); removed.
+      const capped = _scoreAndCapHunks(blockLines, maxHunksPerFile)
+      outParts.push(capped.join('\n'))
     }
     return outParts.join('\n')
   }

@@ -18,7 +18,7 @@ import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
 import { dataDir } from './constants.js'
 import { safeJoin } from './paths.js'
-import { foldCase } from './util.js'
+import { foldCase, foldPath } from './util.js'
 import { registerReset } from './reset.js'
 
 // ESM has no `require`; build one so we can probe for the optional sqlite-vec package without making it a hard module-resolution dependency.
@@ -277,7 +277,11 @@ function resolveDbPath(dbPath: string): string {
  */
 export function getDb(dbPath: string): BetterSqlite3Database {
   const resolved = resolveDbPath(dbPath)
-  const existing = _connections.get(resolved)
+  // Fold only the cache key, not `resolved` itself -- the real-case path is still what
+  // gets passed to fs/Database below, so the file is created/opened with whatever casing
+  // the caller (or an existing file on disk) actually used.
+  const key = foldPath(resolved)
+  const existing = _connections.get(key)
   if (existing !== undefined) return existing
 
   // Ensure the parent directory exists before SQLite tries to create the file. Retry on Windows race conditions.
@@ -301,7 +305,7 @@ export function getDb(dbPath: string): BetterSqlite3Database {
     }
     throw e
   }
-  _connections.set(resolved, conn)
+  _connections.set(key, conn)
   return conn
 }
 
@@ -310,14 +314,15 @@ export function getDb(dbPath: string): BetterSqlite3Database {
  */
 export function closeDb(dbPath: string): void {
   const resolved = resolveDbPath(dbPath)
-  const conn = _connections.get(resolved)
+  const key = foldPath(resolved)
+  const conn = _connections.get(key)
   if (conn === undefined) return
   try {
     conn.close()
   } catch {
     // Already closed or close raced with another caller — the handle is gone either way, so dropping it from the map is the only thing that matters.
   }
-  _connections.delete(resolved)
+  _connections.delete(key)
 }
 
 /**

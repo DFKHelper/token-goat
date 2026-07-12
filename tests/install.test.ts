@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
+import { normalizeDarwinSystemAlias } from '../src/paths.js'
 
 let TMP: string
 let origCwd: string
@@ -30,7 +31,7 @@ describe('settingsPath', () => {
 
   it('project scope ends in settings.json under cwd/.claude', () => {
     const p = settingsPath('project')
-    expect(p).toBe(path.join(TMP, '.claude', 'settings.json'))
+    expect(p).toBe(path.join(normalizeDarwinSystemAlias(TMP), '.claude', 'settings.json'))
   })
 })
 
@@ -94,6 +95,31 @@ describe('installHooks', () => {
     const postCommands = settings.hooks['PostToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
     expect(preCommands).toEqual(['token-goat hook pre_tool_use'])
     expect(postCommands).toEqual(['token-goat hook post_tool_use'])
+  })
+
+  it('strips a legacy entry that coexists with an already-current entry under the same event key (regression: matching the current-format entry caused a `continue` that skipped the legacy-strip pass entirely for that event key, so a dead legacy entry never got removed even though the docstring promises "exactly one, working, entry per event key")', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command: 'token-goat hook pre_tool_use' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'tokenwise hook pre_tool_use' }] },
+          ],
+        },
+      }),
+    )
+
+    const result = installHooks('project')
+    expect(result.alreadyInstalled).toBe(false)
+
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
+    }
+    const preCommands = settings.hooks['PreToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
+    expect(preCommands).toEqual(['token-goat hook pre_tool_use'])
   })
 
   it('preserves pre-existing unrelated settings and hooks', () => {

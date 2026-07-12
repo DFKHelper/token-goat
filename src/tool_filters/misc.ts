@@ -3,6 +3,7 @@
 // Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 14 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: its matches() returns true for every command so it must be a fallback of last resort.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
   capBytes,
@@ -254,7 +255,8 @@ export class PsqlFilter extends ToolFilter {
       inTable = false; headerLines = []; dataRows = []; afterHeader = false
     }
 
-    for (const line of lines) {
+    for (let idx = 0; idx < lines.length; idx++) {
+      const line = lines[idx]!
       if (PSQL_CONN_ERROR_RE.test(line) || PSQL_ERROR_RE.test(line) || PSQL_TIMING_RE.test(line) ||
           PSQL_CMD_TAG_RE.test(line) || PSQL_NOTICE_RE.test(line)) {
         if (inTable) flushTable()
@@ -271,7 +273,24 @@ export class PsqlFilter extends ToolFilter {
       }
       if (isBorder) {
         if (!inTable) {
-          if (kept.length) headerLines.push(kept.pop()!)
+          if (kept.length) {
+            // Default (border-1) style: the header text line was already buffered in `kept`
+            // and this border is the separator right after it.
+            headerLines.push(kept.pop()!)
+          } else {
+            // \pset border 2 style: this is a leading top border with no header text buffered
+            // yet. Peek at the next line -- if it isn't itself a border, it's the header row.
+            // Consume it explicitly here so it can't fall through to the generic dataRows
+            // bucket below and be misclassified as a data row.
+            const next = lines[idx + 1]
+            if (next !== undefined && !/^[-+]+$/.test(next.trim())) {
+              headerLines.push(line)
+              headerLines.push(next)
+              idx++
+              inTable = true; afterHeader = true
+              continue
+            }
+          }
           headerLines.push(line)
           inTable = true; afterHeader = true
         } else {
@@ -1243,8 +1262,19 @@ export class SeverityLogFilter extends ToolFilter {
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const combined = this.combineOutput(stdout, stderr)
     if (!SeverityLogFilter.detect(combined)) return combined
-    // Default config: context_lines=2, score_threshold=0.5 (WARN and above)
-    return compressSeverityLog(combined, 2, 0.5)
+    // Config: [bash_severity_log] context_lines (default 3), score_threshold
+    // (default 0.5, WARN and above). Falls back to those defaults on config
+    // load failure so severity-log compression never hard-fails.
+    let contextLines = 3
+    let scoreThreshold = 0.5
+    try {
+      const sl = loadConfig().bash_severity_log
+      contextLines = sl.context_lines
+      scoreThreshold = sl.score_threshold
+    } catch {
+      // use defaults above
+    }
+    return compressSeverityLog(combined, contextLines, scoreThreshold)
   }
 }
 

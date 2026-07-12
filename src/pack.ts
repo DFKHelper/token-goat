@@ -189,49 +189,82 @@ const HASH_LINE_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 const CSTYLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart'])
 const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua'])
 
+/** Which quote character (if any) is open, tracked as a single running toggle per quote kind. */
+interface QuoteState {
+  dq: boolean
+  sq: boolean
+  bt: boolean
+}
+
 /**
- * Counts unescaped occurrences of a quote character in text. Properly handles
- * escaped backslashes by accumulating consecutive backslashes and only counting
- * the quote when preceded by an even number of backslashes (meaning the quote
- * itself is not escaped). This fixes the lookbehind regex limitation which cannot
- * distinguish `\\` (escaped backslash) from `\` (escaping backslash).
+ * Advances `state` across `text[from, to)`, toggling the appropriate open/closed flag on each
+ * unescaped quote character. A backslash is only treated as an escape while immediately followed
+ * by another character (mirroring `countUnescapedQuotes`'s consecutive-backslash-parity rule),
+ * and is otherwise passed through untouched.
  */
-function countUnescapedQuotes(text: string, quoteChar: string): number {
-  let count = 0
+function advanceQuoteState(text: string, from: number, to: number, state: QuoteState): QuoteState {
   let backslashes = 0
-  for (const ch of text) {
+  for (let i = from; i < to; i++) {
+    const ch = text[i]
     if (ch === '\\') {
       backslashes++
       continue
     }
-    if (ch === quoteChar && backslashes % 2 === 0) count++
+    if (backslashes % 2 === 0) {
+      if (ch === '"') state.dq = !state.dq
+      else if (ch === "'") state.sq = !state.sq
+      else if (ch === '`') state.bt = !state.bt
+    }
     backslashes = 0
   }
-  return count
+  return state
 }
 
 /**
- * True when `index` (an offset into `text`) falls inside an opening quoted
- * string on its line. Mirrors `text_commands.ts`'s `isInsideStringLiteral`:
- * counts unescaped quote characters from the start of the line up to `index`
- * and treats an odd count as "still inside a string". Single, double, and
- * backtick quotes are tracked independently so a comment-like sequence
- * (`//`, `#`, `--`) that only appears inside a string's actual content — a
- * URL such as `https://example.com` or a CSS hex color like `#fff` — is left
- * untouched instead of being misread as a real comment opener.
+ * Precomputes which quote kind(s) are open at the START of every line in `content`, by running
+ * `advanceQuoteState` once over the whole file. Needed so `isInsideStringLiteral` below can tell
+ * a comment-like sequence sitting inside a multi-line string (one whose opening quote is on an
+ * earlier line) from a real comment - without this, per-line quote counting from a fixed
+ * "start of line" always looks "not inside a string" for every line after the one the string
+ * actually opened on, since none of that line's own characters include the opening quote.
  */
-function isInsideStringLiteral(text: string, index: number): boolean {
+function computeLineStartQuoteStates(content: string): QuoteState[] {
+  const states: QuoteState[] = [{ dq: false, sq: false, bt: false }]
+  let state: QuoteState = { dq: false, sq: false, bt: false }
+  let lineStart = 0
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') {
+      state = advanceQuoteState(content, lineStart, i, { ...state })
+      states.push({ ...state })
+      lineStart = i + 1
+    }
+  }
+  return states
+}
+
+/**
+ * True when `index` (an offset into `text`) falls inside an opening quoted string, tracking
+ * state across line boundaries via `lineStates` (see `computeLineStartQuoteStates`) rather than
+ * always assuming "not inside a string" at the start of each line - a multi-line string (e.g. a
+ * JS template literal or a Python triple-quoted string) that opened on an earlier line is still
+ * open on this one. Single, double, and backtick quotes are tracked independently so a
+ * comment-like sequence (`//`, `#`, `--`) that only appears inside a string's actual content — a
+ * URL such as `https://example.com` or a CSS hex color like `#fff` — is left untouched instead of
+ * being misread as a real comment opener.
+ */
+function isInsideStringLiteral(text: string, index: number, lineStates: QuoteState[]): boolean {
   const lineStart = text.lastIndexOf('\n', index - 1) + 1
-  const before = text.slice(lineStart, index)
-  const dqCount = countUnescapedQuotes(before, '"')
-  const sqCount = countUnescapedQuotes(before, "'")
-  const btCount = countUnescapedQuotes(before, '`')
-  return dqCount % 2 !== 0 || sqCount % 2 !== 0 || btCount % 2 !== 0
+  const lineNum = text.slice(0, lineStart).split('\n').length - 1
+  const startState = lineStates[lineNum] ?? { dq: false, sq: false, bt: false }
+  const state = advanceQuoteState(text, lineStart, index, { ...startState })
+  return state.dq || state.sq || state.bt
 }
 
 /** Applies a line-comment regex, skipping any match that starts inside a string literal. */
-function stripLineComments(content: string, pattern: RegExp): string {
-  return content.replace(pattern, (match, offset: number) => (isInsideStringLiteral(content, offset) ? match : ''))
+function stripLineComments(content: string, pattern: RegExp, lineStates: QuoteState[]): string {
+  return content.replace(pattern, (match, offset: number) =>
+    isInsideStringLiteral(content, offset, lineStates) ? match : '',
+  )
 }
 
 /**
@@ -241,34 +274,35 @@ function stripLineComments(content: string, pattern: RegExp): string {
  * string literal to span multiple lines, so if the block-comment opener is inside a string,
  * the whole match is part of that string's content.
  */
-function stripBlockComments(content: string, pattern: RegExp): string {
+function stripBlockComments(content: string, pattern: RegExp, lineStates: QuoteState[]): string {
   return content.replace(pattern, (match, offset: number) =>
-    isInsideStringLiteral(content, offset) ? match : '\n'.repeat(match.split('\n').length - 1),
+    isInsideStringLiteral(content, offset, lineStates) ? match : '\n'.repeat(match.split('\n').length - 1),
   )
 }
 
 export function stripComments(content: string, filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
+  const lineStates = computeLineStartQuoteStates(content)
 
   if (ext === '.py') {
-    return stripLineComments(content, PY_LINE_COMMENT_RE)
+    return stripLineComments(content, PY_LINE_COMMENT_RE, lineStates)
   }
 
   if (ext === '.sql') {
-    return stripLineComments(content, SQL_LINE_RE)
+    return stripLineComments(content, SQL_LINE_RE, lineStates)
   }
 
   if (CSTYLE_EXTS.has(ext)) {
-    content = stripBlockComments(content, CSTYLE_BLOCK_RE)
-    return stripLineComments(content, CSTYLE_LINE_RE)
+    content = stripBlockComments(content, CSTYLE_BLOCK_RE, lineStates)
+    return stripLineComments(content, CSTYLE_LINE_RE, computeLineStartQuoteStates(content))
   }
 
   if (HASH_COMMENT_EXTS.has(ext)) {
-    return stripLineComments(content, HASH_LINE_RE)
+    return stripLineComments(content, HASH_LINE_RE, lineStates)
   }
 
   if (ext === '.css' || ext === '.scss') {
-    return stripBlockComments(content, CSTYLE_BLOCK_RE)
+    return stripBlockComments(content, CSTYLE_BLOCK_RE, lineStates)
   }
 
   return content

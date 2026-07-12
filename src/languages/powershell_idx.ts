@@ -1,8 +1,57 @@
 // PowerShell language adapter (.ps1, .psm1) using regex-based symbol extraction.
 import type { SymbolEntry } from '../parser_types.js'
-import { stripMultilineStringSpan, stripStringLiterals, type MultilineStringState } from './common.js'
+import { stripMultilineStringSpan, type MultilineStringState } from './common.js'
 
 const MAX_SYMBOLS = 500
+
+// Blanks the contents of single-line PowerShell string literals so a `{`/`}` inside a string
+// value is never counted as real code structure. PowerShell strings do NOT use backslash as an
+// escape character (unlike `stripStringLiterals` in common.ts, which assumes C-like backslash
+// escaping) - a backslash in a PowerShell string is always a literal character, most commonly
+// seen in Windows path literals like `"C:\Temp\"`. Treating it as an escape (as the shared
+// `stripStringLiterals` does) misreads a trailing backslash immediately before the closing quote
+// as an escaped quote, leaving the string "open" past its real end and swallowing the rest of the
+// line - including any brace characters - as phantom string content, desyncing `braceDepth` for
+// every line after. PowerShell's real escaping rules are: a doubled quote of the same kind (`""`
+// inside a double-quoted string, `''` inside a single-quoted string) is a literal quote, and a
+// backtick immediately inside a double-quoted string escapes the following character (backtick
+// escaping does not apply inside single-quoted strings).
+function stripPowershellStringLiterals(line: string): string {
+  let out = ''
+  let i = 0
+  while (i < line.length) {
+    const ch = line[i]
+    if (ch === '"' || ch === "'") {
+      const quote = ch
+      out += quote
+      i++
+      while (i < line.length) {
+        const c = line[i]
+        if (quote === '"' && c === '`' && i + 1 < line.length) {
+          out += '  '
+          i += 2
+          continue
+        }
+        if (c === quote) {
+          if (line[i + 1] === quote) {
+            out += '  '
+            i += 2
+            continue
+          }
+          out += quote
+          i++
+          break
+        }
+        out += ' '
+        i++
+      }
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
 
 function makeSymbol(
   filePath: string,
@@ -151,7 +200,7 @@ export function extractPowershell(
 
     // FUNCTION or FILTER (top-level only, not nested)
     if (braceDepth === 0 && currentClass === null) {
-      const funcMatch = /^\s*(?:function|filter)\s+([A-Za-z_][\w-]*)/i.exec(line)
+      const funcMatch = /^\s*(?:function|filter)\s+(?:(?:global|local|script|private):)?([A-Za-z_][\w-]*)/i.exec(line)
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {
@@ -209,7 +258,7 @@ export function extractPowershell(
     // Apply brace delta BEFORE scope pop check (critical ordering). Brace-count on a
     // string-stripped copy of the line so a literal brace inside a string literal is never
     // counted as real nesting.
-    const braceLine = stripStringLiterals(line)
+    const braceLine = stripPowershellStringLiterals(line)
     braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
 
     if (currentClass !== null && braceDepth > classBraceDepth) {

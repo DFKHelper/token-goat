@@ -58,6 +58,22 @@ describe('parseTranscript', () => {
   it('returns an empty array for content with no cue timestamps', () => {
     expect(parseTranscript('not a transcript file')).toEqual([])
   })
+
+  // #233 regression: the speaker was extracted from the <v Alice> tag on the raw first line, but
+  // the cue's text was then computed by running the leading-`Name:` heuristic a SECOND time on the
+  // tag-stripped text -- so dialogue that happens to start with "Word:" (e.g. "Bob said: hello")
+  // was mistaken for a redundant speaker label and silently deleted.
+  it('does not strip a leading "Word:" from dialogue when the speaker already came from a <v> tag', () => {
+    const content = `1\n00:00:01.000 --> 00:00:02.000\n<v Alice>Bob said: hello there everyone\n`
+    const cues = parseTranscript(content)
+    expect(cues[0]).toMatchObject({ speaker: 'Alice', text: 'Bob said: hello there everyone' })
+  })
+
+  it('still applies the leading Name: heuristic to text when there is no <v> tag on the cue (sibling of the #233 fix)', () => {
+    const content = `1\n00:00:01,000 --> 00:00:02,000\nCarol: see you there\n`
+    const cues = parseTranscript(content)
+    expect(cues[0]).toMatchObject({ speaker: 'Carol', text: 'see you there' })
+  })
 })
 
 describe('formatTimestamp', () => {

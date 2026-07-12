@@ -13,7 +13,7 @@ import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
-import { ensureNewline } from './util.js'
+import { ensureNewline, requireNonNegativeStrictInt } from './util.js'
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
@@ -57,12 +57,12 @@ function listParentSessionBlobs(): Array<{ id: string; mtime: number; value: unk
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`bash-history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`bash-history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
   const items = blobs
@@ -101,12 +101,12 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
 export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`web-history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`web-history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
   const blobs = listBlobs(WEB_OUTPUT_SUBDIR)
   const items = blobs
@@ -134,6 +134,55 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
   for (const item of items) {
     process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${item.url}\n`)
+  }
+}
+
+// ── mcp-history ───────────────────────────────────────────────────────────────
+
+// MCP results share BASH_OUTPUT_SUBDIR with plain bash-output entries (see
+// mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it
+// mints; this listing filters bash-history's underlying blob set down to just
+// those. `command` is stored as `mcp:<toolName> <input preview>` (see
+// mcp_cache.ts's mcpInputPreview) — split off the `mcp:` marker and first space
+// to recover the tool name for its own column instead of the raw label.
+export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
+  let limit = 30
+  if (opts.limit !== undefined) {
+    const n = Number.parseInt(opts.limit, 10)
+    if (!Number.isFinite(n)) {
+      emitErr(`mcp-history: --limit must be a number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`)
+    }
+    limit = Math.max(1, n)
+  }
+  const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
+  const items = blobs
+    .map(({ id, mtime, value }) => {
+      if (typeof value !== 'object' || value === null) return null
+      const v = value as Record<string, unknown>
+      const command = typeof v['command'] === 'string' ? v['command'] : ''
+      const toolName = command.startsWith('mcp:') ? command.slice(4).split(' ')[0] || '' : ''
+      return {
+        id,
+        toolName,
+        storedAt: typeof v['storedAt'] === 'number' ? v['storedAt'] : mtime,
+        sizeBytes: typeof v['sizeBytes'] === 'number' ? v['sizeBytes'] : 0,
+      }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => b.storedAt - a.storedAt)
+    .slice(0, limit)
+  if (opts.json === true) {
+    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    return
+  }
+  if (items.length === 0) {
+    process.stdout.write('No mcp output entries cached.\n')
+    return
+  }
+  process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
+  for (const item of items) {
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${item.toolName}\n`)
   }
 }
 
@@ -165,11 +214,11 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
   let maxAgeMs = DEFAULT_MAX_AGE_MS
 
   if (opts.maxCount !== undefined) {
-    const parsed = Number.parseInt(opts.maxCount, 10)
-    if (Number.isNaN(parsed)) {
+    try {
+      maxCount = requireNonNegativeStrictInt('--maxCount', opts.maxCount)
+    } catch {
       throw new Error(`--maxCount must be a valid integer, got '${opts.maxCount}'`)
     }
-    maxCount = Math.max(0, parsed)
   }
 
   if (opts.maxAgeHours !== undefined) {

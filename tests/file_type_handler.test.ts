@@ -216,7 +216,30 @@ describe('handleTxt', () => {
     expect(result.message).toContain('first 5 lines')
     expect(result.message).toContain('last 5 lines')
     expect(result.message).toContain('offset')
-    expect(result.message).not.toContain('h1')
+  })
+
+  // Regression: handleTxt delegated wholesale to handleHtml (which re-gates on the higher
+  // 50 KB html threshold) once content sniffed as HTML. A file between the 20 KB txt
+  // threshold and the 50 KB html threshold got handleHtml's non-blocking {shouldBlock:false}
+  // verbatim, so it silently read through with zero hint -- worse than an equivalent
+  // non-HTML-sniffed .txt of the same size, which still got the standard preview hint.
+  it('HTML-sniffed .txt file sized between the txt and html thresholds still gets a hint instead of reading through silently', () => {
+    const lines = [
+      '<!DOCTYPE html>',
+      '<html><head><title>Saved Export</title></head><body>',
+      '<h1>Report</h1>',
+      '<p>exported content</p>',
+      '</body></html>',
+    ]
+    // Sized well above FILE_TYPE_THRESHOLDS.txt (20,000) but well below FILE_TYPE_THRESHOLDS.html
+    // (50,000), landing squarely in the gap band the delegation bug missed.
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.txt)
+    const result = handleTxt('/path/to/export.txt', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message.length).toBeGreaterThan(0)
+    // Falls back to the standard plain-text preview since it's below handleHtml's own threshold.
+    expect(result.message).toContain('first 5 lines')
+    expect(result.message).toContain('last 5 lines')
   })
 })
 

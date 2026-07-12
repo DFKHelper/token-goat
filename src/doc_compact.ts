@@ -12,7 +12,8 @@ import * as path from 'path'
 
 import { dataDir } from './constants.js'
 import { atomicWriteText } from './util.js'
-import { normalizePath } from './paths.js'
+import { resolveIndexPath } from './paths.js'
+import { eachUnfencedLine } from './markdown_lines.js'
 
 const defaultSentencesPerSection = 2
 const headerPrefix = '<!-- token-goat doc-compact source-hash:'
@@ -56,8 +57,9 @@ function _compactSlug(absPathStr: string): string {
  * so same-named docs in different projects never collide.
  */
 export function compactPathFor(sourcePath: string): string {
-  // Route through normalizePath (not just path.resolve) so the sidecar key is identical whether the caller passes a raw path (cmdCompactDoc) or one already normalized upstream (preReadHandler) -- notably including 8.3 short-name expansion, which path.resolve alone does not perform.
-  const abs = normalizePath(path.resolve(sourcePath))
+  // Use the same absolute filesystem identity as the symbol index so aliases
+  // such as macOS /var and /private/var cannot create duplicate sidecars.
+  const abs = resolveIndexPath(sourcePath)
   return path.join(dataDir(), compactSubdir, `${_compactSlug(abs)}.md`)
 }
 
@@ -189,28 +191,43 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
   let codeBlockLines = 0
   let currentHeading: string | null = null
   let sentencesEmitted = 0
+  // Fence state tracked the same way as markdown_lines.ts's eachUnfencedLine (the codebase's
+  // canonical CommonMark-correct fence tracker): a fence only closes on a run of the SAME
+  // character with length >= the opening run's length, so a mismatched ~~~ can't close a ```
+  // block and a shorter nested ``` inside a ```` fence is literal content, not a closer.
+  let fence: { ch: string; len: number } | null = null
 
   while (i < n) {
     const line = lines[i]!
     const stripped = line.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
-      if (!inCodeBlock) {
+    const fm = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fm !== null && fm[1] !== undefined) {
+      const run = fm[1]
+      const ch = run[0] ?? ''
+      if (fence === null) {
+        fence = { ch, len: run.length }
         inCodeBlock = true
         codeBlockLines = 0
         if (currentHeading && sentencesEmitted < max) {
           out.push(line)
           codeBlockLines++
         }
-      } else {
+        i++
+        continue
+      } else if (ch === fence.ch && run.length >= fence.len) {
+        fence = null
         inCodeBlock = false
         if (currentHeading && sentencesEmitted < max) {
           out.push(line)
           sentencesEmitted++
         }
+        i++
+        continue
       }
-      i++
-      continue
+      // else: fence-looking line that doesn't close the currently open fence (mismatched
+      // character, or a same-char run shorter than the opener) -- falls through to be
+      // treated as ordinary code-block content below.
     }
 
     if (inCodeBlock) {
@@ -260,9 +277,21 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
 export function extractDocCompact(body: string, heading?: string): string {
   if (heading) {
     const lines = body.split('\n')
+    // A `#`-looking line inside a fenced code block (e.g. a doc showing an example `## usage`
+    // heading as sample markdown) must never be mistaken for a real heading or a section
+    // boundary. Track fence state with the same CommonMark-correct logic as
+    // markdown_lines.ts's eachUnfencedLine and only consider lines it yields as candidates.
+    const unfencedIdx = new Set<number>()
+    for (const [idx] of eachUnfencedLine(lines)) unfencedIdx.add(idx)
+
     // A plain `line.includes(heading)` matches ANY line containing the heading text as a substring, including ordinary prose that merely mentions it before the real heading appears, and also longer headings that contain the query as a substring (e.g., "Setup Guide" when searching for "Setup"). Require an exact match of the heading text portion instead, so both prose references and similar-but-not-identical headings can't be mistaken for the section boundary.
-    const compactIdx = lines.findIndex((line) => {
-      const m = /^#{1,6}\s+(.*)$/.exec(line.trim())
+    const compactIdx = lines.findIndex((line, idx) => {
+      if (!unfencedIdx.has(idx)) return false
+      // Lazy capture with an optional SPACE-preceded trailing hash run stripped, matching
+      // section_reader.ts's heading-match form -- a greedy `(.*)` would swallow a closed-ATX
+      // heading's trailing `##` (e.g. `## Setup ##` capturing "Setup ##" instead of "Setup"),
+      // failing exact-equality against the target heading text.
+      const m = /^#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line.trim())
       return m !== null && (m[1] ?? '') === heading
     })
     if (compactIdx === -1) return ''
@@ -275,6 +304,7 @@ export function extractDocCompact(body: string, heading?: string): string {
     // Find the end: walk forward until we hit a heading at the same level or higher (fewer #'s)
     let endIdx = lines.length
     for (let i = compactIdx + 1; i < lines.length; i++) {
+      if (!unfencedIdx.has(i)) continue
       const trimmed = lines[i]!.trim()
       const nextLevelMatch = /^(#+)\s/.exec(trimmed)
       if (nextLevelMatch) {

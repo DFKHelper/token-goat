@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 
 import { parse, stringify } from 'smol-toml'
 
+import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath } from './constants.js'
 import { envBool, envInt, envStr } from './env.js'
 import { atomicWriteText } from './util.js'
@@ -40,7 +41,6 @@ export interface BashCompressConfig {
 
 export interface BashDiffConfig {
   max_hunks_per_file: number
-  hunk_density_cap: boolean
 }
 
 export interface SeverityLogConfig {
@@ -76,19 +76,6 @@ export interface SkillPreservationConfig {
   pre_skill_enabled: boolean
   first_load_compact: boolean
   post_compact_full_loads: boolean
-}
-
-export interface CuratorConfig {
-  enabled: boolean
-  min_samples: number
-  threshold_pct: number
-}
-
-export interface HintBudgetConfig {
-  enabled: boolean
-  max_per_session: number
-  max_structured_per_session: number
-  max_index_only_per_session: number
 }
 
 export interface ImageShrinkConfig {
@@ -140,7 +127,6 @@ export interface HintsConfig {
   large_read_redirect_bytes: number
   reread_deny: boolean
   reread_deny_min_bytes: number
-  baseline_budget_tokens: number
   stable_doc_compacts: boolean
   truncated_read_min_lines: number
   protect_recent_reads: number
@@ -166,9 +152,8 @@ export interface WebFetchConfig {
 }
 
 export interface WorkerConfig {
-  watchdog_enabled: boolean
-  max_pool_workers: number
   blocked_roots: string[]
+  max_pool_workers: number
 }
 
 export interface IndexingConfig {
@@ -205,8 +190,6 @@ export interface Config {
   post_read_code_compress: CodeCompressConfig
   session_brief: SessionBriefConfig
   skill_preservation: SkillPreservationConfig
-  curator: CuratorConfig
-  hint_budget: HintBudgetConfig
   image_shrink: ImageShrinkConfig
   screenshot: ScreenshotConfig
   repomap: RepomapConfig
@@ -258,7 +241,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   },
   bash_diff: {
     max_hunks_per_file: 10,
-    hunk_density_cap: true,
   },
   bash_severity_log: {
     context_lines: 3,
@@ -282,17 +264,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     pre_skill_enabled: true,
     first_load_compact: false,
     post_compact_full_loads: false,
-  },
-  curator: {
-    enabled: true,
-    min_samples: 10,
-    threshold_pct: 20,
-  },
-  hint_budget: {
-    enabled: true,
-    max_per_session: 100,
-    max_structured_per_session: 30,
-    max_index_only_per_session: 30,
   },
   image_shrink: {
     enabled: true,
@@ -336,8 +307,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // once the context window is nearly full.
     large_read_redirect_bytes: 512_000,
     reread_deny: true,
-    reread_deny_min_bytes: 2048,
-    baseline_budget_tokens: 0,
+    // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this
+    // key up as the real gate for that logic does not silently change default behavior for
+    // existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
+    reread_deny_min_bytes: 51_200,
     stable_doc_compacts: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
@@ -360,9 +333,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     compress_min_bytes: 16 * 1024,
   },
   worker: {
-    watchdog_enabled: true,
-    max_pool_workers: 4,
     blocked_roots: [],
+    max_pool_workers: 4,
   },
   indexing: {
     large_file_symbol_only_kb: 500,
@@ -394,8 +366,6 @@ export function defaultConfig(): Config {
     post_read_code_compress: getDefaultConfig('post_read_code_compress') as CodeCompressConfig,
     session_brief: getDefaultConfig('session_brief') as SessionBriefConfig,
     skill_preservation: getDefaultConfig('skill_preservation') as SkillPreservationConfig,
-    curator: getDefaultConfig('curator') as CuratorConfig,
-    hint_budget: getDefaultConfig('hint_budget') as HintBudgetConfig,
     image_shrink: getDefaultConfig('image_shrink') as ImageShrinkConfig,
     screenshot: getDefaultConfig('screenshot') as ScreenshotConfig,
     repomap: getDefaultConfig('repomap') as RepomapConfig,
@@ -454,6 +424,121 @@ function section(raw: Record<string, unknown>, key: string): Record<string, unkn
     : {}
 }
 
+// Numeric field bounds for targeted validation (config set on numbers). Extracted from _buildConfig.
+const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: string}> = {
+  'compact_assist.min_events': {min: 0, max: 1000},
+  'compact_assist.max_manifest_tokens': {min: 50, max: 10000},
+  'compact_assist.auto_trigger_multiplier': {min: 1.0, max: 10.0},
+  'compact_assist.compact_skip_ttl_secs': {min: 1.0, max: 3600.0},
+  'compact_assist.noise_floor_tokens': {min: 0, max: 10000},
+  'compact_assist.edited_dir_group_threshold': {min: 0, max: 100},
+  'compact_assist.max_section_lines': {min: 0, max: 10000},
+  'compact_assist.wide_session_threshold': {min: 1, max: 10000},
+  'compact_assist.orchestrator_commit_threshold': {min: 1, max: 10000},
+  'compact_assist.max_manifest_chars': {min: 0, max: 16000},
+  'bash_compress.max_lines': {min: 50, max: 100_000},
+  'bash_compress.max_bytes': {min: 1024, max: 16 * 1024 * 1024},
+  'bash_compress.timeout_seconds': {min: 5, max: 7200},
+  'bash_compress.cache_min_bytes': {min: 0, max: 100 * 1024 * 1024},
+  'bash_compress.cache_max_file_count': {min: 1, max: 1_000_000},
+  'bash_compress.cache_max_bytes': {min: 1024, max: 4 * 1024 * 1024 * 1024},
+  'bash_compress.cache_max_bytes_per_output': {min: 1024, max: 4 * 1024 * 1024 * 1024, clampTo: 'bash_compress.cache_max_bytes'},
+  'bash_diff.max_hunks_per_file': {min: 1, max: 10000},
+  'bash_severity_log.context_lines': {min: 0, max: 100},
+  'bash_severity_log.score_threshold': {min: 0.0, max: 1.0},
+  'post_read_code_compress.min_lines': {min: 0, max: 1_000_000},
+  'skill_preservation.max_cache_bytes': {min: 64 * 1024, max: 512 * 1024 * 1024},
+  'skill_preservation.orphan_age_secs': {min: 1, max: 2_592_000},
+  'skill_preservation.truncation_budget_tokens': {min: 0, max: 8000},
+  'skill_preservation.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
+  'image_shrink.jpeg_quality': {min: 1, max: 100},
+  'image_shrink.max_image_pixels': {min: 0, max: 1_000_000_000},
+  'curator.min_samples': {min: 0, max: 10000},
+  'curator.threshold_pct': {min: 0, max: 100},
+  'hint_budget.max_per_session': {min: 0, max: 1_000_000},
+  'hint_budget.max_structured_per_session': {min: 0, max: 1_000_000},
+  'hint_budget.max_index_only_per_session': {min: 0, max: 1_000_000},
+  'repomap.compact_file_threshold': {min: 0, max: 100_000},
+  'overflow_guard.max_tokens': {min: 1000, max: 1_000_000},
+  'hints.suppress_after_ignored': {min: 0, max: 1000},
+  'hints.verbose_until_seen_count': {min: 0, max: 10000},
+  'hints.min_file_lines_for_hint': {min: 0, max: 1_000_000},
+  'hints.bash_dedup_min_bytes': {min: 0, max: 100_000},
+  'hints.web_dedup_min_bytes': {min: 0, max: 100_000},
+  'hints.grep_dedup_min_matches': {min: 0, max: 100_000},
+  'hints.git_hint_max_ms': {min: 0, max: 10000},
+  'hints.min_session_hint_savings_bytes': {min: 0, max: 1_000_000},
+  'hints.diff_hint_min_tokens_saved': {min: 0, max: 100_000},
+  'hints.large_read_redirect_bytes': {min: 0, max: 100_000_000},
+  'hints.reread_deny_min_bytes': {min: 0, max: 100_000_000},
+  'hints.truncated_read_min_lines': {min: 0, max: 1_000_000},
+  'hints.protect_recent_reads': {min: 0, max: 100},
+  'hints.cross_session_read_dedup_ttl_secs': {min: 1, max: 86400},
+  'hints.mcp_dedup_ttl_secs': {min: 1, max: 3600},
+  'hooks.watchdog_ms': {min: 100, max: 30000},
+  'webfetch.max_file_count': {min: 0, max: 10_000_000},
+  'webfetch.max_bytes': {min: 0, max: 100 * 1024 * 1024 * 1024},
+  'webfetch.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
+  'worker.max_pool_workers': {min: 1, max: 8},
+  'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
+  'indexing.large_file_skip_kb': {min: 1, max: 1048576},
+  'context.model_window_tokens': {min: 10_000, max: 10_000_000},
+}
+
+/**
+ * Validate a single numeric config field against its documented bounds and cross-field constraints.
+ * Used by config set to reject out-of-range values without rebuilding the entire config tree.
+ * Returns the clamped value if validation passes, or undefined if the field is not numeric/known.
+ */
+function walkGetNumeric(obj: Record<string, unknown>, parts: string[]): number | undefined {
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (typeof cur !== 'object' || cur === null) return undefined
+    cur = (cur as Record<string, unknown>)[part]
+    if (cur === undefined) return undefined
+  }
+  return typeof cur === 'number' ? cur : undefined
+}
+
+export function validateNumericField(fieldKey: string, value: number, cfg: Record<string, unknown>): number | undefined {
+  const bounds = NUMERIC_FIELD_BOUNDS[fieldKey]
+  if (!bounds) return undefined
+
+  // Apply simple min/max clamping (matching validatedInt/validatedFloat logic)
+  let clamped = Math.max(bounds.min, Math.min(bounds.max, value))
+
+  // Apply cross-field constraints if present
+  if (bounds.clampTo) {
+    const clampToValue = walkGetNumeric(cfg, bounds.clampTo.split('.'))
+    if (typeof clampToValue === 'number') {
+      clamped = Math.min(clamped, clampToValue)
+    }
+  }
+
+  return clamped
+}
+
+// String-valued config fields whose value must come from a fixed set. Extracted from
+// _buildConfig / dispatch.ts's PROFILE_CAPS and bridges/registry.ts's harness names, so a typo
+// (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently
+// falling back to a default at runtime with no signal to the user.
+const ENUM_FIELD_VALUES: Record<string, string[]> = {
+  'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
+  'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
+}
+
+/**
+ * Validate a single enum-valued string config field against its fixed set of allowed values.
+ * Used by config set to reject unrecognized values without rebuilding the entire config tree.
+ * Returns undefined if the field isn't enum-constrained (any string is fine) or the value is
+ * valid; returns the allowed-value list if the value is invalid.
+ */
+export function validateEnumField(fieldKey: string, value: string): string[] | undefined {
+  const allowed = ENUM_FIELD_VALUES[fieldKey]
+  if (!allowed) return undefined
+  return allowed.includes(value) ? undefined : allowed
+}
+
 // ---------------------------------------------------------------------------
 // Env fingerprint + mtime cache
 // ---------------------------------------------------------------------------
@@ -471,7 +556,6 @@ const ENV_KEYS = [
   'TOKEN_GOAT_OVERFLOW_MAX_TOKENS',
   'TOKEN_GOAT_HINT_JSON_SIDECAR',
   'TOKEN_GOAT_LARGE_READ_BYTES',
-  'TOKEN_GOAT_BASELINE_BUDGET_TOKENS',
   'TOKEN_GOAT_CURATOR',
   'TOKEN_GOAT_HINT_BUDGET',
   'TOKEN_GOAT_HOOK_WATCHDOG_MS',
@@ -519,6 +603,23 @@ interface CacheEntry {
 
 let _cached: CacheEntry | null = null
 
+// Recursively freezes a config tree before it enters the cache. loadConfig() intentionally
+// returns the SAME cached object reference on every hit within one mtime/env fingerprint
+// window (see the "second call with unchanged file returns same object reference" test) --
+// without this, a caller that does `loadConfig().hints.foo = x` instead of reading it would
+// silently corrupt that shared singleton for every other caller until the next cache
+// invalidation. Object.freeze() throws on such a write in strict mode (ESM is always strict)
+// instead of corrupting shared state, while leaving the returned reference itself unchanged.
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(v)
+    }
+  }
+  return value
+}
+
 // ---------------------------------------------------------------------------
 // load / save
 // ---------------------------------------------------------------------------
@@ -548,7 +649,7 @@ export function loadConfig(): Config {
     }
   }
 
-  const cfg = _buildConfig(raw)
+  const cfg = deepFreeze(_buildConfig(raw))
 
   _cached = { config: cfg, mtime: currentMtime, envFp }
   return cfg
@@ -652,7 +753,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig
   bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, 1, 10000)
-  bd.hunk_density_cap = validatedBool(bd_raw['hunk_density_cap'], bd.hunk_density_cap)
 
   const sl_raw = section(raw, 'bash_severity_log')
   const sl = getDefaultConfig('bash_severity_log') as SeverityLogConfig
@@ -698,21 +798,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
   sc_cfg.chrome_path = validatedStr(sc_raw['chrome_path'], sc_cfg.chrome_path)
 
-  const cur_raw = section(raw, 'curator')
-  const cur = getDefaultConfig('curator') as CuratorConfig
-  cur.enabled = validatedBool(cur_raw['enabled'], cur.enabled)
-  cur.min_samples = validatedInt(cur_raw['min_samples'], cur.min_samples, 0, 10000)
-  cur.threshold_pct = validatedInt(cur_raw['threshold_pct'], cur.threshold_pct, 0, 100)
-  cur.enabled = envBool('TOKEN_GOAT_CURATOR', cur.enabled)
-
-  const hb_raw = section(raw, 'hint_budget')
-  const hb = getDefaultConfig('hint_budget') as HintBudgetConfig
-  hb.enabled = validatedBool(hb_raw['enabled'], hb.enabled)
-  hb.max_per_session = validatedInt(hb_raw['max_per_session'], hb.max_per_session, 0, 1_000_000)
-  hb.max_structured_per_session = validatedInt(hb_raw['max_structured_per_session'], hb.max_structured_per_session, 0, 1_000_000)
-  hb.max_index_only_per_session = validatedInt(hb_raw['max_index_only_per_session'], hb.max_index_only_per_session, 0, 1_000_000)
-  hb.enabled = envBool('TOKEN_GOAT_HINT_BUDGET', hb.enabled)
-
   const rm_raw = section(raw, 'repomap')
   const rm = getDefaultConfig('repomap') as RepomapConfig
   rm.compact_file_threshold = validatedInt(rm_raw['compact_file_threshold'], rm.compact_file_threshold, 0, 100_000)
@@ -754,7 +839,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.large_read_redirect_bytes = validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   hi.reread_deny_min_bytes = validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 0, 100_000_000)
-  hi.baseline_budget_tokens = validatedInt(hi_raw['baseline_budget_tokens'], hi.baseline_budget_tokens, 0, 10_000_000)
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)
@@ -765,7 +849,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
   hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, 0, 100_000_000)
-  hi.baseline_budget_tokens = envInt('TOKEN_GOAT_BASELINE_BUDGET_TOKENS', hi.baseline_budget_tokens, 0, 10_000_000)
   hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
   hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
@@ -804,11 +887,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const wk_raw = section(raw, 'worker')
   const wk = getDefaultConfig('worker') as WorkerConfig
-  wk.watchdog_enabled = validatedBool(wk_raw['watchdog_enabled'], wk.watchdog_enabled)
-  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
-  wk.watchdog_enabled = envBool('TOKEN_GOAT_WORKER_WATCHDOG', wk.watchdog_enabled)
-  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, 1, 8)
+  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
 
   const ix_raw = section(raw, 'indexing')
   const ix = getDefaultConfig('indexing') as IndexingConfig
@@ -845,8 +925,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
     post_read_code_compress: cc,
     session_brief: sb,
     skill_preservation: sp,
-    curator: cur,
-    hint_budget: hb,
     image_shrink: is_cfg,
     screenshot: sc_cfg,
     repomap: rm,
@@ -883,8 +961,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.pre_skill_enabled': ['TOKEN_GOAT_PRE_SKILL'],
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
-  'curator.enabled': ['TOKEN_GOAT_CURATOR'],
-  'hint_budget.enabled': ['TOKEN_GOAT_HINT_BUDGET'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
   'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
@@ -894,7 +970,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.web_dedup_min_bytes': ['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'],
   'hints.grep_dedup_min_matches': ['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
-  'hints.baseline_budget_tokens': ['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
   'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
@@ -906,8 +981,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
-  'worker.watchdog_enabled': ['TOKEN_GOAT_WORKER_WATCHDOG'],
-  'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
@@ -949,7 +1022,6 @@ export function saveConfig(config: Config): void {
     },
     bash_diff: {
       max_hunks_per_file: config.bash_diff.max_hunks_per_file,
-      hunk_density_cap: config.bash_diff.hunk_density_cap,
     },
     bash_severity_log: {
       context_lines: config.bash_severity_log.context_lines,
@@ -973,17 +1045,6 @@ export function saveConfig(config: Config): void {
       pre_skill_enabled: sp.pre_skill_enabled,
       first_load_compact: sp.first_load_compact,
       post_compact_full_loads: sp.post_compact_full_loads,
-    },
-    curator: {
-      enabled: config.curator.enabled,
-      min_samples: config.curator.min_samples,
-      threshold_pct: config.curator.threshold_pct,
-    },
-    hint_budget: {
-      enabled: config.hint_budget.enabled,
-      max_per_session: config.hint_budget.max_per_session,
-      max_structured_per_session: config.hint_budget.max_structured_per_session,
-      max_index_only_per_session: config.hint_budget.max_index_only_per_session,
     },
     image_shrink: {
       enabled: is_cfg.enabled,
@@ -1024,7 +1085,6 @@ export function saveConfig(config: Config): void {
       large_read_redirect_bytes: config.hints.large_read_redirect_bytes,
       reread_deny: config.hints.reread_deny,
       reread_deny_min_bytes: config.hints.reread_deny_min_bytes,
-      baseline_budget_tokens: config.hints.baseline_budget_tokens,
       stable_doc_compacts: config.hints.stable_doc_compacts,
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
@@ -1047,9 +1107,8 @@ export function saveConfig(config: Config): void {
       compress_min_bytes: config.webfetch.compress_min_bytes,
     },
     worker: {
-      watchdog_enabled: config.worker.watchdog_enabled,
-      max_pool_workers: config.worker.max_pool_workers,
       blocked_roots: config.worker.blocked_roots,
+      max_pool_workers: config.worker.max_pool_workers,
     },
     indexing: {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
