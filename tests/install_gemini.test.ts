@@ -52,14 +52,31 @@ function commandsFor(settings: GeminiSettingsShape, event: string): string[] {
 }
 
 let TMP: string
+let originalArgv1: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gemini-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
+  // installGemini/isGeminiInstalled/uninstallGemini identify their own hook commands by
+  // checking whether process.argv[1] (the entry path baked into the written command) contains
+  // a "token-goat" path segment (GEMINI_ENTRY_PATH_MARKER_PATTERN in gemini_install.ts) -- a
+  // real npm install always places the entry under a `node_modules/token-goat/...` directory,
+  // so this is reliable in production. Under vitest's fork pool, though, process.argv[1] is
+  // tinypool's own internal worker script (node_modules/tinypool/dist/entry/process.js), which
+  // has nothing to do with token-goat's identity -- whether it happens to also satisfy the
+  // marker depends entirely on whether the repo's checkout *directory* incidentally contains
+  // "token-goat" somewhere in its path (true for this repo's usual checkout locations, false
+  // for e.g. an arbitrarily-named scratch clone), making the suite pass or fail for reasons
+  // unrelated to the code under test. Stub argv[1] to a realistic token-goat entry path so
+  // these tests exercise real install/uninstall behavior deterministically, independent of
+  // where the repo happens to be checked out.
+  originalArgv1 = process.argv[1]
+  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
 })
 
 afterEach(() => {
+  process.argv[1] = originalArgv1
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
