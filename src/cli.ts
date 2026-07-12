@@ -27,7 +27,9 @@ import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, disabledEmbedSha } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { embeddingsDepsAvailable } from './embeddings.js'
+import { getDb } from './db.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
@@ -240,10 +242,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // the instant embeddings are re-enabled, and mirror makeIndexer's identical gate in
     // worker.ts.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped
+    // only because the optional model/sqlite-vec deps were absent) treated as stale so it is
+    // re-embedded once the deps are installed, instead of looking permanently fresh.
+    const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
     const embedUnchanged =
       parseUnchanged &&
       sha !== null &&
-      entry?.embedSha === (embeddingsEnabled ? sha : disabledEmbedSha(sha))
+      isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue

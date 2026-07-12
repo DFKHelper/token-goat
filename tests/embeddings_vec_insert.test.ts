@@ -116,7 +116,8 @@ describe('upsertChunks (real function, not insertChunkVector in isolation) again
         kind: 'code',
       }
 
-      await expect(upsertChunks(db, [chunk])).resolves.toBeUndefined()
+      // A real vec0 table is present, so upsertChunks actually embeds and reports 'embedded'.
+      await expect(upsertChunks(db, [chunk])).resolves.toBe('embedded')
 
       const row = db
         .prepare('SELECT id FROM chunks WHERE file_path = ?')
