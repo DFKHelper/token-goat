@@ -191,6 +191,51 @@ describe('installCodex', () => {
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe('model = "gpt-5"\n')
   })
+
+  it('refreshes a stale baked entry path on re-install instead of skipping as already installed (regression: the idempotency check only tested for the token-goat-shim marker being present, never compared the actual command text against what hookCommandFor would currently produce, so a deleted-dev-checkout or node-version-switch entry path never got corrected)', () => {
+    const p = codexConfigPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    // A marker-shaped entry (contains "token-goat-shim") whose baked node/entry
+    // paths point at a checkout that no longer exists -- exactly what a real
+    // install call would never write today, but exactly what an old install
+    // left behind.
+    const staleConfig = [
+      '[[hooks.PreToolUse]]',
+      'matcher = "view_image|Bash"',
+      '',
+      '[[hooks.PreToolUse.hooks]]',
+      'type = "command"',
+      'command = "\\"C:/deleted-node/node.exe\\" \\"C:/deleted-checkout/hooks/token-goat-shim.js\\" pre_tool_use \\"C:/deleted-checkout/dist/token-goat.mjs\\""',
+      '',
+      '[[hooks.PreToolUse]]',
+      'matcher = "apply_patch"',
+      '',
+      '[[hooks.PreToolUse.hooks]]',
+      'type = "command"',
+      'command = "\\"C:/deleted-node/node.exe\\" \\"C:/deleted-checkout/hooks/token-goat-shim.js\\" pre_tool_use \\"C:/deleted-checkout/dist/token-goat.mjs\\""',
+      '',
+      '[[hooks.PreToolUse]]',
+      'matcher = "web_search"',
+      '',
+      '[[hooks.PreToolUse.hooks]]',
+      'type = "command"',
+      'command = "\\"C:/deleted-node/node.exe\\" \\"C:/deleted-checkout/hooks/token-goat-shim.js\\" pre_tool_use \\"C:/deleted-checkout/dist/token-goat.mjs\\""',
+      '',
+    ].join('\n')
+    fs.writeFileSync(p, staleConfig)
+
+    const result = installCodex()
+    expect(result.alreadyInstalled).toBe(false)
+
+    const config = readConfig()
+    const preCommands = commandsFor(config, 'PreToolUse')
+    // The stale entry must be gone entirely -- refreshed in place, not left as a dead duplicate.
+    expect(preCommands.some((c) => c.includes('C:/deleted-checkout'))).toBe(false)
+    for (const command of preCommands) {
+      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(result.hookScriptPath)
+    }
+  })
 })
 
 describe('isCodexInstalled / uninstallCodex', () => {
