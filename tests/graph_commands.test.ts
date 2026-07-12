@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { querySymbols } from '../src/index_reader.js'
+import type * as IndexReaderModule from '../src/index_reader.js'
 import {
   bfsCallChains,
   compareHopEntries,
@@ -39,6 +40,17 @@ import {
   runTypes,
 } from '../src/graph_commands.js'
 import type { SymbolEntry } from '../src/parser_types.js'
+
+// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation.
+// vi.mock is hoisted above these imports by vitest, so every call site (this test file's own
+// `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked
+// module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to
+// regression-test that buildFileSymCache() is hoisted once outside the BFS loop in
+// runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited.
+vi.mock('../src/index_reader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof IndexReaderModule>()
+  return { ...actual, querySymbols: vi.fn(actual.querySymbols) }
+})
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -433,6 +445,37 @@ describe('runCallers integration', () => {
   })
 })
 
+// ---- resolveCallers/runCallers cross-project scoping (regression) -----------
+
+describe('resolveCallers cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). resolveCallers used to run queryRefs with no project scope, so a
+  // caller of a same-named symbol living in a completely unrelated project on the same machine
+  // would leak into this project's caller list.
+  it('does not report a caller from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-callers-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-callers-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function scopedTargetFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function scopedTargetFn9k2() { return 1 }\nfunction caller() { scopedTargetFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        // rootB's caller() reference to the same-named function must not leak into rootA's results.
+        expect(resolveCallers('scopedTargetFn9k2')).toEqual([])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
 
 // ---- integration: runDead against the real repo index ----------------------
 
@@ -599,6 +642,87 @@ describe('runCallChain integration', () => {
   })
 })
 
+// ---- runCallChain cross-project scoping (regression) -------------------------
+
+describe('runCallChain cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runCallChain's callersOf closure used to run queryRefs with no
+  // project scope, so a caller of a same-named symbol living in a completely unrelated project
+  // on the same machine would leak into this project's call chains.
+  it('does not follow a caller edge from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-chain-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-chain-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function chainScopedFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function chainScopedFn9k2() { return 1 }\nfunction caller() { chainScopedFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runCallChain({ symbol: 'chainScopedFn9k2' })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the
+        // single-node chain (the symbol itself has no callers within rootA).
+        expect(captured).not.toContain('caller')
+        expect(captured.trim()).toBe('chainScopedFn9k2')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runCallChain file-symbol cache hoisting (regression) --------------------
+
+describe('runCallChain file-symbol cache hoisting', () => {
+  // Regression: runCallChain used to call buildFileSymCache() from inside the callersOf closure
+  // that runs once per BFS node, discarding the memoized Map and forcing a fresh querySymbols()
+  // call for the same file on every hop instead of reusing one cache across the whole BFS.
+  it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-chain-cache-'))
+    try {
+      const file = join(dir, 'chain.ts')
+      writeFileSync(file, [
+        'export function cacheLevel0() { return 1 }',
+        'export function cacheLevel1() { return cacheLevel0() }',
+        'export function cacheLevel2() { return cacheLevel1() }',
+        'export function cacheLevel3() { return cacheLevel2() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      vi.mocked(querySymbols).mockClear()
+      const code = runCallChain({ symbol: 'cacheLevel0', depth: 5 })
+      expect(code).toBe(0)
+
+      const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
+        (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
+      )
+      // All four BFS hops (cacheLevel0 -> cacheLevel1 -> cacheLevel2 -> cacheLevel3) resolve
+      // references inside the same file. With the cache correctly hoisted once outside the BFS
+      // loop, that file's symbols are fetched exactly once and reused for every hop.
+      expect(callsForFile.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runImpact against the real repo index -------------------
 
 describe('runImpact integration', () => {
@@ -621,6 +745,117 @@ describe('runImpact integration', () => {
   it('exits 1 for an unknown symbol', () => {
     const code = runImpact({ symbol: '__xyzzy_no_such_symbol_9f3k__' })
     expect(code).toBe(1)
+  })
+})
+
+// ---- runImpact cross-project scoping (regression) ----------------------------
+
+describe('runImpact cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runImpact's BFS used to run queryRefs with no project scope, so a
+  // caller of a same-named symbol living in a completely unrelated project on the same machine
+  // would leak into this project's impact analysis.
+  it('does not follow a caller edge from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-impact-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-impact-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function impactScopedFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function impactScopedFn9k2() { return 1 }\nfunction impactCaller9k2() { impactScopedFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        // rootB's impactCaller9k2() must not leak into rootA-scoped output, so rootA has no
+        // callers at all for this symbol and runImpact exits 1.
+        const code = runImpact({ symbol: 'impactScopedFn9k2' })
+        expect(code).toBe(1)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runImpact file-symbol cache hoisting (regression) ------------------------
+
+describe('runImpact file-symbol cache hoisting', () => {
+  // Regression: runImpact used to call buildFileSymCache() from inside the BFS while-loop body
+  // (once per dequeued node), discarding the memoized Map and forcing a fresh querySymbols() call
+  // for the same file on every hop instead of reusing one cache across the whole BFS.
+  it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-impact-cache-'))
+    try {
+      const file = join(dir, 'chain.ts')
+      writeFileSync(file, [
+        'export function impactCacheLevel0() { return 1 }',
+        'export function impactCacheLevel1() { return impactCacheLevel0() }',
+        'export function impactCacheLevel2() { return impactCacheLevel1() }',
+        'export function impactCacheLevel3() { return impactCacheLevel2() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      vi.mocked(querySymbols).mockClear()
+      const code = runImpact({ symbol: 'impactCacheLevel0' })
+      expect(code).toBe(0)
+
+      const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
+        (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
+      )
+      // All four BFS hops resolve references inside the same file. With the cache correctly
+      // hoisted once outside the BFS loop, that file's symbols are fetched exactly once and
+      // reused for every hop.
+      expect(callsForFile.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runImpact module-scope refs surfaced as file-level entries (regression) --
+
+describe('runImpact module-scope refs', () => {
+  // Regression: runImpact used to `continue` past any ref whose enclosing symbol could not be
+  // resolved (i.e. a module-scope reference -- top-level code, not inside a function/class),
+  // silently dropping it. resolveCallers already surfaces this same situation as a file-level
+  // entry (caller: '(module scope)'); runImpact must do the same instead of discarding it.
+  it('surfaces a module-scope reference as a file-level entry instead of dropping it', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-impact-modscope-'))
+    try {
+      const file = join(dir, 'modscope.ts')
+      const filePath = normalizePath(file)
+      writeFileSync(file, [
+        'export function moduleScopeTargetFn9k2() { return 1 }',
+        'moduleScopeTargetFn9k2()',
+        '',
+      ].join('\n'))
+      indexFileSync(filePath)
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runImpact({ symbol: 'moduleScopeTargetFn9k2', json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ symbol: string; hops: number }>
+      const moduleScopeEntry = parsed.find((e) => e.symbol.includes('(module scope)') && e.symbol.includes(filePath))
+      expect(moduleScopeEntry).toBeDefined()
+      expect(moduleScopeEntry?.hops).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
