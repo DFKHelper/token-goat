@@ -61,8 +61,14 @@ export function parseTranscript(content: string): TranscriptCue[] {
       }
       const rawText = textLines.join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
       const firstLineForSpeaker = textLines[0] ?? ''
-      const { speaker } = extractSpeaker(firstLineForSpeaker)
-      const { text } = extractSpeaker(rawText)
+      // Extract the speaker only once. A `<v Name>` tag on the raw first line already resolves the
+      // speaker unambiguously, so the leading-`Name:` prefix heuristic must not run a second time on
+      // rawText in that case -- it would otherwise mistake ordinary dialogue text that happens to
+      // start with "Word:" (e.g. "Bob said: hello") for a redundant speaker label and strip it.
+      const vTagSpeaker = extractSpeaker(firstLineForSpeaker)
+      const { speaker, text } = V_TAG_RE.test(firstLineForSpeaker)
+        ? { speaker: vTagSpeaker.speaker, text: rawText }
+        : extractSpeaker(rawText)
       index++
       cues.push({ index, startSeconds, endSeconds, speaker, text })
     } else {
