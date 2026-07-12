@@ -333,6 +333,33 @@ public record Vector(int X, int Y);
     // record is class-like, so it still maps to 'class'.
     expect(symbols.find((s) => s.name === 'Vector')?.kind).toBe('class')
   })
+
+  it('does not open a phantom verbatim string on an ordinary literal ending in "@"', () => {
+    // Regression: findMultilineOpener's verbatim-string branch (`/\$?@\$?"/`) had no
+    // isInsideStringLiteral guard, unlike the sibling triple-quote branch a few lines above it.
+    // An ordinary string like `"@"` textually matches `@"`, so it was misread as opening a
+    // verbatim string that never closes on this line, masking every subsequent line until a
+    // stray `"` happened to appear anywhere later in the file - swallowing both methods below.
+    const content = `public class ConfigHolder
+{
+    private const string At = "@";
+
+    public void MethodOne()
+    {
+        System.Console.WriteLine("one");
+    }
+
+    public void MethodTwo()
+    {
+        System.Console.WriteLine("two");
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    const methods = symbols.filter((s) => s.kind === 'method').map((s) => s.name)
+    expect(methods).toContain('MethodOne')
+    expect(methods).toContain('MethodTwo')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -2063,6 +2090,47 @@ function Get-Foo {
     const { symbols } = extractPowershell(content, 'real_singleline_block_comment.ps1')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Get-Foo')
+  })
+
+  it('does not open a phantom here-string on an ordinary literal ending in "@" or \'@\'', () => {
+    // Regression: findMultilineOpener's PowerShell branch (`/@("|')\s*$/`) had no
+    // isInsideStringLiteral guard. A line like `$email = "admin@"` ends with the two characters
+    // `@"`, so it was misread as opening a here-string. PowerShell here-strings never close on
+    // their opening line, and the real closer requires a line that STARTS with `"@` - which
+    // never occurs in ordinary code - so once falsely triggered, the rest of the file was
+    // silently swallowed from the index.
+    const content = `function Get-Email {
+    $email = "admin@"
+    return $email
+}
+
+function Get-Other {
+    return "ok"
+}
+`
+    const { symbols } = extractPowershell(content, 'ordinary_at_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Email')
+    expect(names).toContain('Get-Other')
+  })
+
+  it('still recognizes a real here-string opener and masks its multi-line content', () => {
+    const content = `function Get-Template {
+    $template = @"
+Hello $Name
+This is a multiline string.
+"@
+    return $template
+}
+
+function Get-Other {
+    return "ok"
+}
+`
+    const { symbols } = extractPowershell(content, 'real_here_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Template')
+    expect(names).toContain('Get-Other')
   })
 })
 })
