@@ -490,7 +490,10 @@ export function positionalArgs(args: string[]): string[] {
   return args.filter((a) => !a.startsWith('-'))
 }
 
-const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-i', '-u', '-e'])
+// `-i` is deliberately absent: for the passthrough wrappers this set gates
+// (sudo, env, ...), `-i` takes no value (`sudo -i`, `env -i`), so treating
+// it as value-taking would consume the real binary token as its "value".
+const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-u', '-e'])
 
 /**
  * Strip pass-through wrappers (sudo/env/nice/...) and resolve multi-token
