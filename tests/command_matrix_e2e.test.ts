@@ -493,6 +493,31 @@ const cases: Record<string, () => void | Promise<void>> = {
     const output = JSON.parse(rj.stdout) as { total_tokens: number }
     expect(typeof output.total_tokens).toBe('number')
   },
+  memory: () => {
+    const proj = mkIsolated('tg-matrix-mem-')
+    const claudeMd = path.join(proj, 'CLAUDE.md')
+    fs.writeFileSync(claudeMd, '# Rules\n\nAlways run tests.\n\nAlways run tests.\n', 'utf8')
+
+    // --analyze (default): read-only report, no writes.
+    const r = run(['memory', '--project', proj])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('CLAUDE.md files')
+    expect(r.stdout).toContain('exact-duplicate lines: 1')
+    expect(fs.readFileSync(claudeMd, 'utf8')).toContain('Always run tests.\n\nAlways run tests.')
+
+    // --fix without --yes and without a TTY: dry run, file untouched.
+    const rDry = run(['memory', '--project', proj, '--fix'])
+    expect(rDry.status, rDry.stderr).toBe(0)
+    expect(rDry.stdout).toMatch(/Dry run: no files were written/)
+    expect(fs.readFileSync(claudeMd, 'utf8')).toContain('Always run tests.\n\nAlways run tests.')
+
+    // --fix --yes: applies the mechanical exact-duplicate-line removal.
+    const rFix = run(['memory', '--project', proj, '--fix', '--yes'])
+    expect(rFix.status, rFix.stderr).toBe(0)
+    expect(rFix.stdout).toMatch(/applied 1 file\(s\)/)
+    const after = fs.readFileSync(claudeMd, 'utf8')
+    expect((after.match(/Always run tests\./g) ?? []).length).toBe(1)
+  },
 
   version: () => {
     const r = run(['version'])
@@ -1081,11 +1106,13 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     expect(r.stderr).not.toContain('sharp unavailable')
 
     const out = JSON.parse(r.stdout) as {
-      hookSpecificOutput?: { additionalContext?: string }
+      hookSpecificOutput?: { updatedInput?: { file_path?: string } }
     }
-    const context = out.hookSpecificOutput?.additionalContext ?? ''
-    expect(context).toContain('smaller')
-    expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
+    const rewrittenPath = out.hookSpecificOutput?.updatedInput?.file_path
+    expect(typeof rewrittenPath).toBe('string')
+    expect(rewrittenPath).not.toBe(imgPath)
+    const rewrittenSize = fs.statSync(rewrittenPath as string).size
+    expect(rewrittenSize).toBeLessThan(jpegBuf.length)
   }, 30000)
 })
 

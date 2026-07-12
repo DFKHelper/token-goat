@@ -27,8 +27,9 @@ import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, disabledEmbedSha } from './parser.js'
-import { pruneDeletedFiles } from './index_prune.js'
+import { indexFileSync, indexFileEmbeddings, disabledEmbedSha, isParseSkipEligible, wouldSkipFileEmbedding } from './parser.js'
+import { getDb } from './db.js'
+import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
@@ -134,6 +135,7 @@ import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent,
 import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
+import { runMemoryCommand } from './cli_memory.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -210,6 +212,7 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     files = collectWalkIndexFiles(root)
   }
   const blockedRoots = loadConfig().worker.blocked_roots
+  const ixCfg = loadConfig().indexing
   let indexed = 0
   let failed = 0
   let skipped = 0
@@ -220,6 +223,20 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
+    // indexing.skip_dirs / indexing.large_file_skip_kb: filter here, before the sha/entry work
+    // below, so a file under a skipped directory or over the size cap is never marked "indexed"
+    // (indexFileSync/indexFileEmbeddings would silently no-op for it internally, but without
+    // this pre-filter its files.sha row would never get created, so parseUnchanged would stay
+    // false forever and the same no-op work would repeat -- and get counted -- on every run).
+    if (isParseSkipEligible(key, ixCfg)) {
+      // A file previously indexed while still eligible must have its stale symbols/refs/files
+      // row AND any orphaned chunk_vectors/chunks embedding rows cleared now that skip_dirs or
+      // large_file_skip_kb covers it -- deleteFileRows alone left embeddings behind forever (not
+      // reachable by pruneDeletedFiles either, since the file still exists on disk), so
+      // `semantic` kept matching content from a file meant to be fully excluded.
+      removeFileFromIndex(getDb(dbPath), key)
+      continue
+    }
 
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
     // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
@@ -231,17 +248,20 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = sha !== null && entry?.sha === sha
-    // While embeddings are disabled, indexFileEmbeddings stamps embed_sha with
-    // disabledEmbedSha(sha) rather than the bare sha (see its doc comment in parser.ts), so
-    // this gate must compare against the same marker form here -- otherwise a file that was
-    // only ever marker-stamped (never actually embedded) would look permanently "unchanged"
-    // the instant embeddings are re-enabled, and mirror makeIndexer's identical gate in
-    // worker.ts.
+    // While embeddings are disabled globally, OR this specific file is permanently excluded from
+    // embedding by policy (profile-meta.xml, skip_dirs, over large_file_symbol_only_kb, an
+    // oversized salesforce_metadata file), indexFileEmbeddings stamps embed_sha with
+    // disabledEmbedSha(sha) rather than the bare sha (see its doc comment in parser.ts), so this
+    // gate must compare against the same marker form here -- otherwise a file that was only ever
+    // marker-stamped (never actually embedded) would look permanently "unchanged" the instant
+    // embeddings are re-enabled or the file's exclusion reason no longer applies, and mirror
+    // makeIndexer's identical gate in worker.ts.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     const embedUnchanged =
       parseUnchanged &&
       sha !== null &&
-      entry?.embedSha === (embeddingsEnabled ? sha : disabledEmbedSha(sha))
+      entry?.embedSha ===
+        (embeddingsEnabled && !wouldSkipFileEmbedding(key, ixCfg) ? sha : disabledEmbedSha(sha))
     if (parseUnchanged && embedUnchanged) {
       skipped += 1
       continue
@@ -516,9 +536,12 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --pi is additive, exactly like --codex above.
+  // --pi is additive, exactly like --codex above. --local narrows removal to the
+  // project-local scope only; without it, uninstallPi cleans up wherever the
+  // extension actually is (global and/or local) instead of requiring the caller
+  // to remember which scope --pi was originally installed with.
   if (opts.pi === true) {
-    const piRemoved = uninstallPi({ local: opts.local === true })
+    const piRemoved = opts.local === true ? uninstallPi({ local: true }) : uninstallPi()
     out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
   }
 
@@ -532,9 +555,11 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --copilot is additive, exactly like --codex above.
+  // --copilot is additive, exactly like --codex above. Same auto-detect-both-scopes
+  // reasoning as --pi above: --local narrows removal to the project scope only;
+  // without it, uninstallCopilotCli cleans up wherever the hook config actually is.
   if (opts.copilot === true) {
-    const copilotRemoved = uninstallCopilotCli({ local: opts.local === true })
+    const copilotRemoved = opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()
     out(
       copilotRemoved
         ? 'Removed token-goat Copilot CLI integration.'
@@ -621,6 +646,10 @@ function cmdDoctor(opts: { context?: boolean }): void {
 
 function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean } = {}): void {
   runContextStats(opts)
+}
+
+function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
+  return runMemoryCommand(opts)
 }
 
 function _applyFiltersAndPrint(
@@ -2054,6 +2083,15 @@ export function buildProgram(): Command {
     .option('--json', 'output JSON')
     .option('--fix', 'apply automatic fixes')
     .action(guard(cmdContextStats))
+
+  program
+    .command('memory')
+    .description('analyze CLAUDE.md files for duplicate/overlapping content (--fix to apply safe mechanical fixes)')
+    .option('--project <path>', 'project root to analyze')
+    .option('--analyze', 'report-only analysis (default)')
+    .option('--fix', 'remove exact-duplicate lines (confirm-gated; shows a diff before writing)')
+    .option('--yes', 'apply --fix changes without prompting (non-interactive)')
+    .action(guard(cmdMemory))
 
   program
     .command('bash-output [id]')
