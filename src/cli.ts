@@ -1647,15 +1647,16 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
 }
 
-async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
+async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
+  const fetchOpts = { fresh: opts.fresh === true }
   if (opts.heading !== undefined) {
-    const content = await getSectionContent(fileId, opts.heading)
+    const content = await getSectionContent(fileId, opts.heading, fetchOpts)
     if (content === null) {
       throw new CliError(`section '${opts.heading}' not found in document ${fileId}`)
     }
     out(`# ${opts.heading}\n${content}`)
   } else {
-    const sections = await getDocSections(fileId)
+    const sections = await getDocSections(fileId, fetchOpts)
     const formatted = formatSections(sections)
     out(formatted)
   }
@@ -2778,6 +2779,7 @@ export function buildProgram(): Command {
     .command('gdrive-sections <file-id>')
     .description('fetch and list sections from a public Google Doc')
     .option('--heading <name>', 'get content of one named section')
+    .option('--fresh', 'skip the on-disk cache and force a live fetch')
     .action(guard(cmdGdriveSections))
 
   program
