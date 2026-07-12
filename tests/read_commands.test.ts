@@ -1571,6 +1571,39 @@ describe('read_commands', () => {
       expect(stdout).toContain(`No data rows found in ${f}`)
       expect(code).toBe(0)
     })
+
+    it('caps output to the first N rows via a valid --head', () => {
+      const f = path.join(tempDir, 'head.csv')
+      fs.writeFileSync(f, CSV)
+      const { stdout } = capture(() => { runCsvQuery({ file: f, head: '1' }) })
+      expect(stdout).toContain('Alice')
+      expect(stdout).not.toContain('Bob')
+    })
+
+    // Regression: --head was parsed with raw parseInt instead of the same
+    // requireNonNegativeInt validation the parallel xlsx --head path already uses. A
+    // non-numeric value produced NaN, which `.slice(0, NaN)` silently turns into 0 rows
+    // with a misleading "N more rows elided" message instead of a clear error.
+    it('returns 1 and reports a clear error for a non-numeric --head', () => {
+      const f = path.join(tempDir, 'badhead.csv')
+      fs.writeFileSync(f, CSV)
+      let code = -1
+      const { stderr } = capture(() => { code = runCsvQuery({ file: f, head: 'abc' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('--head')
+      expect(stderr).toContain('abc')
+    })
+
+    // Regression: a negative --head silently returned all-but-the-last-N rows instead of
+    // erroring, because `.slice(0, -5)` reinterprets a negative count as "from the end".
+    it('returns 1 and reports a clear error for a negative --head', () => {
+      const f = path.join(tempDir, 'neghead.csv')
+      fs.writeFileSync(f, CSV)
+      let code = -1
+      const { stderr } = capture(() => { code = runCsvQuery({ file: f, head: '-5' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('--head')
+    })
   })
 
   // ---- runCsvProfile ---------------------------------------------------
