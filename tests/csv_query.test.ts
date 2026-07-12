@@ -29,6 +29,20 @@ describe('queryCsv', () => {
     expect(result.rows[0]).toEqual(['Alice', 'active']);
   });
 
+  // Regression: Excel/PowerShell "Save As UTF-8" on Windows (the primary platform for this
+  // tool) prefixes the file with a UTF-8 BOM. Without `bom: true` on csv-parse, the
+  // BOM stays glued to the first header cell (a BOM-prefixed 'id' instead of 'id'), silently breaking
+  // --columns/--where lookups on that column even though the file looks fine in a text editor.
+  it('strips a leading UTF-8 BOM from the first header so --columns/--where match on it', () => {
+    const bomCsv = '\uFEFF' + CSV;
+    const result = queryCsv(bomCsv, { columns: ['id', 'name'] });
+    expect(result.header).toEqual(['id', 'name']);
+    expect(result.rows[0]).toEqual(['1', 'Alice']);
+
+    const filtered = queryCsv(bomCsv, { wheres: [{ column: 'id', op: '=', value: '1' }] });
+    expect(filtered.totalRows).toBe(1);
+  });
+
   it('filters rows by equality', () => {
     const result = queryCsv(CSV, { wheres: [{ column: 'status', op: '=', value: 'active' }] });
     expect(result.totalRows).toBe(2);

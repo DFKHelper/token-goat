@@ -26,10 +26,10 @@ export interface CsvQueryOptions {
 function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
   const delimiter = opts.delimiter ?? ','
   if (opts.noHeader === true) {
-    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter }) as string[][]
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true }) as string[][]
     return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
   }
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter }) as Array<Record<string, string>>
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true }) as Array<Record<string, string>>
 }
 
 export interface CsvQueryResult {
