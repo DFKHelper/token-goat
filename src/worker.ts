@@ -329,13 +329,14 @@ function logTransientReadFailure(dir: string, absPath: string): void {
   )
 }
 
-// Re-adds `absPath` to the live dirty queue after a transient read failure. Mirrors
-// appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is
-// parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue
-// processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort:
-// if the requeue write itself fails, the path is lost for this cycle, but the failure is still
-// captured via logTransientReadFailure above.
-function requeueDirtyPath(dir: string, absPath: string): void {
+// Bumps the transient-retry count for `absPath` and decides whether it is still within its
+// retry budget. Returns true when the caller should go on to actually requeue the path (append
+// it to a dirty queue); false once MAX_TRANSIENT_RETRIES has been exceeded (logging the give-up
+// message exactly once, on the cycle the cap is first exceeded). Split out of the old
+// requeueDirtyPath so drainOnce can bump the retry counter immediately (once per real failure)
+// while deferring the actual queue-file append -- see drainOnce's stage (a)/(b) doc comment for
+// why the append must not land in the SAME cycle's live queue.
+function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   const dbPath = path.join(dir, 'global.db')
   const attempts = bumpRetryCount(dbPath, absPath)
   if (attempts > MAX_TRANSIENT_RETRIES) {
@@ -350,8 +351,17 @@ function requeueDirtyPath(dir: string, absPath: string): void {
         `${new Date().toISOString()} giving up on ${absPath} after ${MAX_TRANSIENT_RETRIES} consecutive transient read failures -- no longer retrying automatically (will retry again if the file changes)\n`,
       )
     }
-    return
+    return false
   }
+  return true
+}
+
+// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir +
+// torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding
+// dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an
+// isolated dir under test. Best-effort: if the write itself fails, the path is lost for this
+// cycle, but the failure is still captured via logTransientReadFailure above.
+function appendToDirtyQueue(dir: string, absPath: string): void {
   const queuePath = dirtyQueuePathFor(dir)
   try {
     fs.mkdirSync(path.dirname(queuePath), { recursive: true })
@@ -366,6 +376,14 @@ function requeueDirtyPath(dir: string, absPath: string): void {
   } catch {
     // best-effort -- see doc comment above.
   }
+}
+
+// Re-adds `absPath` to the live dirty queue after a transient read failure. This is the default
+// `requeue` callback processDirtyBatch uses outside of drainOnce (e.g. direct callers/tests);
+// drainOnce itself injects a callback that defers the appendToDirtyQueue half -- see its doc
+// comment for why.
+function requeueDirtyPath(dir: string, absPath: string): void {
+  if (bumpAndCheckRetry(dir, absPath)) appendToDirtyQueue(dir, absPath)
 }
 
 /**
@@ -467,6 +485,7 @@ export function processDirtyBatch(
   index: (absPath: string, sha: string) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
   dir: string = dataDir(),
+  requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
   // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker
@@ -494,7 +513,7 @@ export function processDirtyBatch(
       // The file exists but couldn't be read right now (lock/permission/race) -- see
       // logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
       logTransientReadFailure(dir, p)
-      requeueDirtyPath(dir, p)
+      requeue(dir, p)
       continue
     }
     // The read succeeded -- clear any transient-retry count from a prior failure streak so a
@@ -573,6 +592,21 @@ export function drainOnce(
   const removeFn = remove ?? makeRemover(dbPath)
   let processed = 0
 
+  // A transient read failure in stage (a) (recovering an abandoned .draining file) must not be
+  // requeued straight onto the live dirty.txt: stage (b) below claims that same live queue microseconds
+  // later, in this SAME drainOnce call, and would immediately reprocess the path while the
+  // lock/condition that caused the original failure has almost certainly not cleared yet --
+  // double-bumping its retry count once per cycle instead of once, roughly halving the effective
+  // MAX_TRANSIENT_RETRIES budget. Collect this cycle's requeues here and only write them to the
+  // live queue once BOTH stages have finished claiming/processing their batches, so a requeued
+  // path is guaranteed to wait for the NEXT drainOnce cycle. bumpAndCheckRetry (which increments
+  // the retry counter and enforces MAX_TRANSIENT_RETRIES) still runs immediately, at the point of
+  // failure -- only the disk append is deferred.
+  const deferredRequeues: string[] = []
+  const requeueFn = (requeueDir: string, absPath: string): void => {
+    if (bumpAndCheckRetry(requeueDir, absPath)) deferredRequeues.push(absPath)
+  }
+
   // (a) Crash recovery: absorb a .draining file abandoned by a previous crashed drain.
   if (fs.existsSync(draining)) {
     let drainingContent: string
@@ -592,7 +626,7 @@ export function drainOnce(
     // outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be
     // re-read and its paths reprocessed on every cycle.
     if (unclearedDrainingSnapshots.get(draining) !== drainingContent) {
-      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir)
+      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn)
     }
     // Only clear the recovered file now that its batch has been durably processed (or
     // recognized above as already processed) -- never before -- so a crash partway through
@@ -640,7 +674,7 @@ export function drainOnce(
         // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the
         // process crashing mid-batch) must propagate to the caller, not be swallowed as a
         // "read failure", so the cleanup below never runs and the claimed file survives.
-        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir)
+        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)
         // Only clear the claimed file now that its batch has been durably processed -- never
         // before -- so a crash partway through processDirtyBatch leaves it in place for stage
         // (a) to recover on the next startup instead of losing the paths it named.
@@ -679,6 +713,11 @@ export function drainOnce(
       }
     }
   }
+
+  // Now that both stages above have finished claiming/processing their batches for this cycle,
+  // it is safe to actually append this cycle's transient-failure requeues to the live queue --
+  // see deferredRequeues' doc comment above for why this must happen last.
+  for (const p of deferredRequeues) appendToDirtyQueue(dir, p)
 
   return processed
 }
@@ -737,10 +776,19 @@ export function stopWorker(dir: string = dataDir()): boolean {
       // Race: process exited between the check and the kill. Fall through to pid-file cleanup; report whatever liveness we observed.
     }
   }
-  try {
-    fs.rmSync(workerPidPath(dir), { force: true })
-  } catch {
-    // best-effort cleanup
+  // Only remove the pid file when it still names the pid we just killed -- never unconditionally.
+  // A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via
+  // claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an
+  // unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning
+  // it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would
+  // then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard
+  // style as the exit handler in runDetachedWorkerDaemon.
+  if (readPidFile(dir) === pid) {
+    try {
+      fs.rmSync(workerPidPath(dir), { force: true })
+    } catch {
+      // best-effort cleanup
+    }
   }
   return alive
 }
