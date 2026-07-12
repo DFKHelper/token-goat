@@ -670,8 +670,8 @@ function _applyFiltersAndPrint(
   }
 
   const lines = content.split(/\r?\n/)
-  const headN = opts.head ? (() => { const n = Number.parseInt(opts.head, 10); return Number.isFinite(n) && n > 0 ? n : 30 })() : 30
-  const tailN = opts.tail ? (() => { const n = Number.parseInt(opts.tail, 10); return Number.isFinite(n) && n > 0 ? n : 80 })() : 80
+  const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
+  const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
 
   const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
 

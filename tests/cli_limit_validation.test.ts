@@ -288,3 +288,62 @@ describe('negative --limit/--top validation', () => {
     }
   })
 })
+
+// Regression guard: `bash-output --file`'s --head/--tail parsing used a bare Number.parseInt
+// check that only accepted a strictly-positive result, so a non-numeric value ("abc") and an
+// explicit --head 0 both silently fell back to the default (30/80) instead of erroring or
+// honoring the 0. Route --head/--tail through the same requireNonNegativeInt validator as
+// symbol/semantic/csv-query so invalid input errors cleanly and an explicit 0 is honored.
+describe('bash-output --head/--tail validation', () => {
+  it('rejects a non-numeric --head with a clean error instead of silently using the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-head-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--head', 'abc'])
+      expect(code).toBe(1)
+      // Pre-fix this silently prints the first 30 lines and exits 0.
+      expect(stdout.join('')).not.toContain('line 0')
+      expect(stderr.join('')).toContain('--head')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a negative --tail with a clean error instead of silently using the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-tail-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--tail', '-1'])
+      expect(code).toBe(1)
+      expect(stdout.join('')).not.toContain('line 49')
+      expect(stderr.join('')).toContain('--tail')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('honors an explicit --head 0 instead of silently falling back to the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-head0-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--head', '0'])
+      expect(code).toBe(0)
+      // Pre-fix, --head 0 is truthy-falsy-checked wrong and falls back to the 30-line default.
+      expect(stdout.join('').trim()).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
