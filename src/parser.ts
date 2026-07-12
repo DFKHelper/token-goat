@@ -1549,6 +1549,51 @@ export function disabledEmbedSha(sha: string): string {
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} could not actually embed
+ * a file because the optional embedding deps were absent (the @xenova/transformers model or the
+ * sqlite-vec `chunk_vectors` table). Distinct from a real embed_sha so the freshness gate can
+ * re-embed the file once the deps are installed -- otherwise a project indexed on a deps-less
+ * install would stamp bare shas, and every previously-indexed unchanged file would look
+ * "already embedded" the instant the model is added, leaving the semantic index permanently empty
+ * for that content. Distinct from {@link DISABLED_EMBED_SHA_PREFIX} because the two cases clear on
+ * different conditions: disabled clears when config re-enables embeddings, unavailable clears when
+ * the deps become installable/usable (see {@link isEmbedFresh}).
+ */
+export const UNAVAILABLE_EMBED_SHA_PREFIX = 'unavailable:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when embedding deps are absent. */
+export function unavailableEmbedSha(sha: string): string {
+  return UNAVAILABLE_EMBED_SHA_PREFIX + sha
+}
+
+/**
+ * The shared read side of the embed-freshness gate used by both worker.ts::makeIndexer and
+ * cli.ts's bulk index loop. Returns true when the file's stored `embed_sha` already represents the
+ * correct terminal embedding state for the CURRENT environment, so re-running indexFileEmbeddings
+ * would do no useful work and can be skipped:
+ *
+ *  - embeddings config-disabled: fresh only when stored is the `disabled:` marker for this sha.
+ *  - enabled + a bare sha match: fresh (the file was really embedded, or was empty / policy-skipped
+ *    with nothing to embed -- both are terminal regardless of deps).
+ *  - enabled but deps currently unavailable: an `unavailable:` marker for this sha is also fresh,
+ *    so an unchanged file is not re-entered on every worker drain while deps stay missing.
+ *  - enabled + deps available: an `unavailable:` (or `disabled:`) marker is NOT fresh, forcing the
+ *    real first embed now that it can finally succeed.
+ */
+export function isEmbedFresh(
+  storedEmbedSha: string | undefined,
+  sha: string,
+  embeddingsEnabled: boolean,
+  depsAvailable: boolean,
+): boolean {
+  if (storedEmbedSha === undefined) return false
+  if (!embeddingsEnabled) return storedEmbedSha === disabledEmbedSha(sha)
+  if (storedEmbedSha === sha) return true
+  if (!depsAvailable && storedEmbedSha === unavailableEmbedSha(sha)) return true
+  return false
+}
+
+/**
  * `sha`, when provided, is stamped into `files.embed_sha` after {@link embedIndexFile}
  * commits successfully -- tracked separately from `files.sha` (the parse-freshness gate) so
  * a crash or thrown error mid-embedding never gets masked by the parse-sha gate: the embed_sha
@@ -1569,16 +1614,17 @@ export async function indexFileEmbeddings(
     // for as long as embeddings stay disabled. Deliberately NOT the real sha (see
     // disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for
     // "already embedded, unchanged".
-    if (sha !== undefined) {
-      getDb(dbPath)
-        .prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`)
-        .run(disabledEmbedSha(sha), foldPath(filePath))
-    }
+    stampEmbedSha(getDb(dbPath), filePath, sha, disabledEmbedSha)
     return
   }
   if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
     // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
-    deleteFileEmbeddings(getDb(dbPath), filePath)
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate
+    // (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte
+    // content into indexFileEmbeddings on every worker drain / index run.
+    stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
   let content: string
@@ -1589,23 +1635,42 @@ export async function indexFileEmbeddings(
   }
   if (detectLanguage(filePath) === 'salesforce_metadata' && content.length > 512 * 1024) {
     // Keep unusually large generated metadata from producing thousands of low-signal chunks.
-    deleteFileEmbeddings(getDb(dbPath), filePath)
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    // As with the profile skip above, this is a terminal deliberately-never-embed state; stamp
+    // the real sha so re-touching the (unchanged) file does not re-enter this path every drain.
+    stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
   try {
     const db = getDb(dbPath)
     const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
-    await embedIndexFile(db, filePath, content, boundaries)
-    if (sha !== undefined) {
-      db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(
-        sha,
-        foldPath(filePath),
-      )
-    }
+    const outcome = await embedIndexFile(db, filePath, content, boundaries)
+    // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no
+    // vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this
+    // file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
+    stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
   } catch {
     // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is
     // deliberately left unstamped here (see doc comment above).
   }
+}
+
+/**
+ * Stamp `files.embed_sha` for `filePath`, but only when a `sha` was actually provided (the
+ * incremental worker/CLI paths always pass one; some callers do not). `makeValue` derives the
+ * value to store from the (now-defined) sha -- identity for a real/terminal embed, or a
+ * disabled:/unavailable: marker. Centralizes the UPDATE so every early-return in
+ * {@link indexFileEmbeddings} records its terminal state identically.
+ */
+function stampEmbedSha(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  sha: string | undefined,
+  makeValue: (sha: string) => string,
+): void {
+  if (sha === undefined) return
+  db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(makeValue(sha), foldPath(filePath))
 }
 
 function safeSha(filePath: string): string {

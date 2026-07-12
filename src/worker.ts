@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings, disabledEmbedSha } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { foldPath, isUnderBlockedRoot } from './util.js'
@@ -412,9 +413,13 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // (true), matching config.ts's own default, so this new gate check is a no-op for tests
       // that never cared about embeddings.
       const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
+      // depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the
+      // optional embedding deps were absent (stamped an `unavailable:` marker) from one that was
+      // really embedded: the marker stays "fresh" while deps are still missing, but forces a
+      // re-embed the moment the model + sqlite-vec become usable.
+      const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       const embedUnchanged =
-        parseUnchanged &&
-        entry?.embedSha === (embeddingsEnabled ? sha : disabledEmbedSha(sha))
+        parseUnchanged && isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
       if (embedUnchanged) {
         // Nothing to do at all: parse and embeddings are both already current for this content.
         return false
