@@ -25,6 +25,11 @@ beforeAll(async () => {
   ws3.addRow(['col1', 'col2'])
   ws3.addRow(['a', 'b', 'c', 'd'])
   ws3.addRow(['x', 'y', 'z'])
+  // Date-formatted cell (regression test for cellText's locale-string fallback bug)
+  const ws4 = wb.addWorksheet('Dates')
+  ws4.addRow(['event', 'when'])
+  const dateRow = ws4.addRow(['Launch', new Date(Date.UTC(2025, 0, 1))])
+  dateRow.getCell(2).numFmt = 'yyyy-mm-dd'
   await wb.xlsx.writeFile(file)
 })
 
@@ -35,7 +40,7 @@ afterAll(() => {
 describe('listSheets', () => {
   it('lists sheet names with dimensions', async () => {
     const sheets = await listSheets(file)
-    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData'])
+    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData', 'Dates'])
     const employees = sheets.find((s) => s.name === 'Employees')
     expect(employees?.rows).toBe(4)
     expect(employees?.cols).toBe(3)
@@ -77,6 +82,19 @@ describe('headSheet', () => {
     expect(lines[1]).toBe('a,b,c,d')
     // Second data row has 3 columns: should preserve all 3
     expect(lines[2]).toBe('x,y,z')
+  })
+
+  // Regression: cellText fell through to `String(cell.value)` for any non-rich/non-formula
+  // cell, and ExcelJS returns native Date objects for date-formatted cells -- so a date cell
+  // rendered as a full JS locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT...") instead of a
+  // clean formatted date. cellText must prefer ExcelJS's pre-formatted `cell.text` instead.
+  it('renders a date-formatted cell as a clean date, not a JS locale string', async () => {
+    const text = await headSheet(file, 'Dates', 10)
+    const lines = text.split('\n')
+    expect(lines[0]).toBe('event,when')
+    expect(lines[1]).toBe('Launch,2025-01-01')
+    expect(lines[1]).not.toContain('GMT')
+    expect(lines[1]).not.toContain('Coordinated Universal Time')
   })
 })
 
