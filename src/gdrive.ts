@@ -43,16 +43,35 @@ async function fetchDocFromApi(url: string): Promise<string> {
   if (!response.ok) {
     throw new Error(`Failed to fetch Google Doc: HTTP ${response.status} ${response.statusText}`)
   }
+  // A private/unshared doc's export URL 302-redirects to Google's sign-in page, which
+  // resolves as a 200 with content-type text/html. fetch() follows that redirect
+  // transparently, so without this check the sign-in page HTML would be treated as real
+  // doc content and cached, leaving a misleading "No sections found." result pinned for
+  // DEFAULT_MAX_AGE_MS even after the doc is later shared.
+  const contentType = response.headers?.get?.('content-type') ?? ''
+  if (contentType.includes('text/html')) {
+    throw new Error(
+      'Failed to fetch Google Doc: doc is private or not shared (got a sign-in page instead of doc content)'
+    )
+  }
   const text = await response.text()
   return text
 }
 
-export async function fetchDoc(fileId: string): Promise<string> {
+export interface FetchDocOptions {
+  /** Skip the on-disk cache read and force a live fetch. The fresh result is still written
+   *  back to cache afterward, same as a normal cache-miss path. */
+  fresh?: boolean
+}
+
+export async function fetchDoc(fileId: string, opts: FetchDocOptions = {}): Promise<string> {
   const url = buildExportUrl(fileId)
 
-  const cached = getWebOutputByUrlFromDisk(url)
-  if (cached !== null) {
-    return cached.content
+  if (opts.fresh !== true) {
+    const cached = getWebOutputByUrlFromDisk(url)
+    if (cached !== null) {
+      return cached.content
+    }
   }
 
   const text = await fetchDocFromApi(url)
@@ -103,8 +122,8 @@ function parseDocSections(text: string): GdriveSection[] {
   return sections
 }
 
-export async function getDocSections(fileId: string): Promise<GdriveSection[]> {
-  const text = await fetchDoc(fileId)
+export async function getDocSections(fileId: string, opts: FetchDocOptions = {}): Promise<GdriveSection[]> {
+  const text = await fetchDoc(fileId, opts)
   return parseDocSections(text)
 }
 
@@ -121,8 +140,12 @@ export function formatSections(sections: GdriveSection[]): string {
   return lines.join('\n')
 }
 
-export async function getSectionContent(fileId: string, heading: string): Promise<string | null> {
-  const sections = await getDocSections(fileId)
+export async function getSectionContent(
+  fileId: string,
+  heading: string,
+  opts: FetchDocOptions = {}
+): Promise<string | null> {
+  const sections = await getDocSections(fileId, opts)
   const target = sections.find((s) => s.heading.toLowerCase() === heading.toLowerCase())
   return target ? target.content : null
 }
