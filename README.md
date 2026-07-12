@@ -121,12 +121,11 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Large reference doc (CLAUDE.arch.md, API spec) re-read in full every new session | `token-goat compact-doc <path>` builds a deterministic extractive sidecar (headings + first N lines per section); `pre_read` serves it in place of the full file — 80–95% smaller. Sidecar is automatically marked stale when the source is edited. |
 | Re-read denial fires as an advisory hint the model can ignore | When `deny_reread` is on (default), `pre_read` actively denies re-reads of files confirmed in the current context window, not just nudges; the advisory still fires for older reads that may have scrolled out |
 | Unchanged files produce duplicate hints across sessions | Hint fingerprint includes file path; unchanged-file short-circuit skips re-read pre-check entirely |
-| Dedup hints fire even when agent ignores them | Curator pass skips dedup hints when the agent's preceding action pattern suggests they'll be ignored |
 | Bash dedup hints conflict with other compression | `token-goat compress` can be called as dedup-vs-hint filter; one-call access to cached output |
 | Large manifest sections with no useful signal | Drop empty sections, strip project name from paths (cleaner relative paths in manifest) |
 | Manifest git-history section loses signal on clean main | Inline git diffs + skip git log when on clean main branch; session-awareness improves manifest hygiene |
 | Skill body lost after compaction but recovery too verbose | Recovery hint deduped skills by content_sha (same skill loaded twice = one entry); inline skill checklist |
-| Recovery hints omit critical paths when space is tight | Hint budget hard caps per kind (files=5, bash=3, web=2, skills=4); skip bash snippet when recall available |
+| Recovery hints omit critical paths when space is tight | Skip bash snippet when recall available |
 | AVIF format not supported despite better compression | AVIF image-shrink via sharp (when libvips is built with libaom); WebP fallback; codec auto-detection in docker |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 | Hook crash leaves agent waiting for response | Fail-soft barrier catches `BaseException`/`MemoryError`/`SystemExit`; hook always returns `{"continue": true}` |
@@ -412,6 +411,7 @@ To upgrade cleanly:
 | `token-goat stats` | See how many tokens you have saved. Shows total events / bytes saved / tokens saved. Add `--full` for the per-source, per-command, and per-day breakdown. |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
 | `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` is not yet implemented. |
+| `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
 | `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--head N`/`--tail N` large enough to cover the full output, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
@@ -494,6 +494,32 @@ To add the marker to a skill, open the file and insert `<!-- COMPACT_END -->` on
 To check overhead for your current skills: `token-goat skill-size`. To inspect compact freshness, run `token-goat skill-list` — the `compact_stale` column shows `[stale]` when a skill's compact was generated from an older version of the file. Run `token-goat skill-compact --all` to refresh every stale compact in the current session in one pass.
 
 `token-goat install` now pre-generates compacts for all installed skills as its final step, so compacts are ready from the first session. If you install new skills after the initial install, run `token-goat skill-compact --all` manually — or check `token-goat doctor --context` which reports how many skills were added since the last pre-gen pass and shows the exact command to run.
+
+### Memory analysis and cleanup
+
+`token-goat memory` audits the `CLAUDE.md` files Claude Code loads for a project for wasted tokens: exact-duplicate lines within one file, duplicate headings, content that overlaps verbatim across files, and near-duplicate sibling auto-memory files (`~/.claude/projects/<slug>/memory/*.md`). Default mode is `--analyze` (read-only):
+
+```
+$ token-goat memory
+
+# token-goat memory
+Project: C:\Projects\example
+
+## CLAUDE.md files (1)
+
+  C:\Projects\example\CLAUDE.md  (842 tok)
+    exact-duplicate lines: 1
+      line 40 duplicates line 12: "Always run the full test suite before committing."
+    duplicate headings: none
+    cross-file overlaps: none
+
+## Duplicate-content clusters (sibling auto-memory files)
+  none
+```
+
+`--fix` builds on `--analyze`. The only change it can apply automatically is removing exact-duplicate lines (keeping the first occurrence) — a pure structural dedup with no judgment call. Duplicate headings and cross-file overlaps are printed as advisory findings only; they often mean content should move into a path-scoped `.claude/rules/` file or a subdirectory `CLAUDE.md`, but token-goat never picks where for you, so no diff is proposed for those.
+
+Every proposed exact-duplicate-line fix is shown as a diff before anything is written, gated by the same confirm-before-write flow: pass `--yes` to apply non-interactively (scripts, CI), or run it from a terminal without `--yes` to be prompted per file. Running `--fix` without `--yes` from a non-interactive shell (no TTY) prints the diffs as a dry run and writes nothing.
 
 ## MCP server
 
