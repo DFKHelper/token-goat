@@ -59,6 +59,28 @@ describe('queryCsv', () => {
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
   });
 
+  // Regression: `Number('')` is 0, not NaN, so a blank cell in a numeric column was silently
+  // coerced to the literal value 0 instead of being treated as "no value". That made a blank
+  // cell wrongly match `age<10` (0 < 10) and wrongly match `age>-1` (0 > -1) -- a row with no
+  // age data should never satisfy either filter.
+  it('excludes blank cells from a numeric comparison instead of coercing them to 0', () => {
+    const csvWithBlank = `id,name,age\n1,Alice,30\n2,Blank,\n3,Carol,40\n`;
+
+    const lt10 = queryCsv(csvWithBlank, { wheres: [{ column: 'age', op: '<', value: '10' }] });
+    expect(lt10.rows.map((r) => r[1])).not.toContain('Blank');
+    expect(lt10.totalRows).toBe(0);
+
+    const gtNeg1 = queryCsv(csvWithBlank, { wheres: [{ column: 'age', op: '>', value: '-1' }] });
+    expect(gtNeg1.rows.map((r) => r[1])).not.toContain('Blank');
+    expect(gtNeg1.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+  });
+
+  it('still matches a genuinely zero-valued cell against a numeric comparison', () => {
+    const csvWithZero = `id,name,age\n1,Alice,30\n2,Zero,0\n3,Carol,40\n`;
+    const lt10 = queryCsv(csvWithZero, { wheres: [{ column: 'age', op: '<', value: '10' }] });
+    expect(lt10.rows.map((r) => r[1])).toEqual(['Zero']);
+  });
+
   it('filters rows by >= and <=', () => {
     const gte = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '>=', value: '30' }] });
     expect(gte.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);

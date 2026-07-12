@@ -64,6 +64,11 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
     case '<':
     case '>=':
     case '<=': {
+      // `Number('')` is 0, not NaN, so a blank cell would otherwise be silently coerced to
+      // the literal value 0 and wrongly match filters like `col<10` or `col>-1`. Treat a
+      // blank cell as "no value" -- it never satisfies a numeric comparison -- unless the
+      // cell is genuinely the string "0" (which is non-blank and compares normally below).
+      if (cell.trim() === '') return false
       const cellNum = Number(cell)
       const valNum = Number(where.value)
       const useNum = !Number.isNaN(cellNum) && !Number.isNaN(valNum)
