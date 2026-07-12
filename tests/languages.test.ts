@@ -1696,6 +1696,29 @@ test:
     expect(symbols.find((s) => s.name === 'PRINT_HELP_PYSCRIPT')?.kind).toBe('makefile_define')
   })
 
+  it('masks the entire outer define body of a legally nested define...endef block, not just up to the first inner endef', () => {
+    // Regression: DEFINE_BLOCK_RE was non-greedy, so with a nested `define`/`endef` pair the
+    // mask stopped at the FIRST (inner) endef, leaving the rest of the outer define's body
+    // unmasked and scanned as real rule text -- a fake target line left over in that
+    // unmasked tail was wrongly emitted as a real makefile_target symbol.
+    const content = `define outer
+define inner
+endef
+fake-target-inside-outer:
+	echo should not be indexed
+endef
+
+test:
+	go test ./...
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('fake-target-inside-outer')
+    expect(names).toContain('test')
+    expect(names).toContain('outer')
+    expect(symbols.find((s) => s.name === 'outer')?.kind).toBe('makefile_define')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
