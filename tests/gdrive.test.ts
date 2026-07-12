@@ -22,7 +22,7 @@ describe('gdrive', () => {
   describe('fetchDoc', () => {
     it('returns cached text on hit', async () => {
       const fileId = 'abc123def456'
-      const docText = '# Header\nContent'
+      const docText = '# **Header** {#header}\nContent'
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -44,7 +44,7 @@ describe('gdrive', () => {
 
     it('fetches on cache miss', async () => {
       const fileId = 'xyz789abc'
-      const docText = '# New Doc\nNew content'
+      const docText = '# **New Doc** {#new-doc}\nNew content'
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -59,7 +59,7 @@ describe('gdrive', () => {
 
       const url = mockFetch.mock.calls[0][0]
       expect(url).toContain(fileId)
-      expect(url).toContain('export?format=txt')
+      expect(url).toContain('export?format=markdown')
     })
 
     it('throws on HTTP error', async () => {
@@ -129,17 +129,22 @@ describe('gdrive', () => {
   })
 
   describe('getDocSections', () => {
-    it('parses headings from plain text correctly', async () => {
-      const docText = `# Introduction
+    it('parses headings from a real markdown export (bold markers + anchor suffix)', async () => {
+      // This is the actual shape Google Docs' format=markdown export produces for styled
+      // headings: bold-wrapped text followed by a " {#anchor-slug}" suffix. The old
+      // format=txt export (and the old test fixture of bare "# Heading" lines) never
+      // matched real doc output, since txt export renders no "#" characters at all for
+      // native styled headings.
+      const docText = `# **Introduction** {#introduction}
 This is the intro.
 
-## Getting Started
+## **Getting Started** {#getting-started}
 Instructions here.
 
-### Installation
+### **Installation** {#installation}
 Install steps.
 
-## Advanced
+## **Advanced** {#advanced}
 More info.
 `
       mockFetch.mockResolvedValueOnce({
@@ -169,6 +174,28 @@ More info.
       expect(sections[3].content).toBe('More info.')
     })
 
+    it('strips bold markers and the anchor suffix from a real markdown-export heading', async () => {
+      // Regression test: a heading fixture shaped like the old (wrong) oracle -- a bare
+      // "# Heading" line with no bold markers or anchor suffix -- would pass under the old
+      // regex-only parsing but never occurs in a real Google Docs export. This fixture uses
+      // the real export shape and would have failed under the old parseDocSections, which
+      // left "**Introduction**" and the "{#introduction}" suffix embedded in the heading text.
+      const docText = '# **Introduction** {#introduction}\nBody text.\n'
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('markdown-shape-id')
+      expect(sections.length).toBe(1)
+      expect(sections[0].heading).toBe('Introduction')
+      expect(sections[0].heading).not.toContain('**')
+      expect(sections[0].heading).not.toContain('{#')
+      expect(sections[0].content).toBe('Body text.')
+    })
+
     it('handles docs with no headings', async () => {
       const docText = 'Just plain text.\nNo headings here.'
       mockFetch.mockResolvedValueOnce({
@@ -195,7 +222,7 @@ More info.
     })
 
     it('calculates byteStart correctly with Windows line endings (CRLF)', async () => {
-      const docText = '# First\r\nContent\r\n\r\n# Second\r\nMore content'
+      const docText = '# **First** {#first}\r\nContent\r\n\r\n# **Second** {#second}\r\nMore content'
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -212,7 +239,7 @@ More info.
 
       expect(sections[1].heading).toBe('Second')
       expect(sections[1].content).toBe('More content')
-      const expected2ndStart = Buffer.byteLength('# First\r\nContent\r\n\r\n', 'utf8')
+      const expected2ndStart = Buffer.byteLength('# **First** {#first}\r\nContent\r\n\r\n', 'utf8')
       expect(sections[1].byteStart).toBe(expected2ndStart)
     })
   })
@@ -280,13 +307,13 @@ More info.
 
   describe('getSectionContent', () => {
     it('returns content of named section', async () => {
-      const docText = `# Intro
+      const docText = `# **Intro** {#intro}
 Intro text.
 
-# Main
+# **Main** {#main}
 Main content here.
 
-# End
+# **End** {#end}
 Final stuff.
 `
       mockFetch.mockResolvedValueOnce({
@@ -301,7 +328,7 @@ Final stuff.
     })
 
     it('is case-insensitive', async () => {
-      const docText = `# Getting Started
+      const docText = `# **Getting Started** {#getting-started}
 Installation steps.
 `
       mockFetch.mockResolvedValueOnce({
@@ -316,7 +343,7 @@ Installation steps.
     })
 
     it('returns null for missing section', async () => {
-      const docText = `# One
+      const docText = `# **One** {#one}
 Content.
 `
       mockFetch.mockResolvedValueOnce({
