@@ -499,7 +499,7 @@ function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
  * section as ``--full`` (just without the detail sections); on a pipe it
  * stays flat plain text.
  */
-export function renderShortStats(opts?: { windowDays?: number; homeDir?: string }): void {
+export function renderShortStats(opts?: { windowDays?: number; homeDir?: string; force?: boolean }): void {
   const windowDays = opts?.windowDays ?? 30
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
@@ -508,7 +508,11 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string 
     return
   }
 
-  const useTty = _useRichStats()
+  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent
+  // caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it
+  // can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still
+  // wins even when forced: an explicit no-color preference should never be overridden.
+  const useTty = process.env['NO_COLOR'] ? false : opts?.force === true ? true : _useRichStats()
   if (!useTty) {
     _renderShortTotals(summary)
     return

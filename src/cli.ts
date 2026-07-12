@@ -600,7 +600,7 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean } = {}): void {
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean } = {}): void {
   const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
   if (!Number.isFinite(windowDays) || windowDays < 0) {
     throw new CliError('--window-days must be a non-negative number')
@@ -609,6 +609,7 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
     json: opts.json === true,
     windowDays,
     full: opts.full === true,
+    short: opts.short === true,
   }
   if (opts.homeDir !== undefined) {
     statsOpts.homeDir = opts.homeDir
@@ -2050,6 +2051,7 @@ export function buildProgram(): Command {
     .description('show session statistics (bare = totals only; --full for the breakdown)')
     .option('-j, --json', 'output as JSON')
     .option('--full', 'show the full breakdown (by source, by command, by day)')
+    .option('--short', 'force the rich short KPI view even when stdout is not a TTY (e.g. piped)')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))
