@@ -81,6 +81,20 @@ describe('normalizePath', () => {
     )
   })
 
+  // Regression (bug #244): a `\\?\` extended-length-path prefix used to survive
+  // the backslash->forward-slash conversion as `//?/...`, which then incorrectly
+  // matched UNC_HOST_SHARE_RE (host=`?`, "share"=`c:`), producing a nonsense
+  // UNC-folded key that diverged from the plain-form path's normalized output.
+  it('normalizes a plain \\\\?\\ extended-length path identically to its non-extended equivalent', () => {
+    expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe(normalizePath('C:\\Windows\\System32'))
+    expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe('c:/Windows/System32')
+  })
+
+  it('normalizes a \\\\?\\UNC\\ extended-length UNC path identically to its non-extended equivalent', () => {
+    expect(normalizePath('\\\\?\\UNC\\server\\share\\foo.ts')).toBe(normalizePath('\\\\server\\share\\foo.ts'))
+    expect(normalizePath('\\\\?\\UNC\\server\\share\\foo.ts')).toBe('//server/share/foo.ts')
+  })
+
   describe('Git Bash /<drive>/ mount form (win32-gated)', () => {
     const realPlatform = process.platform
     const setPlatform = (p: string): void => {
