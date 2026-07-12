@@ -112,10 +112,6 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     return n
   }
   if (Array.isArray(existing)) {
-    if (raw.trimStart().startsWith('[')) {
-      return JSON.parse(raw) as unknown[]
-    }
-    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
     // A non-empty existing array of numbers means this field is a number list (e.g.
     // hints.backoff_thresholds) — parse each comma-separated segment as a number instead of
     // leaving it as a string, or a later load-time validator silently filters the whole list
@@ -123,7 +119,20 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     // its own (e.g. the field was previously cleared to []), so fall back to the default
     // config's array at this key to recover the declared type.
     const typeSample = existing.length > 0 ? existing : (Array.isArray(defaultValue) ? defaultValue : existing)
-    if (typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')) {
+    const isNumberList = typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')
+    if (raw.trimStart().startsWith('[')) {
+      const parsed = JSON.parse(raw) as unknown[]
+      // Validate element types against the same type sample the comma-separated branch below
+      // uses, instead of accepting any JSON array unchecked — otherwise a number-list key set
+      // to a JSON array of non-numeric strings reports success here but the load-time
+      // validator (validatedIntList) silently filters it down to an empty array later.
+      if (isNumberList && !parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+        throw new Error(`expected a JSON array of numbers, got: ${raw}`)
+      }
+      return parsed
+    }
+    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+    if (isNumberList) {
       return parts.map((p) => {
         const n = Number(p)
         if (!Number.isFinite(n)) throw new Error(`expected a number in list, got: ${p}`)
