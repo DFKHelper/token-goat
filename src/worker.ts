@@ -1,15 +1,10 @@
 /**
  * Background worker — drain the dirty queue and re-index changed files.
  *
- * Ports the daemon loop of `worker.py` to the TypeScript surface, in two forms:
- *
- *   - {@link startWorker} runs the drain loop in an in-process Node worker
- *     thread (`node:worker_threads`). Best for an embedding process that wants
- *     the worker to die with it.
- *   - {@link startDetachedWorker} spawns a long-lived detached child process
- *     that outlives the launching CLI invocation. Its PID is recorded in a
- *     pid file so a later {@link stopWorker} / {@link isWorkerRunning} can find
- *     it.
+ * Ports the daemon loop of `worker.py` to the TypeScript surface: {@link
+ * startDetachedWorker} spawns a long-lived detached child process that
+ * outlives the launching CLI invocation. Its PID is recorded in a pid file
+ * so a later {@link stopWorker} / {@link isWorkerRunning} can find it.
  *
  * The loop itself: read `{dataDir}/queue/dirty.txt`, parse each changed path,
  * and write its symbol/ref rows into the index DB via {@link indexFileSync}.
@@ -19,7 +14,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
@@ -41,16 +35,6 @@ export interface WorkerOptions {
   readonly pollIntervalMs?: number
   /** Data directory override (defaults to {@link dataDir}). */
   readonly dataDir?: string
-}
-
-/** Handle for a worker started via {@link startWorker}. */
-export interface WorkerHandle {
-  /** Always null for worker threads (they share the host process's PID). */
-  readonly pid: number | null
-  /** The worker thread's id within this process. */
-  readonly threadId: number
-  /** Terminate the worker thread and resolve once it has exited. */
-  stop(): Promise<void>
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
@@ -794,33 +778,6 @@ export function stopWorker(dir: string = dataDir()): boolean {
 }
 
 /**
- * Start the drain loop in an in-process worker thread.
- *
- * The thread re-imports this module; the `isMainThread === false` branch at the
- * bottom runs {@link runWorkerLoop}. Stopping the returned handle terminates
- * the thread.
- */
-export function startWorker(opts?: WorkerOptions): WorkerHandle {
-  const pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  const dir = opts?.dataDir ?? dataDir()
-
-  const worker = new Worker(fileURLToPath(import.meta.url), {
-    workerData: { pollIntervalMs, dataDir: dir },
-  })
-
-  return {
-    pid: null,
-    threadId: worker.threadId,
-    stop(): Promise<void> {
-      return new Promise<void>((resolve) => {
-        worker.once('exit', () => resolve())
-        void worker.terminate()
-      })
-    },
-  }
-}
-
-/**
  * Thrown by {@link startDetachedWorker} when it loses the {@link claimWorkerPidFile} startup
  * race to a daemon that already holds the pid-file slot (a genuine already-running worker, or a
  * concurrent `worker start` invocation that won the race first).
@@ -1018,29 +975,3 @@ export function runDetachedWorkerDaemon(): void {
   void runWorkerLoop(dir, safeInterval)
 }
 
-/**
- * Worker-thread entry point.
- *
- * Runs only when this module is loaded off the main thread, i.e. as the
- * {@link startWorker} in-process worker_threads variant, and reads its config
- * from `workerData`. The detached-daemon case is dispatched explicitly via
- * {@link runDetachedWorkerDaemon} instead of from here, so this is a no-op on
- * the main thread.
- */
-function workerEntry(): void {
-  if (isMainThread) return
-  const wd = (workerData ?? {}) as { pollIntervalMs?: number; dataDir?: string }
-  const dir = wd.dataDir ?? dataDir()
-  const interval = wd.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  let stop = false
-  const onStop = (msg: string) => {
-    if (msg === 'stop') {
-      stop = true
-      parentPort?.removeListener('message', onStop)
-    }
-  }
-  parentPort?.on('message', onStop)
-  void runWorkerLoop(dir, interval, () => stop)
-}
-
-workerEntry()
