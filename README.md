@@ -87,7 +87,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Same `Grep` pattern re-run with hundreds of matches | Pre-Grep dedup hint quotes the prior match count |
 | Same docs URL fetched twice | Re-fetch denied at warm+ context pressure (redirects to `token-goat web-output <id>`); advisory hint at cool |
 | `token-goat section pyproject.toml::tool.ruff` | One TOML table extracted instead of the whole config; same for `.yaml`/`.yml`/`.json`/`.ini`/`.cfg`/`.env`/`Dockerfile` |
-| Typoed `token-goat symbol getUserr` | Auto-redirects to the unambiguous close match (use `--strict` to opt out) |
+| Typoed `token-goat symbol getUserr` | `symbol` matches on exact name; a miss returns `No matches for 'getUserr'` (no fuzzy/auto-redirect) — use `token-goat find` for a fuzzy + semantic lookup instead |
 | `grep`/`rg` returns 50+ match lines | File-level summary: top 20 files by match count; full result cached, ~80% smaller |
 | Same "already read" hint fires on every re-read | Suppressed after first injection; SHA-256 fingerprinting prevents the same nag twice per session |
 | Same bash command runs 3+ times in one session | Escalating warning: "ran 2×" on repeat, "WARNING: ran N×" by the third; output always cached |
@@ -106,7 +106,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 
 | Large TXT or log file (≥20 KB) read in full | Line count + first/last 5 lines shown; `.log`/`.out` files bias toward `--tail 100 --grep`; general catch-all for any file ≥100 KB |
 | Subagent reads a 47–86 KB recon dump (or greps a 73 KB transcript) and overflows its window | `pre_read` denies a full Read at or above `large_read_redirect_bytes` (512 KB base, tightened by context pressure to as low as ~92 KB once the session is nearly full — the case that matters most for an already-strained subagent), and a `content`-mode Grep over one oversized file, redirecting both to surgical reads or a windowed `offset`/`limit` |
-| Subagent overflows at "hello" with no idea why | `token-goat baseline` attributes the fixed environmental floor — other plugins' hook dumps, both CLAUDE.md files, MEMORY.md, MCP servers — by owner, suggested fix, and fixed-vs-variable cost |
+| Subagent overflows at "hello" with no idea why | `token-goat baseline` (`--subagent` for the terser variant a fresh subagent gets) prints a project map — file count, languages, top symbols, recent files — as quick orientation instead of an `ls -R`/full-repo read |
 | MCP screenshot call lands 10 MB image in context because no file path was passed | `pre_screenshot` denies chrome-devtools and playwright screenshot calls without a `filePath`/`file_path` argument; redirects the model to re-issue with one, so the saved file flows through image-shrink (~39K tokens raw → ~8K compressed) |
 | `curl -v` dumps TLS handshake + all request/response headers | Verbose lines stripped; request line, HTTP status, content-type, and body kept — typically 70–90% smaller |
 | `jest --verbose` / `vitest --verbose` emits one `✓` line per passing test | Consecutive passing-test lines collapsed to a count per file; failures kept verbatim, ~95% smaller on passing suites |
@@ -154,14 +154,14 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 | Source | Improvement | Measured impact | Where |
 |--------|-------------|-----------------|-------|
 | Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `src/image_shrink.ts` (codec selection) |
-| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `src/repomap.ts` (`token-goat map --compact`) |
+| Repomap output | `--compact` trims the top-symbols list to 10 (vs 30) and drops the recent-files section and per-symbol locations | Denser overview for the same byte budget | `src/baseline.ts` (`buildProjectMap`, `token-goat map --compact`) |
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
 | Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `src/parser.ts` (Markdown adapter) |
 | Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `src/image_shrink.ts` |
 | Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `src/config.ts` defaults |
-| Miss suggestions | `symbol` auto-redirects on a single high-confidence close match (`--strict` opts out); `read` / `section` print "Did you mean…?" | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_replacement.ts` |
+| Miss suggestions | `read` / `section` print "Did you mean…?" on a miss; `section` also auto-redirects on an unambiguous heading-prefix match | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_commands.ts` |
 
 ## Token-savings examples
 
@@ -216,12 +216,12 @@ The 280-token manifest is one-shot during compaction. The win is downstream: pos
 $ ls -R . | wc -c
 51234                       # ~50 KB of raw paths, no signal about importance
 
-# With token-goat: PageRank-ranked, token-budgeted summary.
+# With token-goat: a ranked orientation summary instead of raw paths.
 $ token-goat map --compact
-out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
+out: ~1 KB                  # top-ranked classes/functions, no locations   (98% smaller)
 ```
 
-`token-goat map --compact` caps output at a fixed 2000-token budget, switching to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. Plain `token-goat map` (no flag) prints the full PageRank-ranked project map with no cap.
+`token-goat map` ranks headline symbols by kind (classes/interfaces first) and body size. `--compact` trims that list to the top 10 symbols (name + kind only, no file/line) and drops the recent-files section, for a denser orientation than the full form.
 
 ### 5. Bash output compression
 
@@ -255,7 +255,7 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 
 > **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.
 
-**Requirements:** Node.js 18 or later (all platforms)
+**Requirements:** Node.js 22 or later (all platforms)
 
 ```
 npm install -g token-goat
@@ -263,13 +263,13 @@ token-goat install
 token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
 ```
 
-Three commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
 
 **Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
 
-On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, and on macOS, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
+The background indexer is not started by `install`. Run `token-goat worker start` on any platform to launch it as a detached process; `token-goat worker status` / `token-goat worker stop` manage it from there.
 
 ### Codex CLI users
 
@@ -347,15 +347,12 @@ Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`win
 
 ### Updating
 
-Updates ship automatically. `token-goat install` schedules a weekly `npm install -g token-goat@latest` run at Sunday 03:00 local time (Windows scheduled task; Linux/macOS crontab line tagged `# token-goat-autoupdate`). `token-goat uninstall` reverses it.
-
-Manual paths:
+There is no auto-update mechanism — token-goat never schedules or runs anything on its own. Updating is always a manual `npm install -g token-goat@latest`.
 
 | When | Command |
 |------|---------|
 | Update now | `npm install -g token-goat@latest` |
 | Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
-| Disable auto-updates | Delete the `token-goat-update` scheduled task (Windows) or the `# token-goat-autoupdate` crontab line (Linux/macOS) |
 
 ### Upgrading from the Python version
 
@@ -389,9 +386,9 @@ To upgrade cleanly:
 | `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. Pass a comma-separated spec (`a,b,c` or `file::a,b`) to merge several symbols' references into one call, each group headed by its symbol name. |
 | `token-goat callers <symbol>` | Show which functions call a given symbol, grouped by caller with file, caller name, and every invoking line. Complements `refs`, which shows raw reference sites without grouping by enclosing function. |
 | `token-goat call-chain <symbol>` | Trace every caller layer from a symbol back to the entry points — one step deeper than `callers`. Use when you need to know what reaches a function across the whole call graph, not only who invokes it directly. Pairs with `impact` for the downstream direction. |
-| `token-goat impact <symbol>` | Walk the reference graph forward and list every file and function that depends on a symbol, with hop depth and dependency type (call, type annotation, import). Run before a refactor to size up the blast radius without starting a build. |
+| `token-goat impact <symbol>` | Walk the call-reference graph forward (breadth-first) and list every function that depends on a symbol, with hop depth; module-scope callers are surfaced as `(module scope) <file>` entries. Run before a refactor to size up the blast radius without starting a build. |
 | `token-goat context-for <task>` | Takes a natural-language task description, runs semantic search across the indexed codebase, and emits a prioritized list of `token-goat read` commands trimmed to a token budget. Fetches only the relevant slices instead of loading entire files. `--budget N` sets the token ceiling; `--top N` limits the file count; `--json` for structured output. |
-| `token-goat ask "<question>"` *(experimental)* | Answers a question about the codebase out-of-band: retrieves the relevant slices, synthesizes a short answer in token-goat's own process, and returns only that answer plus pointer-citations, so the primary model never pays for the slice bodies. When the `claude` CLI (Claude Code) is on PATH it synthesizes with Haiku, its cheapest tier, with no setup; `codex` falls back to its own default model. Set `TOKEN_GOAT_ASK_MODEL=<model>` or `--model` to choose a different model, or `TOKEN_GOAT_ASK_CMD="<command>"` for a custom backend. With no CLI on PATH it makes no network call and degrades to `context-for` pointers. Answers cache across sessions and self-invalidate when a cited slice changes. `--scope`, `--budget`, `--show-sources`, `--json`. |
+| `token-goat ask "<question>"` *(experimental)* | Retrieves relevant slices via full-text (BM25) search over the symbol index — not semantic/embedding search — and lists them as pointer-citations plus `token-goat read` commands. Set `TOKEN_GOAT_ASK_BACKEND=claude` or `TOKEN_GOAT_ASK_BACKEND=codex` to synthesize a short answer via that CLI (whatever model it defaults to; token-goat does not force Haiku or any particular tier); with the env var unset, or the named CLI missing from PATH, `ask` degrades to printing the retrieved pointers with no network call. `--top N` caps the number of FTS hits (default 8); `--json` for structured output. Answers are not cached — each call re-retrieves and re-synthesizes from scratch. |
 | `token-goat changed [<ref>]` | List symbols that changed since a git ref, without reading the full diff. |
 | `token-goat blame "file::symbol"` | Git blame narrowed to a specific symbol's lines — no whole-file blame needed. |
 | `token-goat types ["file"]` | List type definitions (TypedDict, Protocol, dataclass, Pydantic models) in a file or across the project. |
@@ -410,7 +407,7 @@ To upgrade cleanly:
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows total events / bytes saved / tokens saved. Add `--full` for the per-source, per-command, and per-day breakdown. |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
-| `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` is not yet implemented. |
+| `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` prunes dead-link and duplicate entries from `MEMORY.md` and writes the file (destructive — inspect the report first). |
 | `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
 | `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
@@ -434,14 +431,10 @@ To upgrade cleanly:
 | `token-goat pdf-extract <file>` | Extract plain text from a PDF instead of a raw Read. `--pages <spec>` narrows to a page range (e.g. `1-5` or `3`); `--head`/`--tail`/`--grep`/`--max-matches`/`--section` slice the extracted text the same way `bash-output`/`web-output` do. `--layout` heuristically reconstructs column-aware reading order from text-item coordinates instead of raw content-stream order (imperfect on rotated/overlapping text). |
 | `token-goat pdf-outline <file>` | List a PDF's bookmark/outline tree with page numbers instead of a raw Read. |
 | `token-goat pdf-meta <file>` | Page count, title/author, and whether a PDF has an extractable text layer (so you know before extracting whether it's scanned/image-only). |
-
 | `token-goat csv-query <file>` | Project columns and/or filter rows from a CSV instead of a raw Read. `--columns <cols>` selects a comma-separated subset; `--where <spec>` is repeatable and ANDed, supporting `col=value`, `col!=value`, `col>value`, `col<value`, and `col~=regex`; `--head <n>` caps rows; `--json` emits rows as a JSON array of objects instead of a formatted table; `--delimiter <char>` and `--no-header` handle non-comma or headerless files. |
 | `token-goat csv-profile <file>` | Per-column type inference (number/date/string), null/distinct counts, and min/max or top values for low-cardinality columns, instead of a raw Read. Same `--delimiter`/`--no-header` flags as `csv-query`. |
 | `token-goat sharepoint-resolve <shareUrl>` | Best-effort resolve a SharePoint/OneDrive sharing URL to a local synced file path, purely from the local filesystem and `OneDrive`/`OneDriveCommercial` env vars -- no network call, no Graph API, no credentials. Prints the resolved path (feed it to `xlsx-sheets`/`pptx-outline`/etc.) or an honest "could not resolve" with the paths it tried. |
 | `token-goat video-chapters <file>` | Lists a video's embedded chapter markers (timestamps + titles) and subtitle/caption streams via `ffprobe`, instead of downloading/transcoding the file to inspect it. Requires ffmpeg on PATH; degrades with a clear message when it's missing. |
-
-
-
 | `token-goat xlsx-sheets <file>` | List sheet names, used range, and dimensions in an Excel workbook instead of a raw Read. |
 | `token-goat xlsx-head <file> --sheet <name>` | Preview the header + first N rows of one sheet (`--rows`, default 20) instead of a raw Read. |
 | `token-goat xlsx-range <file> --sheet <name> --range <a1>` | Extract one cell range (e.g. `A1:D50`) from a sheet; `--formulas` shows formulas instead of computed values. |
@@ -473,13 +466,13 @@ To upgrade cleanly:
 | `token-goat note set/get/unset/list/clear` | Persistent per-project notes stored as key-value pairs. Token-goat injects them at session start and after compaction so they survive conversation rollover. Use to pin decisions, constraints, or reminders that would otherwise vanish after compaction. `note list --json` for machine-readable output; `note clear` removes everything at once. |
 | `token-goat project list` | Show all project roots indexed by token-goat with their file counts. Roots on the blocklist appear tagged `[excluded]`. `--json` for structured output. |
 | `token-goat project exclude <path>` | Add a project root to the blocklist so the worker never indexes it. Writes the resolved absolute path to `[worker] blocked_roots` in `config.toml`; idempotent. Remove the entry from the config to re-enable indexing. |
-| `token-goat project prune [--dry-run]` | Remove tracked roots that no longer exist on disk. `--dry-run` previews removals without touching the database. Useful after deleting or moving projects. |
-| `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
+| `token-goat project prune [--dry-run]` | Remove blocked/excluded roots that no longer exist on disk. `--dry-run` previews removals without touching the config file. Useful after deleting or moving projects. |
+| `token-goat install` | Wire up hooks (and, with the harness flags below, other AI tool integrations). No `--dry-run` or `--verify` flag — run `token-goat doctor` after install to audit the result. |
 | `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. Pass `--context` to show the **Context footprint** section: a fill bar with severity (ok / warn / high / URGENT), per-component breakdown (skills catalog, loaded skill bodies, CLAUDE.md+MEMORY.md, conversation estimate), session-to-session growth trend with sessions-to-URGENT projection, and tiered compaction recommendations (Tier 0–4) naming the exact commands to run. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. |
-| `token-goat baseline` | Attribute the per-session environmental baseline — other plugins' SessionStart hook dumps, both CLAUDE.md files, MEMORY.md, and configured MCP servers — ranked by token cost and tagged by owner (you / harness / `plugin:<name>`), a concrete fix, and whether the cost is fixed (recurs every session) or variable. Identical re-fired hook dumps are deduped to one row. `--subagent` shows only the fixed sources a freshly spawned agent inherits; `--json` for the machine view. Complements `doctor --context` (which costs skills); set `[hints] baseline_budget_tokens` to get a once-per-session SessionStart nudge when the fixed baseline exceeds your budget. |
+| `token-goat baseline` | Emit a project map: file count, per-language file counts, the top indexed symbols (by name/kind/location), and the most recently modified files. `--subagent` emits a terser variant (fewer symbols, fewer recent files) for context handed to a freshly spawned subagent; `--json` for the machine-readable form. |
 | `token-goat compact-doc <path>` | Build an extractive compact sidecar for a large reference doc (`.md`/`.markdown`). The compact is stored in the token-goat data dir as a SHA-keyed sidecar; `pre_read` serves it in place of the full file when it exists and is fresh, saving 80–95% of context tokens. Use `--force` to rebuild, `--sentences N` to control lines per section (default 2), `--show` to print the result. The sidecar is automatically marked stale when you edit the source file. Config: `[hints] stable_doc_compacts = true` (default on). |
 
-Missed lookups recover surgically: `symbol` auto-redirects to a single high-confidence close match (pass `--strict` to opt out), while `read` and `section` print a "Did you mean…?" list — a typo costs at most one extra glance, not a re-read.
+Missed lookups recover surgically: `read` and `section` print a "Did you mean…?" list on a miss, and `section` auto-redirects on an unambiguous heading-prefix match — a typo costs at most one extra glance, not a re-read.
 
 ### Skill efficiency — the `<!-- COMPACT_END -->` marker
 
@@ -601,23 +594,9 @@ Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 
-**Worker autostart** (one of the following, picked by platform)
+**Background worker.** token-goat does not register any persistent OS-level autostart entry — no Windows registry `Run` key, no systemd user unit, no XDG `.desktop` entry, and no macOS launchd `.plist`. The worker that drains the reindex queue is started manually as a detached child process: `token-goat worker start` launches `node <npm-prefix>/lib/node_modules/token-goat/dist/token-goat.mjs --worker-daemon` and returns immediately, and the child keeps running independent of the parent shell. `token-goat worker status` reports whether it's running; `token-goat worker stop` kills it. It does not restart itself after a reboot or logout — re-run `token-goat worker start` when you want it running again.
 
-| Platform | Entry |
-|---------|------|
-| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\token-goat-worker`. No admin rights required. |
-| Linux (with `systemd --user`) | `~/.config/systemd/user/token-goat-worker.service`, enabled. |
-| Linux (no systemd, incl. WSL) | `~/.config/autostart/token-goat-worker.desktop`. On WSL without systemd, the SessionStart hook also starts the worker on every Claude Code session. |
-| macOS (untested) | `~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist`, loaded via `launchctl`. |
-
-The autostart command is `node <npm-prefix>/lib/node_modules/token-goat/dist/cli.js worker --daemon`. No compiled `.exe` is dropped; AV/EDR products do not behavior-flag this invocation pattern.
-
-**Weekly auto-update** (Sunday 03:00 local time, runs `npm install -g token-goat@latest`)
-
-| Platform | Entry |
-|---------|------|
-| Windows | Scheduled task `token-goat-update` (`schtasks`). |
-| Linux / macOS | A `crontab` line tagged with `# token-goat-autoupdate`. |
+There is no auto-update mechanism. Updating token-goat is always a manual `npm install -g token-goat@latest`.
 
 **Data directory** (created on first run)
 
@@ -677,7 +656,7 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 
 ## Zero maintenance
 
-After install, there is nothing to start, stop, or restart. The worker runs at logon on Windows, Linux, and macOS; on WSL without systemd, the SessionStart hook covers it. Survives reboots on every platform. `token-goat uninstall` reverses every change, including the startup entry.
+Hooks fire automatically on every tool call once installed — nothing to start or restart there. The background worker is a separate, manual step: `token-goat worker start` launches it as a detached process, `token-goat worker status` checks it, `token-goat worker stop` kills it. It does not survive a reboot or logout; re-run `worker start` after either. `token-goat uninstall` removes the hook entries, `CLAUDE.md` block, and skill directory, but does not touch a running worker — stop it separately with `token-goat worker stop` if you no longer want it running.
 
 ## Verify
 
@@ -915,7 +894,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, or `--copilot` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, or `--copilot` to also strip those integrations. There is no `--purge` flag — `uninstall` never deletes the data directory (cache, index, models, logs); remove it by hand if you want it gone. It also does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
 
 ## About
 

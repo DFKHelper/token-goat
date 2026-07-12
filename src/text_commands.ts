@@ -12,6 +12,7 @@ import { walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
+import { normalizeDarwinSystemAlias } from './paths.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
@@ -22,6 +23,23 @@ import { foldPath } from './util.js'
 function readInput(src: string | undefined): string {
   if (src !== undefined) return fs.readFileSync(src, 'utf8')
   return fs.readFileSync(0, 'utf8')
+}
+
+// Mirrors cli.ts's/read_commands.ts's requireNonNegativeInt (same regex-only-integer
+// validation plus a sign check) so hot/recent/trace/logfold's row/frame/line limits get the
+// same error behavior as every other --limit-style flag: a clean thrown error on a non-numeric
+// or negative value instead of `Number.parseInt` silently producing NaN or a negative count,
+// both of which fail the `> 0` guards these commands used to gate their `.slice()` calls with
+// and so fell through to printing every entry unbounded instead of erroring or limiting.
+function requireNonNegativeInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
 }
 
 /** Split text into lines, normalizing CRLF. */
@@ -232,8 +250,8 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // canonicalize only lowercases the drive letter, not the rest of the path, so fold both
   // sides through foldPath (util.ts) to restore case-insensitive comparison on Windows/macOS
   // (matching the platform-gated convention used elsewhere, e.g. isUnderBlockedRoot).
-  const normalCwd = foldPath(canonicalize(cwd))
-  const normalAbs = foldPath(canonicalize(framePath, cwd))
+  const normalCwd = normalizeDarwinSystemAlias(foldPath(canonicalize(cwd)))
+  const normalAbs = normalizeDarwinSystemAlias(foldPath(canonicalize(framePath, cwd)))
   if (normalAbs.startsWith(normalCwd)) {
     // Ensure it's a real directory boundary: the path is either exactly the cwd,
     // or the next character after cwd is a path separator. This prevents false matches
@@ -257,7 +275,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     return
   }
   const cwd = process.cwd()
-  const keepN = opts.keep !== undefined ? Number.parseInt(opts.keep, 10) : 0
+  const keepN = opts.keep !== undefined ? requireNonNegativeInt('--keep', opts.keep) : 0
 
   const filtered = blocks.map((b) => {
     let frames = b.frames.filter((f) => isProjectFrame(f.file, cwd))
@@ -340,8 +358,8 @@ export function cmdLogfold(src: string | undefined, opts: { tail?: string | unde
   const text = readInput(src)
   let lines = splitLines(text)
   if (opts.tail !== undefined) {
-    const n = Number.parseInt(opts.tail, 10)
-    if (Number.isFinite(n) && n > 0) lines = lines.slice(Math.max(0, lines.length - n))
+    const n = requireNonNegativeInt('--tail', opts.tail)
+    lines = lines.slice(Math.max(0, lines.length - n))
   }
 
   const folded = applyFiltersAndFold(lines, opts.noNormalize === true)
@@ -379,9 +397,14 @@ const LOCK_PRIORITY = [
 
 function findLockfile(startPath: string): { file: string; others: string[] } | null {
   const stat = fs.statSync(startPath, { throwIfNoEntry: false })
-  const dir = stat?.isDirectory() !== false && fs.existsSync(startPath) && fs.statSync(startPath).isDirectory()
-    ? startPath
-    : path.dirname(startPath)
+  if (stat !== undefined && stat.isFile()) {
+    // An explicit lockfile path is the caller's actual choice -- honor it
+    // directly instead of falling through to a directory-based priority
+    // search, which would silently discard it in favor of whatever
+    // LOCK_PRIORITY picks from its containing directory.
+    return { file: startPath, others: [] }
+  }
+  const dir = stat !== undefined && stat.isDirectory() ? startPath : path.dirname(startPath)
 
   const found: string[] = []
   for (const name of LOCK_PRIORITY) {
@@ -680,7 +703,7 @@ function loadAllSessionReadCounts(): Map<string, number> {
 }
 
 export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean }): void {
-  const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20
+  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   const totals = loadAllSessionReadCounts()
 
   let entries: HotEntry[] = [...totals.entries()].map(([p, rc]) => ({ path: p, readCount: rc }))
@@ -703,7 +726,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   }
 
   entries.sort((a, b) => b.readCount - a.readCount)
-  if (limit > 0) entries = entries.slice(0, limit)
+  entries = entries.slice(0, limit)
 
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ entries }, null, 2) + '\n')
@@ -730,13 +753,13 @@ interface RecentEntry {
 }
 
 export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): void {
-  const n = nStr !== undefined ? Number.parseInt(nStr, 10) : 20
+  const n = nStr !== undefined ? requireNonNegativeInt('recent', nStr) : 20
   const sessionFiles = getSessionFiles()
 
   const entries: RecentEntry[] = [...sessionFiles.values()]
     .map((e) => ({ path: e.path, readCount: e.readCount, lastReadAt: e.lastReadAt, wasEdited: e.wasEdited }))
     .sort((a, b) => b.lastReadAt - a.lastReadAt)
-    .slice(0, n > 0 ? n : 20)
+    .slice(0, n)
 
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ entries, scope: 'current-session' }, null, 2) + '\n')

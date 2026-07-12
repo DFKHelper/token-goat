@@ -7,7 +7,7 @@
 
 import { parse } from 'csv-parse/sync'
 
-export type CsvWhereOp = '=' | '!=' | '>' | '<' | '~='
+export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
 
 export interface CsvWhere {
   column: string
@@ -26,10 +26,10 @@ export interface CsvQueryOptions {
 function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
   const delimiter = opts.delimiter ?? ','
   if (opts.noHeader === true) {
-    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter }) as string[][]
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true }) as string[][]
     return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
   }
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter }) as Array<Record<string, string>>
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true }) as Array<Record<string, string>>
 }
 
 export interface CsvQueryResult {
@@ -38,17 +38,45 @@ export interface CsvQueryResult {
   totalRows: number
 }
 
-const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|=|>|<)(.*)$/
+const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|>=|<=|=|>|<)(.*)$/
 
-/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col~=regex` specs from
- * repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
+/** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col>=value`/`col<=value`/`col~=regex`
+ * specs from repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
 export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undefined {
   if (specs === undefined || specs.length === 0) return undefined
   return specs.map((spec) => {
     const m = WHERE_SPEC_RE.exec(spec)
-    if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, or col~=regex)`)
+    if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, col>=value, or col<=value, or col~=regex)`)
     return { column: (m[1] as string).trim(), op: m[2] as CsvWhereOp, value: m[3] as string }
   })
+}
+
+/**
+ * `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the
+ * FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never
+ * be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a
+ * genuine `a<b` column exists and was the intended target).
+ *
+ * Re-checks the naive split against the real header: reconstructs the raw spec text from
+ * `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column,
+ * op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a
+ * remainder that still parses as a valid `op value` pair. The longest such header entry wins,
+ * so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g.
+ * `a<b`) that is actually present in this file's header -- never to an arbitrary substring.
+ */
+function resolveWhereColumn(where: CsvWhere, allColumns: string[]): CsvWhere {
+  const rawSpec = where.column + where.op + where.value
+  let best: CsvWhere = where
+  for (const col of allColumns) {
+    if (col.length <= best.column.length) continue
+    if (!rawSpec.startsWith(col)) continue
+    const rest = rawSpec.slice(col.length)
+    const m = /^(!=|~=|>=|<=|=|>|<)(.*)$/.exec(rest)
+    if (m) {
+      best = { column: col, op: m[1] as CsvWhereOp, value: m[2] as string }
+    }
+  }
+  return best
 }
 
 function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
@@ -61,13 +89,29 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
     case '~=':
       return new RegExp(where.value).test(cell)
     case '>':
-    case '<': {
+    case '<':
+    case '>=':
+    case '<=': {
+      // `Number('')` is 0, not NaN, so a blank cell would otherwise be silently coerced to
+      // the literal value 0 and wrongly match filters like `col<10` or `col>-1`. Treat a
+      // blank cell as "no value" -- it never satisfies a numeric comparison -- unless the
+      // cell is genuinely the string "0" (which is non-blank and compares normally below).
+      if (cell.trim() === '') return false
       const cellNum = Number(cell)
       const valNum = Number(where.value)
-      if (!Number.isNaN(cellNum) && !Number.isNaN(valNum)) {
-        return where.op === '>' ? cellNum > valNum : cellNum < valNum
+      const useNum = !Number.isNaN(cellNum) && !Number.isNaN(valNum)
+      const lhs: number | string = useNum ? cellNum : cell
+      const rhs: number | string = useNum ? valNum : where.value
+      switch (where.op) {
+        case '>':
+          return lhs > rhs
+        case '<':
+          return lhs < rhs
+        case '>=':
+          return lhs >= rhs
+        case '<=':
+          return lhs <= rhs
       }
-      return where.op === '>' ? cell > where.value : cell < where.value
     }
   }
 }
@@ -83,15 +127,16 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
       throw new Error(`unknown column: ${c} (available: ${allColumns.join(', ')})`)
     }
   }
-  for (const w of opts.wheres ?? []) {
+  const wheres = (opts.wheres ?? []).map((w) => resolveWhereColumn(w, allColumns))
+
+  for (const w of wheres) {
     if (!allColumns.includes(w.column)) {
       throw new Error(`unknown column: ${w.column} (available: ${allColumns.join(', ')})`)
     }
   }
 
   let filtered = records
-  if (opts.wheres !== undefined && opts.wheres.length > 0) {
-    const wheres = opts.wheres
+  if (wheres.length > 0) {
     filtered = records.filter((r) => wheres.every((w) => matchesWhere(r, w)))
   }
 

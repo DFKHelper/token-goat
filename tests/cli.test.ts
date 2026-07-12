@@ -173,6 +173,50 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --file --grep --max-matches 0 shows zero matching lines instead of unlimited', () => {
+    // Regression: --max-matches was bare-parsed and only applied `cap > 0`, so an explicit
+    // 0 silently fell through to "no cap" and printed every matching line.
+    const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-zero-${Date.now()}.txt`)
+    const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '0'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain('MATCH line')
+      expect(r.stdout).toContain('showing first 0 of 10 matching lines')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
+  it('bash-output --file --grep --max-matches abc errors instead of silently applying no cap', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-nan-${Date.now()}.txt`)
+    const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', 'abc'])
+      expect(r.status).toBe(1)
+      expect(r.stdout).not.toContain('MATCH line')
+      expect(r.stderr).toContain('--max-matches')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
+  it('bash-output --file --grep --max-matches -2 errors instead of silently applying no cap', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-neg-${Date.now()}.txt`)
+    const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '-2'])
+      expect(r.status).toBe(1)
+      expect(r.stdout).not.toContain('MATCH line')
+      expect(r.stderr).toContain('--max-matches')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
   it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')
@@ -998,7 +1042,14 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
   function runIsolated(args: string[], dataDir: string, extraEnv?: Record<string, string>): RunResult {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, LOCALAPPDATA: dataDir, XDG_DATA_HOME: dataDir, ...extraEnv },
+      env: {
+        ...process.env,
+        HOME: dataDir,
+        USERPROFILE: dataDir,
+        LOCALAPPDATA: dataDir,
+        XDG_DATA_HOME: dataDir,
+        ...extraEnv,
+      },
     })
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }

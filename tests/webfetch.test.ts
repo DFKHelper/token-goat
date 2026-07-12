@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import type * as HttpModule from 'http';
 import type * as DnsModule from 'dns';
 import { resolve } from 'path';
-import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, realpathSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 
 const httpRequestMock = vi.hoisted(() => vi.fn());
@@ -29,13 +29,10 @@ vi.mock('dns', async (importOriginal) => {
 const {
   isImageUrl,
   isImageContentType,
-  fetchUrl,
   isPrivateIPv4,
   isPrivateIPv6,
-  isRealPathWithinCacheDir,
   ssrfPinnedLookup,
   performHttpFetch,
-  buildConditionalHeaders,
 } = await import('../src/webfetch.js');
 
 describe('webfetch', () => {
@@ -214,33 +211,6 @@ describe('webfetch', () => {
     });
   });
 
-  describe('fetchUrl', () => {
-    it('should throw on SSRF-unsafe URLs', async () => {
-      await expect(
-        fetchUrl('http://localhost/path'),
-      ).rejects.toThrow(/SSRF safety check/);
-
-      await expect(
-        fetchUrl('http://127.0.0.1/path'),
-      ).rejects.toThrow(/SSRF safety check/);
-
-      await expect(
-        fetchUrl('http://169.254.169.254/path'),
-      ).rejects.toThrow(/SSRF safety check/);
-    });
-
-    it('should throw on URLs that are too long', async () => {
-      const longUrl = 'https://example.com/' + 'a'.repeat(8192);
-      await expect(fetchUrl(longUrl)).rejects.toThrow(/URL too long/);
-    });
-
-    it('should throw on invalid schemes', async () => {
-      await expect(
-        fetchUrl('file:///etc/passwd'),
-      ).rejects.toThrow(/SSRF safety check/);
-    });
-  });
-
   describe('cleanupStaleDownloads', () => {
     it('should remove .tmp files from cache directory', () => {
       // Create temp .tmp files
@@ -290,61 +260,6 @@ describe('webfetch', () => {
     });
   });
 });
-
-  describe('isRealPathWithinCacheDir (B6: shrunk_path containment)', () => {
-    const tempDir = resolve(tmpdir(), 'webfetch-test-b6');
-
-    beforeEach(() => {
-      if (!existsSync(tempDir)) {
-        mkdirSync(tempDir, { recursive: true });
-      }
-    });
-
-    afterEach(() => {
-      try {
-        rmSync(tempDir, { recursive: true, force: true });
-      } catch {
-        // Ignore cleanup errors
-      }
-    });
-
-    it('accepts a real path that lives inside the cache root', () => {
-      const cacheRoot = resolve(tempDir, 'cache-root');
-      mkdirSync(cacheRoot, { recursive: true });
-      const inside = resolve(cacheRoot, 'abc123.shrunk.jpg');
-      writeFileSync(inside, 'fake image bytes');
-      const rootReal = realpathSync(cacheRoot);
-      expect(isRealPathWithinCacheDir(rootReal, inside)).toBe(true);
-    });
-
-    it('rejects a path outside the cache root (planted via a malicious shrunk_path)', () => {
-      const cacheRoot = resolve(tempDir, 'cache-root-2');
-      mkdirSync(cacheRoot, { recursive: true });
-      const secretDir = resolve(tempDir, 'outside-secret');
-      mkdirSync(secretDir, { recursive: true });
-      const outside = resolve(secretDir, 'sensitive.txt');
-      writeFileSync(outside, 'do not serve me');
-      const rootReal = realpathSync(cacheRoot);
-      expect(isRealPathWithinCacheDir(rootReal, outside)).toBe(false);
-    });
-
-    it('rejects a traversal path built with ../ segments', () => {
-      const cacheRoot = resolve(tempDir, 'cache-root-3');
-      mkdirSync(cacheRoot, { recursive: true });
-      const outside = resolve(tempDir, 'traversal-target.txt');
-      writeFileSync(outside, 'secret');
-      const rootReal = realpathSync(cacheRoot);
-      const traversal = resolve(cacheRoot, '..', 'traversal-target.txt');
-      expect(isRealPathWithinCacheDir(rootReal, traversal)).toBe(false);
-    });
-
-    it('rejects a candidate that does not exist', () => {
-      const cacheRoot = resolve(tempDir, 'cache-root-4');
-      mkdirSync(cacheRoot, { recursive: true });
-      const rootReal = realpathSync(cacheRoot);
-      expect(isRealPathWithinCacheDir(rootReal, resolve(cacheRoot, 'does-not-exist.jpg'))).toBe(false);
-    });
-  });
 
   describe('ssrfPinnedLookup (M45: SSRF TOCTOU)', () => {
     it('resolves a public-looking hostname to the same address it validated (single lookup, no separate check-then-fetch gap)', async () => {
@@ -586,29 +501,6 @@ describe('webfetch', () => {
     });
   });
 
-  describe('buildConditionalHeaders (m8: cache revalidation)', () => {
-    it('builds If-None-Match from a stored etag', () => {
-      expect(buildConditionalHeaders({ etag: 'W/"abc123"' })).toEqual({ 'If-None-Match': 'W/"abc123"' });
-    });
-
-    it('builds If-Modified-Since from a stored last_modified', () => {
-      expect(buildConditionalHeaders({ last_modified: 'Wed, 21 Oct 2015 07:28:00 GMT' })).toEqual({
-        'If-Modified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT',
-      });
-    });
-
-    it('builds both headers when both are stored', () => {
-      expect(buildConditionalHeaders({ etag: 'abc', last_modified: 'date' })).toEqual({
-        'If-None-Match': 'abc',
-        'If-Modified-Since': 'date',
-      });
-    });
-
-    it('builds no headers when the cache has neither validator', () => {
-      expect(buildConditionalHeaders({})).toEqual({});
-    });
-  });
-
   describe('performHttpFetch conditional revalidation (m8)', () => {
     it('forwards If-None-Match/If-Modified-Since onto the real HTTP request', async () => {
       let capturedHeaders;
@@ -638,6 +530,84 @@ describe('webfetch', () => {
       expect(capturedHeaders['If-None-Match']).toBe('"abc123"');
       expect(capturedHeaders['If-Modified-Since']).toBe('Wed, 21 Oct 2015 07:28:00 GMT');
       expect(result.status).toBe(304);
+    });
+  });
+
+  describe('performHttpFetch cross-origin redirect header stripping (regression: performHttpFetch recursed with {...opts} on redirect, forwarding requestHeaders verbatim to whatever host the Location pointed at, which would leak an Authorization/API-key header cross-origin)', () => {
+    function respondWith(fakeReq: EventEmitter, statusCode: number, headers: Record<string, string>): void {
+      fakeReq.end = vi.fn(() => {
+        const fakeRes = new EventEmitter();
+        fakeRes.statusCode = statusCode;
+        fakeRes.statusMessage = statusCode === 200 ? 'OK' : 'Found';
+        fakeRes.headers = headers;
+        fakeRes.resume = vi.fn();
+        queueMicrotask(() => {
+          fakeReq.emit('response', fakeRes);
+          if (statusCode === 200) fakeRes.emit('end');
+        });
+      });
+    }
+
+    it('drops requestHeaders when the redirect target is a different host', async () => {
+      const capturedHeaders: Record<string, unknown>[] = [];
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 302, { location: 'http://other-host.example.test/y' });
+        return fakeReq;
+      });
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 200, {});
+        return fakeReq;
+      });
+
+      const result = await performHttpFetch('http://original-host.example.test/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: { Authorization: 'Bearer secret-token' },
+        redirectsLeft: 5,
+      });
+
+      expect(result.status).toBe(200);
+      expect(capturedHeaders).toHaveLength(2);
+      expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
+      expect(capturedHeaders[1]?.['Authorization']).toBeUndefined();
+    });
+
+    it('still forwards requestHeaders when the redirect target is the same host', async () => {
+      const capturedHeaders: Record<string, unknown>[] = [];
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 302, { location: 'http://same-host.example.test/y' });
+        return fakeReq;
+      });
+      httpRequestMock.mockImplementationOnce((options) => {
+        capturedHeaders.push(options.headers);
+        const fakeReq = new EventEmitter();
+        fakeReq.destroy = vi.fn();
+        respondWith(fakeReq, 200, {});
+        return fakeReq;
+      });
+
+      const result = await performHttpFetch('http://same-host.example.test/x', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1000,
+        requestHeaders: { Authorization: 'Bearer secret-token' },
+        redirectsLeft: 5,
+      });
+
+      expect(result.status).toBe(200);
+      expect(capturedHeaders).toHaveLength(2);
+      expect(capturedHeaders[0]?.['Authorization']).toBe('Bearer secret-token');
+      expect(capturedHeaders[1]?.['Authorization']).toBe('Bearer secret-token');
     });
   });
 

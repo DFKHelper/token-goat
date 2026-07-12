@@ -16,12 +16,15 @@ import {
   workerPidPath,
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
+import * as projectModule from '../src/project.js'
 import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { loadConfig } from '../src/config.js'
 import { store } from '../src/snapshots.js'
+import { foldPath } from '../src/util.js'
+import { pathEqClause } from '../src/sql_path.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -37,12 +40,27 @@ function writeQueue(dir: string, lines: string[]): void {
   fs.writeFileSync(qp, lines.map((l) => `${l}\n`).join(''))
 }
 
+// Reads files.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via
+// normalizePath()/foldPath()/pathEqClause() -- so this observes the exact same row a real
+// transient-failure requeue bumps, regardless of which textual form (backslash or normalized)
+// the caller passes in.
+function getRetryCount(dbPath: string, absPath: string): number {
+  const db = getDb(dbPath)
+  const row = db
+    .prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`)
+    .get(foldPath(normalizePath(absPath))) as { retry_count: number | null } | undefined
+  return row?.retry_count ?? 0
+}
+
 beforeEach(() => {
   DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-'))
   // Permissive default so existing tests (which don't set blocked_roots) are unaffected;
-  // individual tests override as needed.
+  // individual tests override as needed. indexing.* size/skip_dirs fields are set generously
+  // permissive too, so this fixture-sized test content never trips indexFileSync/
+  // indexFileEmbeddings' size gates.
   vi.mocked(loadConfig).mockReturnValue({
     worker: { blocked_roots: [] },
+    indexing: { skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
   } as unknown as ReturnType<typeof loadConfig>)
 })
 
@@ -82,6 +100,45 @@ describe('stopWorker', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     expect(stopWorker(DIR)).toBe(false)
     expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
+  })
+
+  // Regression (double-daemon race): stopWorker used to delete the pid file unconditionally
+  // after killing the pid it read, with no re-check. Race: between stopWorker's kill and its
+  // rmSync, a concurrent `worker start` can observe the just-killed pid as dead, reclaim the
+  // pid-file slot via claimWorkerPidFile, and write a NEW daemon's pid into that same file --
+  // which the still-running stopWorker call then deletes anyway, orphaning the new daemon (no
+  // pid file left for a later `worker stop` to find it by). A subsequent `worker start` would
+  // then "fix" the missing pid file by spawning a THIRD daemon, leaving two live daemons
+  // draining one queue. Simulate the race directly: after stopWorker's kill would have fired
+  // (this test's own live pid stands in for "the process stopWorker just killed"), have a
+  // concurrent claim overwrite the pid file with a different pid before stopWorker reaches its
+  // cleanup step -- proven here by writing the pid file back to a different value between the
+  // kill and the cleanup that the exit-handler-style guard must check.
+  it('does not delete a pid file that a concurrent worker start already reclaimed for a new daemon', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+
+    // Stand in for the race window: monkey-patch fs.rmSync so that, at the exact moment
+    // stopWorker is about to remove the pid file, we simulate a concurrent claimWorkerPidFile
+    // call having already reclaimed the slot for a brand-new daemon pid. If stopWorker's guard
+    // re-reads the pid file immediately before deleting (rather than deleting unconditionally),
+    // it must see the new pid and skip the delete entirely.
+    const originalWrite = fs.writeFileSync
+    let reclaimed = false
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (!reclaimed && pid === process.pid && (signal === undefined || signal === 'SIGTERM')) {
+        reclaimed = true
+        originalWrite(workerPidPath(DIR), '424242\n')
+      }
+      return true
+    })
+
+    const alive = stopWorker(DIR)
+
+    expect(alive).toBe(true)
+    // The reclaimed pid file must survive stopWorker's cleanup untouched.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+
+    killSpy.mockRestore()
   })
 })
 
@@ -215,6 +272,33 @@ describe('processDirtyBatch', () => {
     expect(indexed).toEqual([real])
   })
 
+  // Regression: for every dirty path in a batch, processDirtyBatch re-ran a full findProject
+  // ancestor-marker probe (9 markers x existsSync/lstat per level, plus isRepoContainer's own
+  // readdirSync) purely to feed lastKnownProjectRoots -- a value only consulted once per
+  // PRUNE_EVERY_N_DRAINS drains. Multiple dirty paths sharing the same directory in one batch
+  // repeated that walk once per path for an identical result. Assert findProject is called at
+  // most once per distinct dirname in the batch, not once per path.
+  it('memoizes findProject per dirname within a batch instead of re-walking for every path', () => {
+    fs.mkdirSync(path.join(DIR, '.git'))
+    const a = path.join(DIR, 'a.ts')
+    const b = path.join(DIR, 'b.ts')
+    const c = path.join(DIR, 'c.ts')
+    fs.writeFileSync(a, 'export const a = 1\n')
+    fs.writeFileSync(b, 'export const b = 1\n')
+    fs.writeFileSync(c, 'export const c = 1\n')
+
+    const findProjectSpy = vi.spyOn(projectModule, 'findProject')
+
+    const indexed: string[] = []
+    processDirtyBatch([a, b, c], (p) => indexed.push(p))
+
+    expect(indexed).toEqual([a, b, c])
+    // All three paths share the same dirname (DIR) -- pre-fix this was called 3 times (once per
+    // path); post-fix it must be called at most once for that one distinct dirname.
+    expect(findProjectSpy.mock.calls.length).toBeLessThan(3)
+    expect(findProjectSpy).toHaveBeenCalledTimes(1)
+  })
+
   // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call
   // returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive
   // sync, a permission error, or a race with an external writer -- used to be silently dropped:
@@ -250,6 +334,40 @@ describe('processDirtyBatch', () => {
     const log = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
     expect(log).toContain(lockedPath)
     expect(log).toContain('transient read failure')
+  })
+
+  // Regression: bumpRetryCount/clearRetryCount used to fold the RAW absPath as given by the
+  // caller instead of normalizing it first. The files.path column is always written in
+  // normalizePath()'d (forward-slash) form by every real writer, so a caller that referenced
+  // the same file via a native-separator (backslash) path on a second call would never match
+  // the row written under the normalized form, silently falling into the INSERT branch instead
+  // of incrementing the existing row's retry_count. Drive two real transient-read failures on
+  // the SAME file, one queued in its native path.join() form and one in its normalizePath()'d
+  // form, and confirm they share one counter (accumulates to 2) instead of each starting a
+  // fresh row at 1.
+  it('accumulates retry_count on one shared row across calls that reference the same file via different path forms (backslash vs normalized)', () => {
+    const lockedPath = path.join(DIR, 'locked-crossform.ts')
+    fs.mkdirSync(lockedPath) // exists, but reading it as a file throws EISDIR (transient failure)
+    const lockedPathNormalized = normalizePath(lockedPath)
+    const dbPath = path.join(DIR, 'global.db')
+
+    processDirtyBatch([lockedPath], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+    processDirtyBatch([lockedPathNormalized], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(2)
+  })
+
+  it('resetTransientRetryCount clears the counter even when called with a differently-formed path than the one that wrote it', () => {
+    const lockedPath = path.join(DIR, 'locked-reset.ts')
+    fs.mkdirSync(lockedPath)
+    const dbPath = path.join(DIR, 'global.db')
+
+    processDirtyBatch([lockedPath], undefined, undefined, DIR)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+    resetTransientRetryCount(normalizePath(lockedPath), dbPath)
+    expect(getRetryCount(dbPath, lockedPath)).toBe(0)
   })
 
   // Regression (worker requeueDirtyPath had no retry cap/backoff): a permanently stuck path
@@ -468,6 +586,112 @@ describe('drainOnce', () => {
     }
   })
 
+  // Regression: indexFileSync/cmdIndex's skip_dirs and large_file_skip_kb early-returns left
+  // stale symbol/ref rows behind AND never cleared files.sha, so a file indexed while small/
+  // allowed that later crosses the cap (or whose directory is newly added to skip_dirs) got
+  // stuck in a self-perpetuating loop: the stale sha never matched current content, so every
+  // subsequent drainOnce re-selected it as changed, re-called indexFileSync, which re-skipped
+  // it again, forever, while the OLD rows kept resolving via symbol/read. This drives the real
+  // default drain path end-to-end (no injected index callback): index a file normally, EDIT it
+  // (so its sha changes and drainOnce's parseUnchanged gate does not skip the re-check) while
+  // also lowering large_file_skip_kb below its new size, re-drain, and assert (a) the stale
+  // symbol no longer resolves and (b) the files row is gone (sha cleared) so the file settles
+  // into a stable not-indexed state instead of endlessly re-processing.
+  it('default path clears stale rows and files.sha when a previously-indexed file becomes skip-eligible (no injected callback)', () => {
+    const src = path.join(DIR, 'growable.ts')
+    fs.writeFileSync(src, 'export function growableWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    // Index it once while comfortably under the (generously permissive) default cap.
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(getFileEntry(norm, projectDb)).not.toBeNull()
+
+      // Edit the file (sha changes, so the parseUnchanged gate in makeIndexer will not skip
+      // the re-check) and simultaneously make it skip-eligible by lowering large_file_skip_kb
+      // below its new size -- simulating the file crossing the cap (or its directory being
+      // newly added to skip_dirs) on a real edit.
+      fs.writeFileSync(
+        src,
+        'export function growableWorkerSymbol(): number {\n  return 2\n}\n// padding\n',
+      )
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+
+      // The stale symbol must no longer resolve, and the files row (including sha) must be
+      // cleared -- not just the symbols/refs rows -- so the file settles into a stable
+      // not-indexed state instead of being endlessly re-selected as changed.
+      expect(querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+
+      // A further re-queue+drain while still skip-eligible must settle at the same stable
+      // state -- no stale rows resurrect and no error is thrown -- rather than looping forever.
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  // Regression: makeIndexer's parseUnchanged sha-gate ran indexFileSync ONLY when content
+  // changed, so a file re-enqueued with BYTE-IDENTICAL content (same sha) after becoming
+  // skip-eligible purely from a config change (skip_dirs/large_file_skip_kb, no edit at all)
+  // never had indexFileSync called -- and the stale-row purge lives INSIDE indexFileSync -- so
+  // its symbols/refs/files rows were never cleared, even though embeddings correctly purge via
+  // their own independent wouldSkipFileEmbedding gate. This is the specific gap the sibling
+  // "becomes skip-eligible" test above does NOT cover, since that test also edits the file
+  // (changing its sha) to make parseUnchanged false, bypassing this exact code path. Drives the
+  // real default drain path end-to-end (no injected index callback, no content change).
+  it('default path clears stale rows for a skip-eligible file re-enqueued with unchanged content (parseUnchanged=true)', () => {
+    const src = path.join(DIR, 'unchanged.ts')
+    fs.writeFileSync(src, 'export function unchangedWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    // Index it once while comfortably under the (generously permissive) default cap.
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(getFileEntry(norm, projectDb)).not.toBeNull()
+
+      // Make the file skip-eligible via a CONFIG CHANGE ONLY -- content and sha are untouched,
+      // so makeIndexer's parseUnchanged gate would evaluate true (entry.sha === sha), exactly
+      // the gap this test targets.
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+
+      // The stale symbol must no longer resolve, and the files row (including sha) must be
+      // cleared -- consistent with the embeddings side, which already purges correctly
+      // regardless of parseUnchanged via its own independent gate.
+      expect(
+        querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
   // Regression: a rename/delete that never goes through the Edit hook path (git mv, a
   // directory rename, `git checkout <branch>`, `git clean`) never enqueues the old path, so
   // the dirty-queue reconciliation exercised by the sibling "prunes a deleted file's rows on
@@ -663,6 +887,35 @@ describe('drainOnce', () => {
       // The .draining file should be cleaned up.
       expect(fs.existsSync(drainingPath)).toBe(false)
     })
+
+    // Regression (same-cycle retry double-bump): when a transient read failure happens while
+    // recovering an abandoned .draining file in stage (a), the old requeueDirtyPath appended the
+    // path straight to the LIVE dirty.txt -- which stage (b) of this SAME drainOnce call then
+    // claims and reprocesses microseconds later, while the lock/condition that caused the
+    // original failure has almost certainly not cleared yet. That silently bumped the transient
+    // retry counter TWICE per drain cycle instead of once, roughly halving the effective
+    // MAX_TRANSIENT_RETRIES budget (5 real failure cycles exhausted it in ~3 calls instead of 5).
+    // No live dirty.txt exists before this call -- isolating the bug to exactly the stage
+    // (a)-recovers/stage (b)-immediately-reclaims interaction, not any pre-existing queue content.
+    it('bumps the transient-retry count only once per drainOnce call when stage (a) recovering an abandoned .draining file requeues a path stage (b) of the SAME cycle would otherwise immediately reclaim', () => {
+      const lockedPath = path.join(DIR, 'stuck-samecycle.ts')
+      fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR every time
+      const dbPath = path.join(DIR, 'global.db')
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${lockedPath}\n`)
+      expect(fs.existsSync(queuePath)).toBe(false)
+
+      drainOnce(DIR)
+
+      // Exactly one bump for this single drainOnce call -- not two.
+      expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+      // The path is still requeued for the next drain cycle either way -- the fix defers WHEN
+      // the append lands in the live queue, not WHETHER it does.
+      expect(getDirtyPathsFor(DIR)).toEqual([lockedPath])
+    })
   })
 
   describe('drainOnce rm-after-process (crash-safety regression)', () => {
@@ -801,7 +1054,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     vi.restoreAllMocks()
   })
 
-  it('retries embedding on the next touch of unchanged content after a simulated embedding crash', () => {
+  it('retries embedding on the next touch of unchanged content after a simulated embedding crash', async () => {
     const realIndexFileEmbeddings = parserModule.indexFileEmbeddings
     const src = path.join(DIR, 'embed-crash.ts')
     fs.writeFileSync(src, 'export function embedCrashSymbol(): number {\n  return 9\n}\n')
@@ -824,6 +1077,13 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
         querySymbols({ name: 'embedCrashSymbol', limit: 10 }, projectDb).length,
       ).toBeGreaterThan(0)
       expect(getFileEntry(norm, projectDb)?.embedSha).toBe('')
+      // Let the first (rejected) embed call's promise chain settle and clear itself from
+      // worker.ts's per-file in-flight map (embedFileSerialized) before the second drain --
+      // otherwise this second drain would be legitimately treated as overlapping the still
+      // in-flight first call and chained behind it rather than dispatched immediately.
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
 
       // Second drain of the SAME, byte-identical file: the parse-sha gate alone would skip it
       // entirely (pre-fix behaviour), permanently losing the embedding retry. With the fix,
@@ -861,7 +1121,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 
     vi.mocked(loadConfig).mockReturnValue({
       worker: { blocked_roots: [] },
-      indexing: { embeddings_enabled: false },
+      indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
     } as unknown as ReturnType<typeof loadConfig>)
 
     const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
@@ -893,7 +1153,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     }
   })
 
-  it('re-embeds unchanged content on the next touch after embeddings are re-enabled, instead of being masked by a disabled-marker embed_sha from an earlier disabled run (fail-on-buggy: stamping the bare sha while disabled would make this look "already embedded" forever)', () => {
+  it('re-embeds unchanged content on the next touch after embeddings are re-enabled, instead of being masked by a disabled-marker embed_sha from an earlier disabled run (fail-on-buggy: stamping the bare sha while disabled would make this look "already embedded" forever)', async () => {
     const src = path.join(DIR, 'embed-reenabled.ts')
     fs.writeFileSync(src, 'export function embedReenabledSymbol(): number {\n  return 4\n}\n')
     const norm = normalizePath(src)
@@ -905,20 +1165,27 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       // First drain with embeddings disabled: only the disabled-marker embed_sha gets stamped.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: false },
+        indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
       expect(embedSpy).toHaveBeenCalledTimes(1)
       const afterDisabled = getFileEntry(norm, projectDb)
       expect(afterDisabled?.embedSha).toBe(parserModule.disabledEmbedSha(afterDisabled?.sha ?? ''))
+      // Let the first embed call's promise chain settle and clear itself from worker.ts's
+      // per-file in-flight map (embedFileSerialized) before the second drain -- otherwise this
+      // second drain would be legitimately treated as overlapping the still in-flight first
+      // call and chained behind it rather than dispatched immediately.
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
 
       // Second drain of the SAME, byte-identical file, now with embeddings enabled: the gate
       // must NOT treat the disabled-marker embed_sha as a match for a real sha comparison --
       // indexFileEmbeddings must be invoked again so the file actually gets embedded.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: true },
+        indexing: { embeddings_enabled: true, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       drainOnce(DIR)
@@ -926,6 +1193,141 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     } finally {
       closeDb(projectDb)
     }
+  })
+
+  // Regression: two drains of a rapidly re-edited file could spawn two concurrent
+  // indexFileEmbeddings promises for the same path (makeIndexer fires embedding off without
+  // awaiting it, by design -- see its doc comment). If the OLDER call (started first, with
+  // now-stale content) happened to finish AFTER the newer one, its stale chunks/vectors
+  // silently overwrote the fresher ones -- last-writer-wins, self-correcting only on the NEXT
+  // edit. The fix chains same-file embed calls onto one another so they always settle in
+  // submission order. Drives the real default drain path (drainOnce(DIR), no injected index
+  // callback -- makeIndexer's actual production wiring); only indexFileEmbeddings itself is
+  // mocked, with each call's completion under this test's explicit control, so the assertions
+  // prove the ORDER the production code dispatches and resolves the two calls in, not any
+  // artifact of the mock's own timing.
+  it('serializes concurrent embedding calls for the same file so a slower older call cannot overwrite a faster newer one', async () => {
+    const src = path.join(DIR, 'embed-race.ts')
+    fs.writeFileSync(src, 'export function embedRaceV1(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+
+    const invocations: string[] = []
+    const commits: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((_filePath, _dbPath, sha) => {
+      const label = sha ?? ''
+      invocations.push(label)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(label, () => {
+          commits.push(label)
+          resolve()
+        })
+      })
+    })
+
+    // First drain: v1 content (sha1). Its embed call is dispatched but deliberately left
+    // pending -- nothing resolves it yet. The dispatch itself is chained through a `.then()` (a
+    // microtask, even off an already-resolved "no prior call" base promise), so flush one tick
+    // before checking invocations.
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    expect(invocations.length).toBe(1)
+    const sha1 = invocations[0]
+
+    // Second drain: rewrite to v2 content (a different sha) while the first embed call for
+    // sha1 is still in flight -- simulates a rapid re-edit racing an in-flight embed of the
+    // now-stale content.
+    fs.writeFileSync(src, 'export function embedRaceV2(): number {\n  return 2\n}\n')
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // With serialization, the second call must not even be dispatched to indexFileEmbeddings
+    // yet -- it is chained behind the still-pending first call, not racing it concurrently.
+    expect(invocations).toEqual([sha1])
+
+    // Resolving the first (older) call is what unblocks the second -- proving a chain, not an
+    // independent race, governs dispatch order.
+    pendingResolvers.get(sha1)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invocations.length).toBe(2)
+    const sha2 = invocations[1]
+    expect(sha2).not.toBe(sha1)
+
+    pendingResolvers.get(sha2)!()
+    await Promise.resolve()
+
+    // Final commit order must be submission order: sha1 (older, submitted and resolved first)
+    // then sha2 (newer, resolved last) -- never the reverse, which would mean the fresher
+    // content lost to stale content.
+    expect(commits).toEqual([sha1, sha2])
+  })
+
+  // Regression (#250): inFlightEmbeddings above only serializes duplicate work on the SAME
+  // file -- a dirty batch of N distinct changed files previously fired N concurrent
+  // indexFileEmbeddings pipelines with no global cap at all. The fix routes every embed call
+  // through a global slot counter honoring config.worker.max_pool_workers, queuing callers
+  // beyond the cap instead of firing them all at once. Drives the real default drain path
+  // (drainOnce(DIR), no injected index callback -- makeIndexer's actual production wiring);
+  // only indexFileEmbeddings is mocked, with each call's completion under this test's explicit
+  // control, so the assertions prove the production code never dispatches more than the
+  // configured cap concurrently, not an artifact of the mock's own timing.
+  it('caps concurrent embedding pipelines across different files at worker.max_pool_workers, queuing the rest', async () => {
+    // Reset worker.ts's process-wide embed-slot counter: an earlier test in this file may have
+    // dispatched a real (unresolved-by-test-end) embed call without awaiting it to settle,
+    // which would otherwise leave activeEmbedSlots polluted going into this test.
+    clearModuleCaches()
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [], max_pool_workers: 2 },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const files = ['cap-a.ts', 'cap-b.ts', 'cap-c.ts'].map((name, i) => {
+      const p = path.join(DIR, name)
+      fs.writeFileSync(p, `export function capFn${i}(): number {\n  return ${i}\n}\n`)
+      return normalizePath(p)
+    })
+
+    const invoked: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((filePath) => {
+      invoked.push(filePath)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(filePath, resolve)
+      })
+    })
+
+    writeQueue(DIR, files)
+    expect(drainOnce(DIR)).toBe(3)
+
+    // makeIndexer fires embedding fire-and-forget with no `await` in the drain loop, and
+    // embedFileSerialized dispatches synchronously (no microtask hop) whenever a slot is
+    // immediately free -- so with a cap of 2, only the first two of these three distinct files
+    // are dispatched to indexFileEmbeddings inline within drainOnce itself. The third is
+    // queued behind the cap, not fired concurrently, with no await needed to observe this.
+    expect(invoked.length).toBe(2)
+    expect(invoked).toEqual([files[0], files[1]])
+
+    // Resolving one of the two in-flight calls frees a slot for the third, queued file.
+    pendingResolvers.get(files[0])!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invoked.length).toBe(3)
+    expect(invoked).toContain(files[2])
+
+    // Let the remaining in-flight calls settle so this test's own promises don't dangle.
+    pendingResolvers.get(files[1])!()
+    pendingResolvers.get(files[2])!()
+    await Promise.resolve()
   })
 })
 
@@ -954,5 +1356,26 @@ describe('runWorkerLoop stale-snapshot sweep (regression)', () => {
     await runWorkerLoop(DIR, 5, shouldStop)
 
     expect(fs.existsSync(result.path)).toBe(false)
+  })
+})
+
+// Regression: worker-errors.log had no rotation mechanism -- it could grow unbounded over a
+// project's index lifetime. runWorkerLoop now rotates it via cleanupWorkerStateFiles on the same
+// periodic sweep as cleanup_stale above. This drives the real default path end-to-end: write an
+// oversized worker-errors.log, run one real loop cycle, and assert it was actually rotated.
+describe('runWorkerLoop worker state file rotation (regression)', () => {
+  it('rotates an oversized worker-errors.log via the default periodic loop', async () => {
+    const logPath = path.join(DIR, 'worker-errors.log')
+    fs.writeFileSync(logPath, 'x'.repeat(6 * 1024 * 1024))
+
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    const statAfter = fs.statSync(logPath)
+    expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
   })
 })

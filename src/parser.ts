@@ -45,6 +45,11 @@ import { extractProto } from './languages/proto_idx.js'
 import { extractPowershell } from './languages/powershell_idx.js'
 import { extractApex } from './languages/apex.js'
 import { extractSalesforceMetadata } from './languages/salesforce_metadata.js'
+import {
+  extractLwcJavaScript,
+  extractLwcTemplate,
+  extractSalesforceMarkup,
+} from './languages/salesforce_frontend.js'
 import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
@@ -794,10 +799,64 @@ function calleeName(call: TsNode, language: Language): string | null {
 }
 
 /**
- * Walk a tree-sitter tree collecting call-site references.
+ * Bare-identifier "value position" usages of a name, scoped to `node` itself (not recursive --
+ * the caller's own tree walk already visits every descendant, so this only needs to recognise
+ * the specific container shapes below whenever `node` happens to be one of them).
+ *
+ * A call-site walk alone (see extractRefs) misses a symbol that is used without being invoked
+ * directly -- passed as a callback (`arr.map(myHelperFunction)`), assigned to a binding (`const
+ * x = myHelperFunction`), or stored as an object-literal value (`{ onClick: myHelperFunction
+ * }`). Those reads are real usages: `dead` should not flag the symbol as unreferenced, and
+ * `refs`/`callers` should surface them. Scoped to TypeScript/JavaScript/Python (the languages in
+ * REF_LANGUAGES with directly analogous grammar shapes for these three patterns);
+ * Go/Rust/Java/C/C++/Ruby keep call-site-only extraction for now.
+ *
+ * Deliberately narrow: only a bare `identifier` sitting directly in one of these three field
+ * positions counts. A nested expression (`a.b`, `a + b`, a call result, a string/comment) never
+ * matches, since tree-sitter already gives those their own distinct node types -- this needs no
+ * separate string/comment-stripping pass the way a regex-based extractor would.
+ */
+function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
+  const isJs = language === 'typescript' || language === 'javascript'
+  const isPy = language === 'python'
+  if (!isJs && !isPy) return []
+
+  const result: TsNode[] = []
+
+  // Direct call/constructor argument passed by bare name: arr.map(myHelperFunction).
+  if ((isJs && node.type === 'arguments') || (isPy && node.type === 'argument_list')) {
+    for (const child of node.namedChildren) {
+      if (child.type === 'identifier') result.push(child)
+    }
+  }
+
+  // Assignment of an existing binding to a variable: const x = myHelperFunction /
+  // x = myHelperFunction. Arrow/function-expression values are handled separately by
+  // scopeName() as a new scope, not a reference to an existing one, so they're excluded here
+  // by only matching a plain `identifier` value.
+  if (isJs && (node.type === 'variable_declarator' || node.type === 'assignment_expression')) {
+    const value = node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+  if (isPy && node.type === 'assignment') {
+    const value = node.childForFieldName('right')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  // Object-literal value bound to an existing name: { onClick: myHelperFunction }.
+  if (isJs && node.type === 'pair') {
+    const value = node.childForFieldName('value')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  return result
+}
+
+/**
+ * Walk a tree-sitter tree collecting call-site and value-position references.
  *
  * Maintains a stack of enclosing scope names (functions / methods / classes) so
- * each reference records its innermost enclosing symbol in `context` — the data
+ * each reference records its innermost enclosing symbol in `context` -- the data
  * `refs --callers` groups on. References are deduplicated per (name, line) and
  * single-character / builtin callees are dropped to keep the index focused.
  */
@@ -811,26 +870,32 @@ function extractRefs(root: TsNode, filePath: string, language: Language): RefEnt
       : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
   const stack: string[] = []
 
+  const record = (name: string, node: TsNode): void => {
+    if (name.length <= 1 || noise.has(name)) return
+    const line = node.startPosition.row + 1
+    const key = `${name}\0${line}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      filePath,
+      name,
+      line,
+      col: node.startPosition.column,
+      context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
+    })
+  }
+
   const visit = (node: TsNode): void => {
     const enclosing = scopeName(node, language)
     if (enclosing !== null && enclosing !== '') stack.push(enclosing)
 
     if (callTypes.has(node.type)) {
       const callee = calleeName(node, language)
-      if (callee !== null && callee.length > 1 && !noise.has(callee)) {
-        const line = node.startPosition.row + 1
-        const key = `${callee}\0${line}`
-        if (!seen.has(key)) {
-          seen.add(key)
-          out.push({
-            filePath,
-            name: callee,
-            line,
-            col: node.startPosition.column,
-            context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
-          })
-        }
-      }
+      if (callee !== null) record(callee, node)
+    }
+
+    for (const idNode of valueRefIdentifiers(node, language)) {
+      record(idNode.text, idNode)
     }
 
     for (const child of node.namedChildren) visit(child)
@@ -849,7 +914,7 @@ function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[
   const lines = content.split(/\r?\n/)
 
   for (const [i, line] of eachUnfencedLine(lines)) {
-    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s*#+\s*)?$/.exec(line)
+    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/.exec(line)
     if (atxMatch !== null && atxMatch[2] !== undefined) {
       const name = atxMatch[2].trim()
       if (name !== '') {
@@ -968,13 +1033,70 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
+function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
+  let i = startIdx
+  while (i < line.length) {
+    const ch = line[i]
+    if (ch === '"') {
+      let j = i + 1
+      while (j < line.length) {
+        if (line[j] === '\\') { j += 2; continue }
+        if (line[j] === '"') break
+        j++
+      }
+      if (j >= line.length) return '"'
+      i = j + 1
+      continue
+    }
+    if (ch === "'") {
+      let j = i + 1
+      while (j < line.length) {
+        if (line[j] === "'" && line[j + 1] === "'") { j += 2; continue }
+        if (line[j] === "'") break
+        j++
+      }
+      if (j >= line.length) return "'"
+      i = j + 1
+      continue
+    }
+    i++
+  }
+  return null
+}
+
+function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
+  let i = 0
+  while (i < line.length) {
+    if (quote === '"') {
+      if (line[i] === '\\') { i += 2; continue }
+      if (line[i] === '"') return true
+    } else {
+      if (line[i] === "'" && line[i + 1] === "'") { i += 2; continue }
+      if (line[i] === "'") return true
+    }
+    i++
+  }
+  return false
+}
+
 function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
+  // A top-level key's double/single-quoted value can wrap across multiple lines (YAML folds
+  // the embedded newline into a space). Without tracking that, a continuation line that
+  // happens to contain its own `word:` -shaped text (e.g. wrapped prose mentioning "ratio:
+  // 16:9", or any string content resembling a key) was read as a brand new top-level key.
+  let openQuote: '"' | "'" | null = null
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+
+    if (openQuote !== null) {
+      if (yamlLineClosesQuote(line, openQuote)) openQuote = null
+      continue
+    }
 
     const match = /^([a-zA-Z_][\w-]*)\s*:/.exec(line)
     if (match !== null && match[1] !== undefined) {
@@ -987,6 +1109,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
         body: line.trim(),
         docstring: '',
       })
+      openQuote = yamlOpenQuoteAfter(line, match[0].length)
     }
   }
 
@@ -1030,31 +1153,57 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   // them (e.g. a description field quoting example TOML) must never be scanned for
   // key/section syntax. Track whether a triple-quote span opened on an earlier line is still
   // open across the loop, keyed by which delimiter opened it.
-  let inBasicString = false
-  let inLiteralString = false
+  //
+  // The two delimiter styles' run counts cannot be tallied independently per line (e.g. via
+  // separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string
+  // whose body happens to contain a ''' sequence (e.g. a description quoting example TOML
+  // syntax) must treat that ''' as inert text, not as its own independent open/close toggle.
+  // Counting each style's occurrences separately loses that positional relationship: an ODD
+  // number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly
+  // read as opening a real multi-line literal string, desyncing every line after it until an
+  // unrelated ''' happened to appear later in the file. Scan the line once, left to right,
+  // tracking a single open-delimiter slot instead.
+  function lineOpenDelimiterAfter(line: string, startIdx: number): string | null {
+    let pos = startIdx
+    let open: string | null = null
+    for (;;) {
+      if (open === null) {
+        const dIdx = line.indexOf('"""', pos)
+        const sIdx = line.indexOf("'''", pos)
+        if (dIdx === -1 && sIdx === -1) return null
+        if (dIdx !== -1 && (sIdx === -1 || dIdx <= sIdx)) {
+          open = '"""'
+          pos = dIdx + 3
+        } else {
+          open = "'''"
+          pos = sIdx + 3
+        }
+      } else {
+        const closeIdx = line.indexOf(open, pos)
+        if (closeIdx === -1) return open
+        open = null
+        pos = closeIdx + 3
+      }
+    }
+  }
+
+  let openDelim: string | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
 
-    if (inBasicString || inLiteralString) {
-      const closer = inBasicString ? '"""' : "'''"
-      const closeIdx = line.indexOf(closer)
+    if (openDelim !== null) {
+      const closeIdx = line.indexOf(openDelim)
       if (closeIdx === -1) continue // whole line is inside the open string body
-      inBasicString = false
-      inLiteralString = false
-      matchLine(line.slice(closeIdx + closer.length), i)
+      const restStart = closeIdx + openDelim.length
+      matchLine(line.slice(restStart), i)
+      openDelim = lineOpenDelimiterAfter(line, restStart)
       continue
     }
 
     matchLine(line, i)
-
-    // An odd count of """ (or ''') on this line means it opened a multi-line string that
-    // was not also closed on the same line.
-    const basicCount = (line.match(/"""/g) ?? []).length
-    const literalCount = (line.match(/'''/g) ?? []).length
-    if (basicCount % 2 === 1) inBasicString = true
-    if (literalCount % 2 === 1) inLiteralString = true
+    openDelim = lineOpenDelimiterAfter(line, 0)
   }
 
   return out
@@ -1066,23 +1215,118 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   // scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block)
   // is indexed as if it were live CSS.
   const lines = stripCstyleComments(content).split(/\r?\n/)
+  // Raw (pre-strip) lines, kept only to distinguish "blanked by comment stripping" from
+  // "genuinely blank in the source" below -- see the check at the top of the loop.
+  const rawLines = content.split(/\r?\n/)
+
+  // Selector fragments accumulated from preceding comma-continuation lines -- the common
+  // multi-line selector-list idiom (`.btn,\n.btn-primary,\n.btn-secondary {`). Each entry keeps
+  // its own line number/body so a fragment is indexed at the line it actually appears on, not
+  // the brace line, matching how a same-line comma list is already indexed per-fragment below.
+  let pending: Array<{ name: string; line: number; body: string }> = []
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+    const trimmed = line.trim()
 
-    const selectorMatch = /^([.#][\w-]+)[,\s{]/.exec(line)
-    if (selectorMatch !== null && selectorMatch[1] !== undefined) {
-      out.push({
-        filePath,
-        name: selectorMatch[1],
-        kind: 'selector',
-        lineStart: i + 1,
-        lineEnd: i + 1,
-        body: line.trim(),
-        docstring: '',
-      })
+    // A line that became empty ONLY because stripCstyleComments blanked a `/* ... */` comment
+    // sitting on its own line (e.g. `/* primary button */` between selector fragments of a
+    // multi-line comma-separated list) must be a no-op, not a break in accumulation -- treating
+    // it like a genuinely blank line would silently drop every fragment gathered in `pending`
+    // so far (see the discard fallback at the bottom of the loop). A line that was already
+    // blank in the raw source still falls through to that discard below, unchanged.
+    if (trimmed.length === 0 && (rawLines[i]?.trim().length ?? 0) > 0) {
+      continue
     }
+
+    // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a
+    // comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element
+    // (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`),
+    // or any selector indented under a nested @media/@supports block (leading whitespace
+    // broke the `^` anchor) were all silently skipped. Match anything up to the opening
+    // brace instead - excluding lines that start with `@` (an at-rule header like
+    // `@media (...) {` is not itself a selector, though selectors nested inside its block
+    // are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and
+    // split a same-line comma-separated selector list into one symbol per selector.
+    const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/.exec(line)
+    if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
+      for (const p of pending) {
+        out.push({
+          filePath,
+          name: p.name,
+          kind: 'selector',
+          lineStart: p.line,
+          lineEnd: p.line,
+          body: p.body,
+          docstring: '',
+        })
+      }
+      pending = []
+      for (const part of selectorLineMatch[1].split(',')) {
+        const name = part.trim()
+        if (name) {
+          out.push({
+            filePath,
+            name,
+            kind: 'selector',
+            lineStart: i + 1,
+            lineEnd: i + 1,
+            body: line.trim(),
+            docstring: '',
+          })
+        }
+      }
+      continue
+    }
+
+    // Brace-only line (nothing but `{`, possibly with surrounding whitespace) closing off a
+    // multi-line selector list whose fragments were accumulated via `pending` below (the
+    // idiom `.a,\n.b\n{\n...`). Flush those fragments as the selector list for this rule
+    // instead of falling through to the discard case at the bottom of the loop, which would
+    // otherwise silently drop every accumulated fragment because a bare `{` never matches
+    // `selectorLineMatch` above (it requires a non-`{`/`}`/`@` character before the brace).
+    if (trimmed === '{') {
+      for (const p of pending) {
+        out.push({
+          filePath,
+          name: p.name,
+          kind: 'selector',
+          lineStart: p.line,
+          lineEnd: p.line,
+          body: p.body,
+          docstring: '',
+        })
+      }
+      pending = []
+      continue
+    }
+
+    // Continuation candidate: a bare selector-fragment line with no brace, not an at-rule
+    // header, and not a declaration (no `;`). Two shapes are accepted: a line ending in a
+    // trailing comma (starts or continues a comma list, e.g. `.a,`), or - once a comma-list is
+    // already underway (`pending.length > 0`) - a bare trailing-fragment line with no comma at
+    // all (e.g. the final `.b` in `.a,\n.b\n{`), which precedes a brace on its own line rather
+    // than sharing a line with the brace. Either way the fragment is accumulated until the
+    // line that actually opens the brace (matched above) is reached, instead of being dropped.
+    if (
+      trimmed.length > 0 &&
+      !trimmed.startsWith('@') &&
+      !trimmed.includes('{') &&
+      !trimmed.includes('}') &&
+      !trimmed.includes(';')
+    ) {
+      const endsWithComma = trimmed.endsWith(',')
+      if (endsWithComma || pending.length > 0) {
+        const name = endsWithComma ? trimmed.slice(0, -1).trim() : trimmed
+        if (name) pending.push({ name, line: i + 1, body: trimmed })
+        continue
+      }
+    }
+
+    // Anything else (blank line, declaration, closing brace, ...) breaks the accumulation --
+    // the pending fragments weren't actually part of a selector list after all.
+    pending = []
   }
 
   return out
@@ -1096,9 +1340,10 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
     const line = lines[i]
     if (line === undefined) continue
 
-    const match = /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT)\s+(.+)/i.exec(
-      line,
-    )
+    const match =
+      /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
+        line,
+      )
     if (match !== null && match[1] !== undefined) {
       const cmd = match[1]
       const arg = (match[2] ?? '').substring(0, 40)
@@ -1211,6 +1456,33 @@ interface ParseContentResult {
   readonly refs: RefEntry[]
 }
 
+function isLwcFile(filePath: string, extension: '.js' | '.html'): boolean {
+  const normalized = filePath.replace(/\\/g, '/')
+  return /\/lwc\/[^/]+\/[^/]+$/i.test(normalized) && normalized.toLowerCase().endsWith(extension)
+}
+
+function mergeParseResults(...results: readonly ParseContentResult[]): ParseContentResult {
+  const symbols: SymbolEntry[] = []
+  const refs: RefEntry[] = []
+  const seenSymbols = new Set<string>()
+  const seenRefs = new Set<string>()
+  for (const result of results) {
+    for (const entry of result.symbols) {
+      const key = `${entry.filePath}\0${entry.name}\0${entry.kind}\0${entry.lineStart}`
+      if (seenSymbols.has(key)) continue
+      seenSymbols.add(key)
+      symbols.push(entry)
+    }
+    for (const entry of result.refs) {
+      const key = `${entry.filePath}\0${entry.name}\0${entry.line}\0${entry.col}`
+      if (seenRefs.has(key)) continue
+      seenRefs.add(key)
+      refs.push(entry)
+    }
+  }
+  return { symbols, refs }
+}
+
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
 function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
   // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix.
@@ -1247,7 +1519,10 @@ function parseContent(content: string, filePath: string, language: Language): Pa
           symbols = extractTsJsSymbols(root, filePath)
         }
         const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
-        return { symbols, refs }
+        const parsed = { symbols, refs }
+        return language === 'javascript' && isLwcFile(filePath, '.js')
+          ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+          : parsed
       }
     } catch {
       // Parser threw on this input — fall through to the regex pass below.
@@ -1255,7 +1530,7 @@ function parseContent(content: string, filePath: string, language: Language): Pa
   }
 
   // Regex-based extractors for languages without tree-sitter
-  return { symbols: extractSymbolsNoTreeSitter(content, filePath, language), refs: [] }
+  return extractNoTreeSitter(content, filePath, language)
 }
 
 /**
@@ -1315,6 +1590,24 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
+}
+
+function extractNoTreeSitter(
+  content: string,
+  filePath: string,
+  language: Language,
+): ParseContentResult {
+  if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
+  if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
+  if (language === 'html' && isLwcFile(filePath, '.html')) return extractLwcTemplate(content, filePath)
+
+  const parsed: ParseContentResult = {
+    symbols: extractSymbolsNoTreeSitter(content, filePath, language),
+    refs: [],
+  }
+  return language === 'javascript' && isLwcFile(filePath, '.js')
+    ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+    : parsed
 }
 
 function extractSymbolsNoTreeSitter(
@@ -1496,6 +1789,51 @@ export function disabledEmbedSha(sha: string): string {
 }
 
 /**
+ * Prefix used to stamp `files.embed_sha` when {@link indexFileEmbeddings} could not actually embed
+ * a file because the optional embedding deps were absent (the @xenova/transformers model or the
+ * sqlite-vec `chunk_vectors` table). Distinct from a real embed_sha so the freshness gate can
+ * re-embed the file once the deps are installed -- otherwise a project indexed on a deps-less
+ * install would stamp bare shas, and every previously-indexed unchanged file would look
+ * "already embedded" the instant the model is added, leaving the semantic index permanently empty
+ * for that content. Distinct from {@link DISABLED_EMBED_SHA_PREFIX} because the two cases clear on
+ * different conditions: disabled clears when config re-enables embeddings, unavailable clears when
+ * the deps become installable/usable (see {@link isEmbedFresh}).
+ */
+export const UNAVAILABLE_EMBED_SHA_PREFIX = 'unavailable:'
+
+/** The embed_sha value {@link indexFileEmbeddings} stamps for `sha` when embedding deps are absent. */
+export function unavailableEmbedSha(sha: string): string {
+  return UNAVAILABLE_EMBED_SHA_PREFIX + sha
+}
+
+/**
+ * The shared read side of the embed-freshness gate used by both worker.ts::makeIndexer and
+ * cli.ts's bulk index loop. Returns true when the file's stored `embed_sha` already represents the
+ * correct terminal embedding state for the CURRENT environment, so re-running indexFileEmbeddings
+ * would do no useful work and can be skipped:
+ *
+ *  - embeddings config-disabled: fresh only when stored is the `disabled:` marker for this sha.
+ *  - enabled + a bare sha match: fresh (the file was really embedded, or was empty / policy-skipped
+ *    with nothing to embed -- both are terminal regardless of deps).
+ *  - enabled but deps currently unavailable: an `unavailable:` marker for this sha is also fresh,
+ *    so an unchanged file is not re-entered on every worker drain while deps stay missing.
+ *  - enabled + deps available: an `unavailable:` (or `disabled:`) marker is NOT fresh, forcing the
+ *    real first embed now that it can finally succeed.
+ */
+export function isEmbedFresh(
+  storedEmbedSha: string | undefined,
+  sha: string,
+  embeddingsEnabled: boolean,
+  depsAvailable: boolean,
+): boolean {
+  if (storedEmbedSha === undefined) return false
+  if (!embeddingsEnabled) return storedEmbedSha === disabledEmbedSha(sha)
+  if (storedEmbedSha === sha) return true
+  if (!depsAvailable && storedEmbedSha === unavailableEmbedSha(sha)) return true
+  return false
+}
+
+/**
  * `sha`, when provided, is stamped into `files.embed_sha` after {@link embedIndexFile}
  * commits successfully -- tracked separately from `files.sha` (the parse-freshness gate) so
  * a crash or thrown error mid-embedding never gets masked by the parse-sha gate: the embed_sha
@@ -1507,6 +1845,7 @@ export async function indexFileEmbeddings(
   filePath: string,
   dbPath: string = globalDbPath(),
   sha?: string,
+  onError?: (err: unknown) => void,
 ): Promise<void> {
   if (!loadConfig().indexing.embeddings_enabled) {
     // Stamp a disabled-marker embed_sha even though no embedding actually ran, so
@@ -1516,16 +1855,17 @@ export async function indexFileEmbeddings(
     // for as long as embeddings stay disabled. Deliberately NOT the real sha (see
     // disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for
     // "already embedded, unchanged".
-    if (sha !== undefined) {
-      getDb(dbPath)
-        .prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`)
-        .run(disabledEmbedSha(sha), foldPath(filePath))
-    }
+    stampEmbedSha(getDb(dbPath), filePath, sha, disabledEmbedSha)
     return
   }
   if (filePath.toLowerCase().endsWith('.profile-meta.xml')) {
     // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
-    deleteFileEmbeddings(getDb(dbPath), filePath)
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate
+    // (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte
+    // content into indexFileEmbeddings on every worker drain / index run.
+    stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
   let content: string
@@ -1536,23 +1876,59 @@ export async function indexFileEmbeddings(
   }
   if (detectLanguage(filePath) === 'salesforce_metadata' && content.length > 512 * 1024) {
     // Keep unusually large generated metadata from producing thousands of low-signal chunks.
-    deleteFileEmbeddings(getDb(dbPath), filePath)
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    // As with the profile skip above, this is a terminal deliberately-never-embed state; stamp
+    // the real sha so re-touching the (unchanged) file does not re-enter this path every drain.
+    stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
   try {
     const db = getDb(dbPath)
     const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
-    await embedIndexFile(db, filePath, content, boundaries)
-    if (sha !== undefined) {
-      db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(
-        sha,
-        foldPath(filePath),
-      )
-    }
-  } catch {
+    const outcome = await embedIndexFile(db, filePath, content, boundaries)
+    // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no
+    // vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this
+    // file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
+    stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
+  } catch (err) {
     // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is
-    // deliberately left unstamped here (see doc comment above).
+    // deliberately left unstamped here (see doc comment above). `onError`, when provided, lets a
+    // caller (worker.ts's embedFileSerialized) record this failure somewhere discoverable --
+    // this function itself never throws, matching its documented best-effort contract for
+    // callers like cli.ts's foreground bulk-index loop that await it directly with no try/catch.
+    onError?.(err)
   }
+}
+
+/**
+ * Stamp `files.embed_sha` for `filePath`, but only when a `sha` was actually provided (the
+ * incremental worker/CLI paths always pass one; some callers do not). `makeValue` derives the
+ * value to store from the (now-defined) sha -- identity for a real/terminal embed, or a
+ * disabled:/unavailable: marker. Centralizes the UPDATE so every early-return in
+ * {@link indexFileEmbeddings} records its terminal state identically.
+ */
+function stampEmbedSha(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  sha: string | undefined,
+  makeValue: (sha: string) => string,
+): void {
+  if (sha === undefined) return
+  // Optimistic-concurrency guard: also require files.sha to still equal the sha this embed run
+  // started from. inFlightEmbeddings (worker.ts) only serializes concurrent embed calls WITHIN a
+  // single process -- it cannot see a second process (e.g. a slow foreground `token-goat index`
+  // racing the background daemon) embedding the same file at the same time. Without this WHERE
+  // clause, a slow writer that started against an older `sha` can still commit its stamp AFTER a
+  // faster writer already reindexed and re-embedded a newer version, overwriting the fresher
+  // embed_sha with a stale one and leaving embeddings silently out of sync with no way to detect
+  // it. Requiring sha = ? makes a stale writer's stamp a no-op instead: the row's `sha` will have
+  // already moved on to the newer value by the time the stale writer's UPDATE runs.
+  db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')} AND sha = ?`).run(
+    makeValue(sha),
+    foldPath(filePath),
+    sha,
+  )
 }
 
 function safeSha(filePath: string): string {

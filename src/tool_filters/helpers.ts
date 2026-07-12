@@ -48,6 +48,63 @@ export const TIMESTAMP_PREFIX_RE =
 /** A single token that is a shell redirect (`>`, `2>`, `>>`, `<`, `&>`, ...). */
 export const REDIRECT_TOKEN_RE = /^(\d*)(>>?|<<?).*$|^&>$|^>&.*$/
 
+/**
+ * Replace the contents of single- and double-quoted spans in `cmd` with `x`
+ * filler (same length, no quote/escape metacharacters preserved) so control-
+ * operator detection on the raw string doesn't false-positive on a literal
+ * `&`, `|`, `;`, etc. inside a quoted argument. Malformed/unterminated quotes
+ * mask through to the end of the string rather than throwing.
+ */
+function maskQuotedSpans(cmd: string): string {
+  let out = ''
+  let i = 0
+  const n = cmd.length
+  while (i < n) {
+    const ch = cmd[i]
+    if (ch === '\\') {
+      out += i + 1 < n ? 'xx' : 'x'
+      i += 2
+      continue
+    }
+    if (ch === "'") {
+      i += 1
+      const end = cmd.indexOf("'", i)
+      const stop = end === -1 ? n : end
+      out += 'x'.repeat(stop - i)
+      i = end === -1 ? n : end + 1
+      continue
+    }
+    if (ch === '"') {
+      i += 1
+      const start = i
+      while (i < n && cmd[i] !== '"') {
+        i += cmd[i] === '\\' && i + 1 < n ? 2 : 1
+      }
+      out += 'x'.repeat(i - start)
+      if (i < n) i += 1
+      continue
+    }
+    out += ch
+    i += 1
+  }
+  return out
+}
+
+/**
+ * True when `cmd` contains an embedded newline, or an unquoted bare `&`
+ * (the background operator) that is not part of `&&`. Used to gate the
+ * bash-compress single-command wrapper: a backgrounded or newline-separated
+ * compound command must never be rewritten into `token-goat compress -c
+ * '<cmd>'`, since `spawnSync`'s piped stdio blocks on the backgrounded
+ * grandchild's inherited stdout until it exits or the wrapper times out,
+ * turning a fire-and-forget dev server into a hang.
+ */
+export function hasBareBackgroundOrNewline(cmd: string): boolean {
+  if (cmd.includes('\n') || cmd.includes('\r')) return true
+  const masked = maskQuotedSpans(cmd)
+  return /(?<!&)&(?!&)/.test(masked)
+}
+
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).
@@ -490,7 +547,10 @@ export function positionalArgs(args: string[]): string[] {
   return args.filter((a) => !a.startsWith('-'))
 }
 
-const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-i', '-u', '-e'])
+// `-i` is deliberately absent: for the passthrough wrappers this set gates
+// (sudo, env, ...), `-i` takes no value (`sudo -i`, `env -i`), so treating
+// it as value-taking would consume the real binary token as its "value".
+const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-u', '-e'])
 
 /**
  * Strip pass-through wrappers (sudo/env/nice/...) and resolve multi-token
@@ -500,20 +560,28 @@ const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-i', '-u', '-e'])
 export function stripPrefixes(argv: string[]): string[] {
   if (argv.length === 0) return []
   let out = [...argv]
-  // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
-  while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-') && !out[0]!.includes('/')) {
-    const head = out[0]!.split('=', 1)[0]!
-    if (head && (/[A-Za-z]/.test(head[0]!) || head[0] === '_') && /^[A-Za-z0-9_]+$/.test(head)) out.shift()
-    else break
-  }
-  // Strip pass-through prefixes plus their short flags.
-  while (out.length) {
-    if (!PASSTHROUGH_PREFIXES.has(pathStem(out[0]!).toLowerCase())) break
-    out.shift()
-    while (out.length && out[0]!.startsWith('-')) {
-      const flag = out.shift() as string
-      if (SHORT_FLAGS_WITH_VALUE.has(flag) && out.length) out.shift()
+  // Strip leading env assignments and pass-through prefixes to a fixpoint:
+  // each can reveal more of the other (e.g. `env FOO=bar cmd` has an
+  // assignment after the wrapper, `FOO=bar sudo cmd` has a wrapper after
+  // the assignment), so alternate both passes until neither strips anything.
+  for (;;) {
+    const before = out.length
+    // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
+    while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-')) {
+      const head = out[0]!.split('=', 1)[0]!
+      if (head && (/[A-Za-z]/.test(head[0]!) || head[0] === '_') && /^[A-Za-z0-9_]+$/.test(head)) out.shift()
+      else break
     }
+    // Strip pass-through prefixes plus their short flags.
+    while (out.length) {
+      if (!PASSTHROUGH_PREFIXES.has(pathStem(out[0]!).toLowerCase())) break
+      out.shift()
+      while (out.length && out[0]!.startsWith('-')) {
+        const flag = out.shift() as string
+        if (SHORT_FLAGS_WITH_VALUE.has(flag) && out.length) out.shift()
+      }
+    }
+    if (out.length === before) break
   }
   if (out.length === 0) return out
   // `uv tool run <bin>` (the long form of `uvx <bin>`) really does execute

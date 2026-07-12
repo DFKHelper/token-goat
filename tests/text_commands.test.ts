@@ -177,6 +177,33 @@ describe('trace command', () => {
     expect(parsed.tracebacks[0]?.frames.length).toBe(1)
   })
 
+  // Regression: a non-numeric or negative --keep value fell through Number.parseInt's NaN
+  // (NaN > 0 is false) or the sign check, so the `keepN > 0` guard silently disabled trimming
+  // instead of erroring, printing every frame unbounded.
+  it('--keep abc errors instead of silently printing every frame', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      '  File "a.py", line 1, in fa',
+      '    x()',
+      'RuntimeError: oops',
+    ].join('\n')
+    const r = run(['trace', '--keep', 'abc'], { input: multi, cwd: tmpDir })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('--keep')
+  })
+
+  it('--keep -5 errors instead of silently printing every frame', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      '  File "a.py", line 1, in fa',
+      '    x()',
+      'RuntimeError: oops',
+    ].join('\n')
+    const r = run(['trace', '--keep', '-5'], { input: multi, cwd: tmpDir })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('--keep')
+  })
+
   it('does not drop a second traceback whose frames run to EOF with no exception line (fail-on-buggy: trailing-frames flush is gated on the global blocks array, not scoped per block)', () => {
     const multi = [
       'Traceback (most recent call last):',
@@ -294,6 +321,23 @@ describe('logfold command', () => {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('line 9')
     expect(r.stdout).not.toContain('line 0')
+  })
+
+  // Regression: a non-numeric or negative --tail value fell through Number.parseInt's NaN
+  // (Number.isFinite(NaN) is false) or the sign check, so the guard silently skipped the
+  // slice, printing every line unbounded instead of erroring.
+  it('--tail abc errors instead of silently printing every line', () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')
+    const r = run(['logfold', '--tail', 'abc'], { input: lines })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('--tail')
+  })
+
+  it('--tail -5 errors instead of silently printing every line', () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')
+    const r = run(['logfold', '--tail', '-5'], { input: lines })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('--tail')
   })
 
   it('--json emits parseable structured output', () => {
@@ -421,6 +465,39 @@ describe('lockdeps command', () => {
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('No lockfile found')
     fs.rmdirSync(emptyDir)
+  })
+
+  it('honors an explicit lockfile argument over LOCK_PRIORITY when the directory also has a higher-priority lockfile (regression: findLockfile reduced an explicit file path to its containing directory and re-picked by LOCK_PRIORITY, silently discarding the caller\'s actual choice -- "lockdeps ./yarn.lock" in a dir that also had package-lock.json parsed package-lock.json instead)', () => {
+    const mixedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mixed-lock-'))
+    fs.writeFileSync(
+      path.join(mixedDir, 'package-lock.json'),
+      JSON.stringify({
+        name: 'npm-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { dependencies: { 'npm-only-pkg': '1.0.0' } }, 'node_modules/npm-only-pkg': { version: '1.0.0' } },
+      }),
+      'utf8',
+    )
+    const yarnLockPath = path.join(mixedDir, 'yarn.lock')
+    fs.writeFileSync(
+      yarnLockPath,
+      ['yarn-only-pkg@^1.0.0:', '  version "1.2.3"', '  resolved "https://example.com/yarn-only-pkg-1.2.3.tgz"', ''].join('\n'),
+      'utf8',
+    )
+
+    const r = run(['lockdeps', yarnLockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      file: string
+      deps: Array<{ name: string; version: string }>
+    }
+    expect(parsed.format).toBe('yarn')
+    expect(parsed.deps).toContainEqual({ name: 'yarn-only-pkg', version: '1.2.3', kind: 'unknown' })
+    expect(parsed.deps.some((d) => d.name === 'npm-only-pkg')).toBe(false)
+
+    fs.rmSync(mixedDir, { recursive: true, force: true })
   })
 })
 
@@ -557,6 +634,40 @@ describe('hot command', () => {
       fs.rmSync(hotData, { recursive: true, force: true })
     }
   })
+
+  // Regression: a zero, non-numeric, or negative --limit value fell through Number.parseInt's
+  // NaN (NaN > 0 is false) or the sign check, so the `limit > 0` guard silently skipped the
+  // slice, printing every entry unbounded instead of erroring or applying the limit.
+  it('--limit 0/abc/-5 all error instead of silently printing every entry', () => {
+    const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-badlimit-'))
+    try {
+      const sessDir = path.join(hotData, 'sessions')
+      fs.mkdirSync(sessDir, { recursive: true })
+      const files = Array.from({ length: 10 }, (_, i) => ({
+        path: `/fake/file${i}.ts`,
+        readCount: i + 1,
+        lastReadAt: i,
+        wasEdited: false,
+        sizeBytes: 10,
+      }))
+      fs.writeFileSync(
+        path.join(sessDir, 'multi.json'),
+        JSON.stringify({ files, hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }),
+        'utf8',
+      )
+      for (const bad of ['abc', '-5']) {
+        const r = run(['hot', '--limit', bad], { env: isolatedEnv(hotData) })
+        expect(r.status, `--limit ${bad}`).not.toBe(0)
+        expect(r.stderr).toContain('--limit')
+      }
+      const zero = run(['hot', '--limit', '0', '--json'], { env: isolatedEnv(hotData) })
+      expect(zero.status, zero.stderr).toBe(0)
+      const parsedZero = JSON.parse(zero.stdout) as { entries: unknown[] }
+      expect(parsedZero.entries.length).toBe(0)
+    } finally {
+      fs.rmSync(hotData, { recursive: true, force: true })
+    }
+  })
 })
 
 // ── recent ──────────────────────────────────────────────────────────────────
@@ -574,6 +685,23 @@ describe('recent command', () => {
     const parsed = JSON.parse(r.stdout) as { entries: unknown[]; scope: string }
     expect(parsed.scope).toBe('current-session')
     expect(Array.isArray(parsed.entries)).toBe(true)
+  })
+
+  // Regression: a non-numeric or negative n argument fell through Number.parseInt's NaN
+  // (NaN > 0 is false) or the sign check, so the `n > 0 ? n : 20` fallback silently defaulted
+  // to printing (up to) every entry instead of erroring.
+  it('recent abc errors instead of silently falling back to the default limit', () => {
+    const r = run(['recent', 'abc'])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('recent')
+  })
+
+  it('recent -5 errors instead of silently falling back to the default limit', () => {
+    // `--` forces commander to treat "-5" as the positional n argument rather than an
+    // unrecognized option flag, so this exercises requireNonNegativeInt's sign check.
+    const r = run(['recent', '--', '-5'])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('recent')
   })
 })
 

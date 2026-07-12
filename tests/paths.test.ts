@@ -3,7 +3,13 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { lowercaseDriveLetter, normalizePath, resolveIndexPath, safeJoin } from '../src/paths.js'
+import {
+  lowercaseDriveLetter,
+  normalizeDarwinSystemAlias,
+  normalizePath,
+  resolveIndexPath,
+  safeJoin,
+} from '../src/paths.js'
 
 describe('safeJoin', () => {
   it('joins normally when no part contains a colon', () => {
@@ -73,6 +79,20 @@ describe('normalizePath', () => {
     expect(normalizePath('\\\\FileServer\\Dev\\SomeFolder\\FooBar.ts')).toBe(
       '//fileserver/dev/SomeFolder/FooBar.ts',
     )
+  })
+
+  // Regression (bug #244): a `\\?\` extended-length-path prefix used to survive
+  // the backslash->forward-slash conversion as `//?/...`, which then incorrectly
+  // matched UNC_HOST_SHARE_RE (host=`?`, "share"=`c:`), producing a nonsense
+  // UNC-folded key that diverged from the plain-form path's normalized output.
+  it('normalizes a plain \\\\?\\ extended-length path identically to its non-extended equivalent', () => {
+    expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe(normalizePath('C:\\Windows\\System32'))
+    expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe('c:/Windows/System32')
+  })
+
+  it('normalizes a \\\\?\\UNC\\ extended-length UNC path identically to its non-extended equivalent', () => {
+    expect(normalizePath('\\\\?\\UNC\\server\\share\\foo.ts')).toBe(normalizePath('\\\\server\\share\\foo.ts'))
+    expect(normalizePath('\\\\?\\UNC\\server\\share\\foo.ts')).toBe('//server/share/foo.ts')
   })
 
   describe('Git Bash /<drive>/ mount form (win32-gated)', () => {
@@ -202,6 +222,20 @@ describe('lowercaseDriveLetter', () => {
 
   it('leaves a UNC-shaped string with no share segment unchanged (no match, falls through)', () => {
     expect(lowercaseDriveLetter('//FileServer')).toBe('//FileServer')
+  })
+})
+
+describe('normalizeDarwinSystemAlias', () => {
+  it('normalizes only the /var path boundary on macOS', () => {
+    const expectedRoot = process.platform === 'darwin' ? '/private/var' : '/var'
+    const expectedChild = process.platform === 'darwin' ? '/private/var/folders/example' : '/var/folders/example'
+    expect(normalizeDarwinSystemAlias('/var')).toBe(expectedRoot)
+    expect(normalizeDarwinSystemAlias('/var/folders/example')).toBe(expectedChild)
+    expect(normalizeDarwinSystemAlias('/VAR/FOLDERS/example')).toBe(
+      process.platform === 'darwin' ? '/private/VAR/FOLDERS/example' : '/VAR/FOLDERS/example',
+    )
+    expect(normalizeDarwinSystemAlias('/private/var/folders/example')).toBe('/private/var/folders/example')
+    expect(normalizeDarwinSystemAlias('/variant/example')).toBe('/variant/example')
   })
 })
 

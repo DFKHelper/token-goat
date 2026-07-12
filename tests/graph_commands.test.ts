@@ -4,7 +4,7 @@
  * populated before this suite runs — the fixture is the token-goat repo itself).
  */
 
-import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync, mkdirSync } from 'node:fs'
 import { join, resolve, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { querySymbols } from '../src/index_reader.js'
+import type * as IndexReaderModule from '../src/index_reader.js'
 import {
   bfsCallChains,
   compareHopEntries,
@@ -39,6 +40,17 @@ import {
   runTypes,
 } from '../src/graph_commands.js'
 import type { SymbolEntry } from '../src/parser_types.js'
+
+// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation.
+// vi.mock is hoisted above these imports by vitest, so every call site (this test file's own
+// `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked
+// module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to
+// regression-test that buildFileSymCache() is hoisted once outside the BFS loop in
+// runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited.
+vi.mock('../src/index_reader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof IndexReaderModule>()
+  return { ...actual, querySymbols: vi.fn(actual.querySymbols) }
+})
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -273,6 +285,18 @@ describe('runScope integration', () => {
     const result = runScope({ spec: 'src/__nonexistent_file_xyzzy__.ts:1', json: true })
     expect(result).toBe(1)
   })
+
+  // #232 regression: Number.parseInt('12abc', 10) silently parsed as 12 instead of rejecting the
+  // trailing garbage, so `scope file:12abc` resolved the line number as if it had been `file:12`.
+  it('exits 1 for a line number with trailing garbage instead of silently truncating it', () => {
+    const result = runScope({ spec: 'src/cli.ts:12abc' })
+    expect(result).toBe(1)
+  })
+
+  it('exits 1 for a line number in exponential notation instead of silently truncating it', () => {
+    const result = runScope({ spec: 'src/cli.ts:1e3' })
+    expect(result).toBe(1)
+  })
 })
 
 // ---- integration: runTypes against the real repo index ---------------------
@@ -378,6 +402,41 @@ describe('runTypes integration', () => {
 
 // ---- integration: runCallers against the real repo index -------------------
 
+// `LIMIT 0` in SQL always returns zero rows on every kind-scan, so a project with type
+// declarations that genuinely exist would otherwise be reported as "no type declarations
+// found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be
+// rejected up front.
+describe('runTypes limit validation', () => {
+  it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no type declarations found"', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runTypes({ limit: 0 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured).not.toContain('No type declarations found')
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+
+  it('rejects a negative limit as an explicit invalid-argument error', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runTypes({ limit: -1 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+})
+
 describe('runCallers integration', () => {
   it('exits 0 for a well-known symbol and returns structured output', () => {
     let captured = ''
@@ -431,8 +490,71 @@ describe('runCallers integration', () => {
   it('resolveCallers returns an empty array for an unknown symbol', () => {
     expect(resolveCallers('__xyzzy_no_such_symbol_9f3k__')).toEqual([])
   })
+
+  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has callers would
+  // otherwise be reported as "no references found" -- a wrong answer, not just a permissive
+  // input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs.
+  it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no references found"', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runCallers({ symbol: 'querySymbols', limit: 0 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured).not.toContain('No references found')
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+
+  it('rejects a negative limit as an explicit invalid-argument error', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runCallers({ symbol: 'querySymbols', limit: -1 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
 })
 
+// ---- resolveCallers/runCallers cross-project scoping (regression) -----------
+
+describe('resolveCallers cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). resolveCallers used to run queryRefs with no project scope, so a
+  // caller of a same-named symbol living in a completely unrelated project on the same machine
+  // would leak into this project's caller list.
+  it('does not report a caller from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-callers-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-callers-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function scopedTargetFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function scopedTargetFn9k2() { return 1 }\nfunction caller() { scopedTargetFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        // rootB's caller() reference to the same-named function must not leak into rootA's results.
+        expect(resolveCallers('scopedTargetFn9k2')).toEqual([])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
 
 // ---- integration: runDead against the real repo index ----------------------
 
@@ -499,6 +621,85 @@ describe('runDead cross-project scoping', () => {
     } finally {
       rmSync(rootA, { recursive: true, force: true })
       rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- resolveCallers / runDead same-project name-collision scoping (regression) ---------------
+
+describe('resolveCallers same-project name-collision scoping', () => {
+  // Regression: resolveCallers matched refs by bare name only, scoped to the project but not to
+  // which file actually defines the symbol being asked about. When two files in the same project
+  // each define a function with the identical name, a call resolving to file B's local copy was
+  // attributed as a "caller" of file A's unrelated same-named symbol too.
+  it('does not attribute another same-named symbol\'s local caller when a defining filePath is given', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-collision-'))
+    try {
+      const fileA = join(root, 'collide-a.ts')
+      const fileB = join(root, 'collide-b.ts')
+      // fileA's copy is never called anywhere.
+      writeFileSync(fileA, 'export function collideFn7m3() { return 1 }\n')
+      // fileB defines its OWN same-named function and calls it locally.
+      writeFileSync(fileB, 'export function collideFn7m3() { return 2 }\nfunction caller() { collideFn7m3() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Scoped to fileA's own (unused) definition: fileB's local call must not be attributed to it.
+        expect(resolveCallers('collideFn7m3', undefined, normalizePath(fileA))).toEqual([])
+        // Scoped to fileB's own definition: its local caller is still correctly attributed.
+        const bCallers = resolveCallers('collideFn7m3', undefined, normalizePath(fileB))
+        expect(bCallers).toHaveLength(1)
+        expect(bCallers[0]?.caller).toBe('caller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runDead same-project name-collision scoping', () => {
+  // Regression: runDead computed a symbol's ref count via a bare-name queryRefs scoped only to
+  // the project root, so a genuinely unused function in file A was scored ALIVE by a call that
+  // actually resolved to a different, same-named function locally defined and called in file B.
+  it('reports a truly-unused function as dead even when a different file defines and calls a same-named function', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-collision-'))
+    try {
+      const fileA = join(root, 'dead-collide-a.ts')
+      const fileB = join(root, 'dead-collide-b.ts')
+      const normA = normalizePath(fileA)
+      const normB = normalizePath(fileB)
+      writeFileSync(fileA, 'export function collideFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function collideFn9k2() { return 2 }\nfunction caller() { collideFn9k2() }\n')
+      indexFileSync(normA)
+      indexFileSync(normB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runDead({ json: true, top: 500 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        // fileA's copy is truly dead and must be reported.
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normA)).toBe(true)
+        // fileB's copy is genuinely called locally and must NOT be reported as dead.
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normB)).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
@@ -572,6 +773,38 @@ describe('runDeps integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('resolves a NodeNext-style "./foo.js" specifier to its .ts source file, not a literal "foo.js.ts" candidate', () => {
+    // This codebase's own source (and any TS project using NodeNext/ESM module resolution)
+    // writes relative imports with an explicit .js extension even though the source file on
+    // disk is .ts -- e.g. "import { x } from './foo.js'" resolving to foo.ts. Appending a
+    // source extension onto a base that already ends in one (foo.js + '.ts' -> 'foo.js.ts')
+    // never matches anything on disk, so the import stayed unresolved (just the literal
+    // specifier) instead of pointing at the real file.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-nodenext-'))
+    try {
+      const depFile = join(dir, 'helper.ts')
+      writeFileSync(depFile, 'export const helper = 1\n')
+      const entryFile = join(dir, 'entry.ts')
+      writeFileSync(entryFile, "import { helper } from './helper.js'\n")
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file: entryFile, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[] }
+      expect(parsed.internal).toContain(depFile)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallChain against the real repo index -----------------
@@ -599,6 +832,87 @@ describe('runCallChain integration', () => {
   })
 })
 
+// ---- runCallChain cross-project scoping (regression) -------------------------
+
+describe('runCallChain cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runCallChain's callersOf closure used to run queryRefs with no
+  // project scope, so a caller of a same-named symbol living in a completely unrelated project
+  // on the same machine would leak into this project's call chains.
+  it('does not follow a caller edge from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-chain-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-chain-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function chainScopedFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function chainScopedFn9k2() { return 1 }\nfunction caller() { chainScopedFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runCallChain({ symbol: 'chainScopedFn9k2' })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the
+        // single-node chain (the symbol itself has no callers within rootA).
+        expect(captured).not.toContain('caller')
+        expect(captured.trim()).toBe('chainScopedFn9k2')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runCallChain file-symbol cache hoisting (regression) --------------------
+
+describe('runCallChain file-symbol cache hoisting', () => {
+  // Regression: runCallChain used to call buildFileSymCache() from inside the callersOf closure
+  // that runs once per BFS node, discarding the memoized Map and forcing a fresh querySymbols()
+  // call for the same file on every hop instead of reusing one cache across the whole BFS.
+  it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-chain-cache-'))
+    try {
+      const file = join(dir, 'chain.ts')
+      writeFileSync(file, [
+        'export function cacheLevel0() { return 1 }',
+        'export function cacheLevel1() { return cacheLevel0() }',
+        'export function cacheLevel2() { return cacheLevel1() }',
+        'export function cacheLevel3() { return cacheLevel2() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      vi.mocked(querySymbols).mockClear()
+      const code = runCallChain({ symbol: 'cacheLevel0', depth: 5 })
+      expect(code).toBe(0)
+
+      const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
+        (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
+      )
+      // All four BFS hops (cacheLevel0 -> cacheLevel1 -> cacheLevel2 -> cacheLevel3) resolve
+      // references inside the same file. With the cache correctly hoisted once outside the BFS
+      // loop, that file's symbols are fetched exactly once and reused for every hop.
+      expect(callsForFile.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runImpact against the real repo index -------------------
 
 describe('runImpact integration', () => {
@@ -621,6 +935,117 @@ describe('runImpact integration', () => {
   it('exits 1 for an unknown symbol', () => {
     const code = runImpact({ symbol: '__xyzzy_no_such_symbol_9f3k__' })
     expect(code).toBe(1)
+  })
+})
+
+// ---- runImpact cross-project scoping (regression) ----------------------------
+
+describe('runImpact cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runImpact's BFS used to run queryRefs with no project scope, so a
+  // caller of a same-named symbol living in a completely unrelated project on the same machine
+  // would leak into this project's impact analysis.
+  it('does not follow a caller edge from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-impact-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-impact-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function impactScopedFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function impactScopedFn9k2() { return 1 }\nfunction impactCaller9k2() { impactScopedFn9k2() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        // rootB's impactCaller9k2() must not leak into rootA-scoped output, so rootA has no
+        // callers at all for this symbol and runImpact exits 1.
+        const code = runImpact({ symbol: 'impactScopedFn9k2' })
+        expect(code).toBe(1)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runImpact file-symbol cache hoisting (regression) ------------------------
+
+describe('runImpact file-symbol cache hoisting', () => {
+  // Regression: runImpact used to call buildFileSymCache() from inside the BFS while-loop body
+  // (once per dequeued node), discarding the memoized Map and forcing a fresh querySymbols() call
+  // for the same file on every hop instead of reusing one cache across the whole BFS.
+  it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-impact-cache-'))
+    try {
+      const file = join(dir, 'chain.ts')
+      writeFileSync(file, [
+        'export function impactCacheLevel0() { return 1 }',
+        'export function impactCacheLevel1() { return impactCacheLevel0() }',
+        'export function impactCacheLevel2() { return impactCacheLevel1() }',
+        'export function impactCacheLevel3() { return impactCacheLevel2() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      vi.mocked(querySymbols).mockClear()
+      const code = runImpact({ symbol: 'impactCacheLevel0' })
+      expect(code).toBe(0)
+
+      const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
+        (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
+      )
+      // All four BFS hops resolve references inside the same file. With the cache correctly
+      // hoisted once outside the BFS loop, that file's symbols are fetched exactly once and
+      // reused for every hop.
+      expect(callsForFile.length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runImpact module-scope refs surfaced as file-level entries (regression) --
+
+describe('runImpact module-scope refs', () => {
+  // Regression: runImpact used to `continue` past any ref whose enclosing symbol could not be
+  // resolved (i.e. a module-scope reference -- top-level code, not inside a function/class),
+  // silently dropping it. resolveCallers already surfaces this same situation as a file-level
+  // entry (caller: '(module scope)'); runImpact must do the same instead of discarding it.
+  it('surfaces a module-scope reference as a file-level entry instead of dropping it', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-impact-modscope-'))
+    try {
+      const file = join(dir, 'modscope.ts')
+      const filePath = normalizePath(file)
+      writeFileSync(file, [
+        'export function moduleScopeTargetFn9k2() { return 1 }',
+        'moduleScopeTargetFn9k2()',
+        '',
+      ].join('\n'))
+      indexFileSync(filePath)
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runImpact({ symbol: 'moduleScopeTargetFn9k2', json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ symbol: string; hops: number }>
+      const moduleScopeEntry = parsed.find((e) => e.symbol.includes('(module scope)') && e.symbol.includes(filePath))
+      expect(moduleScopeEntry).toBeDefined()
+      expect(moduleScopeEntry?.hops).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -868,6 +1293,129 @@ describe('runTestFor', () => {
     expect(code).toBe(0)
     expect(captured).toMatch(/test/)
   })
+
+  it('narrows testFunctions to only the test symbols that actually reference the target file (not every test-prefixed symbol in the test file)', () => {
+    // Regression test for the unpopulated testFileMap Set: previously every test-prefixed
+    // symbol in a candidate test file was listed regardless of whether it referenced the
+    // target file's symbols at all.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-'))
+    try {
+      // package.json marks `dir` as its own project root for resolveProjectRoot's findProject()
+      // fallback (this tmpdir is not inside a git repo); runTestFor scopes its ref lookup to the
+      // current project root (see "runTestFor cross-project scoping" below), so cwd must be
+      // mocked to `dir` for these fixture files to be in scope.
+      writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-fixture"}\n')
+
+      const srcFile = normalizePath(join(dir, 'testForTarget.ts'))
+      const testFile = normalizePath(join(dir, 'testForTarget.test.ts'))
+
+      writeFileSync(srcFile, 'export function __testForBugTargetFn_9f2a1c() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(
+        testFile,
+        [
+          "import { __testForBugTargetFn_9f2a1c } from './testForTarget'",
+          '',
+          'function test_usesTarget() {',
+          '  __testForBugTargetFn_9f2a1c()',
+          '}',
+          '',
+          'function test_unrelated() {',
+          '  return 2',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      indexFileSync(srcFile)
+      indexFileSync(testFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runTestFor({ file: srcFile, json: true })
+      } finally {
+        process.stdout.write = origWrite
+        cwdSpy.mockRestore()
+      }
+      expect(code).toBe(0)
+
+      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const entry = results.find((r) => r.testFile === testFile)
+      expect(entry).toBeDefined()
+      expect(entry!.testFunctions).toContain('test_usesTarget')
+      expect(entry!.testFunctions).not.toContain('test_unrelated')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runTestFor cross-project scoping (regression) --------------------------
+
+describe('runTestFor cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runTestFor used to run queryRefs({ name: sym.name, limit: 500 })
+  // with no rootDir, unlike every sibling command (runCallers, runCallChain, runImpact, runDead,
+  // runCoverageGaps, runSimilar, runContextFor, runAsk). A test file in a completely unrelated
+  // project referencing a same-named symbol would leak into this project's test-for results.
+  it('does not report a test file from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-testfor-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-testfor-rootB-'))
+    try {
+      // package.json marks each root as its own project root for resolveProjectRoot's
+      // findProject() fallback (these tmpdirs are not inside a git repo).
+      writeFileSync(join(rootA, 'package.json'), '{"name":"tg-testfor-fixtureA"}\n')
+      writeFileSync(join(rootB, 'package.json'), '{"name":"tg-testfor-fixtureB"}\n')
+
+      const srcFileA = normalizePath(join(rootA, 'shared.ts'))
+      const srcFileB = normalizePath(join(rootB, 'shared.ts'))
+      const testFileB = normalizePath(join(rootB, 'shared.test.ts'))
+
+      writeFileSync(srcFileA, 'export function crossProjTestForFn9k2() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(srcFileB, 'export function crossProjTestForFn9k2() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(
+        testFileB,
+        [
+          "import { crossProjTestForFn9k2 } from './shared'",
+          '',
+          'function test_usesSharedFn() {',
+          '  crossProjTestForFn9k2()',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      indexFileSync(srcFileA)
+      indexFileSync(srcFileB)
+      indexFileSync(testFileB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        let code: number
+        try {
+          code = runTestFor({ file: srcFileA, json: true })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        expect(code).toBe(0)
+        const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+        // rootB's test file referencing the same-named function must not leak into rootA's results.
+        expect(results.some((r) => r.testFile === testFileB)).toBe(false)
+        expect(results).toEqual([])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- runCoverageGaps (integration) ------------------------------------------
@@ -900,6 +1448,188 @@ describe('runCoverageGaps', () => {
     for (const line of lines) {
       const name = line.split('\t')[0] ?? ''
       expect(['main', 'run', 'handler', 'index', 'setup']).not.toContain(name)
+    }
+  })
+})
+
+// ---- runCoverageGaps subdirectory scoping (regression) ----------------------
+
+describe('runCoverageGaps subdirectory scoping', () => {
+  // Regression: runCoverageGaps used to scope its querySymbols/queryRefs calls to a raw
+  // `rootDir = process.cwd()` instead of resolving the actual project root. Invoking the command
+  // from a subdirectory of a project (e.g. `cd src && token-goat coverage-gaps`) silently shrank
+  // the scope to that subtree, via a `LIKE '<subdir>/%'` clause, so a genuinely untested function
+  // living in a SIBLING directory of the same project (e.g. a `lib/` next to that `src/`) was
+  // never even scanned, let alone flagged as a gap.
+  it('reports a gap from a sibling directory of the project when invoked from a subdirectory (not shrunk to that subtree)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-covgaps-root-'))
+    try {
+      // package.json marks `root` as the project root for resolveProjectRoot's findProject()
+      // fallback (these tmpdirs are not inside a git repo).
+      writeFileSync(join(root, 'package.json'), '{"name":"tg-covgaps-fixture"}\n')
+      const subdir = join(root, 'sub')
+      mkdirSync(subdir)
+      const siblingDir = join(root, 'lib')
+      mkdirSync(siblingDir)
+
+      const fileInSubdir = join(subdir, 'inside.ts')
+      const fileOutsideSubdir = join(siblingDir, 'outside.ts')
+      writeFileSync(fileInSubdir, 'export function insideSubdirFn9k2() { return 1 }\n')
+      writeFileSync(fileOutsideSubdir, 'export function coverageGapSiblingFn9k2() { return 1 }\n')
+      indexFileSync(normalizePath(fileInSubdir))
+      indexFileSync(normalizePath(fileOutsideSubdir))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runCoverageGaps({ json: true, top: 5000 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        // Pre-fix: rootDir === subdir, so `lib/outside.ts` (a sibling of subdir, not a
+        // descendant) falls outside the `<subdir>/%` LIKE scope and is silently excluded from
+        // the whole-project scan -- coverageGapSiblingFn9k2 would never appear here at all.
+        expect(parsed.some((r) => r.name === 'coverageGapSiblingFn9k2')).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runSimilar/runContextFor/runAsk cross-project FTS scoping (regression) -
+
+describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across projects', () => {
+  // Regression: searchSymbolsFts (index_reader.ts) used to take no rootDir parameter at all, so
+  // every caller queried the FTS index across every project ever indexed into global.db, not
+  // just the current one. This is the default (non-edge-case) path on installs without
+  // sqlite-vec/@xenova, since `semantic` always falls through to this same FTS search there.
+  it('runContextFor does not surface a symbol from a different project sharing a search term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      // The shared search term lives inside the function BODY (not a leading /** */ comment --
+      // this parser does not attach that as a docstring for a bare `export function`), since
+      // searchSymbolsFts's FTS mirror indexes name/body/docstring and body is what's reliably
+      // populated here.
+      writeFileSync(fileA, 'export function ftsScopeFnA9k2() { /* ftsScopeSharedTerm9k2 */ return 1 }\n')
+      writeFileSync(fileB, 'export function ftsScopeFnB9k2() { /* ftsScopeSharedTerm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runContextFor({ task: 'ftsScopeSharedTerm9k2', json: true, top: 50 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ symbol: string }>
+        expect(parsed.some((r) => r.symbol === 'ftsScopeFnA9k2')).toBe(true)
+        // rootB's symbol shares the same searchable docstring term but must not leak into
+        // rootA-scoped context.
+        expect(parsed.some((r) => r.symbol === 'ftsScopeFnB9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+
+  it('runAsk (degraded mode) does not surface a symbol from a different project sharing a search term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-ask-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-ask-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function ftsAskFnA9k2() { /* ftsAskSharedTerm9k2 */ return 1 }\n')
+      writeFileSync(fileB, 'export function ftsAskFnB9k2() { /* ftsAskSharedTerm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      const origBackendEnv = process.env.TOKEN_GOAT_ASK_BACKEND
+      delete process.env.TOKEN_GOAT_ASK_BACKEND
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runAsk({ question: 'ftsAskSharedTerm9k2', json: true, top: 50 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as { context: Array<{ symbol: string }> }
+        expect(parsed.context.some((r) => r.symbol === 'ftsAskFnA9k2')).toBe(true)
+        expect(parsed.context.some((r) => r.symbol === 'ftsAskFnB9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+        if (origBackendEnv !== undefined) process.env.TOKEN_GOAT_ASK_BACKEND = origBackendEnv
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+
+  it('runSimilar does not surface a symbol from a different project sharing a docstring term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-similar-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-similar-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      // runSimilar's search query is built from the anchor's own name (docstring is empty here,
+      // since this parser doesn't attach a leading /** */ comment as a docstring for a bare
+      // `export function`) -- so rootB's body must literally mention the anchor's name for a
+      // pre-fix (unscoped) search to wrongly surface it.
+      writeFileSync(fileA, 'export function ftsSimilarAnchor9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function ftsSimilarOther9k2() { /* mentions ftsSimilarAnchor9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runSimilar({ spec: `${normalizePath(fileA)}::ftsSimilarAnchor9k2`, top: 50, json: true })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        expect(parsed.some((r) => r.name === 'ftsSimilarOther9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
     }
   })
 })

@@ -57,7 +57,7 @@ describe('CLI command registration', () => {
     const required = [
       'symbol', 'read', 'section', 'semantic', 'skeleton', 'outline', 'refs',
       'index', 'map', 'hook', 'install', 'uninstall', 'stats', 'doctor',
-      'bash-output', 'web-output', 'skill-body', 'skill-compact', 'skill-list',
+      'bash-output', 'web-output', 'mcp-output', 'mcp-history', 'skill-body', 'skill-compact', 'skill-list',
       'skill-size', 'skill-history', 'skill-diff', 'skill-section', 'changed', 'config-get', 'write-file', 'replace', 'gdrive-sections',
       'version', 'exports', 'imports', 'find', 'grep', 'memory', 'waste',
       'worker start', 'worker stop', 'worker status',

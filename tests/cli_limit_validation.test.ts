@@ -288,3 +288,99 @@ describe('negative --limit/--top validation', () => {
     }
   })
 })
+
+// Regression guard: `compress --max-tokens` was bare-parsed via
+// `parseInt(opts.maxTokens, 10) || 0`, so a non-numeric value ("abc") silently mapped to 0
+// ("no cap") instead of erroring, and a negative value passed the parse but was silently
+// treated as "no cap" too by the `> 0` check downstream in bash_runner.ts. Route it through the
+// same requireNonNegativeInt validator used for --limit/--top/--head/--tail elsewhere in this
+// file so invalid input errors clearly instead of silently disabling the cap.
+describe('non-numeric/negative --max-tokens validation on compress', () => {
+  it('rejects a non-numeric --max-tokens with a clean error instead of silently disabling the cap', async () => {
+    captureStderr()
+    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', 'abc'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--max-tokens')
+  })
+
+  it('rejects a negative --max-tokens with a clean error instead of silently disabling the cap', async () => {
+    captureStderr()
+    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', '-5'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--max-tokens')
+  })
+})
+
+// Regression guard: `bash-output --file`'s --head/--tail parsing used a bare Number.parseInt
+// check that only accepted a strictly-positive result, so a non-numeric value ("abc") and an
+// explicit --head 0 both silently fell back to the default (30/80) instead of erroring or
+// honoring the 0. Route --head/--tail through the same requireNonNegativeInt validator as
+// symbol/semantic/csv-query so invalid input errors cleanly and an explicit 0 is honored.
+describe('bash-output --head/--tail validation', () => {
+  it('rejects a non-numeric --head with a clean error instead of silently using the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-head-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--head', 'abc'])
+      expect(code).toBe(1)
+      // Pre-fix this silently prints the first 30 lines and exits 0.
+      expect(stdout.join('')).not.toContain('line 0')
+      expect(stderr.join('')).toContain('--head')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a negative --tail with a clean error instead of silently using the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-tail-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--tail', '-1'])
+      expect(code).toBe(1)
+      expect(stdout.join('')).not.toContain('line 49')
+      expect(stderr.join('')).toContain('--tail')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('honors an explicit --head 0 instead of silently falling back to the default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-bashoutput-head0-'))
+    try {
+      const file = join(dir, 'out.txt')
+      writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n'), 'utf-8')
+
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['bash-output', '--file', file, '--head', '0'])
+      expect(code).toBe(0)
+      // Pre-fix, --head 0 is truthy-falsy-checked wrong and falls back to the 30-line default.
+      expect(stdout.join('').trim()).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// Regression guard: `stats --window-days` was bare-parsed via
+// `opts.windowDays ? parseInt(opts.windowDays, 10) : 30`, so a value with trailing garbage
+// ("30abc") parsed to 30 and was silently accepted instead of erroring, inconsistent with the
+// strict requireInt-style validation used by the other flags fixed in this file. Route it
+// through requireNonNegativeInt so trailing-garbage input errors cleanly instead of silently
+// truncating.
+describe('stats --window-days validation', () => {
+  it('rejects trailing garbage instead of silently truncating to the numeric prefix', async () => {
+    captureStderr()
+    const code = await runCli(['stats', '--window-days', '30abc'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--window-days')
+  })
+})

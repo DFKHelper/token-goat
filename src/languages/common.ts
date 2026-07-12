@@ -27,7 +27,7 @@ export function buildLineIndex(text: string): number[] {
 /**
  * Convert a character offset to a 1-based line number using binary search.
  */
-export function offsetToLine(lineIndex: number[], offset: number): number {
+export function offsetToLine(lineIndex: readonly number[], offset: number): number {
   let lo = 0
   let hi = lineIndex.length - 1
   while (lo < hi) {
@@ -63,8 +63,12 @@ export function stripCstyleComments(
     let j = 0
     while (j < line.length) {
       if (!inComment) {
+        const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
         let open = line.indexOf('/*', j)
-        while (open !== -1 && isInsideStringLiteral(line, open)) {
+        while (
+          open !== -1 &&
+          (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+        ) {
           open = line.indexOf('/*', open + 1)
         }
         if (open === -1) {
@@ -99,6 +103,74 @@ export function stripCstyleComments(
     out = out.replace(lineCommentRe, (m) => ' '.repeat(m.length))
   }
   return out
+}
+
+/**
+ * Strip XML/HTML ``<!-- ... -->`` block comments. Comment content is blanked with spaces (not
+ * removed), and newlines inside a multi-line comment are preserved as-is, so line/column offsets
+ * are unaffected downstream — mirrors `stripCstyleComments`'s span-blanking approach for `/* ... *\/`
+ * comments, just with the `<!--`/`-->` delimiters instead of `/*`/`*\/`.
+ */
+export function stripXmlComments(text: string): string {
+  const lines = text.split('\n')
+  let inComment = false
+  const outLines: string[] = []
+  for (const line of lines) {
+    let result = ''
+    let j = 0
+    while (j < line.length) {
+      if (!inComment) {
+        const open = line.indexOf('<!--', j)
+        if (open === -1) {
+          result += line.slice(j)
+          break
+        }
+        result += line.slice(j, open)
+        const close = line.indexOf('-->', open + 4)
+        if (close === -1) {
+          result += ' '.repeat(line.length - open)
+          inComment = true
+          break
+        }
+        result += ' '.repeat(close + 3 - open)
+        j = close + 3
+        inComment = false
+      } else {
+        const close = line.indexOf('-->', j)
+        if (close === -1) {
+          result += ' '.repeat(line.length - j)
+          break
+        }
+        result += ' '.repeat(close + 3 - j)
+        j = close + 3
+        inComment = false
+      }
+    }
+    outLines.push(result)
+  }
+  return outLines.join('\n')
+}
+
+/**
+ * Strip `//` line comments, quote-aware (like `stripSqlLineComments`'s `--` handling below) so a
+ * `//` inside an open string literal (e.g. a URL like `'https://example.com'`) is not mistaken for
+ * a real comment starter. Blank-fills (rather than deletes) the comment span so line/column offsets
+ * are preserved for downstream line-based symbol extraction. Unlike `stripCstyleComments`'s
+ * `lineCommentRe` parameter, this is quote-aware on its own and does not require callers to blank
+ * string literals first — needed by callers (like the Salesforce LWC JS adapter) that still need
+ * string-literal content intact after stripping comments, e.g. to read an import path.
+ */
+export function stripSlashLineComments(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      let idx = line.indexOf('//')
+      while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+        idx = line.indexOf('//', idx + 1)
+      }
+      return idx === -1 ? line : line.slice(0, idx) + ' '.repeat(line.length - idx)
+    })
+    .join('\n')
 }
 
 /**
@@ -145,9 +217,9 @@ export function stripSqlLineComments(text: string): string {
  * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
  * string that never closes.
  */
-function isInsideStringLiteral(line: string, index: number): boolean {
+export function isInsideStringLiteral(line: string, index: number, from = 0): boolean {
   let openQuote: '"' | "'" | null = null
-  let i = 0
+  let i = from
   while (i < index) {
     const ch = line[i]
     // Only treat backslash as an escape while already inside a string (mirrors
@@ -186,8 +258,12 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
   let comment = inComment
   while (j < line.length) {
     if (!comment) {
+      const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
       let open = line.indexOf('/*', j)
-      while (open !== -1 && isInsideStringLiteral(line, open)) {
+      while (
+        open !== -1 &&
+        (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+      ) {
         open = line.indexOf('/*', open + 1)
       }
       if (open === -1) {
@@ -214,15 +290,25 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
  * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
  */
 export function stripLineComment(line: string, markers: string[] = ['//']): string {
+  const cutIdx = lineCommentStartIndex(line, markers)
+  return cutIdx === -1 ? line : line.slice(0, cutIdx)
+}
+
+/**
+ * Index of the first real (not-inside-a-string-literal) occurrence of any marker in
+ * `markers`, or -1 if none is found. Shared scan logic behind {@link stripLineComment} and
+ * `findMultilineOpener`'s comment-awareness guard below.
+ */
+function lineCommentStartIndex(line: string, markers: string[], from = 0): number {
   let cutIdx = -1
   for (const marker of markers) {
-    let idx = line.indexOf(marker)
-    while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+    let idx = line.indexOf(marker, from)
+    while (idx !== -1 && isInsideStringLiteral(line, idx, from)) {
       idx = line.indexOf(marker, idx + 1)
     }
     if (idx !== -1 && (cutIdx === -1 || idx < cutIdx)) cutIdx = idx
   }
-  return cutIdx === -1 ? line : line.slice(0, cutIdx)
+  return cutIdx
 }
 
 /**
@@ -258,6 +344,22 @@ export function stripStringLiterals(line: string): string {
       i++
       while (i < line.length) {
         const c = line[i]
+        // A real single-line string literal never contains a raw, unescaped newline. Some
+        // callers (e.g. Apex, which runs this over an entire file's content rather than one
+        // line at a time - see extractApex - so it can see a `//` comment's text before
+        // comment-stripping runs) can otherwise hand this a false "open string" state, e.g. an
+        // apostrophe inside a `// Don't ...` comment. Without this, an unmatched quote like that
+        // would blank every character - including newlines - until the next stray matching
+        // quote anywhere later in the file, collapsing lines together and desyncing any
+        // line-offset bookkeeping built from the original content. Treating `\n` as an implicit
+        // terminator closes the phantom string at end-of-line instead, matching what every
+        // other caller of this function already does implicitly by only ever passing it one
+        // line (with no embedded `\n`) at a time.
+        if (c === '\n') {
+          out += c
+          i++
+          break
+        }
         if (c === '\\' && i + 1 < line.length) {
           out += '  '
           i += 2
@@ -368,13 +470,76 @@ interface OpenerMatch {
   state: MultilineStringState
 }
 
+// Line-comment marker(s) recognized for each language's findMultilineOpener guard below --
+// an opener-shaped sequence sitting inside one of these is prose, not real syntax.
+const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = {
+  php: ['//', '#'],
+  kotlin: ['//'],
+  csharp: ['//'],
+  powershell: ['#'],
+}
+
+// Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
+// below. PowerShell is deliberately excluded: its block-comment opener `<#` always contains the
+// literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so
+// the line-comment guard above incidentally already treats everything from `<#` onward as
+// commented -- an equivalent check here would be redundant.
+const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp'])
+
+/**
+ * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
+ * or before `idx` and has not yet closed by `idx`. Mirrors the open/close scan
+ * `stripBlockCommentSpan` performs, but only answers the "is idx inside a same-line block
+ * comment" question for `findMultilineOpener`'s guard below -- a block comment that started on
+ * a PRIOR line is already handled by each caller's existing `inComment` gate, which skips
+ * calling `stripMultilineStringSpan` (and therefore this function) entirely on lines that start
+ * already inside one.
+ */
+function isInsideSameLineBlockComment(line: string, idx: number, from = 0): boolean {
+  let comment = false
+  let j = from
+  while (j < idx) {
+    if (!comment) {
+      const open = line.indexOf('/*', j)
+      if (open === -1 || open >= idx) return false
+      if (isInsideStringLiteral(line, open, from)) {
+        j = open + 2
+        continue
+      }
+      comment = true
+      j = open + 2
+    } else {
+      const close = line.indexOf('*/', j)
+      if (close === -1 || close >= idx) return true
+      comment = false
+      j = close + 2
+    }
+  }
+  return comment
+}
+
 function findMultilineOpener(line: string, from: number, lang: MultilineStringLang): OpenerMatch | null {
+  // Where this line's real (not-inside-a-string) `//`/`#` comment begins, if any. An opener
+  // match at or after this index is opener-shaped text inside a comment (e.g. `// see """docs`
+  // or `# example: @"`), not a genuine multi-line string opener -- without this, such a line
+  // desyncs every following line's parse state (brace counting, symbol extraction) until an
+  // unrelated later closer happens to be found.
+  // `from` marks where a previously-closed multi-line string (that closed mid-line) ends --
+  // everything in `line` before it is masked string content, not real code. Scanning these
+  // guards from index 0 instead would let a `//`/`#`, unbalanced `/*`, or odd quote count that
+  // merely happens to sit inside that ALREADY-CLOSED string's own content wrongly veto a genuine
+  // second opener later on the same line, so every guard below is bounded to start at `from`.
+  const commentIdx = lineCommentStartIndex(line, MULTILINE_OPENER_COMMENT_MARKERS[lang], from)
+  const isCommented = (idx: number): boolean =>
+    (commentIdx !== -1 && idx >= commentIdx) ||
+    (MULTILINE_OPENER_BLOCK_COMMENT_LANGS.has(lang) && isInsideSameLineBlockComment(line, idx, from))
+
   if (lang === 'php') {
     // <<<IDENTIFIER (heredoc) or <<<'IDENTIFIER'/<<<"IDENTIFIER" (nowdoc uses single quotes).
     const re = /<<<\s*(['"]?)([A-Za-z_]\w*)\1/g
     re.lastIndex = from
     const m = re.exec(line)
-    if (!m || isInsideStringLiteral(line, m.index)) return null
+    if (!m || isInsideStringLiteral(line, m.index, from) || isCommented(m.index)) return null
     const identifier = m[2] ?? ''
     const kind: MultilineStringKind = m[1] === "'" ? 'nowdoc' : 'heredoc'
     // Heredoc/nowdoc syntax never has real code after the opening marker on the same line.
@@ -385,7 +550,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const idx = line.indexOf('"""', from)
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
-    if (idx === -1 || isInsideStringLiteral(line, idx)) return null
+    if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const closeIdx = line.indexOf('"""', idx + 3)
     if (closeIdx !== -1) {
       return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
@@ -403,12 +568,17 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     let tripleIdx = tripleM ? tripleM.index : -1
     const tripleLen = tripleM ? tripleM[0].length : 0
     // Same guard as PHP's heredoc opener and Kotlin above.
-    if (tripleIdx !== -1 && isInsideStringLiteral(line, tripleIdx)) tripleIdx = -1
+    if (tripleIdx !== -1 && (isInsideStringLiteral(line, tripleIdx, from) || isCommented(tripleIdx))) tripleIdx = -1
 
     const verbRe = /\$?@\$?"/g
     verbRe.lastIndex = from
     const verbM = verbRe.exec(line)
-    const verbIdx = verbM ? verbM.index : -1
+    let verbIdx = verbM ? verbM.index : -1
+    // Same guard as the triple-quote branch above: an `@"` (or `$@"`) that textually appears
+    // inside an already-open single-line string literal - e.g. the ordinary string `"@"` in
+    // `private const string At = "@";` - is not a real verbatim-string opener.
+    if (verbIdx !== -1 && isCommented(verbIdx)) verbIdx = -1
+    if (verbIdx !== -1 && isInsideStringLiteral(line, verbIdx, from)) verbIdx = -1
 
     if (tripleIdx === -1 && verbIdx === -1) return null
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
@@ -434,12 +604,19 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
 
   if (lang === 'powershell') {
     // PowerShell here-strings require `@"` / `@'` to be the last non-whitespace token on the
-    // opening line; nothing (not even a trailing comment) may follow it.
+    // opening line; nothing (not even a trailing comment) may follow it. That end-of-line
+    // requirement alone doesn't rule out the opener-shaped text itself living inside a `#`
+    // comment (e.g. a line that is entirely `# example: @"`), so isCommented is still checked.
     const re = /@("|')\s*$/
     const tail = line.slice(from)
     const m = re.exec(tail)
     if (!m) return null
     const openStart = from + m.index
+    if (isCommented(openStart)) return null
+    // Same guard as the other branches above: an ordinary string ending in `@"` (e.g.
+    // `$email = "admin@"`) is not a real here-string opener - the `@` there falls inside an
+    // already-open single-line string literal, not immediately after one.
+    if (isInsideStringLiteral(line, openStart, from)) return null
     const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
     // Here-strings never close on the opening line by construction.
     return { openStart, closesSameLine: null, state: { kind, identifier: '' } }

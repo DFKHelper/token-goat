@@ -31,10 +31,10 @@ export interface LiquidSection {
   readonly endLine: number
 }
 
-const INCLUDE_RE = /{%\s*include\s+['"]([^'"]+)['"]/gi
-const SECTION_RE = /{%\s*section\s+['"]([^'"]+)['"]/gi
-const RENDER_RE = /{%\s*render\s+['"]([^'"]+)['"]/gi
-const SCHEMA_RE = /{%\s*schema\s*%}([\s\S]*?){%\s*endschema\s*%}/gi
+const INCLUDE_RE = /{%-?\s*include\s+['"]([^'"]+)['"]/gi
+const SECTION_RE = /{%-?\s*section\s+['"]([^'"]+)['"]/gi
+const RENDER_RE = /{%-?\s*render\s+['"]([^'"]+)['"]/gi
+const SCHEMA_RE = /{%-?\s*schema\s*-?%}([\s\S]*?){%-?\s*endschema\s*-?%}/gi
 // `s` (dotall) lets `.*?` cross newlines so a heading formatted across multiple lines (e.g.
 // `<h1>\n  Title\n</h1>`) still matches; the existing non-greedy `.*?` still stops at the
 // first matching `</hN>`, so this doesn't introduce over-greedy matches. The `.trim()` below

@@ -109,8 +109,10 @@ const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
-// A generic `key = value` or `key:` block header at column zero.
-const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:)/
+// A generic `key = value` or `key:` block header at column zero. A bare URL on its own line
+// (e.g. "https://example.com") must NOT match as a false "https" heading -- the colon there
+// is a URL scheme separator immediately followed by "//", not a key/value split.
+const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 
 /**
  * Locate every section header in `lines` for a markdown-style document.
@@ -299,18 +301,28 @@ function resolveHeaderPos(
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
   const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
-  const matches: number[] = []
+  // Tiered matching: exact equality wins over normalized equality, which wins over
+  // stripped equality. Sibling headings that only differ by a parenthetical or
+  // subtitle (e.g. "Setup (Windows)" / "Setup (Linux)") both normalize to the same
+  // text, so an exact-text query must never fall back to an earlier normalized-tier
+  // match — each header is assigned to the single best tier it qualifies for.
+  const exactMatches: number[] = []
+  const normalizedMatches: number[] = []
+  const strippedMatches: number[] = []
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i]
     if (h === undefined) continue
-    if (
-      h.heading.toLowerCase() === target ||
-      normalizeHeading(h.heading).toLowerCase() === normalizedTarget ||
-      normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget
-    ) {
-      matches.push(i)
+    const headingLower = h.heading.toLowerCase()
+    if (headingLower === target) {
+      exactMatches.push(i)
+    } else if (normalizeHeading(h.heading).toLowerCase() === normalizedTarget) {
+      normalizedMatches.push(i)
+    } else if (normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget) {
+      strippedMatches.push(i)
     }
   }
+  const matches =
+    exactMatches.length > 0 ? exactMatches : normalizedMatches.length > 0 ? normalizedMatches : strippedMatches
   if (matches.length > 0) {
     const pick = ordinal === null ? 0 : ordinal - 1
     const headerPos = matches[pick]

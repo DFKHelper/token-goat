@@ -8,8 +8,13 @@
  *
  * Ported from the Python golden tests in tests/test_bash_compress_*.py.
  */
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { configPath } from '../src/constants.js'
 import {
   PlaywrightFilter, playwrightFilter,
   CypressFilter, cypressFilter,
@@ -279,6 +284,31 @@ describe('PsqlFilter table collapse', () => {
       ['psql'])
     expect(out).toContain('| 1 |')
     expect(out).toContain('| 2 |')
+  })
+})
+
+describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
+  it('treats the header row under a leading top border as the header, not a data row', () => {
+    // border-2 style: top border BEFORE the header text, unlike the default style where the
+    // header text has no border above it. The old state machine only popped the header line
+    // on the FIRST border line seen, so the header fell through into the dataRows bucket here.
+    const dataRows = Array.from({ length: 30 }, (_, i) => `|  ${i} | person${i} |`)
+    const text =
+      '+----+---------+\n' +
+      '| id | name    |\n' +
+      '+----+---------+\n' +
+      dataRows.join('\n') +
+      '\n+----+---------+\n' +
+      '(30 rows)\n'
+    const out = apply(psqlFilter, text, ['psql'])
+
+    // Header text is preserved verbatim, not swallowed into the truncated data-row bucket.
+    expect(out).toContain('| id | name    |')
+    // The internal row-count summary must reflect the true 30 data rows, not 31 (header
+    // counted as a row). psql's own "(30 rows)" footer line is untouched either way, so this
+    // asserts on token-goat's own generated summary text specifically.
+    expect(out).toContain('[token-goat: 30 rows')
+    expect(out).not.toContain('[token-goat: 31 rows')
   })
 })
 
@@ -898,6 +928,11 @@ describe('SeverityLogFilter compression', () => {
   })
 
   it('suppresses DEBUG/INFO lines but keeps WARN/ERROR with context', () => {
+    // WARN and ERROR are spaced far enough apart that, even at the config
+    // default context_lines=3 (see [bash_severity_log] in config.ts), their
+    // expanded context windows don't merge into full coverage — leaving a
+    // gap of unrelated DEBUG lines in the middle that must still be
+    // suppressed.
     const lines = [
       '2024-01-01 DEBUG trace: a',
       '2024-01-01 DEBUG trace: b',
@@ -905,14 +940,83 @@ describe('SeverityLogFilter compression', () => {
       '2024-01-01 WARN rate limit exceeded',
       '2024-01-01 DEBUG trace: c',
       '2024-01-01 DEBUG trace: d',
+      '2024-01-01 DEBUG trace: e',
+      '2024-01-01 DEBUG trace: f',
+      '2024-01-01 DEBUG trace: g',
+      '2024-01-01 DEBUG trace: h',
       '2024-01-01 INFO request complete',
       '2024-01-01 ERROR exception in handler',
-      '2024-01-01 DEBUG trace: e',
+      '2024-01-01 DEBUG trace: i',
     ].join('\n')
     const out = apply(severityLogFilter, lines, [])
     expect(out).toContain('WARN rate limit exceeded')
     expect(out).toContain('ERROR exception in handler')
     expect(out).toMatch(/suppressed/)
+  })
+})
+
+describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0.5)', () => {
+  // saveConfig does not create configPath()'s parent directory itself; make
+  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(configPath())
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  // INFO-tagged filler around a WARN so detect()'s >=30%-keyword-lines gate
+  // still passes (INFO scores 0.1, below the WARN's 0.5, so with the default
+  // threshold only the WARN line — plus context — is kept as primary).
+  function buildLines(): string {
+    return [
+      '2024-01-01 INFO filler line a',
+      '2024-01-01 INFO filler line b',
+      '2024-01-01 INFO filler line c',
+      '2024-01-01 INFO filler line d',
+      '2024-01-01 WARN rate limit exceeded',
+      '2024-01-01 INFO filler line e',
+      '2024-01-01 INFO filler line f',
+      '2024-01-01 INFO filler line g',
+      '2024-01-01 INFO filler line h',
+    ].join('\n')
+  }
+
+  it('a configured context_lines wider than the hardcoded 2 pulls in lines the hardcoded default would suppress', () => {
+    const cfg = defaultConfig()
+    cfg.bash_severity_log.context_lines = 4 // config.ts's validated range is [0, 100]
+    saveConfig(cfg)
+
+    const out = severityLogFilter.compress(buildLines(), '', 0, [])
+    // With the old hardcoded context_lines=2, 'filler line a' (4 lines before
+    // the WARN) and 'filler line h' (4 lines after) would be suppressed.
+    expect(out).toContain('filler line a')
+    expect(out).toContain('filler line h')
+    expect(out).not.toMatch(/suppressed/)
+  })
+
+  it('a configured score_threshold above 1.0-scoring WARN lines suppresses what the hardcoded 0.5 would keep', () => {
+    const cfg = defaultConfig()
+    cfg.bash_severity_log.score_threshold = 0.99 // config.ts's validated range is [0.0, 1.0]
+    saveConfig(cfg)
+
+    // Build a log stream where WARN is the only elevated-severity line so
+    // detect() still fires (needs >=30% keyword-matching lines) but, once a
+    // near-1.0 threshold is configured, WARN itself scores below it and
+    // should no longer survive as a primary/context line.
+    const lines = [
+      '2024-01-01 INFO one',
+      '2024-01-01 INFO two',
+      '2024-01-01 WARN rate limit exceeded',
+      '2024-01-01 INFO three',
+      '2024-01-01 INFO four',
+    ].join('\n')
+    const out = severityLogFilter.compress(lines, '', 0, [])
+    expect(out).not.toContain('WARN rate limit exceeded')
   })
 })
 

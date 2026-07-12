@@ -14,19 +14,21 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, withFileLock, sleepSync } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
+import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 
 function emit(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(payload))
 }
 
 function emitErr(text: string): void {
@@ -110,10 +112,6 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     return n
   }
   if (Array.isArray(existing)) {
-    if (raw.trimStart().startsWith('[')) {
-      return JSON.parse(raw) as unknown[]
-    }
-    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
     // A non-empty existing array of numbers means this field is a number list (e.g.
     // hints.backoff_thresholds) — parse each comma-separated segment as a number instead of
     // leaving it as a string, or a later load-time validator silently filters the whole list
@@ -121,7 +119,20 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     // its own (e.g. the field was previously cleared to []), so fall back to the default
     // config's array at this key to recover the declared type.
     const typeSample = existing.length > 0 ? existing : (Array.isArray(defaultValue) ? defaultValue : existing)
-    if (typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')) {
+    const isNumberList = typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')
+    if (raw.trimStart().startsWith('[')) {
+      const parsed = JSON.parse(raw) as unknown[]
+      // Validate element types against the same type sample the comma-separated branch below
+      // uses, instead of accepting any JSON array unchecked — otherwise a number-list key set
+      // to a JSON array of non-numeric strings reports success here but the load-time
+      // validator (validatedIntList) silently filters it down to an empty array later.
+      if (isNumberList && !parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+        throw new Error(`expected a JSON array of numbers, got: ${raw}`)
+      }
+      return parsed
+    }
+    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+    if (isNumberList) {
       return parts.map((p) => {
         const n = Number(p)
         if (!Number.isFinite(n)) throw new Error(`expected a number in list, got: ${p}`)
@@ -223,14 +234,23 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       const coercedValue = coerce(value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
       ref.parent[ref.leaf] = coercedValue
       if (typeof coercedValue === 'number') {
-        // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
-        // overlay, so the check reflects the value actually being written). If the field clamps
-        // to something else, the input was out of its documented range — reject instead of
-        // silently writing an invalid value that only gets clamped (with no feedback) next load.
-        const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
-        const revalidatedResult = walkGet(revalidated, parts)
-        if (revalidatedResult.found && revalidatedResult.value !== coercedValue) {
-          throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
+        // Validate using targeted field validator rather than rebuilding entire config tree.
+        // This checks the field's documented bounds and any cross-field constraints (e.g., per-output
+        // max must not exceed total max).
+        const clamped = validateNumericField(key, coercedValue, cfg as unknown as Record<string, unknown>)
+        if (clamped !== undefined && clamped !== coercedValue) {
+          throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(clamped)}); rejected`)
+        }
+      }
+      if (typeof coercedValue === 'string') {
+        // Symmetric with the numeric-bounds revalidation above, for the handful of string
+        // fields whose value must come from a fixed set (e.g. compression.profile). Without
+        // this, a typo like `agressive` is accepted and persisted with no error, then silently
+        // falls back to a default at runtime (dispatch.ts's PROFILE_CAPS lookup) with no signal
+        // to the user that their setting did nothing.
+        const allowed = validateEnumField(key, coercedValue)
+        if (allowed !== undefined) {
+          throw new Error(`config set: ${key} = '${coercedValue}' is not valid; must be one of: ${allowed.join(', ')}`)
         }
       }
       saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
@@ -242,7 +262,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     // machine that has never run `config set` before).
     ensureDirSync(path.dirname(configPath()))
     const lockPath = path.join(path.dirname(configPath()), '.config.lock')
-    const lockResult = withFileLock(lockPath, applySet)
+    // Same reasoning and value as session_store.ts's saveSessionState (see LOCK_WAIT_MS_HARDENED's
+    // docstring in util.ts): the default withFileLock budget can plausibly be missed under real
+    // machine load with no lock holder actually stuck, and falling back to an unprotected write on
+    // that miss would reintroduce the exact clobber this lock exists to prevent.
+    const lockResult = withFileLock(lockPath, applySet, { waitMs: LOCK_WAIT_MS_HARDENED })
     const coerced = lockResult === undefined ? applySet() : lockResult
     invalidateConfigCache()
     // The write above only ever touches the env-free persisted config, so if an env var
@@ -335,7 +359,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
 // ── project ───────────────────────────────────────────────────────────────────
 
-export function cmdProject(opts: { action: string; pathArg?: string; json?: boolean }): void {
+export function cmdProject(opts: { action: string; pathArg?: string; json?: boolean; dryRun?: boolean }): void {
   const { action } = opts
 
   if (action === 'list') {
@@ -390,6 +414,22 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
       try { return fs.existsSync(r) } catch { return false }
     })
     const removed = before.length - after.length
+    const stale = before.filter((r) => !after.includes(r))
+
+    if (opts.dryRun === true) {
+      if (opts.json === true) {
+        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, blocked_roots: before }, null, 2))
+        return
+      }
+      if (removed === 0) {
+        emit('Would prune 0 stale root(s). Nothing to do.')
+      } else {
+        emit(`Would prune ${removed} stale root(s):`)
+        for (const r of stale) emit(`  ${r}`)
+      }
+      return
+    }
+
     cfg.worker.blocked_roots = after
     saveConfigSafe(cfg)
     invalidateConfigCache()
@@ -437,12 +477,12 @@ export function cmdCompactDoc(opts: {
 
   let sentences: number | undefined
   if (opts.sentences !== undefined) {
-    const n = Number.parseInt(opts.sentences, 10)
-    if (!Number.isFinite(n) || n <= 0) {
+    try {
+      sentences = requirePositiveStrictInt('--sentences', opts.sentences)
+    } catch (e) {
       emitErr(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
-      throw new Error(`invalid --sentences: ${opts.sentences}`)
+      throw new Error(`invalid --sentences: ${opts.sentences}`, { cause: e })
     }
-    sentences = n
   }
 
   const compactPath = compactPathFor(resolved)
@@ -503,7 +543,12 @@ const FETCH_IMAGE_MAX_SIZE_BYTES = 50 * 1024 * 1024
  * than after buffering it whole, and bounds the whole request — redirects
  * included — by FETCH_IMAGE_TIMEOUT_SEC.
  */
-async function fetchBuffer(url: string): Promise<Buffer> {
+interface FetchedImage {
+  body: Buffer
+  contentType: string | undefined
+}
+
+async function fetchBuffer(url: string): Promise<FetchedImage> {
   const result = await performHttpFetch(url, {
     deadlineAt: Date.now() + FETCH_IMAGE_TIMEOUT_SEC * 1000,
     timeoutSec: FETCH_IMAGE_TIMEOUT_SEC,
@@ -514,28 +559,57 @@ async function fetchBuffer(url: string): Promise<Buffer> {
   if (result.status < 200 || result.status >= 300) {
     throw new Error(`HTTP ${result.status} for ${url}`)
   }
-  return result.body
+  const contentType = result.headers['content-type']?.split(';')[0]?.trim().toLowerCase()
+  return { body: result.body, contentType }
+}
+
+/** Maps a response `content-type` to a default file extension for `fetch-image` when the
+ * caller didn't pass `--out`, so a fetched JPEG/WebP/GIF doesn't land under a hardcoded
+ * `.bin` name that misrepresents its actual format. */
+const CONTENT_TYPE_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/bmp': '.bmp',
+  'image/svg+xml': '.svg',
+  'image/avif': '.avif',
+  'image/tiff': '.tiff',
+}
+
+function extensionForContentType(contentType: string | undefined): string {
+  if (contentType === undefined) return '.bin'
+  return CONTENT_TYPE_EXT[contentType] ?? '.bin'
 }
 
 export async function cmdFetchImage(opts: { url: string; out?: string; json?: boolean }): Promise<void> {
-  const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}.bin`)
-  let buf: Buffer
+  let fetched: FetchedImage
   try {
-    buf = await fetchBuffer(opts.url)
+    fetched = await fetchBuffer(opts.url)
   } catch (e) {
     emitErr(`fetch-image: network error — ${e instanceof Error ? e.message : String(e)}`)
     throw new Error(`fetch failed: ${opts.url}`, { cause: e })
   }
+  const buf = fetched.body
+  // Default extension (when --out wasn't given) comes from the response content-type rather
+  // than a hardcoded `.bin`, so e.g. a JPEG response lands under `.jpg` even before any shrink.
+  const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}${extensionForContentType(fetched.contentType)}`)
   const originalBytes = buf.length
   let shrunkBytes: number
   let outData: Buffer
   let wasShrunk = false
+  let finalPath = outPath
   try {
     const result = await shrinkImage(buf)
     if (result !== null) {
       outData = result.data
       shrunkBytes = result.shrunkBytes
       wasShrunk = true
+      // shrinkImage may re-encode to a different container format (JPEG/WebP); correct the
+      // destination extension to match the actual bytes being written, rather than silently
+      // writing e.g. JPEG bytes under a `.png`/`.bin` name.
+      finalPath = withExtension(outPath, result.format)
     } else {
       outData = buf
       shrunkBytes = originalBytes
@@ -544,13 +618,19 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
     outData = buf
     shrunkBytes = originalBytes
   }
-  fs.writeFileSync(outPath, outData)
+  // Atomic (temp file + rename) rather than a direct fs.writeFileSync: a bare writeFileSync
+  // truncates finalPath in place, so a concurrent reader of the same --out path (two
+  // overlapping fetch-image invocations, or a hook reading the file mid-write) could observe
+  // a partial/truncated file. Matches the atomic write already used for this same shrink
+  // pipeline's other disk-cache paths (webfetch.ts's cachePath/shrunkPath, screenshot.ts's
+  // takeScreenshot).
+  atomicWriteBytes(finalPath, outData)
   if (opts.json === true) {
-    emit(JSON.stringify({ url: opts.url, out: outPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
+    emit(JSON.stringify({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
     return
   }
   const savings = wasShrunk ? ` (saved ${originalBytes - shrunkBytes} bytes)` : ' (not shrunk — already small or unsupported format)'
-  emit(`Fetched ${originalBytes} bytes → ${outPath}${savings}`)
+  emit(`Fetched ${originalBytes} bytes → ${finalPath}${savings}`)
 }
 
 // ── history ───────────────────────────────────────────────────────────────────
@@ -558,12 +638,12 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
 export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
 
   const bashItems = listBlobs(BASH_OUTPUT_SUBDIR)

@@ -80,8 +80,27 @@ export function lowercaseDriveLetter(s: string): string {
  * This is a string canonicalizer, not a filesystem canonicalizer: symlinks,
  * junctions, and case-insensitive NTFS paths are not resolved.
  */
+// Matches a `\\?\UNC\` extended-length UNC prefix, case-insensitively.
+const EXTENDED_UNC_PREFIX_RE = /^\\\\\?\\UNC\\/i
+// Matches a plain `\\?\` extended-length-path prefix.
+const EXTENDED_PREFIX_RE = /^\\\\\?\\/
+
 export function normalizePath(p: string): string {
   let s = p
+
+  // Step 0: strip a `\\?\` extended-length-path prefix so it normalizes
+  // identically to its non-extended equivalent. `\\?\UNC\server\share\...`
+  // rewrites to the standard `\\server\share\...` UNC form first; a plain
+  // `\\?\C:\...` just drops the `\\?\` marker. Must run before the
+  // backslash->forward-slash conversion below, since the prefix is expressed
+  // in backslash form and (for the UNC case) `//?/...` would otherwise
+  // incorrectly match UNC_HOST_SHARE_RE with `?` as the host and `c:` as the
+  // "share".
+  if (EXTENDED_UNC_PREFIX_RE.test(s)) {
+    s = '\\\\' + s.slice(8)
+  } else if (EXTENDED_PREFIX_RE.test(s)) {
+    s = s.slice(4)
+  }
 
   // Step 1: backslashes -> forward slashes (before the WSL check so mixed separators like /mnt/c/foo\bar normalize fully before the regex runs).
   if (s.includes('\\')) {
@@ -109,7 +128,25 @@ export function normalizePath(p: string): string {
   // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms. WSL processes emit Windows-format paths on Linux; both must produce the same cache key, so lowercasing is unconditional.
   s = lowercaseDriveLetter(s)
 
+  // Step 4: macOS reports the same temp path with two system aliases depending
+  // on whether it came from os.tmpdir() or process.cwd().
+  s = normalizeDarwinSystemAlias(s)
+
   return s
+}
+
+/**
+ * Normalize macOS's public `/var` alias to its physical `/private/var` path.
+ *
+ * `os.tmpdir()` commonly returns `/var/...`, while `process.cwd()` returns
+ * `/private/var/...` after chdir. Keep this lexical so deleted/future paths
+ * normalize too, without resolving arbitrary user symlinks.
+ */
+export function normalizeDarwinSystemAlias(p: string): string {
+  if (process.platform !== 'darwin') return p
+  if (p.toLowerCase() === '/var') return `/private${p}`
+  if (p.slice(0, 5).toLowerCase() === '/var/') return `/private${p}`
+  return p
 }
 
 /**

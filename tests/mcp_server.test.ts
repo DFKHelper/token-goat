@@ -81,4 +81,32 @@ describe('mcp_server', () => {
     const block = (result.content as any[])[0]
     expect(block.text).toBe(expected.text)
   })
+
+  // `LIMIT 0` in SQL always returns zero rows -- a symbol that genuinely exists would otherwise
+  // be reported as "no matches" instead of surfacing the caller's mistake. `limit: 0` must be
+  // rejected as invalid input at the schema layer, not silently queried against.
+  it('rejects limit: 0 on the symbol tool as a schema validation error instead of a false "no matches"', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'symbol', arguments: { name: 'anything', limit: 0 } })
+
+    expect(result.isError).toBe(true)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toContain('validation error')
+    expect(block.text).not.toContain('No matches')
+  })
+
+  it('rejects limit: 0 on the semantic tool as a schema validation error', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'semantic', arguments: { query: 'anything', limit: 0 } })
+
+    expect(result.isError).toBe(true)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toContain('validation error')
+  })
 })

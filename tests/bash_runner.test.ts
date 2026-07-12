@@ -103,6 +103,22 @@ describe('bash_runner.run (in-process)', () => {
     expect(run('exit 9')).toBe(9)
   })
 
+  it('still applies --max-tokens when no tool filter matches the command', () => {
+    // Regression: run() routed straight to passthrough() (stdio: 'inherit') whenever
+    // resolveFilter returned null, and passthrough() never looked at opts.maxTokens -- the cap
+    // logic only lived inside wrapAndCompress. A plain shell `for` loop has no matching tool
+    // filter (no registered filter claims "for"), so pre-fix this printed all 300 lines
+    // uncapped despite --max-tokens.
+    let out = ''
+    const code = run("for i in $(seq 1 300); do echo unfiltered-unique-line-$i; done", {
+      maxTokens: 20,
+      writeStdout: (x) => (out += x),
+    })
+    expect(code).toBe(0)
+    expect(out).toContain('capped at ~20 tokens')
+    expect(out).not.toContain('unfiltered-unique-line-299')
+  })
+
   it('runRaw streams raw output and returns the exit code', () => {
     expect(runRaw('exit 4')).toBe(4)
   })

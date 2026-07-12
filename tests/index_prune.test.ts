@@ -35,7 +35,8 @@ import * as fs from 'node:fs'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { indexFileSync } from '../src/parser.js'
-import { pruneDeletedFiles } from '../src/index_prune.js'
+import { pruneDeletedFiles, removeFileFromIndex } from '../src/index_prune.js'
+import * as embeddingsModule from '../src/embeddings.js'
 
 // Count symbol rows for a given normalized path key in the isolated DB.
 function symbolCount(dbPath: string, key: string): number {
@@ -236,5 +237,43 @@ describe('index_prune', () => {
     const result2 = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result2).toBe(0)
     expect(symbolCount(dbPath, aKey)).toBe(0)
+  })
+
+  // Regression: removeFileFromIndex called deleteFileRows then deleteFileEmbeddings with no
+  // transaction wrapping the pair. A crash between them (e.g. deleteFileEmbeddings throwing)
+  // left the files/symbols/refs rows deleted but the chunks/chunk_vectors rows for that same
+  // file still present -- orphaned rows nothing else ever cleans up, since pruneDeletedFiles
+  // only iterates `SELECT DISTINCT path FROM files`, which no longer names the file at all
+  // once deleteFileRows alone has run. The fix wraps both deletes in one db.transaction() call
+  // (mirroring upsertChunks in embeddings.ts), so a thrown error between them rolls back the
+  // whole operation instead of leaving it half-applied.
+  it('rolls back deleteFileRows when deleteFileEmbeddings throws (atomic removeFileFromIndex)', () => {
+    const aPath = path.join(dir, 'atomic.ts')
+    fs.writeFileSync(aPath, 'export const atomicSym = 1\n')
+    const aKey = normalizePath(aPath)
+    indexFileSync(aKey, dbPath)
+    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+
+    const db = getDb(dbPath)
+    const filesRowCount = (): number => {
+      const row = db.prepare('SELECT COUNT(*) AS n FROM files WHERE path = ?').get(aKey) as { n: number }
+      return row.n
+    }
+    expect(filesRowCount()).toBe(1)
+
+    const deleteEmbeddingsSpy = vi
+      .spyOn(embeddingsModule, 'deleteFileEmbeddings')
+      .mockImplementationOnce(() => {
+        throw new Error('simulated crash between deletes')
+      })
+
+    expect(() => removeFileFromIndex(db, aKey)).toThrow('simulated crash between deletes')
+    deleteEmbeddingsSpy.mockRestore()
+
+    // Pre-fix (no transaction): deleteFileRows' effect would have persisted despite the throw
+    // -- symbols/files rows gone, orphaning the (untested-here) chunks rows nothing else could
+    // ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
+    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(filesRowCount()).toBe(1)
   })
 })

@@ -823,6 +823,18 @@ function _renderInsightsSection(stats: StatsData): string[] {
     )
   }
 
+  // Hints fired but zero direct commands were ever invoked -- the "By command"
+  // section would otherwise vanish silently instead of flagging the gap.
+  if ((stats.by_command?.length ?? 0) === 0) {
+    const hintSource = stats.by_source?.find((s) => s.source === 'hint')
+    if (hintSource && hintSource.events > 0) {
+      lines.push(
+        `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('0 direct commands   ')}${fg(...C.TEXT_PRIMARY)}${hintSource.events.toLocaleString()}${RESET}` +
+          `${dim(' hint(s) fired but not acted on — run symbol/read/section/semantic/outline/skeleton directly to capture these savings')}`,
+      )
+    }
+  }
+
   return lines
 }
 

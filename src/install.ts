@@ -17,6 +17,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { normalizeDarwinSystemAlias } from './paths.js'
 import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
@@ -95,7 +96,12 @@ function hookCommand(eventArg: string): string {
 
 /** Return the `~/.claude` or `<cwd>/.claude` settings path for `scope`. */
 export function settingsPath(scope: HookScope): string {
-  const base = scope === 'user' ? path.join(os.homedir(), '.claude') : path.join(process.cwd(), '.claude')
+  // Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd()
+  // disagree on this after chdir) — not the full resolveIndexPath pipeline, whose
+  // unconditional drive-letter lowercasing would otherwise leak into this
+  // user-visible, printed-to-the-console path on Windows.
+  const root = scope === 'user' ? os.homedir() : normalizeDarwinSystemAlias(process.cwd())
+  const base = path.join(root, '.claude')
   return path.join(base, 'settings.json')
 }
 
@@ -204,14 +210,20 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   let changed = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const existingGroups = hooks[eventKey] ?? []
-    if (groupHasTokenGoat(existingGroups, isCurrentTokenGoatHookCommand)) continue
 
-    // Strip any legacy-marked token-goat entries before adding the current
-    // command -- a legacy command is dead on this build, so leaving it in
-    // place would just be a second, non-functional entry.
+    // Strip any legacy-marked token-goat entries first, regardless of whether
+    // a current-format entry is also already present -- a legacy command is
+    // dead on this build, so leaving it coexisting with a current entry would
+    // violate "exactly one, working, entry per event key" just as much as
+    // leaving it in place of a missing current entry would.
     const groups: HookMatcherGroup[] = []
+    let strippedLegacy = false
     for (const group of existingGroups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => !isTokenGoatHookCommand(h.command))
+      const keptHooks = (group.hooks ?? []).filter((h) => {
+        const isLegacy = isTokenGoatHookCommand(h.command) && !isCurrentTokenGoatHookCommand(h.command)
+        if (isLegacy) strippedLegacy = true
+        return !isLegacy
+      })
       if (keptHooks.length > 0) {
         groups.push({ ...group, hooks: keptHooks })
       } else if ((group.hooks ?? []).length === 0) {
@@ -219,6 +231,15 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
         groups.push(group)
       }
     }
+
+    if (groupHasTokenGoat(groups, isCurrentTokenGoatHookCommand)) {
+      if (strippedLegacy) {
+        hooks[eventKey] = groups
+        changed = true
+      }
+      continue
+    }
+
     groups.push({ matcher: '', hooks: [{ type: 'command', command: hookCommand(eventArg) }] })
     hooks[eventKey] = groups
     changed = true

@@ -118,23 +118,59 @@ function decodeRange(ref: string): { s: { r: number; c: number }; e: { r: number
   const endRef: string = parts[1] !== undefined && parts[1] !== '' ? parts[1] : startRef
   const start = decodeCellRef(startRef)
   const end = decodeCellRef(endRef)
-  return { s: start, e: end }
+  // A reversed range (e.g. B5:A1, where the start corner is below/right of the end corner)
+  // must not silently produce zero rows: the r <= e.r / c <= e.c loops in rangeSheet would
+  // never execute, returning an empty result that looks identical to "this range covers no
+  // data". Excel itself treats a reversed selection as equivalent to its normalized form, so
+  // normalize per axis here rather than error -- callers get the data they asked for either way.
+  return {
+    s: { r: Math.min(start.r, end.r), c: Math.min(start.c, end.c) },
+    e: { r: Math.max(start.r, end.r), c: Math.max(start.c, end.c) },
+  }
 }
 
 function encodeCell(cell: { r: number; c: number }): string {
   return `${indexToColLetters(cell.c)}${cell.r}`
 }
 
+// ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell
+// types) its own `cell.text` getter does NOT apply the cell's number format for dates --
+// it just calls `.toString()` on the Date internally, so relying on `cell.text` here would
+// still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000
+// (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a
+// clean ISO date when the value carries no time-of-day component (the common case for a
+// date-formatted cell), a full ISO datetime otherwise.
+function formatDateCell(d: Date): string {
+  const isDateOnly =
+    d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
+  return isDateOnly ? d.toISOString().slice(0, 10) : d.toISOString()
+}
+
 function cellText(cell: ExcelCell): string {
   if (cell.value === null || cell.value === undefined) return ''
+  if (cell.value instanceof Date) return formatDateCell(cell.value)
   const v = cell.value as { result?: unknown; text?: unknown; richText?: { text: string }[] } | unknown
   if (typeof v === 'object' && v !== null) {
-    const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[] }
+    const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[]; error?: unknown }
     if (Array.isArray(obj.richText)) return obj.richText.map((t) => t.text).join('')
-    if (obj.result !== undefined) return String(obj.result)
+    // A plain (non-formula) error cell, e.g. #N/A entered directly, is shaped
+    // `{ error: '#N/A' }` with no richText/result/text key. Return the error text directly
+    // instead of falling through to the generic text/String(value) path below, which would
+    // stringify the object itself.
+    if (typeof obj.error === 'string') return obj.error
+    if (obj.result !== undefined) {
+      if (obj.result instanceof Date) return formatDateCell(obj.result)
+      if (typeof obj.result === 'object' && obj.result !== null && typeof (obj.result as { error?: unknown }).error === 'string') {
+        return (obj.result as { error: string }).error
+      }
+      return String(obj.result)
+    }
     if (obj.text !== undefined) return String(obj.text)
   }
-  return String(cell.value)
+  // Plain (non-rich, non-formula, non-Date) values: prefer ExcelJS's pre-formatted display
+  // text (`cell.text`) over stringifying the raw value, e.g. so a number's display formatting
+  // (thousands separators, currency symbols) survives.
+  return cell.text !== '' ? cell.text : String(cell.value)
 }
 
 function cellFormula(cell: ExcelCell): string | undefined {
@@ -149,7 +185,7 @@ function cellFormula(cell: ExcelCell): string | undefined {
 /** Compute the used range of a worksheet as {rows, cols} plus an A1:X#-style ref string. */
 function usedRange(ws: ExcelWorksheet): { ref: string; rows: number; cols: number } {
   let maxCol = 0
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
     row.eachCell({ includeEmpty: false }, (_cell, colNumber) => {
@@ -180,7 +216,7 @@ export async function listSheets(filePath: string): Promise<SheetInfo[]> {
 export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
@@ -242,16 +278,17 @@ export function formatXlsxRange(result: XlsxRangeResult): string {
 
 /** Hand-rolled sheet_to_csv equivalent: ExcelJS has no direct API for this. */
 async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
+  // Every emitted row must have the same field count, or csv-parse's default strict mode
+  // throws "Invalid Record Length" on any row that happens to have empty trailing cells
+  // (row.eachCell({includeEmpty:false}) stops at that row's own last populated column, which
+  // is not necessarily the sheet's widest column). Pad every row out to the sheet's actual
+  // used-column-count, same as headSheet already does per-row against the header width.
+  const { cols: sheetCols } = usedRange(ws)
   const lines: string[] = []
   for (let r = 1; r <= rowCount; r++) {
-    const row = ws.getRow(r)
-    let maxCol = 0
-    row.eachCell({ includeEmpty: false }, (_c, colNumber) => {
-      if (colNumber > maxCol) maxCol = colNumber
-    })
     const vals: string[] = []
-    for (let c = 1; c <= maxCol; c++) {
+    for (let c = 1; c <= sheetCols; c++) {
       vals.push(cellText(ws.getCell(encodeCell({ r, c }))))
     }
     lines.push(vals.map(quoteCsvCell).join(','))

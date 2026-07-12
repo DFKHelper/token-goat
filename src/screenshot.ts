@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
 import { shrinkImage } from './image_shrink.js'
-import { atomicWriteBytes } from './util.js'
+import { atomicWriteBytes, withExtension } from './util.js'
 
 export interface ScreenshotOptions {
   executablePath?: string
@@ -146,8 +146,13 @@ export async function takeScreenshot(url: string, destPath: string, opts?: Scree
     const buffer = await page.screenshot({ type: 'png', fullPage: opts?.fullPage ?? false })
     const shrunk = await shrinkImage(buffer)
     const finalBuffer = shrunk?.data ?? buffer
-    atomicWriteBytes(destPath, finalBuffer)
-    return { path: destPath, originalBytes: buffer.length, finalBytes: finalBuffer.length }
+    // shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the shrink
+    // threshold; writing those bytes under the originally-requested (e.g. `.png`) extension
+    // would silently mislabel the file's actual format. Rename the destination extension to
+    // match the real output format and report the actual saved path.
+    const finalPath = shrunk ? withExtension(destPath, shrunk.format) : destPath
+    atomicWriteBytes(finalPath, finalBuffer)
+    return { path: finalPath, originalBytes: buffer.length, finalBytes: finalBuffer.length }
   } finally {
     await browser.close()
   }

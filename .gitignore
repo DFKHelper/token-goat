@@ -177,3 +177,8 @@ coverage/
 .temp-hooks-skill-source/
 
 .zelys/
+
+# Stray extensionless-basename artifact from a pre-fix screenshot.ts test run
+# (not *.webp -- no legitimate .webp assets are tracked in this repo, so this
+# stays narrow rather than blanket-ignoring real .webp files if any are added)
+.webp

@@ -52,6 +52,24 @@ Even more text`
     expect(headings[1].text).toBe('Heading')
   })
 
+  it('strips a CommonMark closing ATX sequence (## Setup ##)', () => {
+    // Regression: this extractor never stripped closing hashes at all, so `## Setup ##`
+    // produced hint text `Setup ##` -- and the hint's own suggested `token-goat section`
+    // command then failed to resolve, since section_reader stores the heading as `Setup`.
+    const content = '## Setup ##'
+    const headings = extractMarkdownHeadings(content)
+    expect(headings).toHaveLength(1)
+    expect(headings[0].text).toBe('Setup')
+  })
+
+  it('preserves a trailing # in heading text (C#) instead of stripping it as a closing sequence', () => {
+    // A trailing `#` with no whitespace before it is not a CommonMark closing sequence.
+    const content = '## C#'
+    const headings = extractMarkdownHeadings(content)
+    expect(headings).toHaveLength(1)
+    expect(headings[0].text).toBe('C#')
+  })
+
   it('skips empty or whitespace-only headings', () => {
     const content = `# Valid
 #

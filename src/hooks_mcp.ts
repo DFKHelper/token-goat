@@ -9,10 +9,6 @@
  * Both handlers register with no toolName filter (MCP tool names are dynamic)
  * and self-gate on {@link isMcpReadOnly} plus a present sessionId, so they are
  * inert for every non-MCP and mutating tool.
- *
- * A third, env-var-gated handler at the bottom of this file
- * (`mcpRewriteSpikeHandler`) is an output-rewrite feasibility spike, not a
- * caching handler — see its doc comment.
  */
 
 import { registerHook, type HookEvent } from './hook_registry.js'
@@ -20,6 +16,7 @@ import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
+import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 
 /**
  * Pull the textual result out of a tool_response payload. Handles the plain
@@ -97,42 +94,23 @@ function postMcpHandler(event: HookEvent): HookOutput {
   if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
   const resultText = extractMcpResultText(event.raw)
   if (!resultText) return passOutput()
-  storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+  const id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+  // Deterministic structural compression (see mcp_compress.ts): only attempted when the
+  // full result was actually cached (id !== null), so the "full via mcp-output <id>"
+  // label always resolves, size-gated so small results are never touched, and
+  // opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's
+  // existing convention elsewhere in this codebase.
+  if (id !== null && resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
+    const compressed = compressMcpResult(resultText)
+    if (compressed !== null) {
+      return {
+        hookType: 'rewriteOutput',
+        updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${compressed}`,
+      }
+    }
+  }
   return passOutput()
 }
 
 registerHook('pre_tool_use', preMcpHandler)
 registerHook('post_tool_use', postMcpHandler)
-
-/**
- * Feasibility spike for MCP output rewriting — see the design doc referenced
- * in the commit this landed in. `postMcpHandler` above only ever caches and
- * returns `pass`; this handler is the first place token-goat ever emits a
- * `rewriteOutput` `HookOutput`. It round-trips a single low-traffic MCP
- * tool's result through the new `updatedToolOutput` wire shape UNCHANGED, so
- * the only thing under test is whether Claude Code actually honors a
- * `PostToolUse` output rewrite for an MCP tool call — not any compression
- * logic (there is none here).
- *
- * Inert by default on two independent axes so it is safe to leave wired in:
- * - `TOKEN_GOAT_MCP_REWRITE_SPIKE` must be exactly `'1'`.
- * - Even then, it only fires for {@link REWRITE_SPIKE_TOOL}, an intentionally
- *   rare, read-only, low-traffic MCP call (a GitHub team-membership lookup),
- *   so normal sessions with the env var left on by accident see no change to
- *   any tool they actually use routinely.
- *
- * Registered after `postMcpHandler` (not before): `postMcpHandler` always
- * returns `pass`, so this never races the cache write — the result is still
- * cached under its normal `mcp_<hash>` id via `postMcpHandler` first, and
- * only then does this handler get a chance to rewrite what the model sees.
- */
-const REWRITE_SPIKE_TOOL = 'mcp__plugin_github_github__get_teams'
-
-function mcpRewriteSpikeHandler(event: HookEvent): HookOutput {
-  if (process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] !== '1') return passOutput()
-  const resultText = extractMcpResultText(event.raw)
-  if (!resultText) return passOutput()
-  return { hookType: 'rewriteOutput', updatedOutput: resultText }
-}
-
-registerHook('post_tool_use', mcpRewriteSpikeHandler, { toolName: REWRITE_SPIKE_TOOL })

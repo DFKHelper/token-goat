@@ -12,6 +12,9 @@ jobs:
   build-and-publish:
     name: Build and publish to npm
     runs-on: ubuntu-latest
+    # A manual workflow_dispatch run must come off main -- otherwise anyone with write
+    # access could publish an arbitrary feature-branch commit under the next npm version.
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
     environment:
       name: npm
       url: https://www.npmjs.com/package/token-goat
@@ -25,6 +28,16 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+      - name: Verify release tag matches package.json version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Release tag v$TAG does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
       - name: Test
         run: npm test
       - name: Build

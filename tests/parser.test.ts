@@ -615,10 +615,124 @@ describe('parseFile reference extraction', () => {
     expect(refNames).toContain('sort')
   })
 
+  // Regression: extractRefs only walked call-site node types (call_expression/new_expression),
+  // so a symbol used only in a "value position" -- passed as a callback, assigned to a variable,
+  // stored as an object-literal value -- was invisible to the refs table. That made `dead`
+  // report a false positive (the symbol looked unreferenced despite real usage) and made
+  // `refs`/`callers` under-report genuine usages.
+  it('captures a function passed as a bare callback argument (value position, not a call site)', async () => {
+    const file = write(
+      'callback-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(arr: number[]): number[] {\n' +
+        '  return arr.map(myHelperFunction)\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  it('captures a function assigned to a variable (value position, not a call site)', async () => {
+    const file = write(
+      'assignment-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(): unknown {\n' +
+        '  const x = myHelperFunction\n' +
+        '  return x\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  it('captures a function stored as an object-literal value (value position, not a call site)', async () => {
+    const file = write(
+      'object-value-ref.ts',
+      'function myHelperFunction(): void {}\n' +
+        'export function driver(): unknown {\n' +
+        '  return { onClick: myHelperFunction }\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+  })
+
+  it('captures a Python function passed as a bare callback argument', async () => {
+    const file = write(
+      'callback_ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        'def driver(items):\n' +
+        '    return list(map(my_helper_function, items))\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+  })
+
+  it('captures a Python function assigned to a variable', async () => {
+    const file = write(
+      'assignment_ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        'def driver():\n' +
+        '    x = my_helper_function\n' +
+        '    return x\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+  })
+
+  it('does not record a false value-position ref for an identifier used in a nested expression', async () => {
+    // Guard against over-matching: `a.b`, `a + b`, and a call result passed as an argument must
+    // never be captured as if the bare name itself were passed/assigned directly.
+    const file = write(
+      'no-overmatch.ts',
+      'function notAValuePositionRef(): number { return 1 }\n' +
+        'export function driver(): number {\n' +
+        '  const sum = 1 + notAValuePositionRef().length\n' +
+        '  return sum\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    // notAValuePositionRef IS captured as a call-site ref (it's invoked with parens), but must
+    // appear exactly once -- not double-counted by an over-broad value-position match on the
+    // same identifier inside the binary expression it's nested in.
+    const refs = result.refs.filter((r) => r.name === 'notAValuePositionRef')
+    expect(refs).toHaveLength(1)
+  })
+
   it('yields no refs for a language without a tree-sitter grammar', async () => {
     const file = write('notes.md', '# Title\n\nsome prose calling foo()\n')
     const result = await parseFile(file)
     expect(result.refs).toEqual([])
+  })
+
+  it('indexes .mdx headings as markdown symbols instead of skipping the file as unknown', async () => {
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so parseFile/detectLanguage classified
+    // it as 'unknown' and cmdIndex skipped it entirely -- no headings ever made it into the
+    // symbol index for MDX docs.
+    const file = write('guide.mdx', '# Title\n\n## Setup\n\nsome content\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('markdown')
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Title')
+    expect(names).toContain('Setup')
   })
 })
 

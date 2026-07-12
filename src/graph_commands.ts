@@ -17,16 +17,19 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
+import { resolveProjectRoot } from './project.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath } from './util.js'
-import type { SymbolEntry } from './parser_types.js'
+import { stripAnsi } from './render/ansi.js'
+import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 function emit(text: string): void {
-  process.stdout.write(ensureNewline(text))
+  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  process.stdout.write(ensureNewline(payload))
 }
 
 function emitErr(text: string): void {
@@ -139,12 +142,58 @@ export interface CallerEntry {
   line: number
 }
 
-/** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`. */
-export function resolveCallers(name: string, limit?: number): CallerEntry[] {
-  const refs = queryRefs({ name, limit: limit ?? 500 })
-  const getSyms = buildFileSymCache()
+/** True when `fp` has its own symbol definition named `name` -- used by {@link filterRefsForSymbol} to tell a local/shadowing reference apart from one that actually targets a different, same-named symbol elsewhere in the project. */
+function fileDefinesName(fp: string, name: string, getSyms: (fp: string) => SymbolEntry[]): boolean {
+  return getSyms(fp).some((s) => s.name === name)
+}
 
-  return refs.map((ref) => {
+/**
+ * Filter `refs` (all matching a bare `name`) down to the ones plausibly attributable to the
+ * symbol defined at `filePath`, for use when multiple symbols in the project share that name.
+ *
+ * The refs table has no import resolution -- a ref only records the bare callee name, never
+ * which definition it binds to. Without this filter, a same-name reference anywhere in the
+ * project counts as evidence for every same-named symbol project-wide: a genuinely dead
+ * symbol in one file looks "alive" because of an unrelated call resolving to a different
+ * file's same-named symbol, and `callers` misattributes that call to the wrong definition.
+ *
+ * A ref is kept when it is in the symbol's own defining file (the common case: a local call,
+ * or an exported symbol imported elsewhere with no local shadow) or its file does NOT itself
+ * define a same-named symbol (so it cannot be resolving to a local shadow instead). A ref in a
+ * file that defines its OWN symbol of the same name is dropped for every OTHER same-named
+ * symbol's computation, since a bare-name call there almost certainly resolves to that file's
+ * local definition.
+ *
+ * This does not fully resolve every ambiguous case -- a third file with no local definition of
+ * its own, calling a name that collides across two other files, still can't be attributed
+ * precisely without real import resolution, which this index does not perform.
+ */
+function filterRefsForSymbol(
+  refs: RefEntry[],
+  name: string,
+  filePath: string,
+  getSyms: (fp: string) => SymbolEntry[],
+): RefEntry[] {
+  return refs.filter((ref) => ref.filePath === filePath || !fileDefinesName(ref.filePath, name, getSyms))
+}
+
+/** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`.
+ *
+ * `filePath`, when provided, scopes the result to callers plausibly attributable to the symbol
+ * defined there (via {@link filterRefsForSymbol}) -- needed when another symbol in the same
+ * project shares `name`, so a caller of the other symbol isn't misattributed. Omitted by the
+ * bare `token-goat callers <name>` CLI path, which intentionally reports every reference to
+ * `name` project-wide regardless of which same-named definition it targets. */
+export function resolveCallers(name: string, limit?: number, filePath?: string): CallerEntry[] {
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
+  // symbol in an unrelated project on the same machine don't leak into this project's results.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const refs = queryRefs({ name, limit: limit ?? 500, rootDir })
+  const getSyms = buildFileSymCache()
+  const scoped = filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms)
+
+  return scoped.map((ref) => {
     const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
     return {
       caller: enc?.name ?? '(module scope)',
@@ -156,6 +205,14 @@ export function resolveCallers(name: string, limit?: number): CallerEntry[] {
 }
 
 export function runCallers(opts: CallersOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether callers exist -- silently reporting "no references found" for
+  // a symbol that's actually called. Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const entries = resolveCallers(opts.symbol, opts.limit)
   if (entries.length === 0) {
     emitErr(`No references found for '${opts.symbol}'`)
@@ -183,11 +240,17 @@ export interface CallChainOptions {
 
 export function runCallChain(opts: CallChainOptions): number {
   const maxDepth = opts.depth ?? 8
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
+  // an unrelated project on the same machine doesn't leak into this project's call chains.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
+  // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
+  const getSyms = buildFileSymCache()
 
   const callersOf: CallersOfFn = (name: string): string[] => {
-    const refs = queryRefs({ name, limit: 500 })
+    const refs = queryRefs({ name, limit: 500, rootDir })
     if (refs.length === 0) return []
-    const getSyms = buildFileSymCache()
     const names = new Set<string>()
     for (const ref of refs) {
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
@@ -241,6 +304,13 @@ export function compareHopEntries(a: readonly [string, number], b: readonly [str
 export function runImpact(opts: ImpactOptions): number {
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
+  // an unrelated project on the same machine doesn't leak into this project's impact analysis.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
+  // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
+  const getSyms = buildFileSymCache()
 
   const hops = new Map<string, number>([[opts.symbol, 0]])
   const queue: Array<[string, number]> = [[opts.symbol, 0]]
@@ -250,13 +320,21 @@ export function runImpact(opts: ImpactOptions): number {
     if (item === undefined) break
     const [name, depth] = item
     if (depth >= DEPTH_CAP) continue
-    const refs = queryRefs({ name, limit: 500 })
-    const getSyms = buildFileSymCache()
+    const refs = queryRefs({ name, limit: 500, rootDir })
     for (const ref of refs) {
-      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
-      if (enc === null) continue
-      const callerName = enc.name
       const newHop = depth + 1
+      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
+      if (enc === null) {
+        // Module-scope reference (top-level code, not inside a function/class) -- surface it as a
+        // file-level entry instead of silently dropping it, mirroring resolveCallers' '(module
+        // scope)' handling below. Not enqueued for further BFS since a bare file path has no
+        // symbol name to look up callers for.
+        const fileKey = `(module scope) ${ref.filePath}`
+        const existing = hops.get(fileKey)
+        if (existing === undefined || existing > newHop) hops.set(fileKey, newHop)
+        continue
+      }
+      const callerName = enc.name
       const existing = hops.get(callerName)
       if (existing === undefined || existing > newHop) {
         hops.set(callerName, newHop)
@@ -302,15 +380,20 @@ export function runDead(opts: DeadOptions): number {
   // (constants.ts) -- both the symbol scan and the per-symbol ref-count lookup must be scoped
   // to the current project root, or a function dead in this project but referenced by a
   // same-named symbol in an unrelated project on the same machine is wrongly scored ALIVE.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const syms = querySymbols({ kind, limit: 5000, rootDir })
+  const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
 
   for (const sym of syms) {
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
-    const refs = queryRefs({ name: sym.name, limit: 1, rootDir })
-    if (isDeadSymbol(sym.name, refs.length)) {
+    // limit raised from 1 to 500 (matching resolveCallers' default cap): a bare-name existence
+    // check can no longer stop at the first match, since that match might be filtered out below
+    // as belonging to a different, same-named symbol elsewhere in the project.
+    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
+    const scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
+    if (isDeadSymbol(sym.name, scoped.length)) {
       results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
     }
   }
@@ -368,8 +451,16 @@ export function runDeps(opts: DepsOptions): number {
       if (fs.existsSync(base) && fs.statSync(base).isFile()) {
         resolved = base
       } else {
+        // NodeNext/ESM-style specifiers reference the compiled-.js output even when the
+        // source is TypeScript ("./foo.js" resolving to foo.ts) -- this codebase's own
+        // imports are written that way. Appending a source extension onto a base that
+        // already ends in one of them (e.g. base + '.ts' -> 'foo.js.ts') never matches
+        // anything, so strip a recognized source extension from base first and search from
+        // the bare stem instead.
+        const baseExt = path.extname(base)
+        const bareBase = SOURCE_EXTENSIONS.includes(baseExt) ? base.slice(0, -baseExt.length) : base
         for (const srcExt of SOURCE_EXTENSIONS) {
-          const candidate = base + srcExt
+          const candidate = bareBase + srcExt
           if (fs.existsSync(candidate)) {
             resolved = candidate
             break
@@ -418,13 +509,21 @@ export interface TypesOptions {
 }
 
 export function runTypes(opts: TypesOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0` on every kind-scan, always
+  // returning zero rows regardless of whether type declarations exist -- silently reporting "no
+  // type declarations found". Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const limit = opts.limit ?? 500
   const filePath = opts.file !== undefined ? resolveIndexPath(opts.file) : undefined
   const fpOpt = filePath !== undefined ? { filePath } : {}
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope every kind-scan to the current project root so `types` doesn't mix in
   // type/interface/enum/class symbols from an unrelated project on the same machine.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
 
   const results: SymbolEntry[] = []
 
@@ -478,8 +577,14 @@ export function runScope(opts: ScopeOptions): number {
 
   const file = opts.spec.slice(0, colonIdx)
   const lineStr = opts.spec.slice(colonIdx + 1)
-  const line = Number.parseInt(lineStr, 10)
 
+  // Reject anything but an exact integer literal so trailing garbage (e.g. "12abc") is caught
+  // instead of Number.parseInt silently truncating it to 12.
+  if (!/^\d+$/.test(lineStr)) {
+    emitErr(`Invalid line number: ${lineStr}`)
+    return 1
+  }
+  const line = Number.parseInt(lineStr, 10)
   if (!Number.isFinite(line) || line < 1) {
     emitErr(`Invalid line number: ${lineStr}`)
     return 1
@@ -569,7 +674,8 @@ export function runSimilar(opts: SimilarOptions): number {
   const words = [anchor.name, ...(anchor.docstring ?? '').split(/\s+/).filter((w) => w.length > 4)]
   const query = words.slice(0, 8).join(' ')
 
-  const hits = searchSymbolsFts(query, top + 1)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(query, top + 1, undefined, rootDir)
   const results = hits.filter((h) => !(h.filePath === anchor.filePath && h.name === anchor.name)).slice(0, top)
 
   if (opts.json === true) {
@@ -593,7 +699,8 @@ export function runContextFor(opts: ContextForOptions): number {
   const top = opts.top ?? 12
   const budget = opts.budget
 
-  const hits = searchSymbolsFts(opts.task, top)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(opts.task, top, undefined, rootDir)
 
   interface ContextEntry { file: string; symbol: string; kind: string; readCmd: string }
   const entries: ContextEntry[] = []
@@ -627,21 +734,36 @@ export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveIndexPath(opts.file)
   const symbols = querySymbols({ filePath, limit: 10000 })
 
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope each ref lookup to the current project root so a same-named symbol's
+  // test reference in an unrelated project on the same machine isn't returned here.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+
   const testFileMap = new Map<string, Set<string>>()
+  const getSyms = buildFileSymCache()
 
   for (const sym of symbols) {
-    const refs = queryRefs({ name: sym.name, limit: 500 })
+    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())
+      // Record which test function actually exercises the target file's symbol, so the Set
+      // narrows testFunctions to the ones that reference the target -- not every test-prefixed
+      // symbol that merely happens to live in the same file.
+      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
+      if (enc !== null) {
+        testFileMap.get(ref.filePath)!.add(enc.name)
+      }
     }
   }
 
   const results: TestForEntry[] = []
 
-  for (const [tf] of testFileMap) {
+  for (const [tf, referencingFns] of testFileMap) {
     const testSyms = querySymbols({ filePath: tf, limit: 10000 })
-    const testFns = testSyms.filter((s) => /^(test|Test|spec|describe|it)/.test(s.name)).map((s) => s.name)
+    const testFns = testSyms
+      .filter((s) => /^(test|Test|spec|describe|it)/.test(s.name) && referencingFns.has(s.name))
+      .map((s) => s.name)
     results.push({ testFile: tf, testFunctions: testFns })
   }
 
@@ -674,7 +796,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   // (constants.ts); scope the kind-scan and each ref lookup to the current project root so a
   // function untested here isn't hidden by a same-named symbol's test reference in an unrelated
   // project on the same machine.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const allFns = querySymbols({ kind: 'function', limit: 2000, rootDir })
   const allMethods = querySymbols({ kind: 'method', limit: 2000, rootDir })
   const candidates = [...allFns, ...allMethods]
@@ -852,7 +974,8 @@ export interface AskOptions {
 // NOTE: cross-session answer cache is intentionally omitted to keep scope bounded. Add a file-based cache keyed on (question+context hash) if response latency becomes an issue.
 export function runAsk(opts: AskOptions): number {
   const top = opts.top ?? 8
-  const hits = searchSymbolsFts(opts.question, top)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(opts.question, top, undefined, rootDir)
 
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''
