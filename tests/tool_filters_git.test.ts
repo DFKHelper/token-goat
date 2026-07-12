@@ -411,6 +411,26 @@ describe('GitDiffFilter large hunk', () => {
     // this line) fell through unprocessed.
     expect(result).not.toContain('index abc123,def456..0000000')
   })
+
+  // Regression: real `git diff --cc`/`git show --cc` output for a text conflict uses a
+  // triple-`@` combined-diff hunk header (`@@@ -a,b -c,d +e,f @@@`), one extra `@` per merged
+  // parent -- not the plain-diff `@@ -a,b +c,d @@`. Confirmed against a real merge-commit combined
+  // diff (`git show --cc <merge-sha>`) during dogfooding: with only the file-boundary fix, a large
+  // conflict hunk still passed through byte-identical to the pre-fix output, because
+  // _GIT_DIFF_HUNK_RE never split it into hunks in the first place. Both the file-boundary AND the
+  // hunk-boundary regex need to recognize the combined-diff format for large-hunk truncation to
+  // actually engage on `--cc` output.
+  it('git diff --cc: large combined-diff hunk (triple-@ header) gets truncated like a normal diff', () => {
+    const changedLines = Array.from({ length: 80 }, (_, i) => `+line ${i}`).join('\n')
+    const text =
+      'diff --cc conflict.py\n' +
+      'index abc123,def456..0000000\n' +
+      '--- a/conflict.py\n+++ b/conflict.py\n@@@ -1,3 -1,3 +1,83 @@@\n  context\n' +
+      changedLines
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc conflict.py')
+    expect(result).toContain('omitted by token-goat')
+  })
 })
 
 // ---------------------------------------------------------------------------
