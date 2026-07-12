@@ -415,6 +415,19 @@ export function basename(p: string): string {
   return path.basename(p)
 }
 
+/**
+ * Swap `filePath`'s extension for `format` (e.g. `'jpeg'` -> `.jpg`, `'webp'` -> `.webp`),
+ * preserving its directory and basename. Used after `shrinkImage()` re-encodes a capture to a
+ * different container format, so the extension actually reflects the bytes written -- writing
+ * JPEG bytes under a caller-requested `.png` path would otherwise silently mislabel the file.
+ */
+export function withExtension(filePath: string, format: string): string {
+  const ext = format === 'jpeg' ? '.jpg' : `.${format}`
+  const dir = path.dirname(filePath)
+  const base = path.basename(filePath, path.extname(filePath))
+  return path.join(dir, `${base}${ext}`)
+}
+
 /** Ensure text ends with a newline; no-op if already present. Extracted from 5 call sites. */
 export function ensureNewline(text: string): string {
   return text.endsWith('\n') ? text : text + '\n'
