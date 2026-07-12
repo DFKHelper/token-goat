@@ -36,7 +36,7 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
 
   for (const [i, line] of eachUnfencedLine(lines)) {
     if (!line) continue
-    const match = /^(#+)\s+(.+?)\s*$/.exec(line)
+    const match = /^(#+)\s+(.+?)(?:\s+#+\s*)?$/.exec(line)
     if (!match || match.length < 3) continue
 
     const hashes = match[1]!

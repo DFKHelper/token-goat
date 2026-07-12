@@ -854,7 +854,7 @@ function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[
   const lines = content.split(/\r?\n/)
 
   for (const [i, line] of eachUnfencedLine(lines)) {
-    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s*#+\s*)?$/.exec(line)
+    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/.exec(line)
     if (atxMatch !== null && atxMatch[2] !== undefined) {
       const name = atxMatch[2].trim()
       if (name !== '') {
