@@ -136,7 +136,44 @@ function detectSingleSegment(segment: string): { filter: ToolFilter; argv: strin
   return { filter, argv: stripPrefixes(argv) }
 }
 
-const COMPOUND_AND_RE = /\s*&&\s*/
+/**
+ * Splits `command` on top-level `&&` operators only -- i.e. `&&` that appears outside any
+ * single- or double-quoted span. A naive regex split (the previous implementation) treats a
+ * `&&` inside a quoted argument, like the commit message in `git commit -m "a&&b" && npm
+ * test`, as a segment boundary too, corrupting it on rejoin (`a&&b` becomes `a && b`). This
+ * walks the string char-by-char tracking quote state so quoted content is never split.
+ */
+function splitTopLevelAnd(command: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let i = 0
+  while (i < command.length) {
+    const ch = command[i] ?? ''
+    if (quote !== null) {
+      current += ch
+      if (ch === quote) quote = null
+      i++
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      current += ch
+      i++
+      continue
+    }
+    if (ch === '&' && command[i + 1] === '&') {
+      segments.push(current.trim())
+      current = ''
+      i += 2
+      continue
+    }
+    current += ch
+    i++
+  }
+  segments.push(current.trim())
+  return segments
+}
 
 /**
  * Wrap each `&&`-joined segment of a compound command independently, so a
@@ -152,7 +189,7 @@ export function tryWrapCompoundSegments(
   if (!command || command.includes('||') || command.includes('|') || command.includes(';')) return null
   if (command.includes('$(') || command.includes('`')) return null
   if (!command.includes('&&')) return null
-  const segments = command.split(COMPOUND_AND_RE).map((s) => s.trim())
+  const segments = splitTopLevelAnd(command)
   if (segments.length < 2 || segments.length > 8) return null
   const wrappedSegments: string[] = []
   let anyWrapped = false

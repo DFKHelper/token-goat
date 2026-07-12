@@ -336,6 +336,15 @@ describe('dispatch: detection + compound handling', () => {
   it('tryWrapCompoundSegments returns null when no segment matches', () => {
     expect(tryWrapCompoundSegments('echo a && echo b', () => 'x')).toBeNull()
   })
+
+  // Regression: the previous implementation split on a naive `/\s*&&\s*/` regex with no
+  // quote-awareness, so a `&&` embedded inside a quoted argument (e.g. a commit message) was
+  // treated as a segment boundary and corrupted on rejoin -- "a&&b" became "a && b".
+  it('tryWrapCompoundSegments does not split or corrupt a && embedded inside a quoted segment argument', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const out = tryWrapCompoundSegments('mytool -m "a&&b" && echo done', (name, seg) => `wrap[${name}](${seg})`)
+    expect(out).toBe('wrap[echo-test](mytool -m "a&&b") && echo done')
+  })
 })
 
 describe('dispatch: filterByName + profiles', () => {
