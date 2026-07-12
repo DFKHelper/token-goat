@@ -32,6 +32,7 @@ import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
+import { recordStat } from './stats.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -137,6 +138,39 @@ function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
   return capJsonRows(items, cfg.overflow_guard.max_tokens)
 }
 
+/**
+ * Sum of on-disk byte sizes for a set of file paths, deduplicated so a command that matched
+ * several symbols/refs/hits in the same file only counts that file's size once. Used as the
+ * "full source" side of a stat's bytes-saved calculation. Best-effort: a path that no longer
+ * exists on disk (stale index entry) or can't be stat'd contributes 0 rather than throwing --
+ * stat recording must never turn a successful read into a hard error.
+ */
+function sumFileSizes(filePaths: Iterable<string>): number {
+  let total = 0
+  for (const fp of new Set(filePaths)) {
+    try {
+      total += fs.statSync(fp).size
+    } catch {
+      // Stale index entry pointing at a deleted/moved file — contributes nothing.
+    }
+  }
+  return total
+}
+
+/**
+ * Records a surgical-read stat event: bytes saved is the full on-disk source size minus the
+ * emitted slice, floored at 1 (mirrors image_shrink.ts's recordStat call and the retired
+ * Python read_commands.py's `max(1, saved // 3 + 1)` -- this repo drops the //3 constant-token
+ * fudge factor in favor of the same bytes/4 approximation image_shrink already uses, for
+ * consistency across every recordStat call site). Fail-soft via recordStat itself: never
+ * blocks or fails a read on a stats-recording error.
+ */
+function recordReadStat(kind: string, fullSourceBytes: number, emittedText: string, detail?: string): void {
+  const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
+  const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
+  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4), undefined, detail)
+}
+
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
 // occurrence rather than the first: a file path is far more likely to contain a literal `::`
 // than a symbol/heading name is. Returns -1 when absent, matching `String.indexOf`'s no-match
@@ -219,10 +253,14 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     return { text: `No matches for '${opts.name ?? '*'}'`, code: 1 }
   }
 
+  const fullSourceBytes = sumFileSizes(results.map((s) => s.filePath))
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+    return { text, code: 0 }
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
@@ -233,7 +271,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
   const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
-  return { text: guardText(warning + blocks.join('\n\n'), 'symbol'), code: 0 }
+  const text = guardText(warning + blocks.join('\n\n'), 'symbol')
+  recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+  return { text, code: 0 }
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -560,9 +600,12 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   const match = resolution.entry
+  const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
-    return { text: JSON.stringify(match, null, 2), code: 0 }
+    const text = JSON.stringify(match, null, 2)
+    recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+    return { text, code: 0 }
   }
 
   const body = resolveBody(match)
@@ -573,7 +616,9 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     body,
   ]
   const warning = staleWarning(match.filePath)
-  return { text: guardText(warning + trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
+  const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol')
+  recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+  return { text, code: 0 }
 }
 
 // ---- section ----------------------------------------------------------------
@@ -615,19 +660,27 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     return { text: messages.join('\n'), code: 1 }
   }
 
+  // A prefix-redirected match (readSection resolved a different heading than the one asked
+  // for) is recorded as section_replacement rather than a plain section_read, mirroring the
+  // "replacement" framing used by read_replacement for a substituted read elsewhere in this
+  // file.
+  const kind = result.redirectedFrom !== undefined ? 'section_replacement' : 'section_read'
+  const fullSourceBytes = sumFileSizes([filePath])
+
   if (opts.json === true) {
-    return { text: JSON.stringify(result, null, 2), code: 0 }
+    const text = JSON.stringify(result, null, 2)
+    recordReadStat(kind, fullSourceBytes, text, heading)
+    return { text, code: 0 }
   }
 
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  return {
-    text: guardText(
-      `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
-      'heading',
-    ),
-    code: 0,
-  }
+  const text = guardText(
+    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
+    'heading',
+  )
+  recordReadStat(kind, fullSourceBytes, text, heading)
+  return { text, code: 0 }
 }
 
 // ---- refs -------------------------------------------------------------------
@@ -670,6 +723,7 @@ export function runRefs(opts: RefsOptions): number {
   const jsonOut: Record<string, { items: RefEntry[]; truncated: boolean; totalCount: number }> = {}
   let anyFound = false
   const lines: string[] = []
+  const refFilePaths: string[] = []
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to
@@ -679,6 +733,7 @@ export function runRefs(opts: RefsOptions): number {
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
     const results = queryRefs(queryOpts)
     if (results.length > 0) anyFound = true
+    refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
       const capped = guardJsonRows(results)
       jsonOut[sym] = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
@@ -695,11 +750,16 @@ export function runRefs(opts: RefsOptions): number {
       for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
     }
   }
+  const fullSourceBytes = sumFileSizes(refFilePaths)
   if (opts.json === true) {
-    emit(JSON.stringify(jsonOut, null, 2))
+    const text = JSON.stringify(jsonOut, null, 2)
+    emit(text)
+    if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
     return anyFound ? 0 : 1
   }
-  emitGuarded(lines.join('\n'), 'symbol')
+  const text = lines.join('\n')
+  emitGuarded(text, 'symbol')
+  if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
   return anyFound ? 0 : 1
 }
 
@@ -720,10 +780,14 @@ function runRefsSingle(opts: RefsOptions): number {
     return 1
   }
 
+  const fullSourceBytes = sumFileSizes(results.map((r) => r.filePath))
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    emit(JSON.stringify(payload, null, 2))
+    const text = JSON.stringify(payload, null, 2)
+    emit(text)
+    recordReadStat('symbol_read', fullSourceBytes, text, symName)
     return 0
   }
 
@@ -731,7 +795,9 @@ function runRefsSingle(opts: RefsOptions): number {
     opts.callers === true
       ? renderCallerGroups(results)
       : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
-  emitGuarded(lines.join('\n'), 'symbol')
+  const text = lines.join('\n')
+  emitGuarded(text, 'symbol')
+  recordReadStat('symbol_read', fullSourceBytes, text, symName)
   return 0
 }
 
@@ -810,6 +876,8 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
+  const fullSourceBytes = sumFileSizes([resolved])
+
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
       name: s.name,
@@ -822,7 +890,9 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
     }))
     const capped = guardJsonRows(rows)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('stub_view', fullSourceBytes, text, opts.file)
+    return { text, code: 0 }
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
@@ -835,7 +905,9 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : ''
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  return { text: guardText(staleWarning(resolved) + lines.join('\n'), 'symbol'), code: 0 }
+  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  recordReadStat('stub_view', fullSourceBytes, text, opts.file)
+  return { text, code: 0 }
 }
 
 // ---- outline ----------------------------------------------------------------
@@ -878,6 +950,8 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
+  const fullSourceBytes = sumFileSizes([resolved])
+
   if (opts.json === true) {
     const rows =
       refCounts !== undefined
@@ -889,7 +963,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : filtered
     const capped = guardJsonRows(rows)
     const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
-    return { text: JSON.stringify(payload, null, 2), code: 0 }
+    const text = JSON.stringify(payload, null, 2)
+    recordReadStat('outline', fullSourceBytes, text, opts.file)
+    return { text, code: 0 }
   }
 
   const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
@@ -904,7 +980,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
-  return { text: guardText(staleWarning(resolved) + lines.join('\n'), 'symbol'), code: 0 }
+  const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
+  recordReadStat('outline', fullSourceBytes, text, opts.file)
+  return { text, code: 0 }
 }
 
 // ---- csv / pdf / screenshot --------------------------------------------------
@@ -1790,14 +1868,20 @@ export function runExports(opts: ImportsExportsOptions): number {
     return 0
   }
 
+  const fullSourceBytes = sumFileSizes([opts.file])
+
   if (opts.json === true) {
-    emit(JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2))
+    const jsonText = JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2)
+    emit(jsonText)
+    recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
     return 0
   }
 
-  for (const n of names) {
-    emit(`${kindOf(n).padEnd(10)} ${n}`)
+  const outLines = names.map((n) => `${kindOf(n).padEnd(10)} ${n}`)
+  for (const line of outLines) {
+    emit(line)
   }
+  recordReadStat('exports', fullSourceBytes, outLines.join('\n'), opts.file)
   return 0
 }
 
@@ -2027,7 +2111,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     const blocks = hits.map(
       (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
     )
-    return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
+    const text = guardText(blocks.join('\n\n'), 'semantic')
+    recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
+    return { text, code: 0 }
   }
 
   // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
@@ -2038,7 +2124,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
   }
   const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
-  return { text: guardText(blocks.join('\n\n'), 'semantic'), code: 0 }
+  const text = guardText(blocks.join('\n\n'), 'semantic')
+  recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
+  return { text, code: 0 }
 }
 
 export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections, runSemantic }
