@@ -93,10 +93,12 @@ function run(args: string[], embeddingsEnabled: boolean): RunResult {
 }
 
 // Deliberately avoids every word in QUERY: no "look"/"account"/"email"/"address" anywhere in
-// the name or body, so an FTS hit here could only come from a real meaning-based match.
+// the name or body, so an FTS hit here could only come from a real meaning-based match. (The
+// parameter is named "input", not "address", specifically to avoid the literal overlap that
+// would otherwise let searchSymbolsFts's OR-widened retry match this control by keyword alone.)
 const FIXTURE =
-  'export function getUserByEmail(address: string): { id: number } | null {\n' +
-  '  const match = ACCOUNTS.find((row) => row.contact === address)\n' +
+  'export function getUserByEmail(input: string): { id: number } | null {\n' +
+  '  const match = ACCOUNTS.find((row) => row.contact === input)\n' +
   '  return match ? { id: match.id } : null\n' +
   '}\n\n' +
   'const ACCOUNTS = [{ id: 1, contact: "a@example.com" }]\n'
@@ -127,11 +129,13 @@ describe('token-goat semantic performs real embedding search, not just FTS fallb
       expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
 
       const r = run(['semantic', QUERY], false)
-      // sanitizeFtsQuery ANDs every word as a separate literal token; "look"/"up"/"an"/
-      // "using"/"its" never appear in the fixture, so no row can satisfy every term. Either
-      // the command exits 1 with "no matches" or its output simply omits the target symbol -
-      // both prove keyword search cannot find it, establishing this as a genuine miss rather
-      // than an accidental non-match.
+      // searchSymbolsFts now retries with an OR-joined query when the AND-joined attempt
+      // returns zero rows, so this control must avoid *every* literal word overlap with the
+      // fixture (see FIXTURE's comment above), not merely fail the all-terms-present AND match.
+      // None of QUERY's words appear verbatim in the fixture, so even the OR-widened retry
+      // can't match it. Either the command exits 1 with "no matches" or its output simply omits
+      // the target symbol - both prove keyword search cannot find it, establishing this as a
+      // genuine miss rather than an accidental non-match.
       expect(r.stdout).not.toContain('getUserByEmail')
     },
     60000,
