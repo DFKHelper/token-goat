@@ -519,6 +519,41 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect((after.match(/Always run tests\./g) ?? []).length).toBe(1)
   },
 
+  waste: () => {
+    const proj = mkIsolated('tg-matrix-waste-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    const lines = [
+      { message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/never-touched.ts' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: [{ type: 'text', text: 'x'.repeat(300) }] }] } },
+      { cwd: proj, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash1', name: 'Bash', input: { command: 'git status' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash1', content: [{ type: 'text', text: 'y'.repeat(300) }] }] } },
+      { cwd: proj, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash2', name: 'Bash', input: { command: 'git status' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash2', content: [{ type: 'text', text: 'z'.repeat(300) }] }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['waste', '--project', proj, '--transcript', transcript])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('token-goat waste')
+    expect(r.stdout).toContain('Tokens by tool')
+    expect(r.stdout).toContain('never-touched.ts')
+    expect(r.stdout).toContain('never referenced again')
+    expect(r.stdout).toMatch(/git status.*ran 2 times/)
+
+    const rj = run(['waste', '--project', proj, '--transcript', transcript, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as {
+      totalTokens: number
+      tokensByTool: Array<{ key: string; tokens: number }>
+      neverTouchedAgain: Array<{ filePath: string; tokens: number }>
+      repeatedUncompressedBash: Array<{ normalized: string; count: number }>
+    }
+    expect(parsed.totalTokens).toBeGreaterThan(0)
+    expect(parsed.tokensByTool.some((t) => t.key === 'Read')).toBe(true)
+    expect(parsed.neverTouchedAgain.some((f) => f.filePath === '/tmp/never-touched.ts')).toBe(true)
+    expect(parsed.repeatedUncompressedBash.some((c) => c.normalized === 'git status' && c.count === 2)).toBe(true)
+  },
+
   version: () => {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)
