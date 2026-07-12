@@ -390,6 +390,41 @@ describe('runTypes integration', () => {
 
 // ---- integration: runCallers against the real repo index -------------------
 
+// `LIMIT 0` in SQL always returns zero rows on every kind-scan, so a project with type
+// declarations that genuinely exist would otherwise be reported as "no type declarations
+// found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be
+// rejected up front.
+describe('runTypes limit validation', () => {
+  it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no type declarations found"', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runTypes({ limit: 0 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured).not.toContain('No type declarations found')
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+
+  it('rejects a negative limit as an explicit invalid-argument error', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runTypes({ limit: -1 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+})
+
 describe('runCallers integration', () => {
   it('exits 0 for a well-known symbol and returns structured output', () => {
     let captured = ''

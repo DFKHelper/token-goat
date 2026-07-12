@@ -1265,6 +1265,30 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
+    // Same reasoning as runSymbol/runRefs/runFind: limit: 0 (or negative) must be rejected up
+    // front instead of silently slicing the caller list to zero, consistent with every other
+    // --limit flag in this codebase.
+    it('rejects limit: 0 as an explicit invalid-argument error instead of silently showing zero callers', () => {
+      const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { stderr } = capture(() => {
+        const code = runBrief({ spec: 'f.ts::myFunc', limit: 0 })
+        expect(code).toBe(1)
+      })
+      expect(stderr.toLowerCase()).toContain('limit')
+      expect(mockResolveCallers).not.toHaveBeenCalled()
+    })
+
+    it('rejects a negative limit as an explicit invalid-argument error', () => {
+      const { stderr } = capture(() => {
+        const code = runBrief({ spec: 'f.ts::myFunc', limit: -1 })
+        expect(code).toBe(1)
+      })
+      expect(stderr.toLowerCase()).toContain('limit')
+      expect(mockResolveCallers).not.toHaveBeenCalled()
+    })
+
     it('assembles symbol, callers, and section into JSON shape', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1924,6 +1948,33 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runFind({ pattern: 'foo', limit: 2 }) })
       const lines = stdout.trim().split('\n')
       expect(lines).toHaveLength(2)
+    })
+
+    // `.slice(0, 0)` always returns zero files, so a pattern that genuinely matches indexed
+    // files would otherwise be reported as "no indexed files match" -- a wrong answer, not
+    // just a permissive input. limit: 0 (or negative) must be rejected up front.
+    it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no matches"', () => {
+      const syms: MockSymbol[] = [
+        { name: 'fooHelper', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stderr } = capture(() => {
+        const code = runFind({ pattern: 'foo', limit: 0 })
+        expect(code).toBe(1)
+      })
+      expect(stderr).not.toContain('No indexed files match')
+      expect(stderr.toLowerCase()).toContain('limit')
+      expect(mockQuerySymbols).not.toHaveBeenCalled()
+    })
+
+    it('rejects a negative limit as an explicit invalid-argument error', () => {
+      const { stderr } = capture(() => {
+        const code = runFind({ pattern: 'foo', limit: -1 })
+        expect(code).toBe(1)
+      })
+      expect(stderr.toLowerCase()).toContain('limit')
+      expect(mockQuerySymbols).not.toHaveBeenCalled()
     })
 
     it('warns when index scan hits FIND_SCAN_LIMIT', () => {

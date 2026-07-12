@@ -1081,6 +1081,14 @@ interface BriefResult {
  * and its containing doc section (if the file has heading structure) into one response --
  * cutting the common "understand this function" pattern from 2-3 round-trips to 1. */
 export function runBrief(opts: BriefOptions): number {
+  // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently
+  // slice the caller list down to zero entries instead of surfacing a clear "you asked for
+  // nothing" error, consistent with every other --limit flag in this codebase.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const resolution = resolveSymbolSpec(opts.spec)
   if (resolution.kind === 'ambiguous') {
     emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
@@ -1153,6 +1161,14 @@ export interface FindOptions {
 
 /** Handle ``token-goat find <pattern>``. */
 export function runFind(opts: FindOptions): number {
+  // A limit of 0 (or negative) would make the `.slice(0, opts.limit)` below always return zero
+  // files regardless of whether any match -- silently reporting "no indexed files match" for a
+  // pattern that's actually indexed. Reject it explicitly instead of slicing with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
