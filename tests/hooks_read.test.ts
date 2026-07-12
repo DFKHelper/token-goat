@@ -40,6 +40,18 @@ function _makeTmpMdFile(content = 'data'): string {
   return p
 }
 
+const tmpDirs: string[] = []
+
+// Creates a tmp file with an exact basename (in its own throwaway dir) — needed for
+// manifest-file hint tests, which key off the literal filename (e.g. "package.json").
+function makeTmpFileNamed(basename: string, content = '{}'): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-named-'))
+  const p = path.join(dir, basename)
+  fs.writeFileSync(p, content)
+  tmpDirs.push(dir)
+  return p
+}
+
 function readEvent(filePath: string | undefined): HookEvent {
   return makeHookEvent({
     toolName: 'Read',
@@ -109,6 +121,15 @@ afterEach(() => {
     if (p === undefined) continue
     try {
       fs.unlinkSync(p)
+    } catch {
+      // best-effort cleanup
+    }
+  }
+  while (tmpDirs.length > 0) {
+    const d = tmpDirs.pop()
+    if (d === undefined) continue
+    try {
+      fs.rmSync(d, { recursive: true, force: true })
     } catch {
       // best-effort cleanup
     }
@@ -1882,5 +1903,28 @@ describe('buildLineDiff', () => {
     expect(headerOldCount).toBe(40)
     expect(headerNewCount).toBe(10)
     expect(diff).toContain('more changed lines')
+  })
+})
+
+describe('preReadHandler package.json manifest hint (regression: repeated identical hint on every read)', () => {
+  it('emits the manifest hint on the first whole-file read of package.json', () => {
+    const p = makeTmpFileNamed('package.json')
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+    expect(result.hookType === 'context' && result.context).toContain('package manifest')
+  })
+
+  it('does not re-emit the identical manifest hint on a second read — falls through to the existing manifest re-read hint instead', () => {
+    const p = makeTmpFileNamed('package.json')
+    const first = preReadHandler(readEvent(p))
+    expect(first.hookType === 'context' && first.context).toContain('package manifest')
+
+    const second = preReadHandler(readEvent(p))
+    expect(second.hookType).toBe('context')
+    const secondText = second.hookType === 'context' ? second.context : ''
+    // Must not be the same manifest-hint text repeated verbatim.
+    expect(secondText).not.toContain('package manifest')
+    // Falls through to the existing generic "already read this manifest" hint.
+    expect(secondText).toContain('already read')
   })
 })
