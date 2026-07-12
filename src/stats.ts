@@ -15,7 +15,7 @@
 import * as path from 'node:path'
 import type Database from 'better-sqlite3'
 import { getDb } from './db.js'
-import { dataDir } from './constants.js'
+import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
 import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import type { StatsData } from './render/types.js'
@@ -186,23 +186,8 @@ CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
 const _globalSchemaApplied = new Set<string>()
 registerReset(() => _globalSchemaApplied.clear())
 
-/**
- * Compute the data directory path for a given home directory.
- * Replicates the logic from constants.ts::defaultDataDir but uses the provided homeDir.
- */
-function computeDataDir(homeDir: string): string {
-  const platform = process.platform
-  if (platform === 'win32') {
-    return path.join(homeDir, 'dfk-helper', 'token-goat')
-  }
-  if (platform === 'darwin') {
-    return path.join(homeDir, 'Library', 'Application Support', 'token-goat')
-  }
-  return path.join(homeDir, '.local', 'share', 'token-goat')
-}
-
 function getGlobalDb(homeDir?: string): Database.Database {
-  const basePath = homeDir ? computeDataDir(homeDir) : dataDir()
+  const basePath = homeDir ? dataDirForHome(homeDir) : dataDir()
   const dbPath = path.join(basePath, 'global.db')
   const db = getDb(dbPath)
   if (!_globalSchemaApplied.has(dbPath)) {
