@@ -2813,12 +2813,15 @@ export function buildProgram(): Command {
  * let the process exit naturally so buffered stdout flushes first.
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
-  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts).
-  // It is not a registered commander option or command anywhere in buildProgram, so it must be
-  // intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an
-  // unknown option and the freshly-spawned daemon child exits immediately, silently disabling
-  // the entire detached background-indexing feature (`token-goat worker start`).
-  if (argv.includes('--worker-daemon')) {
+  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts):
+  // `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered
+  // commander option or command anywhere in buildProgram, so it must be intercepted here, before
+  // parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the
+  // freshly-spawned daemon child exits immediately, silently disabling the entire detached
+  // background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than
+  // "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal
+  // string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
+  if (argv[2] === '--worker-daemon') {
     runDetachedWorkerDaemon()
     return
   }
