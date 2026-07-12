@@ -501,7 +501,7 @@ export function stripPrefixes(argv: string[]): string[] {
   if (argv.length === 0) return []
   let out = [...argv]
   // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
-  while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-') && !out[0]!.includes('/')) {
+  while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-')) {
     const head = out[0]!.split('=', 1)[0]!
     if (head && (/[A-Za-z]/.test(head[0]!) || head[0] === '_') && /^[A-Za-z0-9_]+$/.test(head)) out.shift()
     else break
