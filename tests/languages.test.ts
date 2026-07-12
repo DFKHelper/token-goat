@@ -1136,6 +1136,50 @@ type Foo {
     expect(fooSymbols[0]?.lineStart).toBe(4)
   })
 
+  it('does not drop every symbol after a literal `#` inside an open """..."""` block description', () => {
+    // Regression: extractGraphql used to strip `#` comments BEFORE masking """..."""` block
+    // descriptions. stripHashComments's own quote-awareness only tracks quote parity within a
+    // single line, so a `#` inside a still-open description (whose opening """` is on an
+    // earlier line) looked "not inside a string" and got treated as a real comment - including
+    // when it appeared right before the description's own closing """` on the same line, which
+    // deleted that closer too. With the closer gone, the description-masking pass never found a
+    // matching end for the rest of the file, silently dropping every symbol after it.
+    const content = `"""
+Some text with a # comment marker here """
+type Foo {
+  id: ID!
+}
+
+type Bar {
+  id: ID!
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+  })
+
+  it('does not treat a `"""`-looking sequence inside a real `#` comment as a description opener', () => {
+    // Regression guard for the fix above: masking descriptions before stripping `#` comments
+    // must not itself misread a `"""`-looking sequence that merely appears inside an ordinary
+    // `#` comment (e.g. documentation prose referencing the syntax) as a real opener - that
+    // would wrongly swallow every declaration after it as "still inside a description".
+    const content = `# see """ for details on descriptions
+type Foo {
+  id: ID!
+}
+
+type Bar {
+  id: ID!
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+  })
+
   it('blanks a single-line "..." description containing declaration-like text before matching (defense-in-depth alongside the block-string fix)', () => {
     // A single-line description's own line always starts with the opening quote, so the
     // line-anchored declaration regexes below can't match its content directly today - this
