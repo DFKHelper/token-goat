@@ -2048,7 +2048,7 @@ export function buildProgram(): Command {
   program
     .command('stats')
     .description('show session statistics (bare = totals only; --full for the breakdown)')
-    .option('--json', 'output JSON')
+    .option('-j, --json', 'output as JSON')
     .option('--full', 'show the full breakdown (by source, by command, by day)')
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
@@ -2059,7 +2059,7 @@ export function buildProgram(): Command {
     .command('context-stats')
     .description('show context statistics')
     .option('--project <path>', 'project root to analyze')
-    .option('--json', 'output JSON')
+    .option('-j, --json', 'output as JSON')
     .option('--fix', 'apply automatic fixes')
     .action(guard(cmdContextStats))
 
