@@ -136,6 +136,7 @@ import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAu
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
+import { runWasteCommand } from './cli_waste.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -650,6 +651,15 @@ function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean
 
 function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
   return runMemoryCommand(opts)
+}
+
+function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean; top?: string } = {}): Promise<void> {
+  return runWasteCommand({
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
+    ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
+  })
 }
 
 function _applyFiltersAndPrint(
@@ -2092,6 +2102,15 @@ export function buildProgram(): Command {
     .option('--fix', 'remove exact-duplicate lines (confirm-gated; shows a diff before writing)')
     .option('--yes', 'apply --fix changes without prompting (non-interactive)')
     .action(guard(cmdMemory))
+
+  program
+    .command('waste')
+    .description('session spend-ledger: token cost per tool/file from the current Claude Code session transcript, plus waste signals')
+    .option('--project <path>', 'project root to analyze')
+    .option('--transcript <path>', 'explicit transcript JSONL path (default: most-recently-modified transcript for this project)')
+    .option('--top <n>', 'number of top expensive tool calls to show (default: 10)')
+    .option('--json', 'output JSON')
+    .action(guard(cmdWaste))
 
   program
     .command('bash-output [id]')

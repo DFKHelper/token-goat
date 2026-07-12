@@ -412,6 +412,7 @@ To upgrade cleanly:
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
 | `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` is not yet implemented. |
 | `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
+| `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
 | `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--head N`/`--tail N` large enough to cover the full output, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
@@ -520,6 +521,36 @@ Project: C:\Projects\example
 `--fix` builds on `--analyze`. The only change it can apply automatically is removing exact-duplicate lines (keeping the first occurrence) — a pure structural dedup with no judgment call. Duplicate headings and cross-file overlaps are printed as advisory findings only; they often mean content should move into a path-scoped `.claude/rules/` file or a subdirectory `CLAUDE.md`, but token-goat never picks where for you, so no diff is proposed for those.
 
 Every proposed exact-duplicate-line fix is shown as a diff before anything is written, gated by the same confirm-before-write flow: pass `--yes` to apply non-interactively (scripts, CI), or run it from a terminal without `--yes` to be prompted per file. Running `--fix` without `--yes` from a non-interactive shell (no TTY) prints the diffs as a dry run and writes nothing.
+
+### Session waste ledger
+
+`token-goat waste` parses the current project's Claude Code session transcript — the JSONL file Claude Code writes under `~/.claude/projects/<slug>/*.jsonl` — and attributes token cost to every tool call in it, then flags a few concrete waste signals: files that were `Read` once and never referenced again, and Bash commands run repeatedly without ever hitting token-goat's own bash-output cache. By default it auto-discovers the most-recently-modified transcript for the current project; pass `--transcript <path>` to point at a specific one instead (useful when several sessions are open, or for CI/testing):
+
+```
+$ token-goat waste
+
+# token-goat waste
+Transcript: C:\Users\you\.claude\projects\C--Projects-example\a1b2c3d4-....jsonl
+Total tokens: 18420
+
+## Tokens by tool
+  Read: 9120 tok
+  Bash: 6210 tok
+  Grep: 2140 tok
+  Edit: 950 tok
+
+## Top expensive tool calls
+  [3400 tok] Read: src/big_module.ts
+  [1800 tok] Bash: npm test
+
+## Read once, never touched again
+  src/unrelated_helper.ts: 640 tok, never referenced again
+
+## Repeated Bash commands not hitting the token-goat cache
+  "git status": ran 4 times, 210 tok each, 840 tok total, uncompressed
+```
+
+`--top <n>` controls how many entries appear under "Top expensive tool calls" (default 10). `--json` prints the same report as machine-readable JSON instead.
 
 ## MCP server
 
