@@ -721,6 +721,20 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
     expect(capturedErr()).toContain('--sentences')
   })
 
+  // #232 regression: the old `Number.parseInt(opts.sentences, 10)` accepted trailing garbage
+  // ("3x" -> 3) and exponential notation ("1e1" -> 1) instead of rejecting them.
+  it('rejects trailing garbage in --sentences instead of silently truncating', () => {
+    const md = writeDoc('garbage-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '3x' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
+  it('rejects exponential notation in --sentences instead of silently truncating', () => {
+    const md = writeDoc('exp-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '1e1' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
   it('reuses a fresh sidecar without --force (rebuilt: false)', () => {
     const md = writeDoc('reuse.md')
     cmdCompactDoc({ filePath: md, json: true })
@@ -915,6 +929,24 @@ describe('cmdHistory', () => {
     // Array.prototype.slice(0, NaN) returns [] — so an invalid --limit silently printed "No
     // history entries found" even though entries existed, instead of raising a clear error.
     expect(() => cmdHistory({ limit: 'abc' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  // #232 regression: trailing garbage ("30x" -> 30 via Number.parseInt), exponential notation
+  // ("1e3" -> 1), and a negative value (silently clamped up to 1 by the old Math.max(1, n)) must
+  // all be rejected instead of silently coerced.
+  it('rejects trailing garbage in --limit instead of silently truncating', () => {
+    expect(() => cmdHistory({ limit: '30x' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  it('rejects exponential notation in --limit instead of silently truncating', () => {
+    expect(() => cmdHistory({ limit: '1e3' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
+  it('rejects a negative --limit instead of silently clamping to 1', () => {
+    expect(() => cmdHistory({ limit: '-5' })).toThrow()
     expect(capturedErr()).toContain('--limit')
   })
 
