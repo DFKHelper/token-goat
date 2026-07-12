@@ -59,6 +59,14 @@ describe('queryCsv', () => {
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
   });
 
+  it('filters rows by >= and <=', () => {
+    const gte = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '>=', value: '30' }] });
+    expect(gte.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
+
+    const lte = queryCsv(CSV_NUM, { wheres: [{ column: 'age', op: '<=', value: '25' }] });
+    expect(lte.rows.map((r) => r[1])).toEqual(['Bob']);
+  });
+
   it('filters rows by regex', () => {
     const result = queryCsv(CSV, { wheres: [{ column: 'name', op: '~=', value: '^(A|B)' }] });
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Bob']);
@@ -114,6 +122,11 @@ describe('parseWhereSpecs', () => {
     expect(parseWhereSpecs(['age>18'])).toEqual([{ column: 'age', op: '>', value: '18' }]);
     expect(parseWhereSpecs(['age<18'])).toEqual([{ column: 'age', op: '<', value: '18' }]);
     expect(parseWhereSpecs(['name~=^A'])).toEqual([{ column: 'name', op: '~=', value: '^A' }]);
+  });
+
+  it('parses >= and <= without misreading them as > or < with a leading = in the value', () => {
+    expect(parseWhereSpecs(['age>=18'])).toEqual([{ column: 'age', op: '>=', value: '18' }]);
+    expect(parseWhereSpecs(['age<=18'])).toEqual([{ column: 'age', op: '<=', value: '18' }]);
   });
 
   it('throws on a spec with no recognized operator', () => {
