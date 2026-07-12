@@ -15,7 +15,8 @@ import * as gdrive from '../src/gdrive.js'
 describe('gdrive', () => {
   beforeEach(() => {
     mockFetch.mockClear()
-    vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValue(null)
+    vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReset().mockReturnValue(null)
+    vi.mocked(webCache.storeWebOutput).mockClear()
   })
 
   describe('fetchDoc', () => {
@@ -75,6 +76,55 @@ describe('gdrive', () => {
       await expect(gdrive.fetchDoc('')).rejects.toThrow('file_id cannot be empty')
       await expect(gdrive.fetchDoc('path/to/file')).rejects.toThrow('invalid characters')
       await expect(gdrive.fetchDoc('a'.repeat(200))).rejects.toThrow('too long')
+    })
+
+    it('rejects a private-doc sign-in redirect instead of caching it as content', async () => {
+      const signInHtml = '<html><body>Sign in to continue</body></html>'
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: (name: string) => (name === 'content-type' ? 'text/html; charset=utf-8' : null) },
+        text: async () => signInHtml,
+      } as unknown as Response)
+
+      await expect(gdrive.fetchDoc('private-doc-id')).rejects.toThrow(/private or not shared/)
+      expect(webCache.storeWebOutput).not.toHaveBeenCalled()
+    })
+
+    it('caches real (non-HTML) doc content normally', async () => {
+      const docText = '# Real content\nBody text.'
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: (name: string) => (name === 'content-type' ? 'text/plain; charset=utf-8' : null) },
+        text: async () => docText,
+      } as unknown as Response)
+
+      const result = await gdrive.fetchDoc('public-doc-id')
+      expect(result).toBe(docText)
+      expect(webCache.storeWebOutput).toHaveBeenCalledOnce()
+    })
+
+    it('bypasses the disk cache and forces a live fetch when fresh is true', async () => {
+      const fileId = 'fresh-flag-id'
+      const staleText = 'stale cached content'
+      const freshText = 'fresh live content'
+
+      vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValueOnce({ cacheId: 'test', content: staleText })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => 'text/plain' },
+        text: async () => freshText,
+      } as unknown as Response)
+
+      const result = await gdrive.fetchDoc(fileId, { fresh: true })
+      expect(result).toBe(freshText)
+      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(webCache.storeWebOutput).toHaveBeenCalledWith(expect.any(String), freshText)
     })
   })
 
