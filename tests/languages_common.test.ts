@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { stripBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
+import { stripBlockCommentSpan, stripCstyleComments, stripSqlLineComments } from '../src/languages/common.js'
 
 // ---------------------------------------------------------------------------
 // stripBlockCommentSpan (and the private isInsideStringLiteral it delegates
@@ -69,6 +69,23 @@ describe('stripBlockCommentSpan', () => {
     expect(result.inComment).toBe(false)
     expect(result.code).not.toContain('real comment')
     expect(result.code.trim()).toBe(`var x = "C:\\\\Users\\\\";`)
+  })
+
+  it('recognizes a second /* comment on the same line after an earlier stripped comment contained an odd number of quote characters (fail-on-buggy: isInsideStringLiteral rescanning from column 0 instead of the current scan position misreads the apostrophe in the already-stripped "it\'s fine" comment as leaving a string open)', () => {
+    const line = `/* it's fine */ /* another comment */ realCode();`
+    const result = stripBlockCommentSpan(line, false)
+    expect(result.inComment).toBe(false)
+    expect(result.code).not.toContain('another comment')
+    expect(result.code.trim()).toBe('realCode();')
+  })
+})
+
+describe('stripCstyleComments', () => {
+  it('recognizes a second /* comment on the same line after an earlier stripped comment contained an odd number of quote characters', () => {
+    const text = `/* it's fine */ /* another comment */ realCode();`
+    const stripped = stripCstyleComments(text)
+    expect(stripped).not.toContain('another comment')
+    expect(stripped.trim()).toBe('realCode();')
   })
 })
 
