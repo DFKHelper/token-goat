@@ -114,6 +114,12 @@ export interface StatsOptions {
   homeDir?: string
   /** Show the full breakdown (by source/command/day) instead of just totals. */
   full?: boolean
+  /**
+   * Force the rich short KPI view even when stdout isn't a TTY (e.g. piped). Without this, a
+   * non-interactive caller (every AI agent invocation) silently falls back to the flat
+   * plain-text totals dump with no way to opt into the richer view.
+   */
+  short?: boolean
 }
 
 /** Run the ``token-goat stats`` command. */
@@ -140,8 +146,12 @@ export function runStats(opts: StatsOptions = {}): void {
   if (opts.homeDir !== undefined) {
     renderOpts.homeDir = opts.homeDir
   }
-  // Bare `stats` shows totals only; `--full` gates the existing rich/plain breakdown.
-  if (opts.full === true) {
+  // `--short` always wins: it exists specifically to force the short KPI view regardless of
+  // `--full` or TTY status. Otherwise bare `stats` shows totals only; `--full` gates the
+  // existing rich/plain breakdown.
+  if (opts.short === true) {
+    renderShortStats({ ...renderOpts, force: true })
+  } else if (opts.full === true) {
     renderStats(renderOpts)
   } else {
     renderShortStats(renderOpts)
