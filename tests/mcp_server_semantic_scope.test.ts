@@ -26,6 +26,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
+import { resolveProjectRoot } from '../src/project.js'
 
 const searchSemanticMock = vi.fn()
 
@@ -87,7 +88,10 @@ describe('mcp semantic tool projectRoot scoping', () => {
     }
   })
 
-  it('falls back to process.cwd() when no projectRoot argument is given (preserves current behavior)', async () => {
+  it('falls back to the resolved project root (not the raw process.cwd()) when no projectRoot argument is given', async () => {
+    // Regression: the default used to be the raw `process.cwd()`, which silently scoped a
+    // `semantic` call made from a project subdirectory to that subtree only. It must now resolve
+    // up to the actual project root the same way runFind/runChanged already do.
     const { client, close } = await connectedClient()
     try {
       const result = await client.callTool({ name: 'semantic', arguments: { query: 'anything' } })
@@ -95,7 +99,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
       expect(result.isError).toBe(false)
       expect(searchSemanticMock).toHaveBeenCalledTimes(1)
       const call = searchSemanticMock.mock.calls[0]
-      expect(call?.[5]).toBe(process.cwd())
+      expect(call?.[5]).toBe(resolveProjectRoot({ project: process.cwd() }))
     } finally {
       await close()
     }
