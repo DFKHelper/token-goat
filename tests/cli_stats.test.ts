@@ -14,6 +14,7 @@ vi.mock('../src/stats.js', () => ({
     by_day: {},
     by_project: {},
     by_command: {},
+    by_source: { hook: { events: 3, tokens_saved: 42, bytes_saved: 100 } },
     window_days: _windowDays ?? 30,
   }),
   renderStats: () => { process.stdout.write('MOCK_FULL_STATS\n') },
@@ -270,6 +271,24 @@ describe('cli_stats', () => {
       }
       expect(output).toContain('MOCK_SHORT_STATS_FORCED')
       expect(output).not.toContain('MOCK_FULL_STATS')
+    })
+
+    // Regression: the JSON envelope built by runStats included by_kind, by_day, by_project,
+    // and by_command, but omitted by_source even though summarize() already computes it and
+    // the human-readable output renders a "By Source" section from it.
+    it('includes by_source in the JSON envelope, matching the human-readable "By Source" data', () => {
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        runStats({ json: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+      }
+      const parsed = JSON.parse(output) as { by_source?: Record<string, { events: number; tokens_saved: number; bytes_saved: number }> }
+      expect(parsed.by_source).toEqual({ hook: { events: 3, tokens_saved: 42, bytes_saved: 100 } })
     })
 
     it('accepts homeDir option (passed through to summarize)', () => {
