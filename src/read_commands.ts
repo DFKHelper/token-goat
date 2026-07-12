@@ -1788,7 +1788,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       }
     }
   }
-  const rootDir = opts.projectRoot ?? process.cwd()
+  const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
 
   // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
   // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers

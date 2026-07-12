@@ -10,7 +10,7 @@
  * This test never seeds a real embedding index, so `searchSemantic` degrades to an empty result
  * and `runSemantic` always falls through to the FTS path under test here.
  */
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -72,6 +72,42 @@ describe('runSemantic FTS fallback project scoping', () => {
     } finally {
       rmSync(rootA, { recursive: true, force: true })
       rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+
+  it('scopes to the whole project root, not just a subdirectory, when invoked with cwd inside a subdirectory (regression)', async () => {
+    // Regression: `runSemantic` defaulted its scope to `opts.projectRoot ?? process.cwd()`.
+    // `projectScopeClause` does a literal `LIKE '<root>/%'` prefix match with no project-root
+    // resolution, so running from a subdirectory silently scoped the search to that subtree
+    // only, instead of walking up to the real project root the way other commands in this same
+    // file (runFind, runChanged) already do via `resolveProjectRoot`.
+    const root = mkdtempSync(join(tmpdir(), 'tg-sem-fts-subdir-root-'))
+    const subdir = join(root, 'subdir')
+    mkdirSync(subdir)
+    try {
+      // A package.json marks `root` as the project root that `resolveProjectRoot` should walk
+      // up to from `subdir`.
+      writeFileSync(join(root, 'package.json'), '{"name":"tg-sem-fts-subdir-fixture"}\n')
+      const rootFile = join(root, 'top.ts')
+      const subdirFile = join(subdir, 'nested.ts')
+      writeFileSync(rootFile, 'export function semFtsSubdirTopFn9k2() { /* semFtsSubdirTerm9k2 */ return 1 }\n')
+      writeFileSync(subdirFile, 'export function semFtsSubdirNestedFn9k2() { /* semFtsSubdirTerm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(rootFile))
+      indexFileSync(normalizePath(subdirFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        const { text, code } = await runSemantic('semFtsSubdirTerm9k2', {})
+        expect(code).toBe(0)
+        // Both the subtree-local symbol and the project-root-level symbol must be visible --
+        // the bug would have scoped the search to `subdir` only and dropped the root-level hit.
+        expect(text).toContain('semFtsSubdirNestedFn9k2')
+        expect(text).toContain('semFtsSubdirTopFn9k2')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
