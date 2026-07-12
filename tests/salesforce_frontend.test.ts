@@ -67,6 +67,29 @@ export default class OrderList extends LightningElement {
     ])
   })
 
+  it('does not treat a `/*`-looking sequence inside a backtick template literal as a real block comment', () => {
+    // Regression: the previous comment stripper's quote-awareness only recognized `"`/`'`, not
+    // the backtick, and reset per line. A template literal spanning multiple lines - legal in JS,
+    // unlike `"`/`'` strings - containing a `/*` sequence was misread as opening a real block
+    // comment. With no matching `*/` anywhere later in the file, the "comment" never closed and
+    // everything after it, including this real @api declaration, was silently dropped.
+    const source = `import { LightningElement, api } from 'lwc';
+
+const tpl = \`template with /* looks like a comment
+still inside template literal\`;
+
+export default class Foo extends LightningElement {
+  @api value;
+}
+`
+    const result = extractLwcJavaScript(source, 'force-app/main/default/lwc/foo/foo.js')
+    expect(result.symbols.map(({ name, kind }) => ({ name, kind }))).toEqual([
+      { name: 'foo', kind: 'lwc_bundle' },
+      { name: 'c-foo', kind: 'lwc_component_alias' },
+      { name: 'value', kind: 'lwc_api_property' },
+    ])
+  })
+
   it('classifies public LWC accessors as properties and async functions as methods', () => {
     const source = `export default class StatusPanel {
   @api get status() { return 'ready'; }
