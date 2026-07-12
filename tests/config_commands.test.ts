@@ -381,6 +381,32 @@ describe('cmdConfig set input validation hardening', () => {
     // The out-of-range value must never reach disk in the first place.
     expect(fs.existsSync(_testConfigPath)).toBe(false)
   })
+
+  it('rejects a typo\'d compression.profile value instead of silently persisting it and falling back at runtime (#237)', () => {
+    // Pre-fix, coerce() returned the raw string unchanged for any non-boolean/number/array
+    // field with no revalidation, so `config set compression.profile agressive` reported
+    // success and wrote the typo to disk. At runtime, bash_runner.ts's resolveProfile() and
+    // dispatch.ts's PROFILE_CAPS[profile] ?? 200 lookup would then silently fall back to the
+    // 'balanced' cap with no signal the setting had no effect.
+    expect(() => cmdConfig({ action: 'set', key: 'compression.profile', value: 'agressive' })).toThrow('must be one of')
+    expect(capturedErr()).toBe('')
+    // The invalid value must never reach disk in the first place.
+    expect(fs.existsSync(_testConfigPath)).toBe(false)
+  })
+
+  it('accepts every valid compression.profile value', () => {
+    for (const value of ['auto', 'aggressive', 'balanced', 'minimal']) {
+      expect(() => cmdConfig({ action: 'set', key: 'compression.profile', value })).not.toThrow()
+      invalidateConfigCache()
+      expect(loadConfig().compression.profile).toBe(value)
+    }
+  })
+
+  it('rejects an unrecognized compact_assist.harness value the same way', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.harness', value: 'claudecodex' })).toThrow('must be one of')
+    invalidateConfigCache()
+    expect(loadConfig().compact_assist.harness).not.toBe('claudecodex')
+  })
 })
 
 // ── config set warns when an active env var shadows the just-written value ──

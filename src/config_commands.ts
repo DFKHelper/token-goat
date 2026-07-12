@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -240,6 +240,17 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         const clamped = validateNumericField(key, coercedValue, cfg as unknown as Record<string, unknown>)
         if (clamped !== undefined && clamped !== coercedValue) {
           throw new Error(`config set: ${key} = ${coercedValue} is outside the allowed range (would be clamped to ${String(clamped)}); rejected`)
+        }
+      }
+      if (typeof coercedValue === 'string') {
+        // Symmetric with the numeric-bounds revalidation above, for the handful of string
+        // fields whose value must come from a fixed set (e.g. compression.profile). Without
+        // this, a typo like `agressive` is accepted and persisted with no error, then silently
+        // falls back to a default at runtime (dispatch.ts's PROFILE_CAPS lookup) with no signal
+        // to the user that their setting did nothing.
+        const allowed = validateEnumField(key, coercedValue)
+        if (allowed !== undefined) {
+          throw new Error(`config set: ${key} = '${coercedValue}' is not valid; must be one of: ${allowed.join(', ')}`)
         }
       }
       saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])

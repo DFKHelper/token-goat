@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 
 import { parse, stringify } from 'smol-toml'
 
+import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath } from './constants.js'
 import { envBool, envInt, envStr } from './env.js'
 import { atomicWriteText } from './util.js'
@@ -544,6 +545,27 @@ export function validateNumericField(fieldKey: string, value: number, cfg: Recor
   }
 
   return clamped
+}
+
+// String-valued config fields whose value must come from a fixed set. Extracted from
+// _buildConfig / dispatch.ts's PROFILE_CAPS and bridges/registry.ts's harness names, so a typo
+// (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently
+// falling back to a default at runtime with no signal to the user.
+const ENUM_FIELD_VALUES: Record<string, string[]> = {
+  'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
+  'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
+}
+
+/**
+ * Validate a single enum-valued string config field against its fixed set of allowed values.
+ * Used by config set to reject unrecognized values without rebuilding the entire config tree.
+ * Returns undefined if the field isn't enum-constrained (any string is fine) or the value is
+ * valid; returns the allowed-value list if the value is invalid.
+ */
+export function validateEnumField(fieldKey: string, value: string): string[] | undefined {
+  const allowed = ENUM_FIELD_VALUES[fieldKey]
+  if (!allowed) return undefined
+  return allowed.includes(value) ? undefined : allowed
 }
 
 // ---------------------------------------------------------------------------

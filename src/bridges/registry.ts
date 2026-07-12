@@ -22,8 +22,9 @@ import { ENV_KEYS } from '../constants.js'
 import { registerReset } from '../reset.js'
 import type { HarnessName } from './types.js'
 
-/** Every value {@link detectHarness} can return; used to validate the override env var. */
-const KNOWN_HARNESS_NAMES = new Set<string>([
+/** Every value {@link detectHarness} can return; used to validate the override env var and, via
+ * config.ts's re-export, `config set compact_assist.harness`. */
+export const KNOWN_HARNESS_NAMES = new Set<string>([
   'claudecode',
   'codex',
   'opencode',
