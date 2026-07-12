@@ -22,6 +22,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, passOutput } from './hooks_common.js'
+import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
 
 /** Recognised image extensions (lowercase, leading dot). Matches the Python set. */
@@ -243,6 +244,16 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     `token-goat shrank ${path.basename(filePath)}: ` +
     `${Math.round(result.originalBytes / 1024)}kb -> ${Math.round(result.shrunkBytes / 1024)}kb ` +
     `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
+
+  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact
+  // vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that
+  // formula was never ported to shrinkImage's return shape, so this uses the same
+  // bytes/4 token-cost approximation the rest of this TS codebase already applies to
+  // savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls).
+  // This call was dropped entirely during the Python->TS port -- restoring it is what
+  // makes 'image_shrink' rows (and the flagship image-shrink savings figure derived
+  // from them) appear in `token-goat stats --full` again.
+  recordStat('image_shrink', saved, Math.round(saved / 4), undefined, path.basename(filePath))
 
   return contextOutput(`${summary}\n${dataUrl}`)
 }

@@ -16,6 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 })
 
 import { isImagePath, preReadImageHandler, shrinkImage } from '../src/image_shrink.js'
+import { summarize } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
 // Importing relay registers EVERY hook module (hooks_read's large-file deny AND
 // image_shrink's preReadImageHandler) for its side-effects, so runHook dispatches
@@ -203,6 +204,20 @@ describe('preReadImageHandler', () => {
     if (out.hookType !== 'context') return
     expect(out.context).toContain('data:image/')
     expect(out.context).toContain('smaller')
+  })
+
+  it('records an image_shrink stat row through the real global stats DB on a successful shrink (#236: this recording was dropped entirely during the Python->TS port -- a synthetic DB insert would not catch its absence, so this drives the real production hook path with no test-only DB override)', async () => {
+    const before = summarize(30).by_kind['image_shrink']
+    const beforeEvents = before?.events ?? 0
+    const beforeBytesSaved = before?.bytes_saved ?? 0
+
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+
+    const after = summarize(30).by_kind['image_shrink']
+    expect(after).toBeDefined()
+    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
   })
 
   it('passes a large image through unshrunk when image_shrink.enabled is false (regression: no way to opt out of shrinking)', async () => {
