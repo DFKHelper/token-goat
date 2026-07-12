@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
-import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
@@ -89,6 +89,31 @@ const lastKnownProjectRoots = new Map<string, string>()
  * subsequent cycle until cleanup finally succeeds.
  */
 const unclearedDrainingSnapshots = new Map<string, string>()
+
+/**
+ * List every live draining-recovery file for `queuePath`: the primary
+ * `dirty.txt.draining` name, plus any `.alt-<ts>` fallback claimed by stage
+ * (b) when the primary name was still occupied by a file a previous cycle
+ * could not clean up (see drainOnce's stage (b) comment). Excludes
+ * `.corrupt-*` quarantine files, which are deliberately abandoned and must
+ * never be reprocessed. Without recovering every fallback file (not just the
+ * first), a single stuck primary `.draining` file could starve the rest of
+ * the queue from ever draining.
+ */
+function listDrainingFiles(queuePath: string): string[] {
+  const dir = path.dirname(queuePath)
+  const base = `${path.basename(queuePath)}.draining`
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  return entries
+    .filter((name) => name === base || (name.startsWith(`${base}.alt-`) && !name.includes('.corrupt-')))
+    .sort()
+    .map((name) => path.join(dir, name))
+}
 
 /**
  * Cap on consecutive transient-read-failure requeues for the same path (see
@@ -532,6 +557,18 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
   const dir = path.dirname(dbPath)
   return (absPath, sha) => {
     try {
+      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate:
+      // a file that becomes skip-eligible purely from a config change (same sha) would
+      // otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows
+      // stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with
+      // a partial { worker: {...} } shape.
+      const ixCfgForSkip = loadConfig().indexing
+      if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {
+        // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must
+        // count as "indexed" in processDirtyBatch's tally.
+        removeFileFromIndex(getDb(dbPath), absPath)
+        return true
+      }
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed
       // (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
@@ -743,53 +780,63 @@ export function drainOnce(
     if (bumpAndCheckRetry(requeueDir, absPath)) deferredRequeues.push(absPath)
   }
 
-  // (a) Crash recovery: absorb a .draining file abandoned by a previous crashed drain.
-  if (fs.existsSync(draining)) {
+  // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files
+  // abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a
+  // Windows sharing violation keeps the primary `.draining` name locked across cycles (see
+  // stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so
+  // a single stuck file can never starve the rest of the queue from ever draining.
+  for (const drainingFile of listDrainingFiles(queuePath)) {
     let drainingContent: string
     try {
-      drainingContent = fs.readFileSync(draining, 'utf8')
+      drainingContent = fs.readFileSync(drainingFile, 'utf8')
     } catch {
-      // Genuinely unreadable: quarantine so stage (b)'s claim-rename cannot clobber it, then skip this cycle.
+      // Genuinely unreadable: quarantine so it cannot collide with a future claim, then skip it this cycle.
       try {
-        fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+        fs.renameSync(drainingFile, `${drainingFile}.corrupt-${Date.now()}`)
       } catch {
         // best effort
       }
-      return 0
+      continue
     }
     // Only process this content if it was not already folded into a batch on a prior cycle
-    // (see unclearedDrainingSnapshots below). Without this guard, a .draining file that
+    // (see unclearedDrainingSnapshots below). Without this guard, a draining file that
     // outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be
     // re-read and its paths reprocessed on every cycle.
-    if (unclearedDrainingSnapshots.get(draining) !== drainingContent) {
+    if (unclearedDrainingSnapshots.get(drainingFile) !== drainingContent) {
       processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn)
     }
     // Only clear the recovered file now that its batch has been durably processed (or
     // recognized above as already processed) -- never before -- so a crash partway through
-    // processDirtyBatch leaves the .draining file in place for the next startup to recover,
-    // instead of deleting it up front and losing every path it named.
+    // processDirtyBatch leaves the file in place for the next startup to recover, instead of
+    // deleting it up front and losing every path it named.
     try {
-      fs.rmSync(draining, { force: true })
-      unclearedDrainingSnapshots.delete(draining)
+      fs.rmSync(drainingFile, { force: true })
+      unclearedDrainingSnapshots.delete(drainingFile)
     } catch {
       try {
-        fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
-        unclearedDrainingSnapshots.delete(draining)
+        fs.renameSync(drainingFile, `${drainingFile}.corrupt-${Date.now()}`)
+        unclearedDrainingSnapshots.delete(drainingFile)
       } catch {
-        // Both cleanup attempts failed and the file is still named .draining: remember
-        // exactly what we already folded into this cycle's batch so the next cycle can
-        // retry cleanup without reprocessing the same paths again.
-        unclearedDrainingSnapshots.set(draining, drainingContent)
+        // Both cleanup attempts failed and the file is still stuck: remember exactly what we
+        // already folded into this cycle's batch so the next cycle can retry cleanup without
+        // reprocessing the same paths again.
+        unclearedDrainingSnapshots.set(drainingFile, drainingContent)
       }
     }
   }
 
   // (b) Atomically claim the live queue. A concurrent appendDirtyPath either landed before the rename (its line travels in .draining) or recreates a fresh dirty.txt after it (next cycle) — it can never be deleted unindexed. On Windows a concurrent open-for-append can make rename fail with EPERM/ EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
   if (fs.existsSync(queuePath)) {
+    // If the primary `.draining` name is still occupied by a file the loop above could not
+    // clean up (both rmSync and rename-to-corrupt failed -- typically a Windows sharing
+    // violation from something else holding it open), claiming into that same name would
+    // collide forever and starve the live queue indefinitely. Claim into a distinct
+    // `.alt-<ts>` name instead; listDrainingFiles recovers it on a future cycle.
+    const claimTarget = fs.existsSync(draining) ? `${draining}.alt-${Date.now()}` : draining
     let claimed = false
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        fs.renameSync(queuePath, draining)
+        fs.renameSync(queuePath, claimTarget)
         claimed = true
         break
       } catch {
@@ -800,7 +847,7 @@ export function drainOnce(
       let claimedContent = ''
       let readOk = false
       try {
-        claimedContent = fs.readFileSync(draining, 'utf8')
+        claimedContent = fs.readFileSync(claimTarget, 'utf8')
         readOk = true
       } catch {
         // read failure is fail-soft: leave the claimed file in place; the next cycle's stage
@@ -811,38 +858,39 @@ export function drainOnce(
         // process crashing mid-batch) must propagate to the caller, not be swallowed as a
         // "read failure", so the cleanup below never runs and the claimed file survives.
         processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)
-        // Re-read the .draining file ONE more time, right before deleting it, to catch a path
+        // Re-read the claimed file ONE more time, right before deleting it, to catch a path
         // appended by a writer that raced the claim-rename above. The rename-to-claim pattern
         // assumes no other writer can touch the live queue's underlying file once it has been
-        // renamed to `draining` -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE lets a
-        // concurrent open-for-append follow the same underlying file object across the rename) or
-        // on POSIX (a narrow rename/open race exists there too). A dirty path appended during
-        // that window would otherwise be silently deleted along with the rest of this cycle's
-        // already-processed content and never reindexed. Forward anything found beyond what was
-        // already processed back into the live queue so the next drain cycle picks it up.
+        // renamed to the claim target -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE
+        // lets a concurrent open-for-append follow the same underlying file object across the
+        // rename) or on POSIX (a narrow rename/open race exists there too). A dirty path
+        // appended during that window would otherwise be silently deleted along with the rest
+        // of this cycle's already-processed content and never reindexed. Forward anything found
+        // beyond what was already processed back into the live queue so the next drain cycle
+        // picks it up.
         try {
-          const recheck = fs.readFileSync(draining, 'utf8')
+          const recheck = fs.readFileSync(claimTarget, 'utf8')
           if (recheck !== claimedContent) {
             const extra = recheck.startsWith(claimedContent) ? recheck.slice(claimedContent.length) : recheck
             for (const p of parseDirtyQueueLines(extra)) appendToDirtyQueue(dir, p)
           }
         } catch {
-          // best-effort recheck -- if the .draining file vanished or became unreadable between
+          // best-effort recheck -- if the claimed file vanished or became unreadable between
           // the read above and now, there is nothing more we can safely recover here.
         }
         // Only clear the claimed file now that its batch has been durably processed -- never
         // before -- so a crash partway through processDirtyBatch leaves it in place for stage
         // (a) to recover on the next startup instead of losing the paths it named.
         try {
-          fs.rmSync(draining, { force: true })
+          fs.rmSync(claimTarget, { force: true })
         } catch {
           try {
-            fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+            fs.renameSync(claimTarget, `${claimTarget}.corrupt-${Date.now()}`)
           } catch {
             // Both cleanup attempts failed: record it the same way stage (a) does, so a
-            // leftover .draining file here is recognized as already-processed (and not
-            // silently reprocessed) by stage (a)'s crash recovery on the next cycle.
-            unclearedDrainingSnapshots.set(draining, claimedContent)
+            // leftover file here is recognized as already-processed (and not silently
+            // reprocessed) by stage (a)'s crash recovery on the next cycle.
+            unclearedDrainingSnapshots.set(claimTarget, claimedContent)
           }
         }
       }

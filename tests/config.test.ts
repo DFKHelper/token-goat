@@ -236,6 +236,21 @@ describe('loadConfig', () => {
     }
   })
 
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WORKER_MAX_POOL to the documented max (1-8)', () => {
+    const orig = process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+    try {
+      process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = '999'
+      const cfg = loadConfig()
+      expect(cfg.worker.max_pool_workers).toBe(8)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+      } else {
+        process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = orig
+      }
+    }
+  })
+
   it('mtime cache: second call with unchanged file returns same object reference', () => {
     // Write a minimal TOML so the file exists
     fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')

@@ -194,6 +194,83 @@ export function stripHashComments(text: string): string {
     .join('\n')
 }
 
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
+const HTML_SCRIPT_BODY_RE = /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi
+const HTML_CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g
+// Liquid's own comment tag, e.g. `{% comment %}...{% endcomment %}` or the whitespace-control
+// variant `{%- comment -%}...{%- endcomment -%}`. Blanked the same way as HTML `<!-- -->`
+// comments below; applying this mask universally (not just for .liquid files) is harmless since
+// `{% comment %}` syntax never occurs in plain HTML/other file kinds this function is used for.
+const LIQUID_COMMENT_RE = /{%-?\s*comment\s*-?%}[\s\S]*?{%-?\s*endcomment\s*-?%}/gi
+
+// Blanks HTML comments, Liquid {% comment %} blocks, <script> element bodies (tags kept intact so
+// callers that still need to read the opening tag, e.g. a script `src=` extractor, are
+// unaffected), and CDATA sections - all with spaces, never newlines, so line/offset math against
+// the original text stays valid. Without this, a heading-shaped string sitting inside
+// a comment, a JS template literal in a <script> block, or a CDATA-wrapped payload
+// gets scanned as if it were real markup and produces a phantom section/symbol.
+export function maskHtmlNoise(text: string): string {
+  // Script bodies are masked FIRST, before HTML-comment masking: a literal `<!--` sitting
+  // inside a <script> string (with no matching `-->` in that same script tag) would otherwise
+  // be treated by HTML_COMMENT_RE as a real comment opener, greedily matching everything up to
+  // the NEXT `-->` anywhere later in the document -- including real headings in between.
+  // Masking script bodies first blanks any such literal `<!--`/`-->` substrings before
+  // HTML_COMMENT_RE ever runs, so it can no longer misfire across a script boundary. An HTML
+  // comment that itself contains a `<script>`-shaped substring is unaffected by this reorder:
+  // HTML_SCRIPT_BODY_RE would just mask that fake script body too (a no-op either way, since
+  // the surrounding HTML_COMMENT_RE pass immediately after blanks that whole span regardless).
+  let out = text.replace(HTML_SCRIPT_BODY_RE, (_m, open: string, body: string, close: string) =>
+    open + body.replace(/[^\n]/g, ' ') + close,
+  )
+  out = out.replace(HTML_COMMENT_RE, (m) => m.replace(/[^\n]/g, ' '))
+  out = out.replace(LIQUID_COMMENT_RE, (m) => m.replace(/[^\n]/g, ' '))
+  out = out.replace(HTML_CDATA_RE, (m) => m.replace(/[^\n]/g, ' '))
+  return out
+}
+
+// ATX-style HTML/Liquid `<h1>`-`<h6>` headings. `s` (dotall) lets `.*?` cross newlines so a
+// heading formatted across multiple lines (e.g. `<h1>\n  Title\n</h1>`, common
+// HTML-formatter/pretty-printer output) still matches -- the non-greedy `.*?` still stops at
+// the first matching `</hN>`, so this doesn't introduce over-greedy matches.
+const HTML_HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
+const HTML_HEADING_TAG_STRIP_RE = /<[^>]+>/g
+
+/** One `<hN>...</hN>` match found by {@link findHtmlHeadingMatches}. */
+export interface HtmlHeadingMatch {
+  /** Heading level, 1-6. */
+  readonly level: number
+  /** Inner text with nested tags stripped and whitespace trimmed. May be empty. */
+  readonly heading: string
+  /** Character offset of the match start in the (unmasked) source text. */
+  readonly offset: number
+  /** The full matched `<hN ...>...</hN>` text, e.g. for callers that need to inspect attributes
+   * on the opening tag (such as an `id=` anchor) without re-scanning the source. */
+  readonly tag: string
+}
+
+/**
+ * Find every `<h1>`-`<h6>` heading in HTML/Liquid `content`, masking comments, `<script>`
+ * bodies, and CDATA sections first via {@link maskHtmlNoise} so heading-shaped text sitting
+ * inside one of those (a commented-out `<h1>`, a JS template literal, a CDATA payload) is not
+ * mistaken for a real heading.
+ *
+ * Shared by the indexer (`html.ts`, `liquid.ts`) and the live section-reading fallback
+ * (`section_reader.ts`) so a heading indexed as a symbol is always reachable via the live
+ * `section` command, and vice versa -- one regex/masking implementation instead of two that can
+ * drift out of sync.
+ */
+export function findHtmlHeadingMatches(content: string): HtmlHeadingMatch[] {
+  const masked = maskHtmlNoise(content)
+  const matches: HtmlHeadingMatch[] = []
+  for (const m of masked.matchAll(HTML_HEADING_RE)) {
+    const level = parseInt(m[1] ?? '1', 10)
+    const raw = m[2] ?? ''
+    const heading = raw.replace(HTML_HEADING_TAG_STRIP_RE, '').trim()
+    matches.push({ level, heading, offset: m.index ?? 0, tag: m[0] ?? '' })
+  }
+  return matches
+}
+
 /** Strip SQL ``-- …`` line comments. */
 export function stripSqlLineComments(text: string): string {
   return text

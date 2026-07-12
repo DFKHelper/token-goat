@@ -27,10 +27,10 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
-import { pruneDeletedFiles } from './index_prune.js'
+import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
@@ -216,6 +216,7 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     files = collectWalkIndexFiles(root)
   }
   const blockedRoots = loadConfig().worker.blocked_roots
+  const ixCfg = loadConfig().indexing
   let indexed = 0
   let failed = 0
   let skipped = 0
@@ -226,6 +227,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
+    // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below.
+    // Without this pre-filter, indexFileSync's internal purge would run and then the
+    // unconditional indexFileEmbeddings call below would immediately re-embed a file meant
+    // to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
+    if (isParseSkipEligible(key, ixCfg)) {
+      removeFileFromIndex(getDb(dbPath), key)
+      continue
+    }
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
     // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
     // for every tracked file on every invocation, even ones byte-identical to what was already
@@ -236,14 +245,12 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = sha !== null && entry?.sha === sha
-    // While embeddings are disabled globally, OR this specific file is permanently excluded from
-    // embedding by policy (profile-meta.xml, skip_dirs, over large_file_symbol_only_kb, an
-    // oversized salesforce_metadata file), indexFileEmbeddings stamps embed_sha with
-    // disabledEmbedSha(sha) rather than the bare sha (see its doc comment in parser.ts), so this
-    // gate must compare against the same marker form here -- otherwise a file that was only ever
-    // marker-stamped (never actually embedded) would look permanently "unchanged" the instant
-    // embeddings are re-enabled or the file's exclusion reason no longer applies, and mirror
-    // makeIndexer's identical gate in worker.ts.
+    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's
+    // makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this
+    // sha counts as fresh; while enabled, a bare sha match is fresh (the file was really
+    // embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized
+    // salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and
+    // an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped
     // only because the optional model/sqlite-vec deps were absent) treated as stale so it is

@@ -916,6 +916,36 @@ describe('drainOnce', () => {
       // the append lands in the live queue, not WHETHER it does.
       expect(getDirtyPathsFor(DIR)).toEqual([lockedPath])
     })
+
+    it('recovers multiple abandoned .draining/.draining.alt-<ts> files in a single cycle', () => {
+      // Regression: before listDrainingFiles, drainOnce only ever checked the single primary
+      // `.draining` name. A `.draining.alt-<ts>` fallback file (left behind when stage (b) had
+      // to claim under a fallback name because the primary was still occupied by a file a
+      // previous cycle could not clean up) would then sit on disk forever, unprocessed, on
+      // every future cycle -- listDrainingFiles must recover ALL of them, not just the first.
+      const D = path.join(DIR, 'stuck-a.ts')
+      fs.writeFileSync(D, 'export const stuckA = 1\n')
+      const F = path.join(DIR, 'stuck-b.ts')
+      fs.writeFileSync(F, 'export const stuckB = 2\n')
+
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      const altPath = `${drainingPath}.alt-1700000000000`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${D}\n`)
+      fs.writeFileSync(altPath, `${F}\n`)
+
+      const indexedPaths: string[] = []
+      const count = drainOnce(DIR, (p) => {
+        indexedPaths.push(p)
+      })
+
+      expect(count).toBe(2)
+      expect(indexedPaths).toContain(D)
+      expect(indexedPaths).toContain(F)
+      expect(fs.existsSync(drainingPath)).toBe(false)
+      expect(fs.existsSync(altPath)).toBe(false)
+    })
   })
 
   describe('drainOnce rm-after-process (crash-safety regression)', () => {

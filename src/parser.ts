@@ -21,6 +21,7 @@ import * as path from 'node:path'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
+import type { IndexingConfig } from './config.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
@@ -1640,6 +1641,34 @@ export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): 
   db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(folded)
 }
 
+/**
+ * True when any directory segment of `filePath` matches a basename in `skipDirs` -- the
+ * `indexing.skip_dirs` config knob. Splits on either separator since callers pass both
+ * forward-slash-normalized keys (resolveIndexPath) and raw absolute paths.
+ */
+export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): boolean {
+  if (skipDirs.length === 0) return false
+  const segments = filePath.split(/[/\\]/)
+  return segments.slice(0, -1).some((seg) => skipDirs.includes(seg))
+}
+
+/**
+ * True when `filePath` is excluded from the syntactic parse entirely by `indexing.skip_dirs`
+ * or `indexing.large_file_skip_kb`. Must be evaluated UNCONDITIONALLY (independent of any
+ * sha/parseUnchanged gate) because a file that becomes skip-eligible via a config change alone
+ * must still have its stale rows purged. A stat failure is treated as "not skip-eligible".
+ */
+export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): boolean {
+  if (isUnderSkipDir(filePath, cfg.skip_dirs)) return true
+  try {
+    const stat = fs.statSync(filePath)
+    if (stat.size > cfg.large_file_skip_kb * 1024) return true
+  } catch {
+    // let the caller's own read/stat attempt handle/report the failure
+  }
+  return false
+}
+
 function writeParseResult(
   filePath: string,
   content: Buffer | null,
@@ -1705,6 +1734,17 @@ function writeParseResult(
  * `processDirtyBatch` silently count this file as indexed.
  */
 export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
+  const ixCfg = loadConfig().indexing
+  if (ixCfg !== undefined && isParseSkipEligible(filePath, ixCfg)) {
+    // Purge stale rows AND the files row (sha) so the file settles into a stable
+    // not-indexed state instead of being re-selected as "changed" on every drain;
+    // also drop any embedding rows it held before becoming skip-eligible
+    // (indexFileSync is called directly from read_commands' --force-refresh path).
+    const db = getDb(dbPath)
+    deleteFileRows(db, filePath)
+    deleteFileEmbeddings(db, filePath)
+    return
+  }
   const language = detectLanguage(filePath)
   let raw: Buffer
   try {

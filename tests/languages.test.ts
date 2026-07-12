@@ -89,6 +89,26 @@ public class Widget {
     expect(methods).not.toContain('items')
   })
 
+  it('indexes an expression-bodied property as a var symbol, not a method', () => {
+    const content = `public class Calc {
+  private int count;
+  public int Count => count;
+  public string Label => "total";
+  public int Add(int a, int b) => a + b;
+}
+`
+    const { symbols } = extractCsharp(content, 'Calc.cs')
+    const countProp = symbols.find((s) => s.name === 'Count')
+    expect(countProp?.kind).toBe('var')
+    expect(countProp?.docstring).toBe('Calc')
+    const labelProp = symbols.find((s) => s.name === 'Label')
+    expect(labelProp?.kind).toBe('var')
+    // Regression: an expression-bodied METHOD (parens between name and `=>`) must still be
+    // indexed as a method, not misdetected as a property by PROPERTY_ARROW_RE.
+    const add = symbols.find((s) => s.name === 'Add')
+    expect(add?.kind).toBe('method')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractCsharp('', 'empty.cs')
     expect(symbols).toHaveLength(0)
@@ -737,6 +757,60 @@ describe('html adapter', () => {
     expect(realSection?.line).toBe(7)
     expect(realSection?.endLine).toBe(8)
   })
+
+  it('does not treat a heading-shaped string inside a <script> template literal as a real heading', () => {
+    const content = `<script>
+const tpl = \`<h1>Fake Title</h1>\`
+</script>
+<h1>Real Title</h1>`
+    const { sections } = extractHtml(content, 'script-tpl.html')
+    expect(sections.some((s) => s.heading === 'Fake Title')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
+  })
+
+  it('does not index id=/class= attributes written literally inside a <script> body', () => {
+    const content = `<script>
+const html = '<div id="phantom-script-id" class="phantom-script-class"></div>'
+</script>
+<div id="real-script-id" class="real-script-class">content</div>`
+    const { symbols } = extractHtml(content, 'script-idclass.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('phantom-script-id')
+    expect(names).not.toContain('phantom-script-class')
+    expect(names).toContain('real-script-id')
+    expect(names).toContain('real-script-class')
+  })
+
+  it('finds a real heading after a <script> body containing an unmatched literal <!-- marker', () => {
+    // A literal `<!--` inside a <script> string with no closing `-->` in that same tag would,
+    // if HTML_COMMENT_RE ran before script-body masking, greedily consume everything up to the
+    // NEXT `-->` anywhere later in the document, silently eating real headings in between.
+    const content = `<script>
+const marker = '<!-- not a real comment opener'
+</script>
+<h1>Real Title</h1>`
+    const { sections } = extractHtml(content, 'script-unmatched.html')
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
+  })
+
+  it('does not index a heading inside a CDATA section', () => {
+    const content = `<![CDATA[<h1>Fake CDATA Title</h1>]]>
+<h1>Real Title</h1>`
+    const { sections } = extractHtml(content, 'cdata-heading.html')
+    expect(sections.some((s) => s.heading === 'Fake CDATA Title')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
+  })
+
+  it('does not index id=/class= attributes written literally inside a CDATA section', () => {
+    const content = `<![CDATA[<div id="phantom-cdata-id" class="phantom-cdata-class"></div>]]>
+<div id="real-cdata-id" class="real-cdata-class">content</div>`
+    const { symbols } = extractHtml(content, 'cdata-idclass.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('phantom-cdata-id')
+    expect(names).not.toContain('phantom-cdata-class')
+    expect(names).toContain('real-cdata-id')
+    expect(names).toContain('real-cdata-class')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -815,6 +889,32 @@ describe('liquid adapter', () => {
     const heading = result.symbols.find((s) => s.name === 'Setup Guide')
     expect(heading?.kind).toBe('heading')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  })
+
+  it('does not index a heading commented out with <!-- -->', () => {
+    const content = `<!-- <h1>Old Title</h1> -->
+<h1>Real Title</h1>`
+    const { sections } = extractLiquid(content, 'html-comment.liquid', 'html-comment.liquid')
+    expect(sections.some((s) => s.heading === 'Old Title')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
+  })
+
+  it('does not index a heading inside a {% comment %} block', () => {
+    const content = `{% comment %}
+<h1>Old Title</h1>
+{% endcomment %}
+<h1>Real Title</h1>`
+    const { sections } = extractLiquid(content, 'liquid-comment.liquid', 'liquid-comment.liquid')
+    expect(sections.some((s) => s.heading === 'Old Title')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
+  })
+
+  it('does not index a heading inside a CDATA section', () => {
+    const content = `<![CDATA[<h1>Fake CDATA Title</h1>]]>
+<h1>Real Title</h1>`
+    const { sections } = extractLiquid(content, 'cdata.liquid', 'cdata.liquid')
+    expect(sections.some((s) => s.heading === 'Fake CDATA Title')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Title')).toBe(true)
   })
 })
 
