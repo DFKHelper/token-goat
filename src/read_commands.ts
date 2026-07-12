@@ -10,11 +10,12 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
-import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
@@ -72,6 +73,28 @@ function resolveBody(entry: { body: string; filePath: string; lineStart: number;
     .split(/\r?\n/)
     .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
     .join('\n')
+}
+
+// The one-line warning prepended by staleWarning() when the on-disk file has changed since the
+// index last saw it. Reuses fingerprintFile/files.sha -- the same sha the worker's dirty-queue
+// gate (makeIndexer in worker.ts) compares against -- so "stale" here means exactly what it means
+// there, rather than reinventing a second freshness signal.
+const STALE_WARNING =
+  "⚠ STALE: index is older than the file on disk (worker hasn't reindexed yet — retry shortly, or read the file directly)"
+
+/**
+ * Returns the STALE_WARNING line (plus trailing newline) when `resolvedPath`'s current on-disk
+ * SHA-256 differs from the SHA-256 stamped on its `files` row at the time it was last indexed, or
+ * '' when they match, the file isn't indexed, or the on-disk file can't be read. Cheap by design:
+ * a single fs.readFileSync + hash, not a reparse, so it's safe to call on every read/outline/
+ * skeleton/symbol lookup.
+ */
+function staleWarning(resolvedPath: string): string {
+  const entry = getFileEntry(resolvedPath)
+  if (entry === null || entry.sha === '') return ''
+  const diskSha = fingerprintFile(resolvedPath)
+  if (diskSha === null || diskSha === entry.sha) return ''
+  return `${STALE_WARNING}\n`
 }
 
 function emit(text: string): void {
@@ -197,7 +220,8 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
-  return { text: guardText(blocks.join('\n\n'), 'symbol'), code: 0 }
+  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file)) : ''
+  return { text: guardText(warning + blocks.join('\n\n'), 'symbol'), code: 0 }
 }
 
 // ---- read (symbol body) -----------------------------------------------------
@@ -495,7 +519,8 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
     body,
   ]
-  return { text: guardText(trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
+  const warning = staleWarning(match.filePath)
+  return { text: guardText(warning + trimBlankLines(lines).join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- section ----------------------------------------------------------------
@@ -730,7 +755,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : ''
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
-  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
+  return { text: guardText(staleWarning(resolved) + lines.join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- outline ----------------------------------------------------------------
@@ -791,7 +816,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
-  return { text: guardText(lines.join('\n'), 'symbol'), code: 0 }
+  return { text: guardText(staleWarning(resolved) + lines.join('\n'), 'symbol'), code: 0 }
 }
 
 // ---- csv / pdf / screenshot --------------------------------------------------

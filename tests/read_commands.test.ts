@@ -65,7 +65,7 @@ import {
   extractTranscriptText,
   parseDiffHunks,
 } from '../src/read_commands.js'
-import { querySymbols, queryRefs, queryRefCounts } from '../src/index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections, findContainingSection } from '../src/section_reader.js'
@@ -73,9 +73,11 @@ import { loadConfig } from '../src/config.js'
 import { indexFileSync } from '../src/parser.js'
 import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
+import { fingerprintContent } from '../src/fingerprint.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
+const mockGetFileEntry = vi.mocked(getFileEntry)
 const mockFindContainingSection = vi.mocked(findContainingSection)
 const mockResolveCallers = vi.mocked(resolveCallers)
 const mockQueryRefs = vi.mocked(queryRefs)
@@ -238,6 +240,33 @@ describe('read_commands', () => {
       const arg = mockQuerySymbols.mock.calls[0]?.[0] as { filePath?: string }
       expect(arg.filePath).not.toBe('src/bar.ts')
       expect(path.isAbsolute(arg.filePath ?? '')).toBe(true)
+    })
+
+    it('prepends a stale-index warning when a file-scoped query targets an index row whose sha is stale (#1)', () => {
+      const content = 'export function foo() {}\n'
+      const f = path.join(tempDir, 'stale-symbol.ts')
+      fs.writeFileSync(f, content)
+      const sym: MockSymbol = { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockGetFileEntry.mockReturnValueOnce({
+        filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+      } as never)
+      const { text: stdout } = runSymbol({ name: 'foo', file: f })
+      expect(stdout).toContain('STALE')
+      expect(stdout).toContain('foo')
+    })
+
+    it('does not warn on a broad (file-less) symbol query, since there is no single file to stale-check', () => {
+      const content = 'export function foo() {}\n'
+      const f = path.join(tempDir, 'broad-symbol.ts')
+      fs.writeFileSync(f, content)
+      const sym: MockSymbol = { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { text: stdout } = runSymbol({ name: 'foo' })
+      expect(stdout).not.toContain('STALE')
+      expect(mockGetFileEntry).not.toHaveBeenCalled()
     })
 
     // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely exists would
@@ -674,6 +703,35 @@ describe('read_commands', () => {
         expect(stdout).toContain('oldSymbol')
       })
 
+      it('prepends a stale-index warning when the indexed sha differs from the on-disk file sha (#1)', () => {
+        const content = 'export function foo() {\n  return 1\n}'
+        const f = path.join(tempDir, 'stale-sha-read.ts')
+        fs.writeFileSync(f, content)
+        mockQuerySymbols.mockReturnValue([
+          { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: content } as never,
+        ])
+        mockGetFileEntry.mockReturnValueOnce({
+          filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+        } as never)
+        const { text: stdout } = runRead({ spec: `${f}::foo` })
+        expect(stdout).toContain('STALE')
+        expect(stdout).toContain('foo')
+      })
+
+      it('does not warn when the indexed sha matches the current on-disk file', () => {
+        const content = 'export function foo() {\n  return 1\n}'
+        const f = path.join(tempDir, 'fresh-sha-read.ts')
+        fs.writeFileSync(f, content)
+        mockQuerySymbols.mockReturnValue([
+          { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: content } as never,
+        ])
+        mockGetFileEntry.mockReturnValueOnce({
+          filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+        } as never)
+        const { text: stdout } = runRead({ spec: `${f}::foo` })
+        expect(stdout).not.toContain('STALE')
+      })
+
       it('refreshes stale index when --force-refresh is set', () => {
         const f = path.join(tempDir, 'refresh.ts')
         const oldContent = 'export function oldSymbol() {\n  return 1\n}'
@@ -882,6 +940,39 @@ describe('read_commands', () => {
       expect(stdout).toContain('2 symbols')
       expect(stdout).toContain('100 lines')
     })
+
+    it('prepends a stale-index warning when the on-disk file sha differs from the indexed row (#1)', () => {
+      const f = path.join(tempDir, 'stale-skeleton.ts')
+      fs.writeFileSync(f, 'export function foo() {}\n')
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: 'export function foo() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockGetFileEntry.mockReturnValueOnce({
+        filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+      } as never)
+      const { text: stdout } = runSkeleton({ file: f })
+      expect(stdout).toContain('STALE')
+      expect(stdout).toContain('worker')
+    })
+
+    it('does not warn when the indexed sha matches the on-disk file', () => {
+      const f = path.join(tempDir, 'fresh-skeleton.ts')
+      const content = 'export function foo() {}\n'
+      fs.writeFileSync(f, content)
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: content, docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const realSha = fingerprintContent(content)
+      mockGetFileEntry.mockReturnValueOnce({
+        filePath: f, sha: realSha, mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+      } as never)
+      const { text: stdout } = runSkeleton({ file: f })
+      expect(stdout).not.toContain('STALE')
+    })
   })
 
   // ---- runOutline ---------------------------------------------------------
@@ -945,6 +1036,22 @@ describe('read_commands', () => {
       expect(parsed.truncated).toBe(true)
       expect(parsed.totalCount).toBe(50)
       expect(parsed.items.length).toBeLessThan(50)
+    })
+
+    it('prepends a stale-index warning when the on-disk file sha differs from the indexed row (#1)', () => {
+      const f = path.join(tempDir, 'stale-outline.ts')
+      fs.writeFileSync(f, 'export function foo() {}\n')
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: f, lineStart: 1, lineEnd: 1, body: 'export function foo() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockGetFileEntry.mockReturnValueOnce({
+        filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+      } as never)
+      const { text: stdout } = runOutline({ file: f })
+      expect(stdout).toContain('STALE')
+      expect(stdout).toContain('foo')
     })
   })
 
