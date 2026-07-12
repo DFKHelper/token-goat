@@ -255,6 +255,49 @@ function workerErrorLogPath(dir: string): string {
 const INDEX_FAILED = Symbol('indexFailed')
 
 /**
+ * Chains concurrent {@link indexFileEmbeddings} calls for the same file so they resolve in
+ * submission order rather than completion order.
+ *
+ * makeIndexer's default callback fires embedding off without awaiting it (see its doc comment --
+ * the drain loop must return instantly), so two drains of a rapidly re-edited file can spawn two
+ * concurrent `indexFileEmbeddings` promises for the same path. Without serialization, if the
+ * OLDER call (started first, with now-stale content) happens to finish AFTER the newer one, its
+ * stale chunks/vectors silently overwrite the fresher ones -- a last-writer-wins bug that
+ * nothing self-corrects until the next edit touches the file again. Keyed by the case-folded
+ * path (matching {@link foldPath}'s convention used everywhere else in this file for path
+ * identity) so same-file concurrency is serialized while different files still embed in
+ * parallel. Cleared once a chain settles and nothing newer has been chained onto it, so this map
+ * does not grow unbounded over a long-lived daemon's lifetime.
+ */
+const inFlightEmbeddings = new Map<string, Promise<unknown>>()
+
+/**
+ * Run {@link indexFileEmbeddings} for `absPath`, serialized against any other in-flight embed
+ * call for the same path (see {@link inFlightEmbeddings}). Errors are swallowed (mirrors the
+ * `.catch(() => undefined)` the direct call used before this wrapper existed) so one failed
+ * embed never breaks the chain for the next caller.
+ */
+function embedFileSerialized(absPath: string, dbPath: string, sha: string): Promise<unknown> {
+  const key = foldPath(absPath)
+  const prior = inFlightEmbeddings.get(key)
+  // Dispatch synchronously (no `.then()` hop) when nothing is currently in flight for this
+  // path, matching indexFileEmbeddings' previous direct-call timing exactly for the (vastly
+  // more common) non-overlapping case -- only a genuinely concurrent second call for the same
+  // path pays the extra microtask turn of waiting on `prior`.
+  const chained = (
+    prior === undefined ? indexFileEmbeddings(absPath, dbPath, sha) : prior.then(() => indexFileEmbeddings(absPath, dbPath, sha))
+  ).catch(() => undefined)
+  inFlightEmbeddings.set(key, chained)
+  void chained.finally(() => {
+    // Only clear the slot if nothing newer has been chained onto it since -- otherwise this
+    // `finally` (from an OLDER call resolving after a NEWER one already replaced the map entry)
+    // would delete the newer call's still-in-flight tracking.
+    if (inFlightEmbeddings.get(key) === chained) inFlightEmbeddings.delete(key)
+  })
+  return chained
+}
+
+/**
  * Append one failure line to the error log for `dir`. Best-effort: a failure to write the log
  * itself must not throw back out of the indexer's own catch handler.
  */
@@ -381,8 +424,10 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // not. indexFileEmbeddings already swallows its own errors internally and this .catch is
       // a defensive backstop against a future regression there ever rejecting; returning the
       // promise (rather than voiding it) lets a caller that wants to - such as a test - await
-      // it explicitly instead of racing it.
-      return indexFileEmbeddings(absPath, dbPath, sha).catch(() => undefined)
+      // it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping
+      // drains of the same rapidly re-edited file chain onto one another instead of racing --
+      // see its doc comment for the stale-overwrite bug this closes.
+      return embedFileSerialized(absPath, dbPath, sha)
     } catch (err) {
       // One bad file must not abort the rest of the batch -- but a swallowed failure must not be
       // silently indistinguishable from a successful index either. See the doc comment above.
@@ -424,6 +469,14 @@ export function processDirtyBatch(
   dir: string = dataDir(),
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
+  // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker
+  // probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every
+  // call, and a batch routinely contains many dirty paths under the same directory (or same
+  // project tree) that would otherwise repeat that walk once per path for a result
+  // (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped
+  // to this function call (not module-level) since a project root learned from one batch's
+  // traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
+  const projectRootCache = new Map<string, string | null>()
   let indexed = 0
   for (const p of paths) {
     if (!p) continue
@@ -452,8 +505,16 @@ export function processDirtyBatch(
     // lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other
     // standing notion of "the current project" for drainOnce's periodic prune sweep to target.
     try {
-      const project = findProject(path.dirname(p))
-      if (project) lastKnownProjectRoots.set(dir, project.root)
+      const dirname = path.dirname(p)
+      let root: string | null
+      if (projectRootCache.has(dirname)) {
+        root = projectRootCache.get(dirname) ?? null
+      } else {
+        const project = findProject(dirname)
+        root = project?.root ?? null
+        projectRootCache.set(dirname, root)
+      }
+      if (root) lastKnownProjectRoots.set(dir, root)
     } catch {
       // best-effort signal only -- never let project-root discovery abort a real index.
     }
