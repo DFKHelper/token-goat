@@ -23,6 +23,11 @@ import { atomicWriteText, foldPath } from './util.js'
 // Entry regex: matches markdown link entries in MEMORY.md.
 const ENTRY_RE = /^\s*-\s*\[(?<title>[^\]]+)\]\((?<target>[^)]+?\.md)\)/
 
+// A target with a URL scheme (https://, mailto:, etc.) is never a local
+// sibling file -- it can't be "dead" in the local-filesystem sense, so it
+// must always be treated as valid rather than fs.existsSync-checked.
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
+
 /**
  * One parsed line from MEMORY.md.
  */
@@ -127,9 +132,20 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
   const dups: IndexEntry[] = []
 
   for (const entry of entries) {
-    const targetPath = path.join(memoryDir, entry.target)
+    // A URL target (https://..., mailto:..., etc.) or an absolute filesystem
+    // path is never resolvable by joining onto memoryDir -- path.join mangles
+    // both into a bogus path that always reports as missing, which used to
+    // get every such entry silently flagged as dead and deleted. Resolve each
+    // case on its own terms: URLs are always valid (nothing local to check),
+    // absolute paths are checked directly.
+    const isUrl = URL_SCHEME_RE.test(entry.target)
+    const targetExists = isUrl
+      ? true
+      : path.isAbsolute(entry.target)
+        ? fs.existsSync(entry.target)
+        : fs.existsSync(path.join(memoryDir, entry.target))
     const foldedTarget = foldPath(entry.target)
-    if (!fs.existsSync(targetPath)) {
+    if (!targetExists) {
       dead.push(entry)
     } else if (seenTargets.has(foldedTarget)) {
       dups.push(entry)
