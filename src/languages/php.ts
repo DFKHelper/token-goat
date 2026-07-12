@@ -27,7 +27,7 @@ const METHOD_RE = new RegExp(
   'function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',
 )
 const ANON_FN_RE = /^\s*function\s*\(/
-const CONST_RE = /^(?:(?:public|protected|private|static)\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)/
+const CONST_RE = /^(?:(?:public|protected|private|static|final)\s+)*const\s+([A-Za-z_][A-Za-z0-9_]*)/
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
 const PROP_RE = new RegExp(
   '^(?:(?:public|protected|private|static|readonly)\\s+)+' +

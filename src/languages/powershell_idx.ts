@@ -151,7 +151,7 @@ export function extractPowershell(
 
     // FUNCTION or FILTER (top-level only, not nested)
     if (braceDepth === 0 && currentClass === null) {
-      const funcMatch = /^\s*(?:function|filter)\s+([A-Za-z_][\w-]*)/i.exec(line)
+      const funcMatch = /^\s*(?:function|filter)\s+(?:(?:global|local|script|private):)?([A-Za-z_][\w-]*)/i.exec(line)
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {

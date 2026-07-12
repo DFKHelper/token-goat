@@ -318,6 +318,24 @@ function helperFn() {}
     expect(imports).toHaveLength(0)
   })
 
+  it('indexes a final class constant, including a final combined with a visibility modifier', () => {
+    // PHP 8.1+ allows `final const`. Regression: the modifier group allowed at most one modifier
+    // and did not include `final` at all, so `final const FOO = 1;` and
+    // `final public const BAR = 2;` silently dropped the constant from the index.
+    const content = `<?php
+class Foo {
+    final const FOO = 1;
+    final public const BAR = 2;
+    public const BAZ = 3;
+}
+`
+    const { symbols } = extractPhp(content, 'Foo.php')
+    const consts = symbols.filter((s) => s.kind === 'const').map((s) => s.name)
+    expect(consts).toContain('FOO')
+    expect(consts).toContain('BAR')
+    expect(consts).toContain('BAZ')
+  })
+
   it('pops class scope at the closing brace so later top-level decls are not mis-parented', () => {
     const content = `<?php
 class Foo {
@@ -667,6 +685,43 @@ class Config {
     const { symbols, imports } = extractKotlin('', 'empty.kt')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
+  })
+
+  it('indexes members of a modifier-prefixed companion object instead of dropping them', () => {
+    // Regression: CLASS_HEADER_RE's modifier list never included `companion`, so
+    // `companion object { ... }` (with or without a leading visibility modifier) never got a
+    // frame pushed for it at all -- yet its brace still incremented braceDepth, silently dropping
+    // every member declared inside from the index.
+    const content = `class Foo {
+  private companion object {
+    fun x() {}
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    const x = symbols.find((s) => s.name === 'x')
+    expect(x).toBeDefined()
+    expect(x?.kind).toBe('method')
+    expect(x?.docstring).toBe('Companion')
+  })
+
+  it('indexes members of an unmodified and a named companion object', () => {
+    const content = `class Foo {
+  companion object {
+    fun y() {}
+  }
+}
+class Bar {
+  companion object Named {
+    fun z() {}
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    const y = symbols.find((s) => s.name === 'y')
+    expect(y?.docstring).toBe('Companion')
+    const z = symbols.find((s) => s.name === 'z')
+    expect(z?.docstring).toBe('Named')
   })
 
   it('detects .kt language via parseFile', async () => {
@@ -1536,6 +1591,32 @@ function MyFunction {
     const { symbols } = extractPowershell(content, 'comment_test.ps1')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('MyFunction')
+  })
+
+  it('indexes a scope-qualified function under its real name, not the scope prefix', () => {
+    // `function global:prompt { }` is the canonical PowerShell profile-customization pattern.
+    // Regression: the name regex excluded `:` from the name character class, so `global` (the
+    // scope qualifier) was captured as the function name instead of `prompt`.
+    const content = `function global:prompt {
+  "PS> "
+}
+`
+    const { symbols } = extractPowershell(content, 'profile.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('prompt')
+    expect(names).not.toContain('global')
+    expect(symbols.find((s) => s.name === 'prompt')?.kind).toBe('function')
+  })
+
+  it('indexes local:/script:/private:-scoped function names, not the scope prefix', () => {
+    const content = `function script:Get-Widget {
+  "widget"
+}
+`
+    const { symbols } = extractPowershell(content, 'scoped.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Get-Widget')
+    expect(names).not.toContain('script')
   })
 
   it('does not emit control-flow keywords inside a method body as methods', () => {
