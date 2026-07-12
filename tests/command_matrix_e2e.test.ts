@@ -437,6 +437,15 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout).toMatch(/mod|src/)
+
+    // `--compact` must route through the same real indexed data as the plain
+    // form (buildProjectMap), not the legacy repomap.ts path -- so it should
+    // surface a real fixture symbol (alphaSym, defined in src/mod.ts) rather
+    // than an alphabetical file listing with no symbol data.
+    const compact = run(['map', '--compact'])
+    expect(compact.status, compact.stderr).toBe(0)
+    expect(compact.stdout).toContain('alphaSym')
+    expect(compact.stdout.length).toBeLessThan(r.stdout.length)
   },
   'bash-output': () => {
     // --file reads a regular file, giving a deterministic real-output check.
