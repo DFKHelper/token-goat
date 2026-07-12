@@ -336,7 +336,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // once the context window is nearly full.
     large_read_redirect_bytes: 512_000,
     reread_deny: true,
-    reread_deny_min_bytes: 2048,
+    // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this
+    // key up as the real gate for that logic does not silently change default behavior for
+    // existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
+    reread_deny_min_bytes: 51_200,
     stable_doc_compacts: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
