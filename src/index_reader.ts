@@ -242,23 +242,35 @@ function sanitizeFtsQuery(query: string): string {
  * Joins FTS hits back to `symbols` to return full {@link SymbolEntry} rows in
  * BM25 relevance order. Falls back to an empty result (rather than throwing) if
  * the FTS5 table is unavailable in this SQLite build or the query is malformed.
+ *
+ * `rootDir`, when provided, scopes the search to files under that project root
+ * (see {@link querySymbols} for why this matters against the machine-wide
+ * `global.db`) -- without it, results leak in symbols from every other project
+ * ever indexed on the machine.
  */
 export function searchSymbolsFts(
   query: string,
   limit = 50,
   dbPath: string = globalDbPath(),
+  rootDir?: string,
 ): SymbolEntry[] {
   const match = sanitizeFtsQuery(query)
   if (match === '') return []
 
   const db = getDb(dbPath)
+  const scope = rootDir !== undefined ? projectScopeClause('s.file_path') : undefined
   // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
-    `WHERE symbols_fts MATCH ? ORDER BY bm25(symbols_fts) LIMIT ?`
+    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   try {
-    const rows = db.prepare(sql).all(match, limit) as SymbolRow[]
+    const params: (string | number)[] = [match]
+    if (scope !== undefined && rootDir !== undefined) {
+      params.push(scope.param(rootDir))
+    }
+    params.push(limit)
+    const rows = db.prepare(sql).all(...params) as SymbolRow[]
     return rows.map(toSymbolEntry)
   } catch {
     // FTS5 missing or a syntactically invalid MATCH query — degrade to empty.

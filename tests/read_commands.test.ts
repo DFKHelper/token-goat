@@ -72,6 +72,7 @@ import { readSection, listSections, listAllSections, findContainingSection } fro
 import { loadConfig } from '../src/config.js'
 import { indexFileSync } from '../src/parser.js'
 import { resolveCallers } from '../src/graph_commands.js'
+import { resolveProjectRoot } from '../src/project.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
@@ -124,6 +125,11 @@ describe('read_commands', () => {
     mockLoadConfig.mockReturnValue({
       overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
+    // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo
+    // top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback
+    // instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit
+    // as. Individual tests below (e.g. runChanged) override this per-test as needed.
+    vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
   })
 
   afterEach(() => {
@@ -995,7 +1001,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       runOutline({ file: 'f.ts', stats: true })
-      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(resolveProjectRoot({ project: process.cwd() }))
     })
 
     it('runSkeleton --stats scopes queryRefCounts to the current project root', () => {
@@ -1006,7 +1012,48 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       mockQueryRefCounts.mockReturnValue(new Map())
       runSkeleton({ file: 'f.ts', stats: true })
-      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(process.cwd())
+      expect(mockQueryRefCounts.mock.calls[0]?.[2]).toBe(resolveProjectRoot({ project: process.cwd() }))
+    })
+
+    // Regression: runOutline/runSkeleton used to pass a raw `process.cwd()` as the rootDir, so
+    // invoking the command from a subdirectory of the project silently shrank the ref-count scope
+    // to that subtree instead of the whole project.
+    it('runOutline --stats scopes queryRefCounts to the whole project root, not the subdirectory cwd', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      const subdir = path.join(process.cwd(), 'src')
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        runOutline({ file: 'f.ts', stats: true })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+      const rootDirArg = mockQueryRefCounts.mock.calls[0]?.[2]
+      expect(rootDirArg).not.toBe(subdir)
+      expect(rootDirArg).toBe(resolveProjectRoot({ project: subdir }))
+    })
+
+    it('runSkeleton --stats scopes queryRefCounts to the whole project root, not the subdirectory cwd', () => {
+      const syms: MockSymbol[] = [
+        { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      const subdir = path.join(process.cwd(), 'src')
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        runSkeleton({ file: 'f.ts', stats: true })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+      const rootDirArg = mockQueryRefCounts.mock.calls[0]?.[2]
+      expect(rootDirArg).not.toBe(subdir)
+      expect(rootDirArg).toBe(resolveProjectRoot({ project: subdir }))
     })
   })
 
@@ -1633,6 +1680,23 @@ describe('read_commands', () => {
       expect(parsed).toHaveProperty('truncated', true)
       expect(parsed).toHaveProperty('files')
       expect(Array.isArray(parsed.files)).toBe(true)
+    })
+
+    // Regression: runFind used to pass a raw `process.cwd()` as querySymbols's rootDir, so
+    // invoking the command from a subdirectory of the project silently shrank the scan to that
+    // subtree instead of the whole project.
+    it('scopes querySymbols to the whole project root, not the subdirectory cwd', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const subdir = path.join(process.cwd(), 'src')
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        runFind({ pattern: 'anything' })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+      const opts = mockQuerySymbols.mock.calls[0]?.[0]
+      expect(opts?.rootDir).not.toBe(subdir)
+      expect(opts?.rootDir).toBe(resolveProjectRoot({ project: subdir }))
     })
   })
 

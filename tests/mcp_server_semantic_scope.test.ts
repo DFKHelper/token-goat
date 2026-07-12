@@ -16,6 +16,8 @@
 // real FTS fallback (searchSymbolsFts) -- that fallback queries the real, order-dependent
 // global.db, which would make this test's pass/fail flaky depending on what other test files
 // ran earlier in the same worker process.
+import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -62,9 +64,12 @@ describe('mcp semantic tool projectRoot scoping', () => {
   })
 
   it('passes an explicit projectRoot argument through to searchSemantic as rootDir, not process.cwd()', async () => {
+    // Must be a real, absolute, existing directory -- runSemantic now validates projectRoot
+    // (see mcp_server_semantic_projectroot_validation.test.ts) and rejects anything else before
+    // it ever reaches searchSemantic.
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-sem-scope-'))
     const { client, close } = await connectedClient()
     try {
-      const scratchRoot = path.join('C:', 'scratch', 'other-project')
       const result = await client.callTool({ name: 'semantic', arguments: { query: 'anything', projectRoot: scratchRoot } })
 
       expect(result.isError).toBe(false)
@@ -78,6 +83,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
       expect(block.text).toContain('scoped.ts')
     } finally {
       await close()
+      fs.rmSync(scratchRoot, { recursive: true, force: true })
     }
   })
 
