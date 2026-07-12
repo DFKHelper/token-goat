@@ -1590,6 +1590,25 @@ B="two"
     expect(symbols.map((s) => s.name)).toEqual(['A', 'B'])
   })
 
+  // Regression: _lineClosesQuote/_detectOpenQuote treated any char immediately preceding a
+  // quote as escaping it if it was a backslash, with no notion of odd/even backslash runs, and
+  // applied that escape logic to single-quoted values too (which have no escape semantics in
+  // dotenv/POSIX). A single-quoted value ending in a backslash (`DIR='C:\Users\me\'`) was
+  // misread as an escaped, still-open quote, silently swallowing every subsequent key as a
+  // phantom multi-line continuation. A double-quoted value ending in an even run of backslashes
+  // (`WIN="C:\path\\"`, i.e. one literal trailing backslash) closes correctly either way, but is
+  // included here to pin down the odd/even-run distinction for double quotes too.
+  it('closes a single-quoted value on any quote regardless of a trailing backslash, and correctly parses a double-quoted value with an even trailing backslash run', () => {
+    const content = String.raw`DIR='C:\Users\me\'
+API_KEY=abc123
+PORT=8080
+WIN="C:\path\\"
+NEXT=1
+`
+    const symbols = extractEnv(content, '.env')
+    expect(symbols.map((s) => s.name)).toEqual(['DIR', 'API_KEY', 'PORT', 'WIN', 'NEXT'])
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
