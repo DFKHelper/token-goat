@@ -199,6 +199,28 @@ describe('doc_compact', () => {
       expect(result).toContain('# Heading')
       expect(result).toContain('Text that must survive')
     })
+
+    // Regression: the naive `stripped.startsWith('```') || stripped.startsWith('~~~')` toggle
+    // treated ANY fence-looking line as a closer, contradicting eachUnfencedLine's real
+    // CommonMark rule (a fence only closes on the SAME character). A ~~~ line inside a ```
+    // block incorrectly closed it early, corrupting the rest of the section's fence tracking
+    // and silently dropping later content (here, "After text" never made it into the output).
+    it('does not let a mismatched ~~~ close an open ``` fence', () => {
+      const md = '# Title\n```\nline1\n~~~\nline2\n```\nAfter text'
+      const result = buildExtractiveCompact(md)
+      expect(result).toContain('After text')
+      expect(result).toContain('```\nline1\n~~~\nline2\n```')
+    })
+
+    // Regression: same naive-toggle bug, other half of the CommonMark rule -- a fence only
+    // closes on a run of the same character with length >= the opener's. A shorter ``` (3
+    // backticks) nested inside an outer ```` (4-backtick) fence must not close it.
+    it('does not let a shorter same-char fence run close a longer opener', () => {
+      const md = '# Title\n````\nouter code\n```\nstill inside\n````\nAfter text'
+      const result = buildExtractiveCompact(md)
+      expect(result).toContain('After text')
+      expect(result).toContain('````\nouter code\n```\nstill inside\n````')
+    })
   })
 
   describe('extractDocCompact', () => {
@@ -258,6 +280,30 @@ describe('doc_compact', () => {
     it('returns empty string when marker not found', () => {
       const body = 'Content without marker'
       const compact = extractDocCompact(body)
+      expect(compact).toBe('')
+    })
+
+    // Regression: the heading-mode end-boundary walker matched `/^(#+)\s/` line-by-line with
+    // zero fence tracking, so a `#`-looking example line inside a fenced code block (e.g. a
+    // doc demonstrating markdown syntax) was mistaken for a real section boundary and
+    // truncated the section early, dropping everything after the fenced example.
+    it('does not treat a heading-looking line inside a fenced code block as a section boundary', () => {
+      const body =
+        '## Setup\nHere is how it works.\n```\nExample doc:\n## usage\nSome fenced example\n```\n' +
+        'More real setup content after fence.\n## Something Else\nNext section content'
+      const compact = extractDocCompact(body, 'Setup')
+      expect(compact).toContain('Some fenced example')
+      expect(compact).toContain('More real setup content after fence.')
+      expect(compact).not.toContain('## Something Else')
+      expect(compact).not.toContain('Next section content')
+    })
+
+    // Same root bug on the other half of the function -- the heading FINDER must also skip
+    // fenced lines, so a `## usage`-looking example line inside a fence is never mistaken for
+    // the real heading being searched for.
+    it('does not match a heading-looking line inside a fenced code block as the target heading', () => {
+      const body = '## Real\nIntro\n```\n## usage\nfenced content\n```\nend'
+      const compact = extractDocCompact(body, 'usage')
       expect(compact).toBe('')
     })
   })
