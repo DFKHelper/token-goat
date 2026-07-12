@@ -26,6 +26,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 const { appendDirtyPath, clearDirtyQueue, dirtyQueuePath, getDirtyPaths, preCompactIndexHandler } =
   await import('../src/hooks_index.js')
 const { clearModuleCaches } = await import('../src/reset.js')
+const { globalDbPath } = await import('../src/constants.js')
 
 beforeEach(() => {
   clearModuleCaches()
@@ -86,6 +87,23 @@ describe('dirty queue', () => {
     fs.writeFileSync(dirtyQueuePath(), '/a/one.t') // torn: no trailing newline
     appendDirtyPath('/a/two.ts')
     expect(getDirtyPaths()).toEqual(['/a/one.t', '/a/two.ts'])
+  })
+
+  // Regression: appendDirtyPath used to unconditionally call resetTransientRetryCount, which
+  // opens a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
+  // load attempt) via getDb() -- paying that cost on every single edit hook invocation just to
+  // run a no-op retry-counter reset, and even creating global.db from scratch if it did not
+  // already exist. processDirtyBatch (worker.ts) already resets the retry counter on every
+  // successful read during a drain, so the append-time reset was redundant on the hot path.
+  // This asserts the DB is never touched/created by a plain dirty-path append.
+  it('does not open or create the global index DB on a plain append (no per-edit DB touch)', () => {
+    const dbPath = globalDbPath()
+    fs.rmSync(dbPath, { force: true })
+    expect(fs.existsSync(dbPath)).toBe(false)
+
+    appendDirtyPath('/a/one.ts')
+
+    expect(fs.existsSync(dbPath)).toBe(false)
   })
 })
 
