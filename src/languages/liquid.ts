@@ -16,7 +16,7 @@
 import * as path from 'node:path'
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
 
 export interface LiquidImport {
   readonly kind: string
@@ -35,13 +35,6 @@ const INCLUDE_RE = /{%-?\s*include\s+['"]([^'"]+)['"]/gi
 const SECTION_RE = /{%-?\s*section\s+['"]([^'"]+)['"]/gi
 const RENDER_RE = /{%-?\s*render\s+['"]([^'"]+)['"]/gi
 const SCHEMA_RE = /{%-?\s*schema\s*-?%}([\s\S]*?){%-?\s*endschema\s*-?%}/gi
-// `s` (dotall) lets `.*?` cross newlines so a heading formatted across multiple lines (e.g.
-// `<h1>\n  Title\n</h1>`) still matches; the existing non-greedy `.*?` still stops at the
-// first matching `</hN>`, so this doesn't introduce over-greedy matches. The `.trim()` below
-// already strips the resulting leading/trailing whitespace from a multi-line match.
-const HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
-const TAG_STRIP_RE = /<[^>]+>/g
-
 const LIQUID_TAG_IMPORTS: ReadonlyArray<[RegExp, string]> = [
   [INCLUDE_RE, 'liquid_include'],
   [SECTION_RE, 'liquid_section'],
@@ -57,10 +50,14 @@ export function extractLiquid(
   const imports: LiquidImport[] = []
   const sections: MiniSection[] = []
   const lineIndex = buildLineIndex(content)
+  // Blank out HTML comments and CDATA sections (offset-preserving; see maskHtmlNoise in
+  // common.ts) before scanning for Liquid tags, so a commented-out {% include %}/{% section
+  // %}/{% render %}/{% schema %} block isn't indexed as a live import/symbol.
+  const maskedForTags = maskHtmlNoise(content)
 
   // include / section / render imports
   for (const [pattern, kind] of LIQUID_TAG_IMPORTS) {
-    for (const m of content.matchAll(pattern)) {
+    for (const m of maskedForTags.matchAll(pattern)) {
       const target = m[1] ?? ''
       if (target) {
         const line = offsetToLine(lineIndex, m.index ?? 0)
@@ -70,7 +67,7 @@ export function extractLiquid(
   }
 
   // schema block
-  for (const m of content.matchAll(SCHEMA_RE)) {
+  for (const m of maskedForTags.matchAll(SCHEMA_RE)) {
     const schemaContent = m[1]?.trim() ?? ''
     try {
       const schemaJson = JSON.parse(schemaContent) as unknown
@@ -97,13 +94,10 @@ export function extractLiquid(
 
   // HTML headings
   const totalLines = content.split('\n').length
-  for (const m of content.matchAll(HEADING_RE)) {
-    const level = parseInt(m[1] ?? '1', 10)
-    const raw = m[2] ?? ''
-    const heading = raw.replace(TAG_STRIP_RE, '').trim()
-    if (heading) {
-      const line = offsetToLine(lineIndex, m.index ?? 0)
-      sections.push({ heading, level, line, endLine: line })
+  for (const hm of findHtmlHeadingMatches(content)) {
+    if (hm.heading) {
+      const line = offsetToLine(lineIndex, hm.offset)
+      sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })
     }
   }
   sections.sort((a, b) => a.line - b.line)

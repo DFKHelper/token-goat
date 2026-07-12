@@ -889,6 +889,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const wk = getDefaultConfig('worker') as WorkerConfig
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
   wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
+  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, 1, 8)
 
   const ix_raw = section(raw, 'indexing')
   const ix = getDefaultConfig('indexing') as IndexingConfig
@@ -981,6 +982,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
+  'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],

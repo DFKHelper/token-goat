@@ -14,6 +14,7 @@
 
 import { readFileSync } from 'node:fs'
 
+import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 
@@ -189,21 +190,19 @@ function findKeyValueHeaders(lines: readonly string[]): SectionHeader[] {
   return headers
 }
 
-// Matches the same single-line <h1>-<h6> pattern extractHtml/extractLiquid use for indexing
-// (src/languages/html.ts, src/languages/liquid.ts), kept in sync so a heading indexed as a
-// symbol is also reachable via the live `section` command.
-const HTML_HEADER_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/i
-
-function findHtmlHeaders(lines: readonly string[]): SectionHeader[] {
+// Uses the same masked, dotall, whole-text heading scan (findHtmlHeadingMatches, in
+// src/languages/common.ts) that the indexer's html.ts/liquid.ts extractors use, so a heading
+// indexed as a symbol is always reachable via the live `section` command and vice versa: a
+// heading formatted across multiple lines is found here too, and a commented-out (or
+// <script>-body / CDATA) heading is excluded here too, instead of two regex implementations
+// that can silently drift apart.
+function findHtmlHeaders(text: string): SectionHeader[] {
+  const lineIndex = buildLineIndex(text)
   const headers: SectionHeader[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (line === undefined) continue
-    const m = HTML_HEADER_RE.exec(line)
-    if (m === null || m[1] === undefined || m[2] === undefined) continue
-    const heading = m[2].replace(/<[^>]+>/g, '').trim()
-    if (!heading) continue
-    headers.push({ heading, level: parseInt(m[1], 10), index: i })
+  for (const hm of findHtmlHeadingMatches(text)) {
+    if (!hm.heading) continue
+    const index = offsetToLine(lineIndex, hm.offset) - 1
+    headers.push({ heading: hm.heading, level: hm.level, index })
   }
   return headers
 }
@@ -223,7 +222,7 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   const lines = text.split('\n')
 
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
-  if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(lines), kind: 'markdown' }
+  if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading.

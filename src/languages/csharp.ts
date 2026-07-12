@@ -47,6 +47,15 @@ const PROPERTY_HEADER_RE = new RegExp(
   '([A-Z][A-Za-z0-9_]*)\\s*$',
 )
 const ALLMAN_ACCESSOR_RE = /^(?:get\s*;\s*set\s*;|set\s*;\s*get\s*;|get\s*;|set\s*;)$/
+// Expression-bodied property (`public string Name => "value";` / `int Count => count;`) - the
+// character classes used for the leading type/modifier filler exclude `(`/`)`, so this can never
+// accidentally match an expression-bodied METHOD (`Add(int a, int b) => a + b;`), where the
+// parens sit between the name and `=>`.
+const PROPERTY_ARROW_RE = new RegExp(
+  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|new|readonly)\\s+)*' +
+  '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
+  '([A-Z][A-Za-z0-9_]*)\\s*=>',
+)
 const CONSTRUCTOR_RE = new RegExp(
   '^\\s+(?:(?:public|protected|private|internal|static)\\s+)*' +
   '([A-Z][A-Za-z0-9_]*)\\s*\\(',
@@ -193,6 +202,14 @@ export function extractCsharp(
             if (braceLineNext === '{' && ALLMAN_ACCESSOR_RE.test(accessorLine)) {
               isPropertyLine = true
               symbols.push(makeSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+            }
+          } else {
+            // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
+            // Allman header match, since there is no `{` on this line or the next.
+            const arrowM = PROPERTY_ARROW_RE.exec(line)
+            if (arrowM) {
+              isPropertyLine = true
+              symbols.push(makeSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
             }
           }
         }
