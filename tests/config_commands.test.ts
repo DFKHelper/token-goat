@@ -18,6 +18,7 @@ import { BUNDLE } from './helpers/bundle.js'
 
 const performHttpFetchMock = vi.hoisted(() => vi.fn())
 const shrinkImageMock = vi.hoisted(() => vi.fn())
+const atomicWriteBytesMock = vi.hoisted(() => vi.fn())
 
 // vi.mock is hoisted — stub image_shrink.js's shrinkImage so fetch-image extension-correction
 // tests can force a format-changing shrink without needing a real decodable image. By default
@@ -50,6 +51,17 @@ vi.mock('../src/webfetch.js', async (importOriginal) => {
     (url: string, opts: Parameters<typeof actual.performHttpFetch>[1]) => actual.performHttpFetch(url, opts),
   )
   return { ...actual, performHttpFetch: performHttpFetchMock }
+})
+
+import type * as UtilModule from '../src/util.js'
+
+// vi.mock is hoisted — spy on util.js's atomicWriteBytes (delegating straight through to the
+// real implementation) so the fetch-image atomic-write regression test can assert cmdFetchImage
+// routes its disk write through the shared atomic helper instead of a bare fs.writeFileSync.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  atomicWriteBytesMock.mockImplementation(actual.atomicWriteBytes)
+  return { ...actual, atomicWriteBytes: atomicWriteBytesMock }
 })
 
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
@@ -802,6 +814,33 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
     expect(fs.existsSync(requestedOut)).toBe(false)
     expect(fs.readFileSync(expectedOut).toString()).toBe('fake-jpeg-bytes')
     expect(captured()).toContain(expectedOut)
+  })
+
+  // Regression: cmdFetchImage wrote the fetched/shrunk bytes to the destination path via a
+  // bare fs.writeFileSync instead of the atomic temp-file+rename helper every other disk-cache
+  // write path in this codebase uses (webfetch.ts's cachePath/shrunkPath, screenshot.ts's
+  // takeScreenshot). A direct writeFileSync truncates the destination in place, so a concurrent
+  // reader of the same --out path (e.g. two overlapping `fetch-image` invocations targeting the
+  // same file, or a hook reading the file while a second fetch is mid-write) can observe a
+  // truncated/partial file instead of either the old or the new complete content.
+  it('writes the fetched image to disk via the atomic write helper, not a direct truncating write', async () => {
+    const fakeBytes = Buffer.from('atomic-write-regression-bytes')
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      body: fakeBytes,
+    }))
+    const out = path.join(tmpHome, 'atomic-write-check.bin')
+
+    await cmdFetchImage({ url: 'http://example.test/atomic.png', out })
+
+    expect(fs.readFileSync(out)).toEqual(fakeBytes)
+    expect(atomicWriteBytesMock).toHaveBeenCalledWith(out, fakeBytes)
+    // No temp-file sibling should be left behind by the atomic write.
+    const dir = path.dirname(out)
+    const leftoverTmp = fs.readdirSync(dir).filter((f) => f.includes('.tmp'))
+    expect(leftoverTmp).toEqual([])
   })
 })
 

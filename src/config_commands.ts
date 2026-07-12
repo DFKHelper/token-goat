@@ -21,7 +21,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes } from './util.js'
 import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -591,7 +591,13 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
     outData = buf
     shrunkBytes = originalBytes
   }
-  fs.writeFileSync(finalPath, outData)
+  // Atomic (temp file + rename) rather than a direct fs.writeFileSync: a bare writeFileSync
+  // truncates finalPath in place, so a concurrent reader of the same --out path (two
+  // overlapping fetch-image invocations, or a hook reading the file mid-write) could observe
+  // a partial/truncated file. Matches the atomic write already used for this same shrink
+  // pipeline's other disk-cache paths (webfetch.ts's cachePath/shrunkPath, screenshot.ts's
+  // takeScreenshot).
+  atomicWriteBytes(finalPath, outData)
   if (opts.json === true) {
     emit(JSON.stringify({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
     return
