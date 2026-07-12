@@ -327,6 +327,23 @@ describe('dispatch: detection + compound handling', () => {
     expect(det?.argv).toEqual(['mytool', 'run'])
   })
 
+  // Regression (bug #242): a bare `&` backgrounds the command; spawnSync's piped
+  // stdio then blocks on the backgrounded grandchild's inherited stdout until it
+  // exits or the wrapper's timeout kills the process tree the user wanted kept
+  // running. Newline-separated compounds slip past the `&&`/`|`/`;` checks the
+  // same way and must be rejected too.
+  it('detectFromCommand rejects a backgrounded command and a newline-separated compound', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand('mytool run &')).toBeNull()
+    expect(detectFromCommand('mytool run&')).toBeNull()
+    expect(detectFromCommand('mytool a\nmytool b')).toBeNull()
+    // A literal & inside a quoted argument is not a background operator.
+    const det = detectFromCommand('mytool -m "a & b"')
+    expect(det?.filter.name).toBe('echo-test')
+    // Legitimate && is still rejected, unaffected by the new check.
+    expect(detectFromCommand('mytool a && mytool b')).toBeNull()
+  })
+
   it('tryWrapCompoundSegments wraps each recognised && segment', () => {
     TOOL_FILTERS.push(new EchoFilter())
     const out = tryWrapCompoundSegments('mytool a && echo done', (name, seg) => `wrap[${name}](${seg})`)

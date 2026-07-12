@@ -48,6 +48,63 @@ export const TIMESTAMP_PREFIX_RE =
 /** A single token that is a shell redirect (`>`, `2>`, `>>`, `<`, `&>`, ...). */
 export const REDIRECT_TOKEN_RE = /^(\d*)(>>?|<<?).*$|^&>$|^>&.*$/
 
+/**
+ * Replace the contents of single- and double-quoted spans in `cmd` with `x`
+ * filler (same length, no quote/escape metacharacters preserved) so control-
+ * operator detection on the raw string doesn't false-positive on a literal
+ * `&`, `|`, `;`, etc. inside a quoted argument. Malformed/unterminated quotes
+ * mask through to the end of the string rather than throwing.
+ */
+function maskQuotedSpans(cmd: string): string {
+  let out = ''
+  let i = 0
+  const n = cmd.length
+  while (i < n) {
+    const ch = cmd[i]
+    if (ch === '\\') {
+      out += i + 1 < n ? 'xx' : 'x'
+      i += 2
+      continue
+    }
+    if (ch === "'") {
+      i += 1
+      const end = cmd.indexOf("'", i)
+      const stop = end === -1 ? n : end
+      out += 'x'.repeat(stop - i)
+      i = end === -1 ? n : end + 1
+      continue
+    }
+    if (ch === '"') {
+      i += 1
+      const start = i
+      while (i < n && cmd[i] !== '"') {
+        i += cmd[i] === '\\' && i + 1 < n ? 2 : 1
+      }
+      out += 'x'.repeat(i - start)
+      if (i < n) i += 1
+      continue
+    }
+    out += ch
+    i += 1
+  }
+  return out
+}
+
+/**
+ * True when `cmd` contains an embedded newline, or an unquoted bare `&`
+ * (the background operator) that is not part of `&&`. Used to gate the
+ * bash-compress single-command wrapper: a backgrounded or newline-separated
+ * compound command must never be rewritten into `token-goat compress -c
+ * '<cmd>'`, since `spawnSync`'s piped stdio blocks on the backgrounded
+ * grandchild's inherited stdout until it exits or the wrapper times out,
+ * turning a fire-and-forget dev server into a hang.
+ */
+export function hasBareBackgroundOrNewline(cmd: string): boolean {
+  if (cmd.includes('\n') || cmd.includes('\r')) return true
+  const masked = maskQuotedSpans(cmd)
+  return /(?<!&)&(?!&)/.test(masked)
+}
+
 const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).
