@@ -421,6 +421,32 @@ describe('listSections regression: nested headings visibility', () => {
   })
 })
 
+describe('adjacent close+open fence markers regression', () => {
+  it('does not promote a fenced comment to a heading and still finds a heading after the fence', () => {
+    const content = [
+      '# Guide',
+      '## Usage',
+      '```',
+      '```js',
+      '# this comment line is fenced content',
+      '```',
+      '',
+      '## Install',
+      'npm i foo',
+      '',
+    ].join('\n')
+    const file = tmpFile('adjacent-fences.md', content)
+    const sections = listSections(file)
+    expect(sections).toEqual(['Guide', 'Usage', 'Install'])
+    expect(sections).not.toContain('this comment line is fenced content')
+
+    const result = readSection(file, 'Install')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Install')
+    expect(result?.content).toBe('## Install\nnpm i foo')
+  })
+})
+
 describe('BOM stripping regression', () => {
   it('finds markdown heading in file with UTF-8 BOM', () => {
     const BOM = '﻿'
