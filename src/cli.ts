@@ -994,7 +994,7 @@ function cmdCompress(opts: {
       process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout))
       return
     }
-    const maxTokens = opts.maxTokens ? parseInt(opts.maxTokens, 10) || 0 : 0
+    const maxTokens = opts.maxTokens !== undefined ? requireNonNegativeInt('--max-tokens', opts.maxTokens) : 0
     process.exitCode = bashRunner.run(opts.cmd, {
       filterName: opts.filter,
       timeout: parseTimeout(opts.timeout),

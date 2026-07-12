@@ -12,13 +12,23 @@ import { wrappedShell } from './shell.js'
 import { recordStat } from './stats.js'
 import {
   type CompressedOutput,
-  type ToolFilter,
+  ToolFilter,
   capTokens,
   compressOutput,
   filterByName,
   selectFilter,
   shlexSplit,
 } from './tool_filters/index.js'
+
+/**
+ * Identity filter used only to route an otherwise-unfiltered command through
+ * {@link wrapAndCompress} so `--max-tokens` still applies. `ToolFilter`'s
+ * default `compressBody` already just combines stdout/stderr unchanged (no
+ * per-tool structural compression), so no override is needed here.
+ */
+class IdentityFilter extends ToolFilter {
+  readonly name = 'passthrough'
+}
 
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
 export const DEFAULT_TIMEOUT_SECONDS = 600
@@ -108,6 +118,15 @@ export function run(command: string, opts: RunOptions = {}): number {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_SECONDS
   const filter = resolveFilter(command, opts.filterName)
   if (filter === null) {
+    // No tool filter matches this command. Ordinarily that means streaming it
+    // through raw is cheapest (one subprocess fork, no capture). But when the
+    // caller asked for a `--max-tokens` cap, raw passthrough would silently
+    // ignore it — `passthrough()` uses `stdio: 'inherit'` and never sees the
+    // output to cap. Route through the capture-and-compress path with an
+    // identity filter instead, so the cap still applies.
+    if ((opts.maxTokens ?? 0) > 0) {
+      return wrapAndCompress(command, new IdentityFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
+    }
     return passthrough(command, timeout, opts.cwd, opts.env)
   }
   return wrapAndCompress(command, filter, timeout, resolveProfile(opts.compressionProfile), opts)

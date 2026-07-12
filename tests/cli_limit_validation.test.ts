@@ -289,6 +289,28 @@ describe('negative --limit/--top validation', () => {
   })
 })
 
+// Regression guard: `compress --max-tokens` was bare-parsed via
+// `parseInt(opts.maxTokens, 10) || 0`, so a non-numeric value ("abc") silently mapped to 0
+// ("no cap") instead of erroring, and a negative value passed the parse but was silently
+// treated as "no cap" too by the `> 0` check downstream in bash_runner.ts. Route it through the
+// same requireNonNegativeInt validator used for --limit/--top/--head/--tail elsewhere in this
+// file so invalid input errors clearly instead of silently disabling the cap.
+describe('non-numeric/negative --max-tokens validation on compress', () => {
+  it('rejects a non-numeric --max-tokens with a clean error instead of silently disabling the cap', async () => {
+    captureStderr()
+    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', 'abc'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--max-tokens')
+  })
+
+  it('rejects a negative --max-tokens with a clean error instead of silently disabling the cap', async () => {
+    captureStderr()
+    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', '-5'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--max-tokens')
+  })
+})
+
 // Regression guard: `bash-output --file`'s --head/--tail parsing used a bare Number.parseInt
 // check that only accepted a strictly-positive result, so a non-numeric value ("abc") and an
 // explicit --head 0 both silently fell back to the default (30/80) instead of erroring or
