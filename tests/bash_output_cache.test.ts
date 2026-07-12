@@ -24,6 +24,7 @@ import {
   depLockfileFingerprint,
   computeBashFingerprints,
   isBashEntryStale,
+  summarizeOutputDelta,
   type BashOutputEntry,
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -492,5 +493,39 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
 
     expect(isCatCommand('cat file.txt')).toBe(true)
     expect(isCatCommand('catalog')).toBe(false)
+  })
+})
+
+describe('summarizeOutputDelta', () => {
+  it('returns null when the outputs are byte-identical', () => {
+    expect(summarizeOutputDelta('all good\n', 'all good\n')).toBeNull()
+  })
+
+  it('reports resolved/remaining counts when the prior output had issue lines', () => {
+    const oldOutput = ['running suite', 'error: foo.ts:10 unexpected token', 'error: bar.ts:5 missing semicolon', ''].join('\n')
+    const newOutput = ['running suite', 'error: bar.ts:5 missing semicolon', ''].join('\n')
+    const delta = summarizeOutputDelta(oldOutput, newOutput)
+    expect(delta).toBe('[token-goat: delta] 1 of 2 prior issues resolved; remaining: 1')
+  })
+
+  it('reports zero resolved when every issue line persists verbatim', () => {
+    const oldOutput = ['error: still broken', ''].join('\n')
+    const newOutput = ['error: still broken', 'an extra unrelated line', ''].join('\n')
+    const delta = summarizeOutputDelta(oldOutput, newOutput)
+    expect(delta).toBe('[token-goat: delta] 0 of 1 prior issues resolved; remaining: 1')
+  })
+
+  it('reports all resolved with zero remaining when every issue line is gone', () => {
+    const oldOutput = ['warning: deprecated call', 'FAILED test_foo', ''].join('\n')
+    const newOutput = ['all clean', ''].join('\n')
+    const delta = summarizeOutputDelta(oldOutput, newOutput)
+    expect(delta).toBe('[token-goat: delta] 2 of 2 prior issues resolved; remaining: 0')
+  })
+
+  it('falls back to a line-count delta when the prior output has no issue-shaped lines', () => {
+    const oldOutput = ['build complete', 'line2', ''].join('\n')
+    const newOutput = ['build complete', 'line2', 'line3', ''].join('\n')
+    const delta = summarizeOutputDelta(oldOutput, newOutput)
+    expect(delta).toBe('[token-goat: delta] output changed: 3 -> 4 lines')
   })
 })

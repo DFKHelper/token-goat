@@ -14,7 +14,7 @@ import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadP
 import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
-import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
+import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
@@ -1815,8 +1815,23 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
+    // Item F: cross-run delta folding. Capture whatever was cached under this exact command's
+    // id BEFORE storeBashOutput overwrites it — the id is stable per normalized command
+    // (commandHash), so a hit here means this exact command already ran and cached output
+    // earlier. storeBashOutput always still runs unconditionally below: the full new output
+    // stays cached and recallable via `bash-output <id>` regardless of whether a delta hint
+    // fires: the delta is an additive summary, never a replacement for the underlying data.
+    const priorId = await commandHash(cmd, cwd)
+    const priorEntry = getBashOutput(priorId)
     const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
+    if (priorEntry !== null) {
+      const delta = summarizeOutputDelta(priorEntry.output, output)
+      if (delta !== null) {
+        recordStat('session_hint', 0, 0)
+        return contextOutput(delta + ' — full output: bash-output ' + id)
+      }
+    }
   } catch {
     // Never block — hook failures must be silent.
   }
