@@ -412,6 +412,21 @@ describe('GitDiffFilter large hunk', () => {
     expect(result).not.toContain('index abc123,def456..0000000')
   })
 
+  // Regression: _GIT_DIFF_BINARY_RE only matched the plain two-filename binary message
+  // ("Binary files a/x and b/x differ"). Real `git diff --cc`/`git show --cc` binary-conflict
+  // output omits filenames entirely ("Binary files differ"), so that combined-diff form never
+  // matched and binary collapse never triggered for --cc binary conflicts.
+  it('collapses a combined-diff (--cc) binary message that omits filenames', () => {
+    const text =
+      'diff --cc image.png\n' +
+      'index abc123,def456..0000000\n' +
+      'Binary files differ\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc image.png')
+    expect(result).toContain('Binary files differ')
+    expect(result).not.toContain('index abc123,def456..0000000')
+  })
+
   // Regression: real `git diff --cc`/`git show --cc` output for a text conflict uses a
   // triple-`@` combined-diff hunk header (`@@@ -a,b -c,d +e,f @@@`), one extra `@` per merged
   // parent -- not the plain-diff `@@ -a,b +c,d @@`. Confirmed against a real merge-commit combined

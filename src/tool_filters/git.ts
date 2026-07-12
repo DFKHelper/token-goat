@@ -377,7 +377,10 @@ export class GitLogFilter extends GitBaseFilter {
 // GitDiffFilter — "git diff", "git show"
 // ---------------------------------------------------------------------------
 
-const _GIT_DIFF_BINARY_RE = /^Binary files? .+ (?:and .+ )?differ$/
+// Matches both the plain two-filename binary message ("Binary files a/x and b/x differ") and
+// the combined-diff (`git diff --cc` / `git show --cc`) form, which omits filenames entirely
+// ("Binary files differ") -- the filename segment is optional so both shapes match.
+const _GIT_DIFF_BINARY_RE = /^Binary files?(?: .+)? differ$/
 const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+\d+/
 const _GIT_DIFF_STAT_SUMMARY_RE = /^\s*\d+ files? changed/
 const _DIFF_STAT_DIR_ROLLUP_THRESHOLD = 20
