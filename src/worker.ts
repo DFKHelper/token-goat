@@ -29,6 +29,7 @@ import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
 import { findProject } from './project.js'
+import { registerReset } from './reset.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -319,8 +320,53 @@ const INDEX_FAILED = Symbol('indexFailed')
 const inFlightEmbeddings = new Map<string, Promise<unknown>>()
 
 /**
+ * Resolve once every embedding call currently tracked in {@link inFlightEmbeddings} has settled
+ * -- including one still waiting on the global concurrency slot (see {@link embedFileSerialized}),
+ * since a slot's entry is added to the map at dispatch time regardless of whether it started
+ * immediately or was queued behind the cap. makeIndexer fires embedding fire-and-forget by
+ * design (the drain loop must return instantly -- see its doc comment), so a caller that needs
+ * embeddings to have actually completed before proceeding (e.g. a test asserting on embed_sha, or
+ * one that closes the index DB right after draining and would otherwise race a queued embed call
+ * that hasn't even opened its DB connection yet) can await this instead of guessing at timing.
+ */
+export function pendingEmbeddings(): Promise<unknown> {
+  return Promise.allSettled([...inFlightEmbeddings.values()])
+}
+
+/**
+ * Global concurrency gate for embedding pipelines across ALL files, honoring
+ * `config.worker.max_pool_workers`. {@link inFlightEmbeddings} only serializes duplicate work on
+ * the SAME file -- a dirty batch of N distinct changed files previously fired N concurrent
+ * `indexFileEmbeddings` transformer-inference pipelines with no cap at all, which can spike
+ * CPU/memory proportionally to batch size. `activeEmbedSlots` tracks how many pipelines are
+ * currently running; `embedSlotWaiters` holds resolvers for callers queued behind the cap, woken
+ * one at a time (FIFO) as slots free up in {@link releaseEmbedSlot}.
+ */
+let activeEmbedSlots = 0
+const embedSlotWaiters: Array<() => void> = []
+
+/** Release a slot claimed inline in {@link embedFileSerialized}, waking the next queued waiter. */
+function releaseEmbedSlot(): void {
+  activeEmbedSlots -= 1
+  const next = embedSlotWaiters.shift()
+  if (next) next()
+}
+
+// This counter is intentionally a single process-wide value (not scoped per-file or per-dir like
+// inFlightEmbeddings/lastKnownProjectRoots above) since the concurrency cap it enforces is a
+// real, global daemon-lifetime resource limit. That also means it can leak across test cases
+// that dispatch a real (unresolved-by-test-end) embed call without awaiting it to settle --
+// register it with the shared reset registry so tests can restore a clean slate via
+// clearModuleCaches() rather than each test needing its own bespoke workaround.
+registerReset(() => {
+  activeEmbedSlots = 0
+  embedSlotWaiters.length = 0
+})
+
+/**
  * Run {@link indexFileEmbeddings} for `absPath`, serialized against any other in-flight embed
- * call for the same path (see {@link inFlightEmbeddings}). Errors are swallowed (mirrors the
+ * call for the same path (see {@link inFlightEmbeddings}) AND capped globally across all files by
+ * {@link acquireEmbedSlot}/{@link releaseEmbedSlot}. Errors are swallowed (mirrors the
  * `.catch(() => undefined)` the direct call used before this wrapper existed) so one failed
  * embed never breaks the chain for the next caller.
  */
@@ -338,15 +384,41 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
     const message = err instanceof Error ? err.message : String(err)
     appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
   }
-  // Dispatch synchronously (no `.then()` hop) when nothing is currently in flight for this
-  // path, matching indexFileEmbeddings' previous direct-call timing exactly for the (vastly
-  // more common) non-overlapping case -- only a genuinely concurrent second call for the same
-  // path pays the extra microtask turn of waiting on `prior`.
-  const chained = (
-    prior === undefined
-      ? indexFileEmbeddings(absPath, dbPath, sha, onEmbedError)
-      : prior.then(() => indexFileEmbeddings(absPath, dbPath, sha, onEmbedError))
-  ).catch(() => undefined)
+  // Defensive fallback (matches config.ts's own default of 4): several existing tests in this
+  // file mock loadConfig() with only a partial `{ worker: { blocked_roots: [...] } }` shape (see
+  // makeIndexer's embeddingsEnabled comment above for the same pattern), so a bare
+  // `.max_pool_workers` here would be `undefined` for those and silently block every embed call
+  // forever (0 < undefined is false, so nothing would ever dispatch or queue). loadConfig()
+  // always returns a fully-populated, schema-validated config object in production.
+  const limit = loadConfig().worker.max_pool_workers ?? 4
+  // Dispatches the actual embed call once a global slot is available, releasing it as soon as
+  // that call settles (success or failure) so it frees up for the next queued file regardless of
+  // outcome. Release is attached as a sibling `.then(release, release)` on the SAME promise
+  // `indexFileEmbeddings` returns (rather than wrapped via `.finally()` into a new promise that
+  // `runEmbed` then returns) so it costs no extra microtask hop on the chain the rest of this
+  // function builds on top of `runEmbed()`'s return value -- preserving indexFileEmbeddings'
+  // previous direct-call timing (including for tests that assert on it without awaiting extra
+  // ticks) for the common case where a slot is immediately free. Only when the global cap is
+  // already saturated does this queue in embedSlotWaiters, deferring dispatch until a running
+  // embed elsewhere finishes and calls releaseEmbedSlot.
+  const dispatchEmbed = (): Promise<unknown> => {
+    const result = indexFileEmbeddings(absPath, dbPath, sha, onEmbedError)
+    result.then(releaseEmbedSlot, releaseEmbedSlot)
+    return result
+  }
+  const runEmbed = (): Promise<unknown> => {
+    if (activeEmbedSlots < limit) {
+      activeEmbedSlots += 1
+      return dispatchEmbed()
+    }
+    return new Promise<unknown>((resolve) => {
+      embedSlotWaiters.push(() => {
+        activeEmbedSlots += 1
+        resolve(dispatchEmbed())
+      })
+    })
+  }
+  const chained = (prior === undefined ? runEmbed() : prior.then(runEmbed)).catch(() => undefined)
   inFlightEmbeddings.set(key, chained)
   void chained.finally(() => {
     // Only clear the slot if nothing newer has been chained onto it since -- otherwise this

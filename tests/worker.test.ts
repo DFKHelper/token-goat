@@ -1160,6 +1160,66 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     // content lost to stale content.
     expect(commits).toEqual([sha1, sha2])
   })
+
+  // Regression (#250): inFlightEmbeddings above only serializes duplicate work on the SAME
+  // file -- a dirty batch of N distinct changed files previously fired N concurrent
+  // indexFileEmbeddings pipelines with no global cap at all. The fix routes every embed call
+  // through a global slot counter honoring config.worker.max_pool_workers, queuing callers
+  // beyond the cap instead of firing them all at once. Drives the real default drain path
+  // (drainOnce(DIR), no injected index callback -- makeIndexer's actual production wiring);
+  // only indexFileEmbeddings is mocked, with each call's completion under this test's explicit
+  // control, so the assertions prove the production code never dispatches more than the
+  // configured cap concurrently, not an artifact of the mock's own timing.
+  it('caps concurrent embedding pipelines across different files at worker.max_pool_workers, queuing the rest', async () => {
+    // Reset worker.ts's process-wide embed-slot counter: an earlier test in this file may have
+    // dispatched a real (unresolved-by-test-end) embed call without awaiting it to settle,
+    // which would otherwise leave activeEmbedSlots polluted going into this test.
+    clearModuleCaches()
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [], max_pool_workers: 2 },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const files = ['cap-a.ts', 'cap-b.ts', 'cap-c.ts'].map((name, i) => {
+      const p = path.join(DIR, name)
+      fs.writeFileSync(p, `export function capFn${i}(): number {\n  return ${i}\n}\n`)
+      return normalizePath(p)
+    })
+
+    const invoked: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((filePath) => {
+      invoked.push(filePath)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(filePath, resolve)
+      })
+    })
+
+    writeQueue(DIR, files)
+    expect(drainOnce(DIR)).toBe(3)
+
+    // makeIndexer fires embedding fire-and-forget with no `await` in the drain loop, and
+    // embedFileSerialized dispatches synchronously (no microtask hop) whenever a slot is
+    // immediately free -- so with a cap of 2, only the first two of these three distinct files
+    // are dispatched to indexFileEmbeddings inline within drainOnce itself. The third is
+    // queued behind the cap, not fired concurrently, with no await needed to observe this.
+    expect(invoked.length).toBe(2)
+    expect(invoked).toEqual([files[0], files[1]])
+
+    // Resolving one of the two in-flight calls frees a slot for the third, queued file.
+    pendingResolvers.get(files[0])!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invoked.length).toBe(3)
+    expect(invoked).toContain(files[2])
+
+    // Let the remaining in-flight calls settle so this test's own promises don't dangle.
+    pendingResolvers.get(files[1])!()
+    pendingResolvers.get(files[2])!()
+    await Promise.resolve()
+  })
 })
 
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called

@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb } from '../src/db.js'
 import { queryRefs, querySymbols } from '../src/index_reader.js'
 import { normalizePath } from '../src/paths.js'
-import { drainOnce } from '../src/worker.js'
+import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 
 import { BUNDLE } from './helpers/bundle.js'
 
@@ -91,13 +91,22 @@ afterEach(() => {
 })
 
 describe('Salesforce DX worker default path', () => {
-  it('drains Apex, LWC, Flow, and metadata into searchable symbols and refs', () => {
+  it('drains Apex, LWC, Flow, and metadata into searchable symbols and refs', async () => {
     const repo = copyFixture()
     const dataDir = tempDir('tg-salesforce-worker-data-')
     const files = fixtureFiles(repo)
     writeDirtyQueue(dataDir, files)
 
     expect(drainOnce(dataDir)).toBe(files.length)
+
+    // makeIndexer fires embedding fire-and-forget (the drain loop must return instantly), and
+    // worker.ts's global concurrency cap (config.worker.max_pool_workers) can defer a queued
+    // file's embed call -- including its very first getDb() connection open -- until well after
+    // drainOnce() itself returns. Without waiting for that work to actually finish here, the
+    // afterEach cleanup's fs.rmSync(dataDir) can race a queued embed call that opens its own DB
+    // connection AFTER this test's own closeDb() below already ran, leaking an open handle that
+    // Windows then holds a lock on, failing the directory removal with EPERM.
+    await pendingEmbeddings()
 
     const dbPath = path.join(dataDir, 'global.db')
     try {
