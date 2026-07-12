@@ -112,12 +112,16 @@ const MAX_TRANSIENT_RETRIES = 5
  */
 function bumpRetryCount(dbPath: string, absPath: string): number {
   const db = getDb(dbPath)
-  // NOT normalizePath()'d: the files.path column stores the raw path exactly as the indexer
-  // wrote it (see writeParseResult in parser.ts, which never runs it through normalizePath
-  // either) -- normalizing here would flip native OS separators (backslashes on Windows) to
-  // forward slashes and never match the stored row, always falling through to the INSERT
-  // branch below on every call after the first (see the regression test in worker.test.ts).
-  const folded = foldPath(absPath)
+  // The files.path column stores paths normalized by normalizePath() (forward slashes) --
+  // every real writer (hooks_edit.ts's postEditHandler, cli.ts's cmdIndex via
+  // resolveIndexPath) normalizes before the path ever reaches the queue or the indexer; see
+  // sql_path.ts's projectScopeClause doc for the same invariant stated from the SQL side.
+  // Normalize defensively here too so correctness doesn't silently depend on every future
+  // caller remembering to pre-normalize -- a caller that passed a native backslash path
+  // straight through used to always miss the SELECT and fall into the INSERT branch below
+  // instead of matching the existing row (see the regression test in worker.test.ts).
+  const normalized = normalizePath(absPath)
+  const folded = foldPath(normalized)
   const tx = db.transaction((): number => {
     const row = db.prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`).get(folded) as
       | { retry_count: number | null }
@@ -127,7 +131,7 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
       db.prepare(`UPDATE files SET retry_count = ? WHERE ${pathEqClause('path')}`).run(next, folded)
       return next
     }
-    db.prepare('INSERT INTO files (path, retry_count) VALUES (?, 1)').run(absPath)
+    db.prepare('INSERT INTO files (path, retry_count) VALUES (?, 1)').run(normalized)
     return 1
   })
   return tx()
@@ -141,9 +145,9 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
 function clearRetryCount(dbPath: string, absPath: string): void {
   try {
     const db = getDb(dbPath)
-    // See bumpRetryCount's doc comment: no normalizePath() here either, to match the raw form
+    // See bumpRetryCount's doc comment: normalize defensively to match the normalized form
     // the row was written under.
-    const folded = foldPath(absPath)
+    const folded = foldPath(normalizePath(absPath))
     db.prepare(`UPDATE files SET retry_count = 0 WHERE ${pathEqClause('path')}`).run(folded)
   } catch {
     // best-effort -- see doc comment above.
