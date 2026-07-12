@@ -1299,6 +1299,28 @@ CREATE TABLE real_table (id int);
     expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
   })
 
+  it('does not drop symbols after a multi-line string containing a `/*`-looking sequence', () => {
+    // Regression: block-comment stripping used to run as a separate pre-pass
+    // (`stripCstyleComments`) before string-literal stripping, and had no awareness that a line
+    // could start mid-way through an already-open multi-line string literal from a prior line.
+    // A `/*` that merely appears inside such a string (e.g. stored as part of a default text
+    // value) was misread as a real comment opener; since no real `*/` ever follows it, the
+    // "comment" never closes and every real statement after it - to EOF - was silently dropped.
+    const content = `CREATE TABLE t (
+  note TEXT DEFAULT 'line one
+/* looks like a comment
+still string' -- trailing
+);
+
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('t')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
   it('reports correct line numbers for many scattered CREATE TABLE statements', () => {
     // Regression guard for a quadratic slice+split line-number bug in the sql adapter.
     const tableCount = 60

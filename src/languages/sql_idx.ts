@@ -13,7 +13,6 @@ import {
   makeSymbolEmitter,
   offsetToLine,
   propagateEndLinesToSymbols,
-  stripCstyleComments,
 } from './common.js'
 
 const MAX_SYMBOLS = 500
@@ -57,29 +56,34 @@ const PATTERNS: ReadonlyArray<[RegExp, string]> = [
 ]
 
 /**
- * Blank the contents of SQL single-quoted string literals and `--` line comments in a single
- * linear scan, replacing interior characters with spaces (keeping the quote delimiters and any
- * newlines) so DDL keywords that merely appear inside a string value (e.g. dynamic SQL passed to
- * `EXECUTE '...'`) are never matched by the `CREATE ...` patterns below, and `--` never gets
- * treated as a comment marker while inside an open string literal. Double-quoted spans are left
- * untouched since double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string
- * literals - blanking them would destroy legitimate delimited names. Length- and
- * offset-preserving, like the other `strip*` helpers in `common.ts`, so `match.index` positions
- * stay valid for line lookup.
+ * Blank the contents of SQL single-quoted string literals, `--` line comments, and `/* *\/` block
+ * comments in a single linear scan, replacing interior characters with spaces (keeping the quote
+ * delimiters and any newlines) so DDL keywords that merely appear inside a string value (e.g.
+ * dynamic SQL passed to `EXECUTE '...'`) are never matched by the `CREATE ...` patterns below, and
+ * neither comment marker ever gets treated as real syntax while inside an open string literal.
+ * Double-quoted spans are left untouched since double quotes delimit SQL identifiers (e.g.
+ * `CREATE TABLE "user"`), not string literals - blanking them would destroy legitimate delimited
+ * names. Length- and offset-preserving, like the other `strip*` helpers in `common.ts`, so
+ * `match.index` positions stay valid for line lookup.
  *
  * SQL's standard escape for a literal quote inside a string is a doubled quote (`''` inside a
  * `'...'` string, `""` inside a `"..."` string) rather than a backslash - `common.ts`'s
  * `isInsideStringLiteral`/`stripStringLiterals` assume backslash escaping, so they don't fit SQL's
  * rule and this file needs its own quote-aware scanner.
  *
- * `--` comment handling used to live in a separate line-scoped pre-pass (`stripSqlLineComments`,
- * run before this function) whose quote-tracking reset at every newline, with no awareness that
- * the current line started mid-way through an already-open multi-line string literal from a
- * prior line - so a `--` inside a multi-line string got treated as a comment marker, blanking
- * out whatever closing quote followed it on that line and flipping string-parity tracking for
- * the rest of the file. Folding `--` handling into this single stateful scan (which already
- * tracks whether a string is open across line boundaries) fixes that: `--` is only treated as a
- * comment start when the scanner is not currently inside an open string.
+ * `--` and `/* *\/` comment handling used to live in separate pre-passes
+ * (`stripSqlLineComments`/`common.ts`'s `stripCstyleComments`) that ran before string-literal
+ * stripping. Both reset their quote-tracking at every newline, with no awareness that the current
+ * line started mid-way through an already-open multi-line string literal from a prior line - so a
+ * `--` or a `/*`-looking sequence inside a multi-line string got treated as real comment syntax,
+ * corrupting the rest of the file two ways: blanking a closing quote and flipping string-parity
+ * tracking for everything after (under-stripping: real string content eaten), or - worse - opening
+ * a phantom block comment that never finds a real `*\/` closer anywhere later in the file (since
+ * the file's actual `*\/`-shaped text, if any, is itself inside the same open string), silently
+ * dropping every real DDL statement after it to EOF (over-stripping: real code swallowed as
+ * comment). Folding both comment forms into this single stateful scan - which already tracks
+ * whether a string is open across line boundaries - fixes both directions: `--` and `/*` are only
+ * ever treated as comment starts when the scanner is not currently inside an open string.
  */
 function stripSqlStringLiterals(text: string): string {
   let out = ''
@@ -122,6 +126,23 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
+    if (ch === '/' && text[i + 1] === '*') {
+      // `/* ... */` block comment: only recognized outside a string literal, same guarantee as
+      // `--` above. Blanks through to the closing `*/` (preserving newlines so line/offset
+      // positions downstream stay valid), or to EOF if unterminated.
+      out += '  '
+      i += 2
+      while (i < text.length) {
+        if (text[i] === '*' && text[i + 1] === '/') {
+          out += '  '
+          i += 2
+          break
+        }
+        out += text[i] === '\n' ? '\n' : ' '
+        i++
+      }
+      continue
+    }
     out += ch
     i++
   }
@@ -146,12 +167,15 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const seen = new Set<string>()
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
-  const stripped = stripCstyleComments(content)
   const totalLines = content.split('\n').length
-  const lineIndex = buildLineIndex(stripped)
-  // Blanks string literals AND `--` line comments in one linear scan, so `--` inside a
-  // multi-line string literal is never mistaken for a comment marker (see docstring below).
-  const noStrings = stripSqlStringLiterals(stripped)
+  const lineIndex = buildLineIndex(content)
+  // Blanks string literals, `--` line comments, AND `/* */` block comments in one linear scan
+  // over the raw content, so neither comment marker is ever mistaken for real syntax while
+  // inside an open (possibly multi-line) string literal - see docstring below. Running this
+  // directly on `content` instead of a separate `stripCstyleComments` pre-pass is required for
+  // that: a `/* */` pre-pass with no string-literal awareness would itself misparse a `/*`- or
+  // `*/`-shaped sequence sitting inside a multi-line string.
+  const noStrings = stripSqlStringLiterals(content)
 
   for (const [pattern, kind] of PATTERNS) {
     // Reset lastIndex since these are global regexes
