@@ -49,6 +49,11 @@ beforeAll(async () => {
   formulaDateRow.getCell(2).value = { formula: 'A1', result: new Date(Date.UTC(2025, 0, 1)) }
   const formulaErrorRow = ws6.addRow(['broken', null])
   formulaErrorRow.getCell(2).value = { formula: 'A1/0', result: { error: '#N/A' } }
+  // Plain (non-formula) error cell, e.g. #N/A entered directly rather than produced by a
+  // formula -- shaped `{ error: '#N/A' }` with no richText/result/text key (regression test
+  // for cellText falling through to `String(cell.value)` and producing "[object Object]").
+  const plainErrorRow = ws6.addRow(['direct-error', null])
+  plainErrorRow.getCell(2).value = { error: '#N/A' }
   // Sheet where the last data row has empty trailing cells, so `row.eachCell` stops earlier
   // than the sheet's actual width (regression test for sheetToCsv producing ragged CSV rows
   // that csv-parse's strict column-count check rejects with "Invalid Record Length").
@@ -156,6 +161,13 @@ describe('headSheet', () => {
     const lines = text.split('\n')
     expect(lines[2]).toBe('broken,#N/A')
     expect(lines[2]).not.toContain('[object Object]')
+  })
+
+  it('renders a plain (non-formula) error cell as the error text, not [object Object]', async () => {
+    const text = await headSheet(file, 'FormulaResults', 10)
+    const lines = text.split('\n')
+    expect(lines[3]).toBe('direct-error,#N/A')
+    expect(lines[3]).not.toContain('[object Object]')
   })
 
   it('does not drop a trailing data row that comes after an interior blank row', async () => {

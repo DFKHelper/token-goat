@@ -151,8 +151,13 @@ function cellText(cell: ExcelCell): string {
   if (cell.value instanceof Date) return formatDateCell(cell.value)
   const v = cell.value as { result?: unknown; text?: unknown; richText?: { text: string }[] } | unknown
   if (typeof v === 'object' && v !== null) {
-    const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[] }
+    const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[]; error?: unknown }
     if (Array.isArray(obj.richText)) return obj.richText.map((t) => t.text).join('')
+    // A plain (non-formula) error cell, e.g. #N/A entered directly, is shaped
+    // `{ error: '#N/A' }` with no richText/result/text key. Return the error text directly
+    // instead of falling through to the generic text/String(value) path below, which would
+    // stringify the object itself.
+    if (typeof obj.error === 'string') return obj.error
     if (obj.result !== undefined) {
       if (obj.result instanceof Date) return formatDateCell(obj.result)
       if (typeof obj.result === 'object' && obj.result !== null && typeof (obj.result as { error?: unknown }).error === 'string') {
