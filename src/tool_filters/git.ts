@@ -10,10 +10,47 @@ import { ToolFilter } from './base.js'
 import {
   ERROR_SIGNAL_RE,
   dedupeCombinedOutput,
-  positionalArgs,
+  pathName,
+  pathStem,
   splitBlocks,
   squeezeBlankLines,
 } from './helpers.js'
+
+// git flags that take a value in the following token. When scanning argv for
+// subcommand-identifying positional tokens (matches()/compress() subcommand detection), the
+// value token of one of these must be skipped entirely, not scanned for a word that happens to
+// match another filter's subcommand keyword -- e.g. `git commit -m "please push and rebase"`
+// must never be mistaken for a `push`/`rebase` command just because that word appears inside
+// the message text.
+const _GIT_VALUE_FLAGS = new Set([
+  '-m',
+  '--message',
+  '-c',
+  '--reuse-message',
+  '-C',
+  '--reedit-message',
+  '-F',
+  '--file',
+  '--author',
+  '--date',
+])
+
+/** Positional (non-flag) args for git argv, skipping the value token of known value-taking git
+ * flags (`-m <msg>`, `--message <msg>`, ...) so a word inside a flag's value can never be
+ * mistaken for a subcommand keyword by the `<=3`-token subcommand scan in `matches()`. */
+function gitPositionalArgs(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('-')) {
+      const flag = a.includes('=') ? a.slice(0, a.indexOf('=')) : a
+      if (!a.includes('=') && _GIT_VALUE_FLAGS.has(flag)) i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
+}
 
 // ---------------------------------------------------------------------------
 // CRLF warning stripping (git.postNormalise)
@@ -75,6 +112,22 @@ function _stripGitCrlfWarnings(text: string): string {
 
 abstract class GitBaseFilter extends ToolFilter {
   override readonly binaries = new Set(['git'])
+
+  // Overrides ToolFilter.matches() to scan gitPositionalArgs() instead of the generic
+  // positionalArgs() -- git's subcommand-identifying tokens must skip the value of -m/--message
+  // and other value-taking flags, or a word inside a commit message could be mistaken for
+  // another filter's subcommand keyword.
+  override matches(argv: string[]): boolean {
+    if (argv.length === 0) return false
+    const first = argv[0]!
+    const stem = pathStem(first).toLowerCase()
+    const name = pathName(first).toLowerCase()
+    if (!this.binaries.has(stem) && !this.binaries.has(name)) return false
+    if (this.subcommands.size === 0) return true
+    return gitPositionalArgs(argv.slice(1))
+      .slice(0, 3)
+      .some((tok) => this.subcommands.has(tok))
+  }
 
   override postNormalise(text: string): string {
     return _stripGitCrlfWarnings(text)
@@ -1286,11 +1339,11 @@ export class GitFilter extends GitBaseFilter {
   // (registered after GIT_FILTERS) and its per-file match-count summarizer.
   override matches(argv: string[]): boolean {
     if (!super.matches(argv)) return false
-    return positionalArgs(argv.slice(1))[0] !== 'grep'
+    return gitPositionalArgs(argv.slice(1))[0] !== 'grep'
   }
 
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
-    const positionals = positionalArgs(argv.slice(1))
+    const positionals = gitPositionalArgs(argv.slice(1))
     const subcommand = positionals[0] ?? ''
     if (subcommand === 'status') return _compressGitStatus(stdout, stderr)
     if (subcommand === 'log') return _compressGitLogSimple(stdout, stderr)

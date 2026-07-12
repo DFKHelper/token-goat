@@ -794,6 +794,22 @@ describe('GitCommitFilter dispatch', () => {
   it('matches git commit --fixup=abc', () => {
     expect(gitCommitFilter.matches(['git', 'commit', '--fixup=abc'])).toBe(true)
   })
+
+  // Regression: a word inside a -m/--message value that happens to equal another filter's
+  // subcommand keyword (e.g. "log", "push") must not hijack dispatch away from git-commit --
+  // the tokenizer must skip the value token of value-taking git flags entirely, not scan it
+  // for subcommand-looking words.
+  it('routes to git-commit, not git-log, when the message value is the word "log"', () => {
+    expect(selectFilter(['git', 'commit', '-m', 'log'])?.name).toBe('git-commit')
+  })
+
+  it('routes to git-commit, not git-push, when the message contains the word "push"', () => {
+    expect(selectFilter(['git', 'commit', '-m', 'please push this and rebase later'])?.name).toBe('git-commit')
+  })
+
+  it('routes to git-commit when --message contains a subcommand-looking word', () => {
+    expect(selectFilter(['git', 'commit', '--message', 'push and rebase'])?.name).toBe('git-commit')
+  })
 })
 
 // ---------------------------------------------------------------------------
