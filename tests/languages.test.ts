@@ -1948,6 +1948,23 @@ message M {
     expect(choice?.lineStart).toBe(8)
   })
 
+  it('extracts rpc methods declared at column 0 inside an unindented service body', () => {
+    // Regression: RPC_RE required at least one leading space/tab (`^[ 	]+rpc`), so a
+    // column-0 rpc line inside a column-0 service block was never matched - only the
+    // service itself got indexed.
+    const content = `service Greeter {
+rpc SayHello(HelloRequest) returns (HelloResponse) {}
+rpc SayBye(ByeRequest) returns (ByeResponse) {}
+}
+`
+    const { symbols } = extractProto(content, 'unindented.proto')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('SayHello')
+    expect(names).toContain('SayBye')
+    expect(symbols.find((s) => s.name === 'SayHello')?.kind).toBe('proto_rpc')
+    expect(symbols.find((s) => s.name === 'SayBye')?.kind).toBe('proto_rpc')
+  })
+
   it('extracts a message after a string literal containing // without corrupting its range', () => {
     const content = `message Foo {
   option (my.url) = "https://example.com";

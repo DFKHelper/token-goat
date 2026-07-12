@@ -49,11 +49,12 @@ const TOP_LEVEL_RE =
 // tolerance as TOP_LEVEL_RE: extend blocks may be nested inside a message.
 const EXTEND_RE = /^[ \t]*extend\s+(?<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\{/gm
 
-// rpc MethodName(...) inside a service block
-const RPC_RE = /^[ \t]+rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
+// rpc MethodName(...) inside a service block. Leading [ \t]* (not +) so an unindented
+// (column-0) rpc line inside a column-0 service block is still matched.
+const RPC_RE = /^[ \t]*rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
 
-// oneof name { } inside a message
-const ONEOF_RE = /^[ \t]+oneof\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
+// oneof name { } inside a message. Same indentation tolerance as RPC_RE.
+const ONEOF_RE = /^[ \t]*oneof\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
 
 // import "path.proto" — both weak/public modifiers accepted
 const IMPORT_RE = /^import\s+(?:weak\s+|public\s+)?["']([^"']+)["']/gm
