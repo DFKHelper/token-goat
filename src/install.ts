@@ -210,14 +210,20 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   let changed = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const existingGroups = hooks[eventKey] ?? []
-    if (groupHasTokenGoat(existingGroups, isCurrentTokenGoatHookCommand)) continue
 
-    // Strip any legacy-marked token-goat entries before adding the current
-    // command -- a legacy command is dead on this build, so leaving it in
-    // place would just be a second, non-functional entry.
+    // Strip any legacy-marked token-goat entries first, regardless of whether
+    // a current-format entry is also already present -- a legacy command is
+    // dead on this build, so leaving it coexisting with a current entry would
+    // violate "exactly one, working, entry per event key" just as much as
+    // leaving it in place of a missing current entry would.
     const groups: HookMatcherGroup[] = []
+    let strippedLegacy = false
     for (const group of existingGroups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => !isTokenGoatHookCommand(h.command))
+      const keptHooks = (group.hooks ?? []).filter((h) => {
+        const isLegacy = isTokenGoatHookCommand(h.command) && !isCurrentTokenGoatHookCommand(h.command)
+        if (isLegacy) strippedLegacy = true
+        return !isLegacy
+      })
       if (keptHooks.length > 0) {
         groups.push({ ...group, hooks: keptHooks })
       } else if ((group.hooks ?? []).length === 0) {
@@ -225,6 +231,15 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
         groups.push(group)
       }
     }
+
+    if (groupHasTokenGoat(groups, isCurrentTokenGoatHookCommand)) {
+      if (strippedLegacy) {
+        hooks[eventKey] = groups
+        changed = true
+      }
+      continue
+    }
+
     groups.push({ matcher: '', hooks: [{ type: 'command', command: hookCommand(eventArg) }] })
     hooks[eventKey] = groups
     changed = true
