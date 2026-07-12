@@ -987,6 +987,25 @@ Some content that makes the file large enough`
     }
   })
 
+  it('recognizes .ps1/.psm1 (PowerShell) and .cls/.trigger (Apex) as source extensions for the count-based re-read deny (regression: SOURCE_EXT_RE/DIFFABLE_SOURCE_RE drifted from EXTENSION_LANGUAGE and omitted these despite real language adapters existing)', () => {
+    for (const suffix of ['.ps1', '.psm1', '.trigger']) {
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}${suffix}`,
+      )
+      fs.writeFileSync(p, suffix === '.trigger' ? 'trigger Example on Account (before insert) {}' : 'Write-Host "hi"')
+      tmpFiles.push(p)
+
+      expect(preReadHandler(readEvent(p)).hookType).toBe('pass')
+      expect(preReadHandler(readEvent(p)).hookType).toBe('context')
+      const third = preReadHandler(readEvent(p))
+      expect(third.hookType).toBe('deny')
+      if (third.hookType === 'deny') {
+        expect(third.message).toContain('token-goat skeleton')
+      }
+    }
+  })
+
   it('recognizes Salesforce source and metadata files for symbol-aware re-read guidance', () => {
     for (const suffix of ['.cls', '.cmp', '.flow-meta.xml']) {
       const p = path.join(
