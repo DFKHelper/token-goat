@@ -182,6 +182,10 @@ describe('helpers: command parsing', () => {
   it('stripPrefixes strips a leading env assignment whose value is a path', () => {
     expect(stripPrefixes(['PATH=/usr/local/bin', 'git', 'log'])).toEqual(['git', 'log'])
   })
+
+  it('stripPrefixes strips env assignments that follow a passthrough wrapper', () => {
+    expect(stripPrefixes(['env', 'FOO=bar', 'git', 'log'])).toEqual(['git', 'log'])
+  })
 })
 
 describe('CompressedOutput', () => {
