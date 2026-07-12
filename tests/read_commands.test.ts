@@ -1414,8 +1414,12 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'json.csv')
       fs.writeFileSync(f, CSV)
       const { stdout } = capture(() => { runCsvQuery({ file: f, json: true }) })
-      const parsed = JSON.parse(stdout)
-      expect(parsed[0]).toEqual({ id: '1', name: 'Alice', status: 'active' })
+      // guardJsonRows wraps the rows in an { items, truncated, totalCount } envelope so large
+      // results can be capped without changing the top-level JSON shape (see read_commands.ts).
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.items[0]).toEqual({ id: '1', name: 'Alice', status: 'active' })
+      expect(parsed.truncated).toBe(false)
+      expect(parsed.totalCount).toBe(parsed.items.length)
     })
 
     it('returns 1 and reports the error for an unknown --where column', () => {
