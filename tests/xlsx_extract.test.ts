@@ -177,6 +177,18 @@ describe('rangeSheet', () => {
     const result = await rangeSheet(file, 'Employees', 'A2:B2', true)
     expect(formatXlsxRange(result)).toBe('A,B\nAlice,"=SUM(29,1)"')
   })
+
+  // Regression: a reversed range (start corner below/right of the end corner) decoded to a
+  // start row/col greater than the end row/col, so the r <= e.r / c <= e.c iteration loops
+  // never executed -- silently producing an empty result instead of the requested data, with
+  // no signal that the range order was backwards. Excel treats a reversed selection as
+  // equivalent to its normalized form, so rangeSheet must too.
+  it('normalizes a reversed range to the same result as its forward form', async () => {
+    const forward = await rangeSheet(file, 'Employees', 'A1:B3', false)
+    const reversed = await rangeSheet(file, 'Employees', 'B3:A1', false)
+    expect(formatXlsxRange(reversed)).toBe(formatXlsxRange(forward))
+    expect(formatXlsxRange(reversed)).toBe('A,B\nname,age\nAlice,30\nBob,25')
+  })
 })
 
 describe('querySheet', () => {
