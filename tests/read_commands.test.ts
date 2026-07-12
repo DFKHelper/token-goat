@@ -1157,6 +1157,23 @@ describe('read_commands', () => {
       expect(parsed.totalCallers).toBe(10)
       expect(parsed.truncated).toBe(true)
     })
+
+    it('re-reads the body from disk when the indexed symbol has an empty body (regression)', () => {
+      // Regression: symbols with an empty stored `body` exist by construction -- e.g. HTML/Liquid
+      // heading symbols produced by `sectionsToHeadingSymbols` (parser.ts) always store
+      // `body: ''`. Unlike runRead and runSymbol, runBrief rendered `match.body` directly with no
+      // disk fallback, so those symbols showed header lines and a `~0 tok` estimate but a blank body.
+      const file = path.join(tempDir, 'page.html')
+      fs.writeFileSync(file, '<html>\n<h2>Some Heading</h2>\n<p>content</p>\n</html>\n')
+      const sym: MockSymbol = { name: 'Some Heading', kind: 'heading', filePath: file, lineStart: 2, lineEnd: 2, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([])
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: `${file}::Some Heading` }) })
+      expect(stdout).toContain('<h2>Some Heading</h2>')
+      expect(stdout).not.toContain('~0 tok')
+    })
   })
 
   // ---- runGrep ------------------------------------------------------------

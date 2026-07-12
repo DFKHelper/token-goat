@@ -58,6 +58,22 @@ function readFileText(p: string): string | null {
   }
 }
 
+/**
+ * Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by
+ * `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by
+ * line range instead of rendering blank. Shared by runSymbol, runRead, and runBrief so all
+ * three read surfaces resolve empty-body symbols the same way.
+ */
+function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number }): string {
+  if (entry.body !== '') return entry.body
+  const source = readFileText(entry.filePath)
+  if (source === null) return entry.body
+  return source
+    .split(/\r?\n/)
+    .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
+    .join('\n')
+}
+
 function emit(text: string): void {
   const out = process.stdout.isTTY === true ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(out))
@@ -177,16 +193,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
     const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
-    let body = sym.body
-    if (body === '') {
-      const source = readFileText(sym.filePath)
-      if (source !== null) {
-        body = source
-          .split(/\r?\n/)
-          .slice(Math.max(0, sym.lineStart - 1), sym.lineEnd)
-          .join('\n')
-      }
-    }
+    const body = resolveBody(sym)
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
@@ -481,16 +488,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text: JSON.stringify(match, null, 2), code: 0 }
   }
 
-  let body = match.body
-  if (body === '') {
-    const source = readFileText(match.filePath)
-    if (source !== null) {
-      body = source
-        .split(/\r?\n/)
-        .slice(Math.max(0, match.lineStart - 1), match.lineEnd)
-        .join('\n')
-    }
-  }
+  const body = resolveBody(match)
 
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
@@ -981,11 +979,12 @@ export function runBrief(opts: BriefOptions): number {
     return 0
   }
 
+  const body = resolveBody(match)
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     `# ${match.name}  ${match.kind}  ${match.filePath}:${match.lineStart}-${match.lineEnd}`,
-    `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
-    match.body,
+    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
+    body,
     '',
   ]
 
