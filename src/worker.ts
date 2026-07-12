@@ -235,6 +235,64 @@ function workerErrorLogPath(dir: string): string {
 }
 
 /**
+ * Cap on worker-errors.log's size before {@link cleanupWorkerStateFiles} rotates (truncates) it.
+ * Mirrors disk_cache.ts's pruneBlobs size/age-cutoff pattern for keeping other accumulating
+ * state bounded over a long-lived daemon's lifetime -- nothing previously rotated this file, so
+ * it could otherwise grow unbounded across a project's entire index lifetime.
+ */
+const WORKER_ERROR_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+/**
+ * How old a `.draining.corrupt-<timestamp>` quarantine file (see drainOnce's cleanup-failure
+ * fallback) must be before {@link cleanupWorkerStateFiles} removes it. Mirrors disk_cache.ts's
+ * pruneBlobs age cutoff and snapshots.ts's cleanup_stale 24h window, scaled up: a quarantine file
+ * is kept around long enough to be manually inspected after a persistent lock/corruption issue,
+ * not treated as routine cache churn.
+ */
+const CORRUPT_QUARANTINE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Best-effort housekeeping for the worker's own accumulating state files under `dir`:
+ *  - rotates (truncates) `worker-errors.log` once it exceeds {@link WORKER_ERROR_LOG_MAX_BYTES}.
+ *  - removes `.corrupt-*` dirty-queue quarantine files older than
+ *    {@link CORRUPT_QUARANTINE_MAX_AGE_MS}.
+ * Neither had any rotation/cleanup before this, so both could grow unbounded over a project's
+ * index lifetime. Mirrors the size/age-cutoff cleanup pattern already used elsewhere in this
+ * codebase for other accumulating state (disk_cache.ts's pruneBlobs, snapshots.ts's
+ * cleanup_stale). Fail-soft: never throws. Called on the same periodic sweep as cleanup_stale in
+ * {@link runWorkerLoop}; exported so tests can drive it directly without waiting on real time.
+ */
+export function cleanupWorkerStateFiles(dir: string): void {
+  try {
+    const logPath = workerErrorLogPath(dir)
+    const stat = fs.statSync(logPath)
+    if (stat.size > WORKER_ERROR_LOG_MAX_BYTES) {
+      fs.writeFileSync(
+        logPath,
+        `${new Date().toISOString()} worker-errors.log rotated (exceeded ${WORKER_ERROR_LOG_MAX_BYTES} bytes)\n`,
+      )
+    }
+  } catch {
+    // Missing log file, or a stat/write failure -- nothing to rotate.
+  }
+  try {
+    const queueDir = path.dirname(dirtyQueuePathFor(dir))
+    const cutoff = Date.now() - CORRUPT_QUARANTINE_MAX_AGE_MS
+    for (const file of fs.readdirSync(queueDir)) {
+      if (!file.includes('.corrupt-')) continue
+      const full = path.join(queueDir, file)
+      try {
+        if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full)
+      } catch {
+        // best-effort per-file cleanup -- one bad quarantine file must not abort the sweep.
+      }
+    }
+  } catch {
+    // Missing queue dir, or a readdir failure -- nothing to clean.
+  }
+}
+
+/**
  * Sentinel returned by {@link makeIndexer}'s default callback when `indexFileSync` (or the
  * sha-gate lookup preceding it) throws. Distinct from the sha-gate's own `false` no-op-skip
  * return so {@link processDirtyBatch} never conflates "nothing needed reindexing" with "indexing
@@ -269,12 +327,25 @@ const inFlightEmbeddings = new Map<string, Promise<unknown>>()
 function embedFileSerialized(absPath: string, dbPath: string, sha: string): Promise<unknown> {
   const key = foldPath(absPath)
   const prior = inFlightEmbeddings.get(key)
+  const dir = path.dirname(dbPath)
+  // Unlike a parse failure (logged via logIndexFailure/INDEX_FAILED above), indexFileEmbeddings
+  // swallows its own errors internally with no log path at all -- and the background daemon runs
+  // with stdio: 'ignore' (see startDetachedWorker), so a thrown embedding error previously
+  // produced zero observable trace anywhere. Route it through the same worker-errors.log
+  // appendWorkerErrorLog uses for indexing failures so it is at least discoverable after the
+  // fact, instead of vanishing silently.
+  const onEmbedError = (err: unknown): void => {
+    const message = err instanceof Error ? err.message : String(err)
+    appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
+  }
   // Dispatch synchronously (no `.then()` hop) when nothing is currently in flight for this
   // path, matching indexFileEmbeddings' previous direct-call timing exactly for the (vastly
   // more common) non-overlapping case -- only a genuinely concurrent second call for the same
   // path pays the extra microtask turn of waiting on `prior`.
   const chained = (
-    prior === undefined ? indexFileEmbeddings(absPath, dbPath, sha) : prior.then(() => indexFileEmbeddings(absPath, dbPath, sha))
+    prior === undefined
+      ? indexFileEmbeddings(absPath, dbPath, sha, onEmbedError)
+      : prior.then(() => indexFileEmbeddings(absPath, dbPath, sha, onEmbedError))
   ).catch(() => undefined)
   inFlightEmbeddings.set(key, chained)
   void chained.finally(() => {
@@ -668,6 +739,25 @@ export function drainOnce(
         // process crashing mid-batch) must propagate to the caller, not be swallowed as a
         // "read failure", so the cleanup below never runs and the claimed file survives.
         processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)
+        // Re-read the .draining file ONE more time, right before deleting it, to catch a path
+        // appended by a writer that raced the claim-rename above. The rename-to-claim pattern
+        // assumes no other writer can touch the live queue's underlying file once it has been
+        // renamed to `draining` -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE lets a
+        // concurrent open-for-append follow the same underlying file object across the rename) or
+        // on POSIX (a narrow rename/open race exists there too). A dirty path appended during
+        // that window would otherwise be silently deleted along with the rest of this cycle's
+        // already-processed content and never reindexed. Forward anything found beyond what was
+        // already processed back into the live queue so the next drain cycle picks it up.
+        try {
+          const recheck = fs.readFileSync(draining, 'utf8')
+          if (recheck !== claimedContent) {
+            const extra = recheck.startsWith(claimedContent) ? recheck.slice(claimedContent.length) : recheck
+            for (const p of parseDirtyQueueLines(extra)) appendToDirtyQueue(dir, p)
+          }
+        } catch {
+          // best-effort recheck -- if the .draining file vanished or became unreadable between
+          // the read above and now, there is nothing more we can safely recover here.
+        }
         // Only clear the claimed file now that its batch has been durably processed -- never
         // before -- so a crash partway through processDirtyBatch leaves it in place for stage
         // (a) to recover on the next startup instead of losing the paths it named.
@@ -931,6 +1021,14 @@ export async function runWorkerLoop(
     if (Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
       try {
         cleanup_stale()
+      } catch {
+        // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
+      }
+      // Rotate/prune the worker's own accumulating state files (worker-errors.log,
+      // .corrupt-* quarantine files) on the same periodic cadence -- see
+      // cleanupWorkerStateFiles' doc comment.
+      try {
+        cleanupWorkerStateFiles(dir)
       } catch {
         // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
       }

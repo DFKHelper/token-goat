@@ -1189,3 +1189,24 @@ describe('runWorkerLoop stale-snapshot sweep (regression)', () => {
     expect(fs.existsSync(result.path)).toBe(false)
   })
 })
+
+// Regression: worker-errors.log had no rotation mechanism -- it could grow unbounded over a
+// project's index lifetime. runWorkerLoop now rotates it via cleanupWorkerStateFiles on the same
+// periodic sweep as cleanup_stale above. This drives the real default path end-to-end: write an
+// oversized worker-errors.log, run one real loop cycle, and assert it was actually rotated.
+describe('runWorkerLoop worker state file rotation (regression)', () => {
+  it('rotates an oversized worker-errors.log via the default periodic loop', async () => {
+    const logPath = path.join(DIR, 'worker-errors.log')
+    fs.writeFileSync(logPath, 'x'.repeat(6 * 1024 * 1024))
+
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    const statAfter = fs.statSync(logPath)
+    expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
+  })
+})
