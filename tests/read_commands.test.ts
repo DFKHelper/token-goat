@@ -790,14 +790,21 @@ describe('read_commands', () => {
       expect(stderr).toContain('Install')
     })
 
-    it('shows full heading list on section miss', () => {
+    it('caps the heading list on section miss at DIDYOUMEAN_LIMIT (5), matching runRead\'s "did you mean" cap, instead of dumping every heading (regression: unbounded "Available sections" dump)', () => {
       mockReadSection.mockReturnValue(null)
-      mockListAllSections.mockReturnValue(['Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing'])
+      mockListAllSections.mockReturnValue([
+        'Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing', 'License',
+      ])
       const { text: stderr } = runSection({ spec: 'README.md::Nonexistent' })
-      expect(stderr).toContain('Available sections')
+      expect(stderr).toContain('Did you mean')
+      expect(stderr).toContain('Title')
       expect(stderr).toContain('Introduction')
+      expect(stderr).toContain('Installation')
+      expect(stderr).toContain('Usage')
       expect(stderr).toContain('API Reference')
-      expect(stderr).toContain('Contributing')
+      // Only the first 5 candidates are shown — 'Contributing' and 'License' are suppressed.
+      expect(stderr).not.toContain('Contributing')
+      expect(stderr).not.toContain('License')
     })
 
     it('prints section content when found', () => {
