@@ -118,7 +118,15 @@ function decodeRange(ref: string): { s: { r: number; c: number }; e: { r: number
   const endRef: string = parts[1] !== undefined && parts[1] !== '' ? parts[1] : startRef
   const start = decodeCellRef(startRef)
   const end = decodeCellRef(endRef)
-  return { s: start, e: end }
+  // A reversed range (e.g. B5:A1, where the start corner is below/right of the end corner)
+  // must not silently produce zero rows: the r <= e.r / c <= e.c loops in rangeSheet would
+  // never execute, returning an empty result that looks identical to "this range covers no
+  // data". Excel itself treats a reversed selection as equivalent to its normalized form, so
+  // normalize per axis here rather than error -- callers get the data they asked for either way.
+  return {
+    s: { r: Math.min(start.r, end.r), c: Math.min(start.c, end.c) },
+    e: { r: Math.max(start.r, end.r), c: Math.max(start.c, end.c) },
+  }
 }
 
 function encodeCell(cell: { r: number; c: number }): string {
