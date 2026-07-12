@@ -165,7 +165,7 @@ function cellFormula(cell: ExcelCell): string | undefined {
 /** Compute the used range of a worksheet as {rows, cols} plus an A1:X#-style ref string. */
 function usedRange(ws: ExcelWorksheet): { ref: string; rows: number; cols: number } {
   let maxCol = 0
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
     row.eachCell({ includeEmpty: false }, (_cell, colNumber) => {
@@ -196,7 +196,7 @@ export async function listSheets(filePath: string): Promise<SheetInfo[]> {
 export async function headSheet(filePath: string, sheetName: string, rows: number): Promise<string> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
@@ -258,7 +258,7 @@ export function formatXlsxRange(result: XlsxRangeResult): string {
 
 /** Hand-rolled sheet_to_csv equivalent: ExcelJS has no direct API for this. */
 async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
-  const rowCount = ws.actualRowCount || ws.rowCount || 0
+  const rowCount = ws.rowCount || 0
   const lines: string[] = []
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
