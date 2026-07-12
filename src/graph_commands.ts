@@ -143,7 +143,11 @@ export interface CallerEntry {
 
 /** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`. */
 export function resolveCallers(name: string, limit?: number): CallerEntry[] {
-  const refs = queryRefs({ name, limit: limit ?? 500 })
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
+  // symbol in an unrelated project on the same machine don't leak into this project's results.
+  const rootDir = process.cwd()
+  const refs = queryRefs({ name, limit: limit ?? 500, rootDir })
   const getSyms = buildFileSymCache()
 
   return refs.map((ref) => {
@@ -185,11 +189,17 @@ export interface CallChainOptions {
 
 export function runCallChain(opts: CallChainOptions): number {
   const maxDepth = opts.depth ?? 8
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
+  // an unrelated project on the same machine doesn't leak into this project's call chains.
+  const rootDir = process.cwd()
+  // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
+  // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
+  const getSyms = buildFileSymCache()
 
   const callersOf: CallersOfFn = (name: string): string[] => {
-    const refs = queryRefs({ name, limit: 500 })
+    const refs = queryRefs({ name, limit: 500, rootDir })
     if (refs.length === 0) return []
-    const getSyms = buildFileSymCache()
     const names = new Set<string>()
     for (const ref of refs) {
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
@@ -243,6 +253,13 @@ export function compareHopEntries(a: readonly [string, number], b: readonly [str
 export function runImpact(opts: ImpactOptions): number {
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
+  // an unrelated project on the same machine doesn't leak into this project's impact analysis.
+  const rootDir = process.cwd()
+  // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
+  // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
+  const getSyms = buildFileSymCache()
 
   const hops = new Map<string, number>([[opts.symbol, 0]])
   const queue: Array<[string, number]> = [[opts.symbol, 0]]
@@ -252,13 +269,21 @@ export function runImpact(opts: ImpactOptions): number {
     if (item === undefined) break
     const [name, depth] = item
     if (depth >= DEPTH_CAP) continue
-    const refs = queryRefs({ name, limit: 500 })
-    const getSyms = buildFileSymCache()
+    const refs = queryRefs({ name, limit: 500, rootDir })
     for (const ref of refs) {
-      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
-      if (enc === null) continue
-      const callerName = enc.name
       const newHop = depth + 1
+      const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
+      if (enc === null) {
+        // Module-scope reference (top-level code, not inside a function/class) -- surface it as a
+        // file-level entry instead of silently dropping it, mirroring resolveCallers' '(module
+        // scope)' handling below. Not enqueued for further BFS since a bare file path has no
+        // symbol name to look up callers for.
+        const fileKey = `(module scope) ${ref.filePath}`
+        const existing = hops.get(fileKey)
+        if (existing === undefined || existing > newHop) hops.set(fileKey, newHop)
+        continue
+      }
+      const callerName = enc.name
       const existing = hops.get(callerName)
       if (existing === undefined || existing > newHop) {
         hops.set(callerName, newHop)
