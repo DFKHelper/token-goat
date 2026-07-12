@@ -47,6 +47,10 @@ vi.mock('../src/config.js', () => ({
   loadConfig: vi.fn(),
 }))
 
+vi.mock('../src/screenshot.js', () => ({
+  takeScreenshot: vi.fn(async () => ({ path: '/tmp/out.png', originalBytes: 100, finalBytes: 50 })),
+}))
+
 import {
   runSymbol,
   runRead,
@@ -68,6 +72,7 @@ import {
   extractExportNames,
   extractTranscriptText,
   parseDiffHunks,
+  runScreenshot,
 } from '../src/read_commands.js'
 import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
@@ -79,6 +84,7 @@ import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
 import { appendDirtyPath } from '../src/hooks_index.js'
+import { takeScreenshot } from '../src/screenshot.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockAppendDirtyPath = vi.mocked(appendDirtyPath)
@@ -92,6 +98,7 @@ const mockListSections = vi.mocked(listSections)
 const mockListAllSections = vi.mocked(listAllSections)
 const mockIndexFileSync = vi.mocked(indexFileSync)
 const mockLoadConfig = vi.mocked(loadConfig)
+const mockTakeScreenshot = vi.mocked(takeScreenshot)
 
 /** Capture stdout/stderr for a function call. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -2685,5 +2692,48 @@ describe('overflow guard applies to symbol/refs/skeleton/outline (#5)', () => {
     })
     expect(stdout).toContain('output capped at ~20 tokens')
     expect(stdout).not.toContain('use299()')
+  })
+})
+
+describe('runScreenshot --width/--height validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('rejects a non-numeric --width before launching a browser', async () => {
+    // Regression: parseInt(opts.width, 10) on garbage input produces NaN, which isn't
+    // nullish, so it survives takeScreenshot's `?? 1280` fallback and reaches Chrome DevTools
+    // Protocol, producing an opaque Emulation.setDeviceMetricsOverride failure after a full
+    // browser launch. Validating up front must reject before takeScreenshot is ever called.
+    await expect(
+      runScreenshot('https://example.com', '/tmp/out.png', { width: 'abc' }),
+    ).rejects.toThrow('--width must be a number')
+    expect(mockTakeScreenshot).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-numeric --height before launching a browser', async () => {
+    await expect(
+      runScreenshot('https://example.com', '/tmp/out.png', { height: 'abc' }),
+    ).rejects.toThrow('--height must be a number')
+    expect(mockTakeScreenshot).not.toHaveBeenCalled()
+  })
+
+  it('rejects a zero or negative --width/--height', async () => {
+    await expect(
+      runScreenshot('https://example.com', '/tmp/out.png', { width: '0' }),
+    ).rejects.toThrow('--width must be a positive number')
+    await expect(
+      runScreenshot('https://example.com', '/tmp/out.png', { height: '-10' }),
+    ).rejects.toThrow('--height must be a positive number')
+    expect(mockTakeScreenshot).not.toHaveBeenCalled()
+  })
+
+  it('accepts valid --width/--height and calls takeScreenshot with parsed numbers', async () => {
+    await runScreenshot('https://example.com', '/tmp/out.png', { width: '800', height: '600' })
+    expect(mockTakeScreenshot).toHaveBeenCalledWith(
+      'https://example.com',
+      '/tmp/out.png',
+      expect.objectContaining({ width: 800, height: 600 }),
+    )
   })
 })
