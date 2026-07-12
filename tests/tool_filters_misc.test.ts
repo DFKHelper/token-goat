@@ -282,6 +282,31 @@ describe('PsqlFilter table collapse', () => {
   })
 })
 
+describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
+  it('treats the header row under a leading top border as the header, not a data row', () => {
+    // border-2 style: top border BEFORE the header text, unlike the default style where the
+    // header text has no border above it. The old state machine only popped the header line
+    // on the FIRST border line seen, so the header fell through into the dataRows bucket here.
+    const dataRows = Array.from({ length: 30 }, (_, i) => `|  ${i} | person${i} |`)
+    const text =
+      '+----+---------+\n' +
+      '| id | name    |\n' +
+      '+----+---------+\n' +
+      dataRows.join('\n') +
+      '\n+----+---------+\n' +
+      '(30 rows)\n'
+    const out = apply(psqlFilter, text, ['psql'])
+
+    // Header text is preserved verbatim, not swallowed into the truncated data-row bucket.
+    expect(out).toContain('| id | name    |')
+    // The internal row-count summary must reflect the true 30 data rows, not 31 (header
+    // counted as a row). psql's own "(30 rows)" footer line is untouched either way, so this
+    // asserts on token-goat's own generated summary text specifically.
+    expect(out).toContain('[token-goat: 30 rows')
+    expect(out).not.toContain('[token-goat: 31 rows')
+  })
+})
+
 describe('PsqlFilter keeps errors', () => {
   it('passes through ERROR lines', () => {
     const out = apply(psqlFilter, 'ERROR: column "x" does not exist\n', ['psql'], { exitCode: 1 })
