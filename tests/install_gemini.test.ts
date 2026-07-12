@@ -202,6 +202,51 @@ describe('installGemini', () => {
     expect(() => installGemini()).toThrow(/does not contain a JSON object/)
     expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
   })
+
+  it('upgrades a legacy bare "token-goat hook <event>" command to the current exec-path-hardened form on re-install, instead of treating it as already installed (regression: installGemini used to gate on isGeminiTokenGoatCommand, which also matches the legacy form, so a pre-hardening install never got upgraded)', () => {
+    const p = geminiSettingsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const legacySettings = {
+      hooks: {
+        BeforeTool: [
+          { matcher: '^(run_shell_command)$', hooks: [{ type: 'command', command: 'token-goat hook pre_tool_use' }] },
+        ],
+        AfterTool: [
+          { matcher: '^(run_shell_command)$', hooks: [{ type: 'command', command: 'token-goat hook post_tool_use' }] },
+        ],
+        PreCompress: [{ hooks: [{ type: 'command', command: 'token-goat hook pre_compact' }] }],
+      },
+    }
+    fs.writeFileSync(p, JSON.stringify(legacySettings, null, 2))
+
+    const result = installGemini()
+    expect(result.alreadyInstalled).toBe(false)
+
+    const settings = readSettings()
+    const allCommands = [
+      ...commandsFor(settings, 'BeforeTool'),
+      ...commandsFor(settings, 'AfterTool'),
+      ...commandsFor(settings, 'PreCompress'),
+    ]
+    // The legacy bare command must be gone entirely -- upgraded in place, not left as a dead duplicate.
+    expect(allCommands.some((c) => c === 'token-goat hook pre_tool_use')).toBe(false)
+    expect(allCommands.some((c) => c === 'token-goat hook post_tool_use')).toBe(false)
+    expect(allCommands.some((c) => c === 'token-goat hook pre_compact')).toBe(false)
+    // Every remaining matcher's ^(run_shell_command)$ / no-matcher group now carries the current, hardened form.
+    for (const command of commandsFor(settings, 'BeforeTool')) {
+      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(`"${process.argv[1]}"`)
+    }
+    for (const command of commandsFor(settings, 'AfterTool')) {
+      expect(command).toContain(`"${process.execPath}"`)
+      expect(command).toContain(`"${process.argv[1]}"`)
+    }
+    // Not asserting isGeminiInstalled() here: it requires process.argv[1] to
+    // literally contain a "token-goat" path segment, which the test runner's
+    // own entry path does not -- a pre-existing, unrelated environment
+    // limitation also hit by the "fresh install" test above, not something
+    // this fix changes.
+  })
 })
 
 describe('isGeminiInstalled / uninstallGemini', () => {

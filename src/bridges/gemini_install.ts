@@ -218,13 +218,34 @@ function isGeminiTokenGoatCommand(command: string): boolean {
   return GEMINI_LEGACY_MARKER_PATTERN.test(command)
 }
 
-/** True when `groups` already has a token-goat hook entry under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */
-function groupHasTokenGoat(groups: GeminiMatcherGroup[] | undefined, matcher: string | undefined): boolean {
+/**
+ * True when `command` is exactly the *current* exec-path-hardened form
+ * {@link geminiHookCommand} produces -- never the legacy bare `token-goat hook
+ * <event>` form. Distinguishing this from {@link isGeminiTokenGoatCommand}
+ * (which also matches the legacy form) lets {@link installGemini} tell "already
+ * upgraded" apart from "still on the old, `.cmd`-shim-unsafe command" so a
+ * re-install actually upgrades a legacy entry instead of treating it as
+ * sufficient to skip.
+ */
+function isCurrentGeminiTokenGoatCommand(command: string): boolean {
+  if (typeof command !== 'string') return false
+  const match = GEMINI_COMMAND_PATTERN.exec(command)
+  if (!match) return false
+  const entryPath = match[1] ?? ''
+  return GEMINI_ENTRY_PATH_MARKER_PATTERN.test(entryPath)
+}
+
+/** True when `groups` already has a hook entry matching `predicate` under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */
+function groupHasTokenGoat(
+  groups: GeminiMatcherGroup[] | undefined,
+  matcher: string | undefined,
+  predicate: (command: string) => boolean = isGeminiTokenGoatCommand,
+): boolean {
   if (groups === undefined) return false
   for (const group of groups) {
     if (group.matcher !== matcher) continue
     for (const h of group.hooks ?? []) {
-      if (isGeminiTokenGoatCommand(h.command)) return true
+      if (predicate(h.command)) return true
     }
   }
   return false
@@ -314,7 +335,29 @@ export function installGemini(): GeminiInstallResult {
     const command = geminiHookCommand(GEMINI_EVENT_ARG[event])
     const groups = [...(hooks[event] ?? [])]
     for (const matcher of desiredMatchersFor(event)) {
-      if (groupHasTokenGoat(groups, matcher)) continue
+      if (groupHasTokenGoat(groups, matcher, isCurrentGeminiTokenGoatCommand)) continue
+
+      // A stale entry (legacy bare command, or a same-shape command whose
+      // baked entry path is otherwise not current) is not "already installed"
+      // -- strip it before writing the current command, so a re-install
+      // upgrades in place instead of leaving a dead duplicate.
+      const nextGroups: GeminiMatcherGroup[] = []
+      for (const group of groups) {
+        if (group.matcher !== matcher) {
+          nextGroups.push(group)
+          continue
+        }
+        const keptHooks = (group.hooks ?? []).filter((h) => !isGeminiTokenGoatCommand(h.command))
+        if (keptHooks.length > 0) {
+          nextGroups.push({ ...group, hooks: keptHooks })
+        } else if ((group.hooks ?? []).length === 0) {
+          // A group that had no hooks to begin with is user data; preserve it.
+          nextGroups.push(group)
+        }
+      }
+      groups.length = 0
+      groups.push(...nextGroups)
+
       const group: GeminiMatcherGroup =
         matcher === undefined ? { hooks: [{ type: 'command', command }] } : { matcher, hooks: [{ type: 'command', command }] }
       groups.push(group)
@@ -399,7 +442,7 @@ export function isGeminiInstalled(): boolean {
   if (hooks === undefined) return false
   for (const event of GEMINI_HOOK_EVENTS) {
     for (const matcher of desiredMatchersFor(event)) {
-      if (!groupHasTokenGoat(hooks[event], matcher)) return false
+      if (!groupHasTokenGoat(hooks[event], matcher, isCurrentGeminiTokenGoatCommand)) return false
     }
   }
   return true
