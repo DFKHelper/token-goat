@@ -613,6 +613,85 @@ describe('runDead cross-project scoping', () => {
   })
 })
 
+// ---- resolveCallers / runDead same-project name-collision scoping (regression) ---------------
+
+describe('resolveCallers same-project name-collision scoping', () => {
+  // Regression: resolveCallers matched refs by bare name only, scoped to the project but not to
+  // which file actually defines the symbol being asked about. When two files in the same project
+  // each define a function with the identical name, a call resolving to file B's local copy was
+  // attributed as a "caller" of file A's unrelated same-named symbol too.
+  it('does not attribute another same-named symbol\'s local caller when a defining filePath is given', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-collision-'))
+    try {
+      const fileA = join(root, 'collide-a.ts')
+      const fileB = join(root, 'collide-b.ts')
+      // fileA's copy is never called anywhere.
+      writeFileSync(fileA, 'export function collideFn7m3() { return 1 }\n')
+      // fileB defines its OWN same-named function and calls it locally.
+      writeFileSync(fileB, 'export function collideFn7m3() { return 2 }\nfunction caller() { collideFn7m3() }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Scoped to fileA's own (unused) definition: fileB's local call must not be attributed to it.
+        expect(resolveCallers('collideFn7m3', undefined, normalizePath(fileA))).toEqual([])
+        // Scoped to fileB's own definition: its local caller is still correctly attributed.
+        const bCallers = resolveCallers('collideFn7m3', undefined, normalizePath(fileB))
+        expect(bCallers).toHaveLength(1)
+        expect(bCallers[0]?.caller).toBe('caller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runDead same-project name-collision scoping', () => {
+  // Regression: runDead computed a symbol's ref count via a bare-name queryRefs scoped only to
+  // the project root, so a genuinely unused function in file A was scored ALIVE by a call that
+  // actually resolved to a different, same-named function locally defined and called in file B.
+  it('reports a truly-unused function as dead even when a different file defines and calls a same-named function', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-collision-'))
+    try {
+      const fileA = join(root, 'dead-collide-a.ts')
+      const fileB = join(root, 'dead-collide-b.ts')
+      const normA = normalizePath(fileA)
+      const normB = normalizePath(fileB)
+      writeFileSync(fileA, 'export function collideFn9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function collideFn9k2() { return 2 }\nfunction caller() { collideFn9k2() }\n')
+      indexFileSync(normA)
+      indexFileSync(normB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runDead({ json: true, top: 500 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        // fileA's copy is truly dead and must be reported.
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normA)).toBe(true)
+        // fileB's copy is genuinely called locally and must NOT be reported as dead.
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normB)).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runDeps against the real repo -------------------------
 
 describe('runDeps integration', () => {

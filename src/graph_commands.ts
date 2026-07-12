@@ -23,7 +23,7 @@ import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath } from './util.js'
 import { stripAnsi } from './render/ansi.js'
-import type { SymbolEntry } from './parser_types.js'
+import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -142,16 +142,58 @@ export interface CallerEntry {
   line: number
 }
 
-/** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`. */
-export function resolveCallers(name: string, limit?: number): CallerEntry[] {
+/** True when `fp` has its own symbol definition named `name` -- used by {@link filterRefsForSymbol} to tell a local/shadowing reference apart from one that actually targets a different, same-named symbol elsewhere in the project. */
+function fileDefinesName(fp: string, name: string, getSyms: (fp: string) => SymbolEntry[]): boolean {
+  return getSyms(fp).some((s) => s.name === name)
+}
+
+/**
+ * Filter `refs` (all matching a bare `name`) down to the ones plausibly attributable to the
+ * symbol defined at `filePath`, for use when multiple symbols in the project share that name.
+ *
+ * The refs table has no import resolution -- a ref only records the bare callee name, never
+ * which definition it binds to. Without this filter, a same-name reference anywhere in the
+ * project counts as evidence for every same-named symbol project-wide: a genuinely dead
+ * symbol in one file looks "alive" because of an unrelated call resolving to a different
+ * file's same-named symbol, and `callers` misattributes that call to the wrong definition.
+ *
+ * A ref is kept when it is in the symbol's own defining file (the common case: a local call,
+ * or an exported symbol imported elsewhere with no local shadow) or its file does NOT itself
+ * define a same-named symbol (so it cannot be resolving to a local shadow instead). A ref in a
+ * file that defines its OWN symbol of the same name is dropped for every OTHER same-named
+ * symbol's computation, since a bare-name call there almost certainly resolves to that file's
+ * local definition.
+ *
+ * This does not fully resolve every ambiguous case -- a third file with no local definition of
+ * its own, calling a name that collides across two other files, still can't be attributed
+ * precisely without real import resolution, which this index does not perform.
+ */
+function filterRefsForSymbol(
+  refs: RefEntry[],
+  name: string,
+  filePath: string,
+  getSyms: (fp: string) => SymbolEntry[],
+): RefEntry[] {
+  return refs.filter((ref) => ref.filePath === filePath || !fileDefinesName(ref.filePath, name, getSyms))
+}
+
+/** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`.
+ *
+ * `filePath`, when provided, scopes the result to callers plausibly attributable to the symbol
+ * defined there (via {@link filterRefsForSymbol}) -- needed when another symbol in the same
+ * project shares `name`, so a caller of the other symbol isn't misattributed. Omitted by the
+ * bare `token-goat callers <name>` CLI path, which intentionally reports every reference to
+ * `name` project-wide regardless of which same-named definition it targets. */
+export function resolveCallers(name: string, limit?: number, filePath?: string): CallerEntry[] {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
   // symbol in an unrelated project on the same machine don't leak into this project's results.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const refs = queryRefs({ name, limit: limit ?? 500, rootDir })
   const getSyms = buildFileSymCache()
+  const scoped = filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms)
 
-  return refs.map((ref) => {
+  return scoped.map((ref) => {
     const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
     return {
       caller: enc?.name ?? '(module scope)',
@@ -340,13 +382,18 @@ export function runDead(opts: DeadOptions): number {
   // same-named symbol in an unrelated project on the same machine is wrongly scored ALIVE.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const syms = querySymbols({ kind, limit: 5000, rootDir })
+  const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
 
   for (const sym of syms) {
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
-    const refs = queryRefs({ name: sym.name, limit: 1, rootDir })
-    if (isDeadSymbol(sym.name, refs.length)) {
+    // limit raised from 1 to 500 (matching resolveCallers' default cap): a bare-name existence
+    // check can no longer stop at the first match, since that match might be filtered out below
+    // as belonging to a different, same-named symbol elsewhere in the project.
+    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
+    const scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
+    if (isDeadSymbol(sym.name, scoped.length)) {
       results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
     }
   }
