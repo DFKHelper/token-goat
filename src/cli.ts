@@ -23,7 +23,7 @@ import type { StdioServerTransport as StdioServerTransportClass } from '@modelco
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { formatLocalTimestamp } from './stats.js'
-import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
+import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
@@ -295,13 +295,8 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
 
 function cmdMap(opts: { compact?: boolean }): void {
   const compact = opts.compact === true
-  if (compact) {
-    const entries = buildCompactMap(2000, process.cwd())
-    out(formatMap(entries, { compact: true }))
-  } else {
-    const map = buildProjectMap(process.cwd(), { compact: false })
-    out(formatProjectMap(map, false))
-  }
+  const map = buildProjectMap(process.cwd(), { compact })
+  out(formatProjectMap(map, compact))
 }
 
 // Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The
