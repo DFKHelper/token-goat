@@ -64,7 +64,7 @@ export function stripCstyleComments(
     while (j < line.length) {
       if (!inComment) {
         let open = line.indexOf('/*', j)
-        while (open !== -1 && isInsideStringLiteral(line, open)) {
+        while (open !== -1 && isInsideStringLiteral(line, open, j)) {
           open = line.indexOf('/*', open + 1)
         }
         if (open === -1) {
@@ -213,9 +213,9 @@ export function stripSqlLineComments(text: string): string {
  * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
  * string that never closes.
  */
-function isInsideStringLiteral(line: string, index: number): boolean {
+function isInsideStringLiteral(line: string, index: number, from = 0): boolean {
   let openQuote: '"' | "'" | null = null
-  let i = 0
+  let i = from
   while (i < index) {
     const ch = line[i]
     // Only treat backslash as an escape while already inside a string (mirrors
@@ -255,7 +255,7 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
   while (j < line.length) {
     if (!comment) {
       let open = line.indexOf('/*', j)
-      while (open !== -1 && isInsideStringLiteral(line, open)) {
+      while (open !== -1 && isInsideStringLiteral(line, open, j)) {
         open = line.indexOf('/*', open + 1)
       }
       if (open === -1) {
