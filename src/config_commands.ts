@@ -21,7 +21,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, withFileLock, sleepSync } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync } from './util.js'
 import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -244,7 +244,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     // machine that has never run `config set` before).
     ensureDirSync(path.dirname(configPath()))
     const lockPath = path.join(path.dirname(configPath()), '.config.lock')
-    const lockResult = withFileLock(lockPath, applySet)
+    // Same reasoning and value as session_store.ts's saveSessionState (see LOCK_WAIT_MS_HARDENED's
+    // docstring in util.ts): the default withFileLock budget can plausibly be missed under real
+    // machine load with no lock holder actually stuck, and falling back to an unprotected write on
+    // that miss would reintroduce the exact clobber this lock exists to prevent.
+    const lockResult = withFileLock(lockPath, applySet, { waitMs: LOCK_WAIT_MS_HARDENED })
     const coerced = lockResult === undefined ? applySet() : lockResult
     invalidateConfigCache()
     // The write above only ever touches the env-free persisted config, so if an env var
