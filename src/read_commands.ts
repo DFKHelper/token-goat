@@ -1004,21 +1004,24 @@ export function runBrief(opts: BriefOptions): number {
   }
   const match = resolution.entry
 
-  // Query with resolveCallers's own (much larger) default limit so we learn the true
-  // caller count, then apply the display limit ourselves — otherwise the DB query and
-  // the display slice are capped at the same value and the "more elided" message can
-  // never fire even when far more callers exist than are shown.
+  // resolveCallers(name) with no explicit limit still applies its own internal default cap
+  // (500, in graph_commands.ts's queryRefs call) -- so callers.length is NOT the true count
+  // once more than 500 references exist, despite what an earlier version of this comment
+  // claimed. Get the real uncapped total via a separate COUNT(*) query (queryRefCounts,
+  // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
   const callers = resolveCallers(match.name)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const totalCallers = queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
   const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd)
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
-  const truncated = callers.length > shown.length
+  const truncated = totalCallers > shown.length
 
   if (opts.json === true) {
     const result: BriefResult = {
       symbol: match,
       callers: shown,
-      totalCallers: callers.length,
+      totalCallers,
       truncated,
       section,
     }
@@ -1035,12 +1038,12 @@ export function runBrief(opts: BriefOptions): number {
     '',
   ]
 
-  lines.push(`Callers (${callers.length}):`)
+  lines.push(`Callers (${totalCallers}):`)
   for (const c of shown) {
     lines.push(`  ${c.caller}\t${c.file}:${c.line}`)
   }
   if (truncated) {
-    lines.push(`  ...(${callers.length - shown.length} more elided)`)
+    lines.push(`  ...(${totalCallers - shown.length} more elided)`)
   }
 
   if (section !== null) {
@@ -1388,6 +1391,46 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// Splits off a trailing inline comment (# or ;) from a TOML/INI value, but only when the
+// marker occurs outside a quoted region -- so `"value # not a comment"` keeps its full
+// quoted content, while `value # real comment` (unquoted) gets truncated at the marker.
+// This mirrors the intent of the section-header comment stripping above, but is quote-aware
+// so it doesn't corrupt quoted values that legitimately contain '#' or ';'.
+function stripInlineComment(s: string): string {
+  let inQuote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      inQuote = ch
+      continue
+    }
+    if (ch === '#' || ch === ';') {
+      return s.slice(0, i)
+    }
+  }
+  return s
+}
+
+// Strips a leading+trailing quote pair from a value only when both ends are present and
+// match the same quote character -- e.g. `"value"` -> `value`, but `O'Brien's` (a legitimate
+// trailing apostrophe with no matching leading quote) and `"foo'` (mismatched quote
+// characters) are both left untouched, since stripping either end independently would
+// silently corrupt the value.
+function stripPairedQuotes(s: string): string {
+  if (s.length >= 2) {
+    const first = s[0]
+    const last = s[s.length - 1]
+    if ((first === '"' || first === "'") && first === last) {
+      return s.slice(1, -1)
+    }
+  }
+  return s
+}
+
 /**
  * Resolve a scalar value at a dotted path in a YAML document, line-based (no YAML
  * library). Handles flat keys, indentation-nested keys at any consistent indent
@@ -1412,10 +1455,13 @@ function lookupYaml(lines: readonly string[], key: string): string | null {
     const k = trimmed.slice(0, colon).trim()
     if (k !== parts[depth]) continue
     if (depth === parts.length - 1) {
-      return trimmed
-        .slice(colon + 1)
-        .trim()
-        .replace(/^["']|["']$/g, '')
+      // Same paired-quote-stripping logic as the TOML/INI path below: YAML's own quoting
+      // rules (doubled-quote escapes, flow scalars, etc.) are already out of scope per this
+      // function's doc comment, but the independent-single-end stripping this replaced had
+      // the identical bug -- e.g. `name: O'Brien's` lost its trailing apostrophe. Paired
+      // stripping is strictly safer (it only strips when both ends match), so unifying the
+      // fix here cannot regress any previously-correct case.
+      return stripPairedQuotes(trimmed.slice(colon + 1).trim())
     }
     parentIndent = indent
     childIndent = -1
@@ -1534,7 +1580,8 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     // embedding in a RegExp. `\s*` (not `\s+`) preserves the zero-space case.
     if (new RegExp(`^${escapeRegExp(leafKey)}\\s*=`).test(trimmed)) {
       const eqIdx = trimmed.indexOf('=')
-      emit(trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, ''))
+      const rawValue = stripInlineComment(trimmed.slice(eqIdx + 1)).trim()
+      emit(stripPairedQuotes(rawValue))
       return 0
     }
   }
