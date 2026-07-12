@@ -173,6 +173,10 @@ const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
  * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
  *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
  *   shape that replaces the whole tool input and lets the call proceed.
+ * - `rewriteOutput` → `{"hookSpecificOutput":{"hookEventName":"PostToolUse",
+ *   "updatedToolOutput":"<content>"}}` — the `PostToolUse` shape that replaces
+ *   the tool result text the model receives; the tool has already run, so this
+ *   cannot undo the call, only change what the model sees of it.
  * - `pass`    → `{}` (no-op; the call proceeds unchanged)
  *
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
@@ -198,6 +202,13 @@ export function serializeOutput(output: HookOutput, eventName: HookEventName): s
           hookEventName: 'PreToolUse',
           permissionDecision: 'allow',
           updatedInput: output.updatedInput,
+        },
+      })
+    case 'rewriteOutput':
+      return JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          updatedToolOutput: output.updatedOutput,
         },
       })
     case 'pass':

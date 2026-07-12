@@ -216,5 +216,21 @@ describe('hook registry', () => {
     it('serializes pass to an empty object', () => {
       expect(serializeOutput({ hookType: 'pass' }, 'pre_tool_use')).toBe('{}')
     })
+
+    // Confirmed against https://code.claude.com/docs/en/hooks (verified 2026-07-12):
+    // PostToolUse hooks rewrite a tool's result via hookSpecificOutput.updatedToolOutput
+    // -- the same field name whether the tool is MCP or built-in (support for built-in
+    // tools shipped in v2.1.121; MCP support predates it). This is a real, valid partial
+    // verification that token-goat's serializer PRODUCES the documented wire shape; it
+    // does not by itself confirm a live Claude Code session honors it on receipt.
+    it('serializes rewriteOutput to the documented hookSpecificOutput.updatedToolOutput shape', () => {
+      expect(
+        serializeOutput({ hookType: 'rewriteOutput', updatedOutput: 'rewritten body' }, 'post_tool_use'),
+      ).toBe(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: 'rewritten body' },
+        }),
+      )
+    })
   })
 })
