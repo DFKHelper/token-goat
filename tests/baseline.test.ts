@@ -4,22 +4,30 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { buildProjectMap, formatProjectMap, walkProject } from '../src/baseline.js'
+import { buildProjectMap, formatProjectMap, walkProject, findMemSuggestionCandidates, formatMemSuggestions } from '../src/baseline.js'
 import { loadConfig } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { findClaudeMdFiles } from '../src/cli_context_stats.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
+// findMemSuggestionCandidates/formatMemSuggestions walk from findClaudeMdFiles's result --
+// mocked so tests are deterministic regardless of whatever real CLAUDE.md files exist on the
+// machine running the suite (e.g. a real ~/.claude/CLAUDE.md), rather than depending on the
+// real filesystem walk up from a temp dir.
+vi.mock('../src/cli_context_stats.js', () => ({ findClaudeMdFiles: vi.fn() }))
 
 let TMP: string
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-'))
   // Permissive default so existing tests (none of whose fixture files match isTestFile) are
-  // unaffected; individual tests override as needed.
+  // unaffected; individual tests override as needed. indexing.skip_dirs is set empty so
+  // walkProject's merge of it never trips on these fixtures.
   vi.mocked(loadConfig).mockReturnValue({
     repomap: { exclude_tests: false },
+    indexing: { skip_dirs: [] },
   } as unknown as ReturnType<typeof loadConfig>)
 })
 
@@ -71,6 +79,7 @@ describe('buildProjectMap', () => {
     write('tests/add.test.ts', 'export const t = 1\n')
     vi.mocked(loadConfig).mockReturnValue({
       repomap: { exclude_tests: true },
+      indexing: { skip_dirs: [] },
     } as unknown as ReturnType<typeof loadConfig>)
 
     const map = buildProjectMap(TMP)
@@ -84,6 +93,7 @@ describe('buildProjectMap', () => {
     write('tests/add.test.ts', 'export const t = 1\n')
     vi.mocked(loadConfig).mockReturnValue({
       repomap: { exclude_tests: false },
+      indexing: { skip_dirs: [] },
     } as unknown as ReturnType<typeof loadConfig>)
 
     const map = buildProjectMap(TMP)
@@ -172,5 +182,100 @@ describe('buildProjectMap cross-project scoping', () => {
       fs.rmSync(rootA, { recursive: true, force: true })
       fs.rmSync(rootB, { recursive: true, force: true })
     }
+  })
+})
+
+describe('findMemSuggestionCandidates', () => {
+  it('counts single-line preference-shaped bullets outside structural/critical headings', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', [
+      '# CLAUDE.md',
+      '',
+      '## Preferences',
+      '- Use SSH remote for git push',
+      '- Prefer rg over grep',
+      '',
+      '## Architecture',
+      '- src/foo.ts handles bar',
+      '- src/baz.ts handles qux',
+    ].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const result = findMemSuggestionCandidates(TMP)
+
+    const entry = result.find((r) => r.path === claudeMd)
+    expect(entry).toBeDefined()
+    // Only the two "## Preferences" bullets qualify; the two "## Architecture" bullets are
+    // structural inventory content and must be excluded.
+    expect(entry?.count).toBe(2)
+  })
+
+  it('excludes bullets under a heading that reads as a must-enforce directive', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', [
+      '## MANDATORY Rules',
+      '- Never commit secrets',
+      '- Always run tests before pushing',
+    ].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const result = findMemSuggestionCandidates(TMP)
+
+    expect(result.find((r) => r.path === claudeMd)).toBeUndefined()
+  })
+
+  it('returns no entry for a file with zero qualifying bullets', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', '# CLAUDE.md\n\nJust prose, no bullets.\n')
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const result = findMemSuggestionCandidates(TMP)
+
+    expect(result.find((r) => r.path === claudeMd)).toBeUndefined()
+  })
+
+  it('also scans a sibling AGENTS.md next to a discovered CLAUDE.md', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', '# CLAUDE.md\n')
+    write('AGENTS.md', ['## Notes', '- Prefer small commits'].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const result = findMemSuggestionCandidates(TMP)
+
+    const agentsEntry = result.find((r) => r.path === path.join(TMP, 'AGENTS.md'))
+    expect(agentsEntry).toBeDefined()
+    expect(agentsEntry?.count).toBe(1)
+  })
+})
+
+describe('formatMemSuggestions', () => {
+  it('renders an advisory "mem import --from-md" line naming the file and bullet count', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', ['## Preferences', '- Use SSH remote for git push'].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const text = formatMemSuggestions(TMP)
+
+    expect(text).toContain('mem import --from-md')
+    expect(text).toContain(claudeMd)
+    expect(text).toContain('migrates 1 preference-shaped lines from CLAUDE.md')
+  })
+
+  it('returns an empty string when there is nothing to suggest', () => {
+    vi.mocked(findClaudeMdFiles).mockReturnValue([])
+
+    expect(formatMemSuggestions(TMP)).toBe('')
+  })
+
+  it('never writes anything to disk and returns a string result only (advisory, not a live integration)', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', ['## Preferences', '- Use SSH remote for git push'].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const before = fs.readdirSync(TMP).sort()
+    formatMemSuggestions(TMP)
+    const after = fs.readdirSync(TMP).sort()
+
+    expect(after).toEqual(before)
   })
 })

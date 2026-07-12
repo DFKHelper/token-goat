@@ -2587,8 +2587,9 @@ export function buildProgram(): Command {
     .command('baseline')
     .description('emit the project baseline map (file count, languages, top symbols, recent files)')
     .option('--subagent', 'emit terser compact variant for subagent context')
+    .option('--suggest-mem', 'also scan CLAUDE.md/AGENTS.md for preference-shaped bullets and suggest `mem import --from-md` (advisory only; never invokes mem)')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { subagent?: boolean; json?: boolean }) => guard(() => cmdBaseline(opts))())
+    .action((opts: { subagent?: boolean; json?: boolean; suggestMem?: boolean }) => guard(() => cmdBaseline(opts))())
 
   program
     .command('config <action> [key] [value]')

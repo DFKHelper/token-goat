@@ -21,6 +21,7 @@ import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
+import { findClaudeMdFiles } from './cli_context_stats.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
 export interface ProjectMap {
@@ -235,5 +236,85 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     }
   }
 
-  return lines.join('\n')
+  return lines.join(String.fromCharCode(10))
+}
+/** A bullet line that isn't itself a heading, list continuation, or blank -- a lightweight, single-line markdown bullet. */
+const BULLET_LINE_RE = /^[-*]\s+\S.*$/
+/** Heading text naming an obviously-structural section (Architecture, File Structure, ...) whose bullets are inventory/reference content, not preference-shaped. */
+const STRUCTURAL_HEADING_RE = /\b(architecture|file structure|directory structure|repository structure|project structure|folder structure)\b/i
+/** Heading text marking a must-enforce/critical directive section -- content that has to stay in the deterministic system-prompt channel, never migrated to a queryable memory store. */
+const CRITICAL_HEADING_RE = /\b(MANDATORY|REQUIRED|CRITICAL|NEVER|ALWAYS)\b/
+
+/** One CLAUDE.md/AGENTS.md file with a count of preference-shaped bullet lines found in it. */
+export interface MemSuggestion {
+  readonly path: string
+  readonly count: number
+}
+
+/**
+ * Scans a project's CLAUDE.md/AGENTS.md files for preference/decision-shaped bullet lines
+ * that are candidates for `mem import --from-md` migration: single-line bullets that are
+ * NOT under an obviously-structural heading (Architecture, File Structure, ...) and NOT
+ * under a heading that reads as a must-enforce directive (MANDATORY/REQUIRED/CRITICAL/
+ * NEVER/ALWAYS as a heading marker) -- that content must stay in the deterministic
+ * system-prompt channel, never migrated to a queryable memory store.
+ *
+ * This is a lightweight heuristic kept in the spirit of (not byte-identical to) the
+ * mem-side `mem import --from-md` classifier, so behavior doesn't surprise a user running
+ * both. Purely advisory: it never invokes `mem`, never writes anything, and works whether
+ * or not `mem` is installed -- it is just a text hint about a command the user could run.
+ */
+export function findMemSuggestionCandidates(projectRoot: string): MemSuggestion[] {
+  const claudeMdFiles = findClaudeMdFiles(projectRoot)
+  const candidateFiles = new Set<string>(claudeMdFiles)
+  for (const claudeMd of claudeMdFiles) {
+    const agentsMd = path.join(path.dirname(claudeMd), 'AGENTS.md')
+    if (fs.existsSync(agentsMd)) candidateFiles.add(agentsMd)
+  }
+
+  const suggestions: MemSuggestion[] = []
+  for (const filePath of candidateFiles) {
+    let text: string
+    try {
+      text = fs.readFileSync(filePath, { encoding: 'utf-8' })
+    } catch {
+      continue
+    }
+
+    let count = 0
+    let skipSection = false
+    for (const rawLine of text.split(String.fromCharCode(10))) {
+      const line = rawLine.trim()
+      if (line.startsWith('#')) {
+        const heading = line.replace(/^#+\s*/, '')
+        skipSection = STRUCTURAL_HEADING_RE.test(heading) || CRITICAL_HEADING_RE.test(heading)
+        continue
+      }
+      if (skipSection) continue
+      if (BULLET_LINE_RE.test(line)) count++
+    }
+
+    if (count > 0) suggestions.push({ path: filePath, count })
+  }
+
+  return suggestions
+}
+
+/**
+ * Renders the `--suggest-mem` advisory block for `token-goat baseline`: one
+ * `mem import --from-md <path>` suggestion per qualifying CLAUDE.md/AGENTS.md file.
+ * Returns '' when there is nothing to suggest.
+ */
+export function formatMemSuggestions(projectRoot: string): string {
+  const suggestions = findMemSuggestionCandidates(projectRoot)
+  if (suggestions.length === 0) return ''
+
+  const lines: string[] = ['', '## mem suggestions']
+  for (const s of suggestions) {
+    const basename = path.basename(s.path)
+    lines.push(
+      'Consider: mem import --from-md ' + s.path + '  # migrates ' + s.count + ' preference-shaped lines from ' + basename + ' as pending facts for review',
+    )
+  }
+  return lines.join(String.fromCharCode(10))
 }
