@@ -925,6 +925,22 @@ function requireNonNegativeInt(flag: string, raw: string): number {
   return n
 }
 
+// Same numeric parse as requireNonNegativeInt, plus a strictly-positive check. Used for
+// screenshot --width/--height: parseInt's bare `NaN` result isn't nullish, so it survives the
+// `?? 1280`-style fallback in takeScreenshot and reaches Chrome DevTools Protocol, producing an
+// opaque `Protocol error (Emulation.setDeviceMetricsOverride)` failure after a full browser
+// launch. Validating up front fails fast with a clear CLI error before that launch happens.
+function requirePositiveInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${flag} must be a positive number, got: "${raw}"`)
+  }
+  return n
+}
+
 interface CsvQueryCliOptions {
   file: string
   columns?: string
@@ -1055,8 +1071,8 @@ export async function runScreenshot(
 ): Promise<string> {
   const screenshotOpts: Parameters<typeof takeScreenshot>[2] = {}
   if (opts.executablePath !== undefined) screenshotOpts.executablePath = opts.executablePath
-  if (opts.width !== undefined) screenshotOpts.width = parseInt(opts.width, 10)
-  if (opts.height !== undefined) screenshotOpts.height = parseInt(opts.height, 10)
+  if (opts.width !== undefined) screenshotOpts.width = requirePositiveInt('--width', opts.width)
+  if (opts.height !== undefined) screenshotOpts.height = requirePositiveInt('--height', opts.height)
   if (opts.fullPage !== undefined) screenshotOpts.fullPage = opts.fullPage
   const result = await takeScreenshot(url, destPath, screenshotOpts)
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
