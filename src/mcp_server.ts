@@ -33,7 +33,7 @@ export function createMcpServer(): McpServer {
       description: 'Search for a symbol by name across the indexed project.',
       inputSchema: {
         name: z.string().describe('symbol name to search for'),
-        limit: z.number().int().nonnegative().optional().describe('max results (default: 20)'),
+        limit: z.number().int().positive().optional().describe('max results (default: 20)'),
         file: z.string().optional().describe('restrict to one file'),
         kind: z.string().optional().describe('restrict to one kind (function, class, ...)'),
         json: z.boolean().optional().describe('output as JSON'),
@@ -151,7 +151,7 @@ export function createMcpServer(): McpServer {
         'root for a client that launched the server from elsewhere, so pass projectRoot explicitly when in doubt.',
       inputSchema: {
         query: z.string().describe('natural-language search query'),
-        limit: z.number().int().nonnegative().optional().describe('max results (default: 20)'),
+        limit: z.number().int().positive().optional().describe('max results (default: 20)'),
         projectRoot: z
           .string()
           .optional()

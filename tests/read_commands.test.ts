@@ -239,6 +239,27 @@ describe('read_commands', () => {
       expect(arg.filePath).not.toBe('src/bar.ts')
       expect(path.isAbsolute(arg.filePath ?? '')).toBe(true)
     })
+
+    // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely exists would
+    // otherwise be reported as "no matches" -- a wrong answer, not just a permissive input.
+    // limit: 0 (or negative) must be rejected up front instead of reaching querySymbols.
+    it('rejects limit: 0 as an explicit invalid-argument error instead of querying with it', () => {
+      const sym: MockSymbol = { name: 'loadGrammar', kind: 'function', filePath: 'src/parser.ts', lineStart: 1, lineEnd: 2, body: 'function loadGrammar() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { text, code } = runSymbol({ name: 'loadGrammar', limit: 0 })
+      expect(code).toBe(1)
+      expect(text).not.toContain('No matches')
+      expect(text.toLowerCase()).toContain('limit')
+      expect(mockQuerySymbols).not.toHaveBeenCalled()
+    })
+
+    it('rejects a negative limit as an explicit invalid-argument error', () => {
+      const { text, code } = runSymbol({ name: 'x', limit: -1 })
+      expect(code).toBe(1)
+      expect(text.toLowerCase()).toContain('limit')
+      expect(mockQuerySymbols).not.toHaveBeenCalled()
+    })
   })
 
   // ---- runRead ------------------------------------------------------------

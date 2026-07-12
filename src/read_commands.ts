@@ -149,6 +149,13 @@ export interface SymbolOptions {
 
 /** Handle ``token-goat symbol <name>``. */
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero
+  // rows regardless of whether the symbol exists -- silently reporting "no matches" for a
+  // symbol that's actually indexed. Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+  }
+
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
   if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file)
@@ -1760,6 +1767,12 @@ interface SemanticOptions {
 // no-matches miss instead of returning a code. The "token-goat: " prefix is baked into the
 // returned text here so the CLI's output stays byte-identical to that historical path.
 async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
+  // Same reasoning as runSymbol above: a limit of 0 (or negative) would silently query for
+  // zero results instead of surfacing a clear "you asked for nothing" error.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+  }
+
   const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
 
   // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise
