@@ -380,9 +380,14 @@ const LOCK_PRIORITY = [
 
 function findLockfile(startPath: string): { file: string; others: string[] } | null {
   const stat = fs.statSync(startPath, { throwIfNoEntry: false })
-  const dir = stat?.isDirectory() !== false && fs.existsSync(startPath) && fs.statSync(startPath).isDirectory()
-    ? startPath
-    : path.dirname(startPath)
+  if (stat !== undefined && stat.isFile()) {
+    // An explicit lockfile path is the caller's actual choice -- honor it
+    // directly instead of falling through to a directory-based priority
+    // search, which would silently discard it in favor of whatever
+    // LOCK_PRIORITY picks from its containing directory.
+    return { file: startPath, others: [] }
+  }
+  const dir = stat !== undefined && stat.isDirectory() ? startPath : path.dirname(startPath)
 
   const found: string[] = []
   for (const name of LOCK_PRIORITY) {

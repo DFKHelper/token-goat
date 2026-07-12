@@ -422,6 +422,39 @@ describe('lockdeps command', () => {
     expect(r.stderr).toContain('No lockfile found')
     fs.rmdirSync(emptyDir)
   })
+
+  it('honors an explicit lockfile argument over LOCK_PRIORITY when the directory also has a higher-priority lockfile (regression: findLockfile reduced an explicit file path to its containing directory and re-picked by LOCK_PRIORITY, silently discarding the caller\'s actual choice -- "lockdeps ./yarn.lock" in a dir that also had package-lock.json parsed package-lock.json instead)', () => {
+    const mixedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mixed-lock-'))
+    fs.writeFileSync(
+      path.join(mixedDir, 'package-lock.json'),
+      JSON.stringify({
+        name: 'npm-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { dependencies: { 'npm-only-pkg': '1.0.0' } }, 'node_modules/npm-only-pkg': { version: '1.0.0' } },
+      }),
+      'utf8',
+    )
+    const yarnLockPath = path.join(mixedDir, 'yarn.lock')
+    fs.writeFileSync(
+      yarnLockPath,
+      ['yarn-only-pkg@^1.0.0:', '  version "1.2.3"', '  resolved "https://example.com/yarn-only-pkg-1.2.3.tgz"', ''].join('\n'),
+      'utf8',
+    )
+
+    const r = run(['lockdeps', yarnLockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      file: string
+      deps: Array<{ name: string; version: string }>
+    }
+    expect(parsed.format).toBe('yarn')
+    expect(parsed.deps).toContainEqual({ name: 'yarn-only-pkg', version: '1.2.3', kind: 'unknown' })
+    expect(parsed.deps.some((d) => d.name === 'npm-only-pkg')).toBe(false)
+
+    fs.rmSync(mixedDir, { recursive: true, force: true })
+  })
 })
 
 // ── note ─────────────────────────────────────────────────────────────────────
