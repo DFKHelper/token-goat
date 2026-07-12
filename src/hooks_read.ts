@@ -62,9 +62,6 @@ function isTsConfigFile(basename: string): boolean {
  */
 const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 
-/** Re-read deny threshold: files above this size that have already been read are denied rather than just hinted. */
-const REREAD_DENY_BYTES = 50 * 1024
-
 /**
  * Size gate for the *first* read of a tasks/<id>.output file. Unlike the markdown
  * intercept (MARKDOWN_SIZE_THRESHOLD) and the generic large-file gate (LARGE_FILE_BYTES)
@@ -870,36 +867,41 @@ export function preReadHandler(event: HookEvent): HookOutput {
       }
     }
 
-    // Item 1: file was truncated on last read — surgical reads only
-    if (wasFileTruncatedThisSession(normalized)) {
-      return denyOutput(
-        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-      )
-    }
+    // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read
+    // still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only
+    // hinted via the contextOutput fallback at the bottom of this block.
+    if (config.hints.reread_deny) {
+      // Item 1: file was truncated on last read — surgical reads only
+      if (wasFileTruncatedThisSession(normalized)) {
+        return denyOutput(
+          'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        )
+      }
 
-    // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
-    if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
-      return denyOutput(
-        'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-      )
-    }
+      // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
+      if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
+        return denyOutput(
+          'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
+          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        )
+      }
 
-    // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-    const isSourceExt = isSourceExtension(basename)
-    if (isSourceExt && reads >= 2) {
-      recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
-      return denyOutput(
-        'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-      )
+      // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
+      const isSourceExt = isSourceExtension(basename)
+      if (isSourceExt && reads >= 2) {
+        recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
+        return denyOutput(
+          'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
+          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        )
+      }
     }
 
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    if (rereadBytes >= REREAD_DENY_BYTES || reads >= 2) {
+    if (config.hints.reread_deny && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
