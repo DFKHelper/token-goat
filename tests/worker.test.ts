@@ -16,6 +16,7 @@ import {
   workerPidPath,
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
+import * as projectModule from '../src/project.js'
 import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
@@ -213,6 +214,33 @@ describe('processDirtyBatch', () => {
 
     expect(count).toBe(1)
     expect(indexed).toEqual([real])
+  })
+
+  // Regression: for every dirty path in a batch, processDirtyBatch re-ran a full findProject
+  // ancestor-marker probe (9 markers x existsSync/lstat per level, plus isRepoContainer's own
+  // readdirSync) purely to feed lastKnownProjectRoots -- a value only consulted once per
+  // PRUNE_EVERY_N_DRAINS drains. Multiple dirty paths sharing the same directory in one batch
+  // repeated that walk once per path for an identical result. Assert findProject is called at
+  // most once per distinct dirname in the batch, not once per path.
+  it('memoizes findProject per dirname within a batch instead of re-walking for every path', () => {
+    fs.mkdirSync(path.join(DIR, '.git'))
+    const a = path.join(DIR, 'a.ts')
+    const b = path.join(DIR, 'b.ts')
+    const c = path.join(DIR, 'c.ts')
+    fs.writeFileSync(a, 'export const a = 1\n')
+    fs.writeFileSync(b, 'export const b = 1\n')
+    fs.writeFileSync(c, 'export const c = 1\n')
+
+    const findProjectSpy = vi.spyOn(projectModule, 'findProject')
+
+    const indexed: string[] = []
+    processDirtyBatch([a, b, c], (p) => indexed.push(p))
+
+    expect(indexed).toEqual([a, b, c])
+    // All three paths share the same dirname (DIR) -- pre-fix this was called 3 times (once per
+    // path); post-fix it must be called at most once for that one distinct dirname.
+    expect(findProjectSpy.mock.calls.length).toBeLessThan(3)
+    expect(findProjectSpy).toHaveBeenCalledTimes(1)
   })
 
   // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call
@@ -801,7 +829,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     vi.restoreAllMocks()
   })
 
-  it('retries embedding on the next touch of unchanged content after a simulated embedding crash', () => {
+  it('retries embedding on the next touch of unchanged content after a simulated embedding crash', async () => {
     const realIndexFileEmbeddings = parserModule.indexFileEmbeddings
     const src = path.join(DIR, 'embed-crash.ts')
     fs.writeFileSync(src, 'export function embedCrashSymbol(): number {\n  return 9\n}\n')
@@ -824,6 +852,13 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
         querySymbols({ name: 'embedCrashSymbol', limit: 10 }, projectDb).length,
       ).toBeGreaterThan(0)
       expect(getFileEntry(norm, projectDb)?.embedSha).toBe('')
+      // Let the first (rejected) embed call's promise chain settle and clear itself from
+      // worker.ts's per-file in-flight map (embedFileSerialized) before the second drain --
+      // otherwise this second drain would be legitimately treated as overlapping the still
+      // in-flight first call and chained behind it rather than dispatched immediately.
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
 
       // Second drain of the SAME, byte-identical file: the parse-sha gate alone would skip it
       // entirely (pre-fix behaviour), permanently losing the embedding retry. With the fix,
@@ -893,7 +928,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     }
   })
 
-  it('re-embeds unchanged content on the next touch after embeddings are re-enabled, instead of being masked by a disabled-marker embed_sha from an earlier disabled run (fail-on-buggy: stamping the bare sha while disabled would make this look "already embedded" forever)', () => {
+  it('re-embeds unchanged content on the next touch after embeddings are re-enabled, instead of being masked by a disabled-marker embed_sha from an earlier disabled run (fail-on-buggy: stamping the bare sha while disabled would make this look "already embedded" forever)', async () => {
     const src = path.join(DIR, 'embed-reenabled.ts')
     fs.writeFileSync(src, 'export function embedReenabledSymbol(): number {\n  return 4\n}\n')
     const norm = normalizePath(src)
@@ -912,6 +947,13 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       expect(embedSpy).toHaveBeenCalledTimes(1)
       const afterDisabled = getFileEntry(norm, projectDb)
       expect(afterDisabled?.embedSha).toBe(parserModule.disabledEmbedSha(afterDisabled?.sha ?? ''))
+      // Let the first embed call's promise chain settle and clear itself from worker.ts's
+      // per-file in-flight map (embedFileSerialized) before the second drain -- otherwise this
+      // second drain would be legitimately treated as overlapping the still in-flight first
+      // call and chained behind it rather than dispatched immediately.
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
 
       // Second drain of the SAME, byte-identical file, now with embeddings enabled: the gate
       // must NOT treat the disabled-marker embed_sha as a match for a real sha comparison --
@@ -926,6 +968,81 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     } finally {
       closeDb(projectDb)
     }
+  })
+
+  // Regression: two drains of a rapidly re-edited file could spawn two concurrent
+  // indexFileEmbeddings promises for the same path (makeIndexer fires embedding off without
+  // awaiting it, by design -- see its doc comment). If the OLDER call (started first, with
+  // now-stale content) happened to finish AFTER the newer one, its stale chunks/vectors
+  // silently overwrote the fresher ones -- last-writer-wins, self-correcting only on the NEXT
+  // edit. The fix chains same-file embed calls onto one another so they always settle in
+  // submission order. Drives the real default drain path (drainOnce(DIR), no injected index
+  // callback -- makeIndexer's actual production wiring); only indexFileEmbeddings itself is
+  // mocked, with each call's completion under this test's explicit control, so the assertions
+  // prove the ORDER the production code dispatches and resolves the two calls in, not any
+  // artifact of the mock's own timing.
+  it('serializes concurrent embedding calls for the same file so a slower older call cannot overwrite a faster newer one', async () => {
+    const src = path.join(DIR, 'embed-race.ts')
+    fs.writeFileSync(src, 'export function embedRaceV1(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+
+    const invocations: string[] = []
+    const commits: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((_filePath, _dbPath, sha) => {
+      const label = sha ?? ''
+      invocations.push(label)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(label, () => {
+          commits.push(label)
+          resolve()
+        })
+      })
+    })
+
+    // First drain: v1 content (sha1). Its embed call is dispatched but deliberately left
+    // pending -- nothing resolves it yet. The dispatch itself is chained through a `.then()` (a
+    // microtask, even off an already-resolved "no prior call" base promise), so flush one tick
+    // before checking invocations.
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    expect(invocations.length).toBe(1)
+    const sha1 = invocations[0]
+
+    // Second drain: rewrite to v2 content (a different sha) while the first embed call for
+    // sha1 is still in flight -- simulates a rapid re-edit racing an in-flight embed of the
+    // now-stale content.
+    fs.writeFileSync(src, 'export function embedRaceV2(): number {\n  return 2\n}\n')
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // With serialization, the second call must not even be dispatched to indexFileEmbeddings
+    // yet -- it is chained behind the still-pending first call, not racing it concurrently.
+    expect(invocations).toEqual([sha1])
+
+    // Resolving the first (older) call is what unblocks the second -- proving a chain, not an
+    // independent race, governs dispatch order.
+    pendingResolvers.get(sha1)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invocations.length).toBe(2)
+    const sha2 = invocations[1]
+    expect(sha2).not.toBe(sha1)
+
+    pendingResolvers.get(sha2)!()
+    await Promise.resolve()
+
+    // Final commit order must be submission order: sha1 (older, submitted and resolved first)
+    // then sha2 (newer, resolved last) -- never the reverse, which would mean the fresher
+    // content lost to stale content.
+    expect(commits).toEqual([sha1, sha2])
   })
 })
 
