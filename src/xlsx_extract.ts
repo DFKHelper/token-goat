@@ -127,6 +127,19 @@ function encodeCell(cell: { r: number; c: number }): string {
 
 function cellText(cell: ExcelCell): string {
   if (cell.value === null || cell.value === undefined) return ''
+  if (cell.value instanceof Date) {
+    // ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell
+    // types) its own `cell.text` getter does NOT apply the cell's number format for dates --
+    // it just calls `.toString()` on the Date internally, so relying on `cell.text` here would
+    // still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000
+    // (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a
+    // clean ISO date when the value carries no time-of-day component (the common case for a
+    // date-formatted cell), a full ISO datetime otherwise.
+    const d = cell.value
+    const isDateOnly =
+      d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
+    return isDateOnly ? d.toISOString().slice(0, 10) : d.toISOString()
+  }
   const v = cell.value as { result?: unknown; text?: unknown; richText?: { text: string }[] } | unknown
   if (typeof v === 'object' && v !== null) {
     const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[] }
@@ -134,7 +147,10 @@ function cellText(cell: ExcelCell): string {
     if (obj.result !== undefined) return String(obj.result)
     if (obj.text !== undefined) return String(obj.text)
   }
-  return String(cell.value)
+  // Plain (non-rich, non-formula, non-Date) values: prefer ExcelJS's pre-formatted display
+  // text (`cell.text`) over stringifying the raw value, e.g. so a number's display formatting
+  // (thousands separators, currency symbols) survives.
+  return cell.text !== '' ? cell.text : String(cell.value)
 }
 
 function cellFormula(cell: ExcelCell): string | undefined {
