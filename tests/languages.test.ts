@@ -2132,5 +2132,27 @@ function Get-Other {
     expect(names).toContain('Get-Template')
     expect(names).toContain('Get-Other')
   })
+
+  it('does not let a trailing backslash before a string literal\'s closing quote desync brace-depth tracking', () => {
+    // Regression: PowerShell strings do not use backslash as an escape character - a backslash
+    // right before the closing quote (e.g. a Windows path literal like "C:\Temp\") is just a
+    // literal character, not an escaped quote. The brace-depth scanner used to reuse common.ts's
+    // C-like `stripStringLiterals`, which treats backslash as an escape and so misread that
+    // trailing backslash as escaping the real closing quote, leaving the string "open" past its
+    // true end and swallowing the rest of the line - including the `}` that follows - as phantom
+    // string content. That desynced braceDepth for every line afterward, dropping AfterSetup.
+    const content = `function Setup {
+  if ($true) { $Path = "C:\\Temp\\" }
+}
+
+function AfterSetup {
+  Write-Host "after"
+}
+`
+    const { symbols } = extractPowershell(content, 'trailing_backslash_string.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Setup')
+    expect(names).toContain('AfterSetup')
+  })
 })
 })
