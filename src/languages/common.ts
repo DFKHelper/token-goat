@@ -326,6 +326,22 @@ export function stripStringLiterals(line: string): string {
       i++
       while (i < line.length) {
         const c = line[i]
+        // A real single-line string literal never contains a raw, unescaped newline. Some
+        // callers (e.g. Apex, which runs this over an entire file's content rather than one
+        // line at a time - see extractApex - so it can see a `//` comment's text before
+        // comment-stripping runs) can otherwise hand this a false "open string" state, e.g. an
+        // apostrophe inside a `// Don't ...` comment. Without this, an unmatched quote like that
+        // would blank every character - including newlines - until the next stray matching
+        // quote anywhere later in the file, collapsing lines together and desyncing any
+        // line-offset bookkeeping built from the original content. Treating `\n` as an implicit
+        // terminator closes the phantom string at end-of-line instead, matching what every
+        // other caller of this function already does implicitly by only ever passing it one
+        // line (with no embedded `\n`) at a time.
+        if (c === '\n') {
+          out += c
+          i++
+          break
+        }
         if (c === '\\' && i + 1 < line.length) {
           out += '  '
           i += 2
@@ -476,7 +492,11 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const verbRe = /\$?@\$?"/g
     verbRe.lastIndex = from
     const verbM = verbRe.exec(line)
-    const verbIdx = verbM ? verbM.index : -1
+    let verbIdx = verbM ? verbM.index : -1
+    // Same guard as the triple-quote branch above: an `@"` (or `$@"`) that textually appears
+    // inside an already-open single-line string literal - e.g. the ordinary string `"@"` in
+    // `private const string At = "@";` - is not a real verbatim-string opener.
+    if (verbIdx !== -1 && isInsideStringLiteral(line, verbIdx)) verbIdx = -1
 
     if (tripleIdx === -1 && verbIdx === -1) return null
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
@@ -508,6 +528,10 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const m = re.exec(tail)
     if (!m) return null
     const openStart = from + m.index
+    // Same guard as the other branches above: an ordinary string ending in `@"` (e.g.
+    // `$email = "admin@"`) is not a real here-string opener - the `@` there falls inside an
+    // already-open single-line string literal, not immediately after one.
+    if (isInsideStringLiteral(line, openStart)) return null
     const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
     // Here-strings never close on the opening line by construction.
     return { openStart, closesSameLine: null, state: { kind, identifier: '' } }

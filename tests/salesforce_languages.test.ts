@@ -89,6 +89,33 @@ describe('apex adapter', () => {
     expect(find('getOther', 'apex_method')).toBeDefined()
   })
 
+  it('does not let an apostrophe inside a "//" comment open a phantom string that swallows the rest of the file', () => {
+    // Regression: extractApex runs stripStringLiterals(content) over the ENTIRE file content
+    // (deliberately before comment-stripping, so a "//" inside a URL string literal survives
+    // it), but stripStringLiterals used to blank every character - including newlines - until it
+    // found the next matching quote once a string was considered "open". A stray apostrophe
+    // inside a "//" line comment (e.g. "Don't") was misread as opening a real string, which then
+    // swallowed every subsequent line's content: both methods below, and the class's true line
+    // range, were lost.
+    const content = `public class AccountService {
+    // Don't call this directly
+    public void MethodOne() {
+        System.debug('one');
+    }
+
+    public void MethodTwo() {
+        System.debug('two');
+    }
+}
+`
+    const { symbols } = extractApex(content, 'AccountService.cls')
+    const find = (name: string, kind: string) => symbols.find((s) => s.name === name && s.kind === kind)
+
+    expect(find('AccountService', 'apex_class')?.lineEnd).toBe(10)
+    expect(find('MethodOne', 'apex_method')).toBeDefined()
+    expect(find('MethodTwo', 'apex_method')).toBeDefined()
+  })
+
   it('is used by parseFile for .cls files', async () => {
     const file = tmp(
       'ExampleService.cls',
