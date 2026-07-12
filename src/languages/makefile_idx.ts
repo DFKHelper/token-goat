@@ -20,13 +20,38 @@ function stripComments(text: string): string {
   return text.replace(COMMENT_RE, (m) => ' '.repeat(m.length))
 }
 
+// Recognize `define`/`endef` lines, tolerating GNU make's legal leading whitespace before
+// `endef` (and `define`, for symmetry).
+const DEFINE_LINE_RE = /^\s*define\s+/
+const ENDEF_LINE_RE = /^\s*endef\b/
+
 // Mask define...endef block bodies (replacing with spaces, preserving newlines/offsets) so
 // TARGET_RE never scans script content embedded inside a define block (e.g. an embedded
-// Python/shell help-generation script) for spurious colon-bearing "target" lines.
-const DEFINE_BLOCK_RE = /^define\s+[^\n]*\n[\s\S]*?^endef\b[^\n]*$/gm
-
+// Python/shell help-generation script) for spurious colon-bearing "target" lines. GNU make
+// allows `define`/`endef` to nest (a define block containing its own nested define block), so
+// this is a depth-tracking line scanner rather than a single first-match regex: a non-greedy
+// regex stops masking at the FIRST (innermost) `endef`, leaving the remainder of the outer
+// block's body unmasked and scanned as real rule text.
 function maskDefineBlocks(text: string): string {
-  return text.replace(DEFINE_BLOCK_RE, (m) => m.replace(/[^\n]/g, ' '))
+  const lines = text.split('\n')
+  let depth = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    const isDefine = DEFINE_LINE_RE.test(line)
+    const isEndef = ENDEF_LINE_RE.test(line)
+    if (depth > 0) {
+      // Inside a define block: mask this line (define/endef delimiter lines included), then
+      // update depth for nested define/endef pairs.
+      lines[i] = ' '.repeat(line.length)
+      if (isDefine) depth++
+      else if (isEndef) depth--
+    } else if (isDefine) {
+      // Outer define opener: mask it and enter the block.
+      lines[i] = ' '.repeat(line.length)
+      depth++
+    }
+  }
+  return lines.join('\n')
 }
 
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
