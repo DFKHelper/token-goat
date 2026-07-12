@@ -80,8 +80,27 @@ export function lowercaseDriveLetter(s: string): string {
  * This is a string canonicalizer, not a filesystem canonicalizer: symlinks,
  * junctions, and case-insensitive NTFS paths are not resolved.
  */
+// Matches a `\\?\UNC\` extended-length UNC prefix, case-insensitively.
+const EXTENDED_UNC_PREFIX_RE = /^\\\\\?\\UNC\\/i
+// Matches a plain `\\?\` extended-length-path prefix.
+const EXTENDED_PREFIX_RE = /^\\\\\?\\/
+
 export function normalizePath(p: string): string {
   let s = p
+
+  // Step 0: strip a `\\?\` extended-length-path prefix so it normalizes
+  // identically to its non-extended equivalent. `\\?\UNC\server\share\...`
+  // rewrites to the standard `\\server\share\...` UNC form first; a plain
+  // `\\?\C:\...` just drops the `\\?\` marker. Must run before the
+  // backslash->forward-slash conversion below, since the prefix is expressed
+  // in backslash form and (for the UNC case) `//?/...` would otherwise
+  // incorrectly match UNC_HOST_SHARE_RE with `?` as the host and `c:` as the
+  // "share".
+  if (EXTENDED_UNC_PREFIX_RE.test(s)) {
+    s = '\\\\' + s.slice(8)
+  } else if (EXTENDED_PREFIX_RE.test(s)) {
+    s = s.slice(4)
+  }
 
   // Step 1: backslashes -> forward slashes (before the WSL check so mixed separators like /mnt/c/foo\bar normalize fully before the regex runs).
   if (s.includes('\\')) {
