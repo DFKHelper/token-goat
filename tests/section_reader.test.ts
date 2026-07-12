@@ -274,6 +274,40 @@ describe('extractSection — normalized heading matching', () => {
   })
 })
 
+describe('extractSection — exact match wins over normalized/stripped tier (#231)', () => {
+  it('resolves the exact-text sibling heading, not an earlier heading that only normalizes to the same text', () => {
+    const md = [
+      '# Setup (Windows)',
+      'windows install steps',
+      '',
+      '# Setup (Linux)',
+      'linux install steps',
+      '',
+    ].join('\n')
+    const result = extractSection(md, 'Setup (Linux)')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Setup (Linux)')
+    expect(result?.content).toContain('linux install steps')
+    expect(result?.content).not.toContain('windows install steps')
+  })
+
+  it('resolves the exact-text sibling heading across an em-dash subtitle that strips to the same text', () => {
+    const md = [
+      '# Overview — legacy',
+      'legacy overview body',
+      '',
+      '# Overview — current',
+      'current overview body',
+      '',
+    ].join('\n')
+    const result = extractSection(md, 'Overview — current')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Overview — current')
+    expect(result?.content).toContain('current overview body')
+    expect(result?.content).not.toContain('legacy overview body')
+  })
+})
+
 describe('extractSection — unambiguous prefix redirect (#92)', () => {
   const MD_PREFIX = [
     '# Business / logic',

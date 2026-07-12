@@ -299,18 +299,28 @@ function resolveHeaderPos(
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
   const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
-  const matches: number[] = []
+  // Tiered matching: exact equality wins over normalized equality, which wins over
+  // stripped equality. Sibling headings that only differ by a parenthetical or
+  // subtitle (e.g. "Setup (Windows)" / "Setup (Linux)") both normalize to the same
+  // text, so an exact-text query must never fall back to an earlier normalized-tier
+  // match — each header is assigned to the single best tier it qualifies for.
+  const exactMatches: number[] = []
+  const normalizedMatches: number[] = []
+  const strippedMatches: number[] = []
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i]
     if (h === undefined) continue
-    if (
-      h.heading.toLowerCase() === target ||
-      normalizeHeading(h.heading).toLowerCase() === normalizedTarget ||
-      normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget
-    ) {
-      matches.push(i)
+    const headingLower = h.heading.toLowerCase()
+    if (headingLower === target) {
+      exactMatches.push(i)
+    } else if (normalizeHeading(h.heading).toLowerCase() === normalizedTarget) {
+      normalizedMatches.push(i)
+    } else if (normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget) {
+      strippedMatches.push(i)
     }
   }
+  const matches =
+    exactMatches.length > 0 ? exactMatches : normalizedMatches.length > 0 ? normalizedMatches : strippedMatches
   if (matches.length > 0) {
     const pick = ordinal === null ? 0 : ordinal - 1
     const headerPos = matches[pick]
