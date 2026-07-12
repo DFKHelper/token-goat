@@ -496,7 +496,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -549,7 +549,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -606,7 +606,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -679,7 +679,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -740,7 +740,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
@@ -804,7 +804,7 @@ describe('stats', () => {
       const platform = process.platform
       const homeDataDir =
         platform === 'win32'
-          ? path.join(customHome, 'dfk-helper', 'token-goat')
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
           : platform === 'darwin'
             ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
             : path.join(customHome, '.local', 'share', 'token-goat')
