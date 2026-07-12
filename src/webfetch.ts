@@ -545,13 +545,24 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
           return;
         }
         let nextUrl: string;
+        let nextParsed: URL;
         try {
-          nextUrl = new URL(location, targetUrl).toString();
+          nextParsed = new URL(location, targetUrl);
+          nextUrl = nextParsed.toString();
         } catch {
           rejectPromise(new Error(`Invalid redirect location fetching ${truncateUrl(targetUrl)}`));
           return;
         }
-        performHttpFetch(nextUrl, { ...opts, redirectsLeft: opts.redirectsLeft - 1 }).then(resolvePromise, rejectPromise);
+        // Only forward requestHeaders to the redirect target when the host is unchanged --
+        // otherwise a caller-supplied Authorization/API-key header would silently leak to
+        // whatever cross-origin host the server redirects to.
+        const sameOrigin = nextParsed.host === parsed.host;
+        const nextOpts: HttpFetchOpts = {
+          ...opts,
+          redirectsLeft: opts.redirectsLeft - 1,
+          requestHeaders: sameOrigin ? opts.requestHeaders : {},
+        };
+        performHttpFetch(nextUrl, nextOpts).then(resolvePromise, rejectPromise);
         return;
       }
 
