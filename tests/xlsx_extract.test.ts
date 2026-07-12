@@ -30,6 +30,15 @@ beforeAll(async () => {
   ws4.addRow(['event', 'when'])
   const dateRow = ws4.addRow(['Launch', new Date(Date.UTC(2025, 0, 1))])
   dateRow.getCell(2).numFmt = 'yyyy-mm-dd'
+  // Sheet with an interior blank row (regression test for actualRowCount undercounting trailing
+  // rows -- actualRowCount only counts *populated* rows, so a sheet with a blank row in the
+  // middle has actualRowCount < rowCount, and loop bounds using actualRowCount silently drop
+  // the trailing data row).
+  const ws5 = wb.addWorksheet('Gaps')
+  ws5.getRow(1).values = ['name', 'value']
+  ws5.getRow(2).values = ['first', 1]
+  // row 3 intentionally left untouched/blank
+  ws5.getRow(4).values = ['last', 2]
   await wb.xlsx.writeFile(file)
 })
 
@@ -40,10 +49,16 @@ afterAll(() => {
 describe('listSheets', () => {
   it('lists sheet names with dimensions', async () => {
     const sheets = await listSheets(file)
-    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData', 'Dates'])
+    expect(sheets.map((s) => s.name)).toEqual(['Employees', 'Empty', 'WideData', 'Dates', 'Gaps'])
     const employees = sheets.find((s) => s.name === 'Employees')
     expect(employees?.rows).toBe(4)
     expect(employees?.cols).toBe(3)
+  })
+
+  it('reports the true row extent for a sheet with an interior blank row', async () => {
+    const sheets = await listSheets(file)
+    const gaps = sheets.find((s) => s.name === 'Gaps')
+    expect(gaps?.rows).toBe(4)
   })
 
   // Regression: a non-.xlsx/corrupt file forwarded jszip's raw internal parse error ("Can't
@@ -95,6 +110,14 @@ describe('headSheet', () => {
     expect(lines[1]).toBe('Launch,2025-01-01')
     expect(lines[1]).not.toContain('GMT')
     expect(lines[1]).not.toContain('Coordinated Universal Time')
+  })
+
+  it('does not drop a trailing data row that comes after an interior blank row', async () => {
+    const text = await headSheet(file, 'Gaps', 10)
+    const lines = text.split('\n')
+    expect(lines[0]).toBe('name,value')
+    expect(lines[1]).toBe('first,1')
+    expect(lines).toContain('last,2')
   })
 })
 
