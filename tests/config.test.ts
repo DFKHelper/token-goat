@@ -92,10 +92,10 @@ describe('loadConfig', () => {
     }
   })
 
-  // Regression: overflow_guard.enabled/max_tokens and hints.json_sidecar/large_read_redirect_bytes/
-  // baseline_budget_tokens were validated from TOML in _buildConfig but never given an envBool/
-  // envInt call afterward, unlike every sibling field -- so their documented env vars (present in
-  // CHANGELOG.md since v1.0.0-v1.6.0) silently had zero effect on the loaded config.
+  // Regression: overflow_guard.enabled/max_tokens and hints.json_sidecar/large_read_redirect_bytes
+  // were validated from TOML in _buildConfig but never given an envBool/envInt call afterward,
+  // unlike every sibling field -- so their documented env vars (present in CHANGELOG.md since
+  // v1.0.0-v1.6.0) silently had zero effect on the loaded config.
   it('applies env var override for TOKEN_GOAT_OVERFLOW_GUARD', () => {
     const orig = process.env['TOKEN_GOAT_OVERFLOW_GUARD']
     try {
@@ -156,21 +156,6 @@ describe('loadConfig', () => {
     }
   })
 
-  it('applies env var override for TOKEN_GOAT_BASELINE_BUDGET_TOKENS', () => {
-    const orig = process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
-    try {
-      process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = '1234'
-      const cfg = loadConfig()
-      expect(cfg.hints.baseline_budget_tokens).toBe(1234)
-    } finally {
-      if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
-      } else {
-        process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = orig
-      }
-    }
-  })
-
   it('clamps an out-of-range env var override for TOKEN_GOAT_OVERFLOW_MAX_TOKENS to the documented max (1000-1_000_000)', () => {
     const orig = process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
     try {
@@ -197,21 +182,6 @@ describe('loadConfig', () => {
         delete process.env['TOKEN_GOAT_LARGE_READ_BYTES']
       } else {
         process.env['TOKEN_GOAT_LARGE_READ_BYTES'] = orig
-      }
-    }
-  })
-
-  it('clamps an out-of-range env var override for TOKEN_GOAT_BASELINE_BUDGET_TOKENS to the documented max (0-10_000_000)', () => {
-    const orig = process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
-    try {
-      process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = '999999999999'
-      const cfg = loadConfig()
-      expect(cfg.hints.baseline_budget_tokens).toBe(10_000_000)
-    } finally {
-      if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
-      } else {
-        process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = orig
       }
     }
   })

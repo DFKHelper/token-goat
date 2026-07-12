@@ -140,7 +140,6 @@ export interface HintsConfig {
   large_read_redirect_bytes: number
   reread_deny: boolean
   reread_deny_min_bytes: number
-  baseline_budget_tokens: number
   stable_doc_compacts: boolean
   truncated_read_min_lines: number
   protect_recent_reads: number
@@ -337,7 +336,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     large_read_redirect_bytes: 512_000,
     reread_deny: true,
     reread_deny_min_bytes: 2048,
-    baseline_budget_tokens: 0,
     stable_doc_compacts: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
@@ -501,7 +499,6 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hints.diff_hint_min_tokens_saved': {min: 0, max: 100_000},
   'hints.large_read_redirect_bytes': {min: 0, max: 100_000_000},
   'hints.reread_deny_min_bytes': {min: 0, max: 100_000_000},
-  'hints.baseline_budget_tokens': {min: 0, max: 10_000_000},
   'hints.truncated_read_min_lines': {min: 0, max: 1_000_000},
   'hints.protect_recent_reads': {min: 0, max: 100},
   'hints.cross_session_read_dedup_ttl_secs': {min: 1, max: 86400},
@@ -566,7 +563,6 @@ const ENV_KEYS = [
   'TOKEN_GOAT_OVERFLOW_MAX_TOKENS',
   'TOKEN_GOAT_HINT_JSON_SIDECAR',
   'TOKEN_GOAT_LARGE_READ_BYTES',
-  'TOKEN_GOAT_BASELINE_BUDGET_TOKENS',
   'TOKEN_GOAT_CURATOR',
   'TOKEN_GOAT_HINT_BUDGET',
   'TOKEN_GOAT_HOOK_WATCHDOG_MS',
@@ -849,7 +845,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.large_read_redirect_bytes = validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   hi.reread_deny_min_bytes = validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 0, 100_000_000)
-  hi.baseline_budget_tokens = validatedInt(hi_raw['baseline_budget_tokens'], hi.baseline_budget_tokens, 0, 10_000_000)
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)
@@ -860,7 +855,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
   hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, 0, 100_000_000)
-  hi.baseline_budget_tokens = envInt('TOKEN_GOAT_BASELINE_BUDGET_TOKENS', hi.baseline_budget_tokens, 0, 10_000_000)
   hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
   hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
@@ -989,7 +983,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.web_dedup_min_bytes': ['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'],
   'hints.grep_dedup_min_matches': ['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
-  'hints.baseline_budget_tokens': ['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
   'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
@@ -1119,7 +1112,6 @@ export function saveConfig(config: Config): void {
       large_read_redirect_bytes: config.hints.large_read_redirect_bytes,
       reread_deny: config.hints.reread_deny,
       reread_deny_min_bytes: config.hints.reread_deny_min_bytes,
-      baseline_budget_tokens: config.hints.baseline_budget_tokens,
       stable_doc_compacts: config.hints.stable_doc_compacts,
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
