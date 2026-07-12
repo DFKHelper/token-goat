@@ -1509,6 +1509,42 @@ KEY=value
     expect(symbols.map((s) => s.name)).not.toContain('This')
   })
 
+  // Regression: extractEnv scanned every line independently for a column-0 `KEY=value`
+  // assignment, with no notion of an open quote carried over from a previous line. A
+  // multi-line double-quoted value whose embedded content happened to look like an
+  // assignment (e.g. `PHANTOM_KEY=phantom`) was misread as a real, separate key.
+  it('does not emit a phantom key from a line embedded inside a multi-line quoted value', () => {
+    const content = `MULTILINE="first line
+PHANTOM_KEY=phantom
+last line"
+REAL_KEY=value
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('MULTILINE')
+    expect(names).toContain('REAL_KEY')
+    expect(names).not.toContain('PHANTOM_KEY')
+    expect(names).toHaveLength(2)
+  })
+
+  it('resumes normal key scanning once the multi-line quoted value closes', () => {
+    const content = `MULTILINE="line one
+line two"
+AFTER=value
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['MULTILINE', 'AFTER'])
+  })
+
+  it('still treats a single-line quoted value normally (no false multi-line carryover)', () => {
+    const content = `A="one"
+B="two"
+`
+    const symbols = extractEnv(content, '.env')
+    expect(symbols.map((s) => s.name)).toEqual(['A', 'B'])
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
