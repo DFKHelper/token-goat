@@ -391,6 +391,26 @@ describe('GitDiffFilter large hunk', () => {
     expect(result).toContain('--- a/big.py')
     expect(result).toContain('+++ b/big.py')
   })
+
+  // Regression: `git diff --cc` (combined diffs from a merge-commit conflict resolution) use a
+  // `diff --cc <path>` file-boundary line instead of `diff --git a/<path> b/<path>`. The file
+  // boundary regex used to only recognize `diff --git `, so combined diffs never got split into
+  // per-file blocks here at all -- the whole diff fell through as a single unprocessed block and
+  // large-hunk compression never applied, even for a single huge hunk.
+  it('git diff --cc gets per-file compression (binary collapse) like a normal diff', () => {
+    const text =
+      'diff --cc image.png\n' +
+      'index abc123,def456..0000000\n' +
+      'Binary files a/image.png and b/image.png differ\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
+    expect(result).toContain('diff --cc image.png')
+    expect(result).toContain('Binary files a/image.png and b/image.png differ')
+    // The `index` metadata line is dropped only when the block was recognized as a combined-diff
+    // file boundary and ran through binary collapse (header + binary-summary line only). Before
+    // the fix, `diff --cc` never matched the file-boundary regex, so the whole block (including
+    // this line) fell through unprocessed.
+    expect(result).not.toContain('index abc123,def456..0000000')
+  })
 })
 
 // ---------------------------------------------------------------------------

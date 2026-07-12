@@ -139,7 +139,9 @@ abstract class GitBaseFilter extends ToolFilter {
 // ---------------------------------------------------------------------------
 
 const _GIT_LOG_COMMIT_RE = /^commit [0-9a-f]{7,}/
-const _GIT_DIFF_FILE_RE = /^diff --git /
+// `diff --git ` for normal diffs; `diff --cc ` for combined diffs (merge-commit
+// conflict resolutions, e.g. `git diff --cc <merge-sha>` / `git show --cc <merge-sha>`).
+const _GIT_DIFF_FILE_RE = /^diff --(?:git|cc) /
 const _GIT_DIFF_HUNK_RE = /^@@\s/
 const _GIT_STATUS_HEADER_RE =
   /^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|Unmerged paths|Changes to be committed|nothing to commit)/
