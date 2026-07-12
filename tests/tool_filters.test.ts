@@ -178,6 +178,10 @@ describe('helpers: command parsing', () => {
     expect(stripPrefixes(['npx', 'jest'])).toEqual(['jest'])
     expect(stripPrefixes(['FOO=bar', 'eslint', '.'])).toEqual(['eslint', '.'])
   })
+
+  it('stripPrefixes strips a leading env assignment whose value is a path', () => {
+    expect(stripPrefixes(['PATH=/usr/local/bin', 'git', 'log'])).toEqual(['git', 'log'])
+  })
 })
 
 describe('CompressedOutput', () => {
