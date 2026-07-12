@@ -443,6 +443,38 @@ describe('runCallers integration', () => {
   it('resolveCallers returns an empty array for an unknown symbol', () => {
     expect(resolveCallers('__xyzzy_no_such_symbol_9f3k__')).toEqual([])
   })
+
+  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has callers would
+  // otherwise be reported as "no references found" -- a wrong answer, not just a permissive
+  // input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs.
+  it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no references found"', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runCallers({ symbol: 'querySymbols', limit: 0 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured).not.toContain('No references found')
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
+
+  it('rejects a negative limit as an explicit invalid-argument error', () => {
+    let errCaptured = ''
+    const origStderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+    let code: number
+    try {
+      code = runCallers({ symbol: 'querySymbols', limit: -1 })
+    } finally {
+      process.stderr.write = origStderr
+    }
+    expect(code).toBe(1)
+    expect(errCaptured.toLowerCase()).toContain('limit')
+  })
 })
 
 // ---- resolveCallers/runCallers cross-project scoping (regression) -----------
