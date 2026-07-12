@@ -1815,7 +1815,7 @@ function cmdBudget(
     if (opts.json === true) {
       out(JSON.stringify(result, null, 2))
     } else {
-      const contextK = opts.context !== undefined ? Number.parseInt(opts.context, 10) : undefined
+      const contextK = opts.context !== undefined ? requirePositiveInt('--context', opts.context) : undefined
       out(formatBudgetText(result, contextK))
     }
     process.exitCode = 0

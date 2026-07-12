@@ -193,6 +193,13 @@ describe('budget command', () => {
     expect(r.stdout).toMatch(/\d+% of 200K/)
   })
 
+  it('--context rejects a negative value instead of printing a bogus negative percentage', () => {
+    const r = run(['budget', 'hello.ts', '--context', '-5'])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('--context')
+    expect(r.stdout).not.toMatch(/% of -5K/)
+  })
+
   it('--json emits parseable structured output', () => {
     const r = run(['budget', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
