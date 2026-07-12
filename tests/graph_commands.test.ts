@@ -4,7 +4,7 @@
  * populated before this suite runs — the fixture is the token-goat repo itself).
  */
 
-import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync, mkdirSync } from 'node:fs'
 import { join, resolve, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -1135,6 +1135,188 @@ describe('runCoverageGaps', () => {
     for (const line of lines) {
       const name = line.split('\t')[0] ?? ''
       expect(['main', 'run', 'handler', 'index', 'setup']).not.toContain(name)
+    }
+  })
+})
+
+// ---- runCoverageGaps subdirectory scoping (regression) ----------------------
+
+describe('runCoverageGaps subdirectory scoping', () => {
+  // Regression: runCoverageGaps used to scope its querySymbols/queryRefs calls to a raw
+  // `rootDir = process.cwd()` instead of resolving the actual project root. Invoking the command
+  // from a subdirectory of a project (e.g. `cd src && token-goat coverage-gaps`) silently shrank
+  // the scope to that subtree, via a `LIKE '<subdir>/%'` clause, so a genuinely untested function
+  // living in a SIBLING directory of the same project (e.g. a `lib/` next to that `src/`) was
+  // never even scanned, let alone flagged as a gap.
+  it('reports a gap from a sibling directory of the project when invoked from a subdirectory (not shrunk to that subtree)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-covgaps-root-'))
+    try {
+      // package.json marks `root` as the project root for resolveProjectRoot's findProject()
+      // fallback (these tmpdirs are not inside a git repo).
+      writeFileSync(join(root, 'package.json'), '{"name":"tg-covgaps-fixture"}\n')
+      const subdir = join(root, 'sub')
+      mkdirSync(subdir)
+      const siblingDir = join(root, 'lib')
+      mkdirSync(siblingDir)
+
+      const fileInSubdir = join(subdir, 'inside.ts')
+      const fileOutsideSubdir = join(siblingDir, 'outside.ts')
+      writeFileSync(fileInSubdir, 'export function insideSubdirFn9k2() { return 1 }\n')
+      writeFileSync(fileOutsideSubdir, 'export function coverageGapSiblingFn9k2() { return 1 }\n')
+      indexFileSync(normalizePath(fileInSubdir))
+      indexFileSync(normalizePath(fileOutsideSubdir))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runCoverageGaps({ json: true, top: 5000 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        // Pre-fix: rootDir === subdir, so `lib/outside.ts` (a sibling of subdir, not a
+        // descendant) falls outside the `<subdir>/%` LIKE scope and is silently excluded from
+        // the whole-project scan -- coverageGapSiblingFn9k2 would never appear here at all.
+        expect(parsed.some((r) => r.name === 'coverageGapSiblingFn9k2')).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runSimilar/runContextFor/runAsk cross-project FTS scoping (regression) -
+
+describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across projects', () => {
+  // Regression: searchSymbolsFts (index_reader.ts) used to take no rootDir parameter at all, so
+  // every caller queried the FTS index across every project ever indexed into global.db, not
+  // just the current one. This is the default (non-edge-case) path on installs without
+  // sqlite-vec/@xenova, since `semantic` always falls through to this same FTS search there.
+  it('runContextFor does not surface a symbol from a different project sharing a search term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      // The shared search term lives inside the function BODY (not a leading /** */ comment --
+      // this parser does not attach that as a docstring for a bare `export function`), since
+      // searchSymbolsFts's FTS mirror indexes name/body/docstring and body is what's reliably
+      // populated here.
+      writeFileSync(fileA, 'export function ftsScopeFnA9k2() { /* ftsScopeSharedTerm9k2 */ return 1 }\n')
+      writeFileSync(fileB, 'export function ftsScopeFnB9k2() { /* ftsScopeSharedTerm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runContextFor({ task: 'ftsScopeSharedTerm9k2', json: true, top: 50 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ symbol: string }>
+        expect(parsed.some((r) => r.symbol === 'ftsScopeFnA9k2')).toBe(true)
+        // rootB's symbol shares the same searchable docstring term but must not leak into
+        // rootA-scoped context.
+        expect(parsed.some((r) => r.symbol === 'ftsScopeFnB9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+
+  it('runAsk (degraded mode) does not surface a symbol from a different project sharing a search term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-ask-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-ask-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      writeFileSync(fileA, 'export function ftsAskFnA9k2() { /* ftsAskSharedTerm9k2 */ return 1 }\n')
+      writeFileSync(fileB, 'export function ftsAskFnB9k2() { /* ftsAskSharedTerm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      const origBackendEnv = process.env.TOKEN_GOAT_ASK_BACKEND
+      delete process.env.TOKEN_GOAT_ASK_BACKEND
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runAsk({ question: 'ftsAskSharedTerm9k2', json: true, top: 50 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as { context: Array<{ symbol: string }> }
+        expect(parsed.context.some((r) => r.symbol === 'ftsAskFnA9k2')).toBe(true)
+        expect(parsed.context.some((r) => r.symbol === 'ftsAskFnB9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+        if (origBackendEnv !== undefined) process.env.TOKEN_GOAT_ASK_BACKEND = origBackendEnv
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+
+  it('runSimilar does not surface a symbol from a different project sharing a docstring term', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-similar-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-similar-rootB-'))
+    try {
+      const fileA = join(rootA, 'a.ts')
+      const fileB = join(rootB, 'b.ts')
+      // runSimilar's search query is built from the anchor's own name (docstring is empty here,
+      // since this parser doesn't attach a leading /** */ comment as a docstring for a bare
+      // `export function`) -- so rootB's body must literally mention the anchor's name for a
+      // pre-fix (unscoped) search to wrongly surface it.
+      writeFileSync(fileA, 'export function ftsSimilarAnchor9k2() { return 1 }\n')
+      writeFileSync(fileB, 'export function ftsSimilarOther9k2() { /* mentions ftsSimilarAnchor9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runSimilar({ spec: `${normalizePath(fileA)}::ftsSimilarAnchor9k2`, top: 50, json: true })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        expect(parsed.some((r) => r.name === 'ftsSimilarOther9k2')).toBe(false)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
     }
   })
 })

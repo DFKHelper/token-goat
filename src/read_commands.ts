@@ -696,7 +696,9 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       : symbols
 
   const refCounts =
-    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
+    opts.stats === true
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: process.cwd() }))
+      : undefined
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -754,7 +756,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       : symbols
 
   const refCounts =
-    opts.stats === true ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), process.cwd()) : undefined
+    opts.stats === true
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: process.cwd() }))
+      : undefined
 
   if (opts.json === true) {
     const rows =
@@ -1008,7 +1012,7 @@ export function runFind(opts: FindOptions): number {
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: process.cwd() })
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: resolveProjectRoot({ project: process.cwd() }) })
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
@@ -1758,6 +1762,21 @@ interface SemanticOptions {
 async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
   const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
 
+  // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise
+  // searchSemantic silently finds nothing under the bogus root and this function falls back to
+  // the (now project-scoped) FTS search using that same bogus root, which also finds nothing,
+  // and the caller gets a plain "no matches" instead of a clear signal that the scope they asked
+  // for doesn't exist. Fail loudly instead of silently widening/losing scope.
+  if (opts.projectRoot !== undefined) {
+    if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
+      return {
+        text: `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`,
+        code: 1,
+      }
+    }
+  }
+  const rootDir = opts.projectRoot ?? process.cwd()
+
   // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
   // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
   // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
@@ -1775,7 +1794,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     overFetchForMerge,
     undefined,
     undefined,
-    opts.projectRoot ?? process.cwd(),
+    rootDir,
   )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
@@ -1788,7 +1807,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
   // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
   // distance threshold.
-  const results = searchSymbolsFts(query, n)
+  const results = searchSymbolsFts(query, n, undefined, rootDir)
   if (results.length === 0) {
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
   }

@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
+import { resolveProjectRoot } from './project.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -146,7 +147,7 @@ export function resolveCallers(name: string, limit?: number): CallerEntry[] {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
   // symbol in an unrelated project on the same machine don't leak into this project's results.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const refs = queryRefs({ name, limit: limit ?? 500, rootDir })
   const getSyms = buildFileSymCache()
 
@@ -192,7 +193,7 @@ export function runCallChain(opts: CallChainOptions): number {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
   // an unrelated project on the same machine doesn't leak into this project's call chains.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
@@ -256,7 +257,7 @@ export function runImpact(opts: ImpactOptions): number {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
   // an unrelated project on the same machine doesn't leak into this project's impact analysis.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
@@ -329,7 +330,7 @@ export function runDead(opts: DeadOptions): number {
   // (constants.ts) -- both the symbol scan and the per-symbol ref-count lookup must be scoped
   // to the current project root, or a function dead in this project but referenced by a
   // same-named symbol in an unrelated project on the same machine is wrongly scored ALIVE.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const syms = querySymbols({ kind, limit: 5000, rootDir })
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -451,7 +452,7 @@ export function runTypes(opts: TypesOptions): number {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope every kind-scan to the current project root so `types` doesn't mix in
   // type/interface/enum/class symbols from an unrelated project on the same machine.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
 
   const results: SymbolEntry[] = []
 
@@ -596,7 +597,8 @@ export function runSimilar(opts: SimilarOptions): number {
   const words = [anchor.name, ...(anchor.docstring ?? '').split(/\s+/).filter((w) => w.length > 4)]
   const query = words.slice(0, 8).join(' ')
 
-  const hits = searchSymbolsFts(query, top + 1)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(query, top + 1, undefined, rootDir)
   const results = hits.filter((h) => !(h.filePath === anchor.filePath && h.name === anchor.name)).slice(0, top)
 
   if (opts.json === true) {
@@ -620,7 +622,8 @@ export function runContextFor(opts: ContextForOptions): number {
   const top = opts.top ?? 12
   const budget = opts.budget
 
-  const hits = searchSymbolsFts(opts.task, top)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(opts.task, top, undefined, rootDir)
 
   interface ContextEntry { file: string; symbol: string; kind: string; readCmd: string }
   const entries: ContextEntry[] = []
@@ -701,7 +704,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   // (constants.ts); scope the kind-scan and each ref lookup to the current project root so a
   // function untested here isn't hidden by a same-named symbol's test reference in an unrelated
   // project on the same machine.
-  const rootDir = process.cwd()
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const allFns = querySymbols({ kind: 'function', limit: 2000, rootDir })
   const allMethods = querySymbols({ kind: 'method', limit: 2000, rootDir })
   const candidates = [...allFns, ...allMethods]
@@ -879,7 +882,8 @@ export interface AskOptions {
 // NOTE: cross-session answer cache is intentionally omitted to keep scope bounded. Add a file-based cache keyed on (question+context hash) if response latency becomes an issue.
 export function runAsk(opts: AskOptions): number {
   const top = opts.top ?? 8
-  const hits = searchSymbolsFts(opts.question, top)
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const hits = searchSymbolsFts(opts.question, top, undefined, rootDir)
 
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''
