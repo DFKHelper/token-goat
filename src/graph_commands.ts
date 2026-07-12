@@ -726,11 +726,16 @@ export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveIndexPath(opts.file)
   const symbols = querySymbols({ filePath, limit: 10000 })
 
+  // global.db is a single machine-wide index shared across every project ever indexed
+  // (constants.ts); scope each ref lookup to the current project root so a same-named symbol's
+  // test reference in an unrelated project on the same machine isn't returned here.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+
   const testFileMap = new Map<string, Set<string>>()
   const getSyms = buildFileSymCache()
 
   for (const sym of symbols) {
-    const refs = queryRefs({ name: sym.name, limit: 500 })
+    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())

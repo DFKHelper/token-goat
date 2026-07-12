@@ -1268,6 +1268,12 @@ describe('runTestFor', () => {
     // target file's symbols at all.
     const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-'))
     try {
+      // package.json marks `dir` as its own project root for resolveProjectRoot's findProject()
+      // fallback (this tmpdir is not inside a git repo); runTestFor scopes its ref lookup to the
+      // current project root (see "runTestFor cross-project scoping" below), so cwd must be
+      // mocked to `dir` for these fixture files to be in scope.
+      writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-fixture"}\n')
+
       const srcFile = normalizePath(join(dir, 'testForTarget.ts'))
       const testFile = normalizePath(join(dir, 'testForTarget.test.ts'))
 
@@ -1291,6 +1297,7 @@ describe('runTestFor', () => {
       indexFileSync(srcFile)
       indexFileSync(testFile)
 
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
       let captured = ''
       const origWrite = process.stdout.write.bind(process.stdout)
       process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
@@ -1299,6 +1306,7 @@ describe('runTestFor', () => {
         code = runTestFor({ file: srcFile, json: true })
       } finally {
         process.stdout.write = origWrite
+        cwdSpy.mockRestore()
       }
       expect(code).toBe(0)
 
@@ -1309,6 +1317,71 @@ describe('runTestFor', () => {
       expect(entry!.testFunctions).not.toContain('test_unrelated')
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runTestFor cross-project scoping (regression) --------------------------
+
+describe('runTestFor cross-project scoping', () => {
+  // Regression: global.db is a single machine-wide index shared across every project ever
+  // indexed (constants.ts). runTestFor used to run queryRefs({ name: sym.name, limit: 500 })
+  // with no rootDir, unlike every sibling command (runCallers, runCallChain, runImpact, runDead,
+  // runCoverageGaps, runSimilar, runContextFor, runAsk). A test file in a completely unrelated
+  // project referencing a same-named symbol would leak into this project's test-for results.
+  it('does not report a test file from a different project for a same-named symbol', () => {
+    const rootA = mkdtempSync(join(tmpdir(), 'tg-testfor-rootA-'))
+    const rootB = mkdtempSync(join(tmpdir(), 'tg-testfor-rootB-'))
+    try {
+      // package.json marks each root as its own project root for resolveProjectRoot's
+      // findProject() fallback (these tmpdirs are not inside a git repo).
+      writeFileSync(join(rootA, 'package.json'), '{"name":"tg-testfor-fixtureA"}\n')
+      writeFileSync(join(rootB, 'package.json'), '{"name":"tg-testfor-fixtureB"}\n')
+
+      const srcFileA = normalizePath(join(rootA, 'shared.ts'))
+      const srcFileB = normalizePath(join(rootB, 'shared.ts'))
+      const testFileB = normalizePath(join(rootB, 'shared.test.ts'))
+
+      writeFileSync(srcFileA, 'export function crossProjTestForFn9k2() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(srcFileB, 'export function crossProjTestForFn9k2() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(
+        testFileB,
+        [
+          "import { crossProjTestForFn9k2 } from './shared'",
+          '',
+          'function test_usesSharedFn() {',
+          '  crossProjTestForFn9k2()',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      indexFileSync(srcFileA)
+      indexFileSync(srcFileB)
+      indexFileSync(testFileB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        let code: number
+        try {
+          code = runTestFor({ file: srcFileA, json: true })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        expect(code).toBe(0)
+        const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+        // rootB's test file referencing the same-named function must not leak into rootA's results.
+        expect(results.some((r) => r.testFile === testFileB)).toBe(false)
+        expect(results).toEqual([])
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(rootA, { recursive: true, force: true })
+      rmSync(rootB, { recursive: true, force: true })
     }
   })
 })
