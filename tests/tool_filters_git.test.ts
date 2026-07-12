@@ -140,6 +140,29 @@ describe('GitLogFilter oneline', () => {
     const result = apply(gitLogFilter, text, ['git', 'log', '--oneline'])
     expect(result).toContain('+1 more commits')
   })
+
+  // Regression: `git log --graph --oneline` intersperses real commit lines (each prefixed with
+  // ASCII-art connectors like `* `/`| * `) with connector-only lines that carry no commit hash
+  // (e.g. `|\  `, `|/  `, from a merge). The old cap counted every non-empty line as a commit,
+  // so those connector-only lines inflated both the truncation point and the "+N more commits"
+  // tally past the real commit count.
+  it('--graph --oneline: connector-only lines are not counted as commits', () => {
+    const commitLines = Array.from(
+      { length: 55 },
+      (_, i) => `* abc${String(i).padStart(4, '0')}ef Short commit message ${i}`,
+    )
+    // Splice in graph connector-only lines (no commit hash) that a real merge produces.
+    const lines = [...commitLines]
+    lines.splice(10, 0, '|\\  ')
+    lines.splice(30, 0, '|/  ')
+    const text = lines.join('\n')
+
+    const result = apply(gitLogFilter, text, ['git', 'log', '--graph', '--oneline'])
+    // 55 real commits, cap 50 -> exactly 5 elided, not 7 (which the connector-line-inflated
+    // count would have reported).
+    expect(result).toContain('+5 more commits')
+    expect(result).not.toContain('+7 more commits')
+  })
 })
 
 // ---------------------------------------------------------------------------

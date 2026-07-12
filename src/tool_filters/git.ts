@@ -149,6 +149,10 @@ const _GIT_STATUS_HEADER_RE =
 // ---------------------------------------------------------------------------
 
 const _GIT_LOG_ONELINE_RE = /^[0-9a-f]{7,}\s/
+// Same as _GIT_LOG_ONELINE_RE but tolerant of a leading `--graph` ASCII-art prefix
+// (e.g. `| * `, `|/  `, `*   `), so connector-only lines (no commit hash) aren't
+// mistaken for commit lines when counting/capping oneline commits.
+const _GIT_LOG_ONELINE_GRAPH_RE = /^[|\\/* ]*[0-9a-f]{7,}\s/
 const _GIT_LOG_MERGE_RE = /^Merge:/
 const _GIT_LOG_AUTHOR_RE = /^Author:\s+(.+)/
 const _GIT_LOG_DATE_RE = /^Date:\s+(.+)/
@@ -328,7 +332,12 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[])
         .filter((b) => b.trim())
         .map((b) => (isPatch ? _capPatchLinesInBlock(b, MAX_PATCH_LINES) : _capStatLinesInBlock(b, MAX_STAT_FILES)))
     } else {
-      blocks = stdout.split('\n').filter((ln) => ln.trim())
+      // `--graph` prefixes each commit's oneline entry with ASCII-art connector characters
+      // (e.g. `| * `, `*   `) and also emits connector-only lines (`|\  `, `|/  `) with no
+      // commit hash at all. Counting every non-empty line as a commit overcounts the
+      // elided-commit tally by however many connector-only lines exist, so only count/cap
+      // lines that actually carry a commit hash (with or without a graph prefix).
+      blocks = stdout.split('\n').filter((ln) => ln.trim() && _GIT_LOG_ONELINE_GRAPH_RE.test(ln))
     }
 
     let keptLines: string[]
