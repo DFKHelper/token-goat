@@ -796,6 +796,22 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
 
 // ---- csv / pdf / screenshot --------------------------------------------------
 
+// Mirrors cli.ts's requireNonNegativeInt (same regex-only-integer validation plus a sign
+// check) so csv's `--head` gets the same error behavior as xlsx's `--head`: a clean thrown
+// error on a non-numeric or negative value instead of `parseInt` silently producing NaN
+// (which downstream `.slice(0, NaN)` turns into "0 rows returned") or a negative count
+// (which `.slice(0, -N)` silently reinterprets as "all but the last N rows").
+function requireNonNegativeInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
+}
+
 interface CsvQueryCliOptions {
   file: string
   columns?: string
@@ -820,7 +836,13 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
         .filter(Boolean)
     : undefined
 
-  const head = opts.head !== undefined ? parseInt(opts.head, 10) : undefined
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(e instanceof Error ? e.message : String(e))
+    return 1
+  }
 
   try {
     const wheres = parseWhereSpecs(opts.where)
