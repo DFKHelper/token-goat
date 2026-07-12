@@ -112,6 +112,28 @@ describe('stripComments', () => {
     expect(result).not.toContain('trailing comment')
     expect(result).toContain('code = 1')
   })
+
+  it('leaves a `#`-looking sequence inside a multi-line Python triple-quoted string untouched', () => {
+    // Regression: isInsideStringLiteral only counted quote characters from the start of the
+    // CURRENT line, so a triple-quoted string opened on an earlier line looked "not open" on
+    // every subsequent line, and a `#` inside its content on one of those lines was misread as
+    // a real comment and stripped, corrupting the string's content.
+    const code = 'x = """\n# not a comment, just text inside the string\nstill text\n"""\ny = 1\n'
+    const result = stripComments(code, 'file.py')
+    expect(result).toContain('# not a comment, just text inside the string')
+    expect(result).toContain('still text')
+    expect(result).toContain('y = 1')
+  })
+
+  it('leaves a `//`-looking sequence inside a multi-line template literal untouched (.ts)', () => {
+    // Same regression as the Python triple-quoted-string case above, for a JS/TS template
+    // literal that spans multiple lines.
+    const code = 'const x = `hello\n// not a comment, just text\nworld`;\nconst y = 1;\n'
+    const result = stripComments(code, 'file.ts')
+    expect(result).toContain('// not a comment, just text')
+    expect(result).toContain('world`;')
+    expect(result).toContain('const y = 1;')
+  })
 })
 
 describe('scanSecrets', () => {
