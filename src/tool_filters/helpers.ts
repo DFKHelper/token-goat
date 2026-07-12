@@ -500,20 +500,28 @@ const SHORT_FLAGS_WITH_VALUE = new Set(['-n', '-c', '-i', '-u', '-e'])
 export function stripPrefixes(argv: string[]): string[] {
   if (argv.length === 0) return []
   let out = [...argv]
-  // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
-  while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-')) {
-    const head = out[0]!.split('=', 1)[0]!
-    if (head && (/[A-Za-z]/.test(head[0]!) || head[0] === '_') && /^[A-Za-z0-9_]+$/.test(head)) out.shift()
-    else break
-  }
-  // Strip pass-through prefixes plus their short flags.
-  while (out.length) {
-    if (!PASSTHROUGH_PREFIXES.has(pathStem(out[0]!).toLowerCase())) break
-    out.shift()
-    while (out.length && out[0]!.startsWith('-')) {
-      const flag = out.shift() as string
-      if (SHORT_FLAGS_WITH_VALUE.has(flag) && out.length) out.shift()
+  // Strip leading env assignments and pass-through prefixes to a fixpoint:
+  // each can reveal more of the other (e.g. `env FOO=bar cmd` has an
+  // assignment after the wrapper, `FOO=bar sudo cmd` has a wrapper after
+  // the assignment), so alternate both passes until neither strips anything.
+  for (;;) {
+    const before = out.length
+    // Strip leading env assignments (FOO=bar BAZ=qux cmd ...).
+    while (out.length && out[0]!.includes('=') && !out[0]!.startsWith('-')) {
+      const head = out[0]!.split('=', 1)[0]!
+      if (head && (/[A-Za-z]/.test(head[0]!) || head[0] === '_') && /^[A-Za-z0-9_]+$/.test(head)) out.shift()
+      else break
     }
+    // Strip pass-through prefixes plus their short flags.
+    while (out.length) {
+      if (!PASSTHROUGH_PREFIXES.has(pathStem(out[0]!).toLowerCase())) break
+      out.shift()
+      while (out.length && out[0]!.startsWith('-')) {
+        const flag = out.shift() as string
+        if (SHORT_FLAGS_WITH_VALUE.has(flag) && out.length) out.shift()
+      }
+    }
+    if (out.length === before) break
   }
   if (out.length === 0) return out
   // `uv tool run <bin>` (the long form of `uvx <bin>`) really does execute
