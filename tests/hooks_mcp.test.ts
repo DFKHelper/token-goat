@@ -228,3 +228,72 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
     }
   })
 })
+
+describe('mcpRewriteSpikeHandler (TOKEN_GOAT_MCP_REWRITE_SPIKE feasibility spike)', () => {
+  const spikeTool = 'mcp__plugin_github_github__get_teams'
+  let prevFlag: string | undefined
+
+  beforeEach(() => {
+    prevFlag = process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE']
+  })
+
+  afterEach(() => {
+    if (prevFlag === undefined) delete process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE']
+    else process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] = prevFlag
+  })
+
+  it('is inert by default (env var unset) even on its matched tool', async () => {
+    delete process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE']
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: spikeTool,
+        tool_input: {},
+        session_id: sessionId,
+        tool_response: 'team list',
+      }),
+    )
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('is inert for other tools even when the env var is on', async () => {
+    process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] = '1'
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: 'mcp__plugin_github_github__get_file_contents',
+        tool_input: {},
+        session_id: sessionId,
+        tool_response: 'file body',
+      }),
+    )
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('round-trips the result unchanged through rewriteOutput when enabled on its matched tool', async () => {
+    process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] = '1'
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: spikeTool,
+        tool_input: {},
+        session_id: sessionId,
+        tool_response: 'team list unchanged',
+      }),
+    )
+    expect(result).toEqual({ hookType: 'rewriteOutput', updatedOutput: 'team list unchanged' })
+  })
+
+  it('still caches under postMcpHandler before the spike handler rewrites the output', async () => {
+    process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] = '1'
+    await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: spikeTool,
+        tool_input: {},
+        session_id: sessionId,
+        tool_response: 'team list unchanged',
+      }),
+    )
+    const pre = await runHook(
+      buildEvent('pre_tool_use', { tool_name: spikeTool, tool_input: {}, session_id: sessionId }),
+    )
+    expect(pre.hookType).toBe('deny')
+  })
+})

@@ -9,6 +9,10 @@
  * Both handlers register with no toolName filter (MCP tool names are dynamic)
  * and self-gate on {@link isMcpReadOnly} plus a present sessionId, so they are
  * inert for every non-MCP and mutating tool.
+ *
+ * A third, env-var-gated handler at the bottom of this file
+ * (`mcpRewriteSpikeHandler`) is an output-rewrite feasibility spike, not a
+ * caching handler — see its doc comment.
  */
 
 import { registerHook, type HookEvent } from './hook_registry.js'
@@ -99,3 +103,36 @@ function postMcpHandler(event: HookEvent): HookOutput {
 
 registerHook('pre_tool_use', preMcpHandler)
 registerHook('post_tool_use', postMcpHandler)
+
+/**
+ * Feasibility spike for MCP output rewriting — see the design doc referenced
+ * in the commit this landed in. `postMcpHandler` above only ever caches and
+ * returns `pass`; this handler is the first place token-goat ever emits a
+ * `rewriteOutput` `HookOutput`. It round-trips a single low-traffic MCP
+ * tool's result through the new `updatedToolOutput` wire shape UNCHANGED, so
+ * the only thing under test is whether Claude Code actually honors a
+ * `PostToolUse` output rewrite for an MCP tool call — not any compression
+ * logic (there is none here).
+ *
+ * Inert by default on two independent axes so it is safe to leave wired in:
+ * - `TOKEN_GOAT_MCP_REWRITE_SPIKE` must be exactly `'1'`.
+ * - Even then, it only fires for {@link REWRITE_SPIKE_TOOL}, an intentionally
+ *   rare, read-only, low-traffic MCP call (a GitHub team-membership lookup),
+ *   so normal sessions with the env var left on by accident see no change to
+ *   any tool they actually use routinely.
+ *
+ * Registered after `postMcpHandler` (not before): `postMcpHandler` always
+ * returns `pass`, so this never races the cache write — the result is still
+ * cached under its normal `mcp_<hash>` id via `postMcpHandler` first, and
+ * only then does this handler get a chance to rewrite what the model sees.
+ */
+const REWRITE_SPIKE_TOOL = 'mcp__plugin_github_github__get_teams'
+
+function mcpRewriteSpikeHandler(event: HookEvent): HookOutput {
+  if (process.env['TOKEN_GOAT_MCP_REWRITE_SPIKE'] !== '1') return passOutput()
+  const resultText = extractMcpResultText(event.raw)
+  if (!resultText) return passOutput()
+  return { hookType: 'rewriteOutput', updatedOutput: resultText }
+}
+
+registerHook('post_tool_use', mcpRewriteSpikeHandler, { toolName: REWRITE_SPIKE_TOOL })
