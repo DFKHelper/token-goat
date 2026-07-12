@@ -341,6 +341,17 @@ describe('cmdConfig set input validation hardening', () => {
     expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10])
   })
 
+  it('rejects a JSON-array value with non-numeric elements on a number-list key instead of silently discarding it', () => {
+    // Pre-fix, the JSON-array branch in coerce() returned JSON.parse(raw) unchecked, so
+    // `config set hints.backoff_thresholds '["a","b"]'` reported success and echoed the bad
+    // value, but the load-time int-list validator (validatedIntList) then silently filtered
+    // it down to [] on the very next load -- a value that "succeeded" but silently vanished.
+    expect(() => cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '["a","b"]' })).toThrow()
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.backoff_thresholds).not.toEqual([])
+  })
+
   it('rejects setting an entire config section to a scalar value instead of corrupting it (#M24)', () => {
     expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow('section')
     expect(capturedErr()).toBe('')
