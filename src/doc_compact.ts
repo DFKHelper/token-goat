@@ -287,7 +287,11 @@ export function extractDocCompact(body: string, heading?: string): string {
     // A plain `line.includes(heading)` matches ANY line containing the heading text as a substring, including ordinary prose that merely mentions it before the real heading appears, and also longer headings that contain the query as a substring (e.g., "Setup Guide" when searching for "Setup"). Require an exact match of the heading text portion instead, so both prose references and similar-but-not-identical headings can't be mistaken for the section boundary.
     const compactIdx = lines.findIndex((line, idx) => {
       if (!unfencedIdx.has(idx)) return false
-      const m = /^#{1,6}\s+(.*)$/.exec(line.trim())
+      // Lazy capture with an optional SPACE-preceded trailing hash run stripped, matching
+      // section_reader.ts's heading-match form -- a greedy `(.*)` would swallow a closed-ATX
+      // heading's trailing `##` (e.g. `## Setup ##` capturing "Setup ##" instead of "Setup"),
+      // failing exact-equality against the target heading text.
+      const m = /^#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line.trim())
       return m !== null && (m[1] ?? '') === heading
     })
     if (compactIdx === -1) return ''
