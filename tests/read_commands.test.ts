@@ -1348,7 +1348,10 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', limit: 5 }) })
       // resolveCallers must be queried for the true count, not capped at the display limit --
       // otherwise callers.length can never exceed shown.length and the elided message can't fire.
-      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc')
+      // Third arg is the resolved symbol's own filePath -- runBrief passes it through so
+      // resolveCallers can disambiguate a same-named symbol defined elsewhere (regression:
+      // task #136, same-project name-collision merging in callers/dead).
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts')
       expect(stdout).toContain('Callers (10):')
       expect(stdout).toContain('...(5 more elided)')
     })

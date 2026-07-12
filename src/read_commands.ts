@@ -1121,7 +1121,7 @@ export function runBrief(opts: BriefOptions): number {
   // once more than 500 references exist, despite what an earlier version of this comment
   // claimed. Get the real uncapped total via a separate COUNT(*) query (queryRefCounts,
   // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
-  const callers = resolveCallers(match.name)
+  const callers = resolveCallers(match.name, undefined, match.filePath)
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const totalCallers = queryRefCounts([match.name], globalDbPath(), rootDir).get(match.name) ?? callers.length
   const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd)
