@@ -254,7 +254,8 @@ export class PsqlFilter extends ToolFilter {
       inTable = false; headerLines = []; dataRows = []; afterHeader = false
     }
 
-    for (const line of lines) {
+    for (let idx = 0; idx < lines.length; idx++) {
+      const line = lines[idx]!
       if (PSQL_CONN_ERROR_RE.test(line) || PSQL_ERROR_RE.test(line) || PSQL_TIMING_RE.test(line) ||
           PSQL_CMD_TAG_RE.test(line) || PSQL_NOTICE_RE.test(line)) {
         if (inTable) flushTable()
@@ -271,7 +272,24 @@ export class PsqlFilter extends ToolFilter {
       }
       if (isBorder) {
         if (!inTable) {
-          if (kept.length) headerLines.push(kept.pop()!)
+          if (kept.length) {
+            // Default (border-1) style: the header text line was already buffered in `kept`
+            // and this border is the separator right after it.
+            headerLines.push(kept.pop()!)
+          } else {
+            // \pset border 2 style: this is a leading top border with no header text buffered
+            // yet. Peek at the next line -- if it isn't itself a border, it's the header row.
+            // Consume it explicitly here so it can't fall through to the generic dataRows
+            // bucket below and be misclassified as a data row.
+            const next = lines[idx + 1]
+            if (next !== undefined && !/^[-+]+$/.test(next.trim())) {
+              headerLines.push(line)
+              headerLines.push(next)
+              idx++
+              inTable = true; afterHeader = true
+              continue
+            }
+          }
           headerLines.push(line)
           inTable = true; afterHeader = true
         } else {
