@@ -11,11 +11,24 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import type * as WebfetchModule from '../src/webfetch.js'
+import type * as ImageShrinkModule from '../src/image_shrink.js'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BUNDLE } from './helpers/bundle.js'
 
 const performHttpFetchMock = vi.hoisted(() => vi.fn())
+const shrinkImageMock = vi.hoisted(() => vi.fn())
+
+// vi.mock is hoisted — stub image_shrink.js's shrinkImage so fetch-image extension-correction
+// tests can force a format-changing shrink without needing a real decodable image. By default
+// this delegates straight through to the real implementation, so any test that doesn't layer
+// a mockImplementationOnce/mockResolvedValueOnce on top gets real behavior for free (which for
+// the fake, non-image byte payloads used elsewhere in this file resolves to null / "not shrunk").
+vi.mock('../src/image_shrink.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ImageShrinkModule>()
+  shrinkImageMock.mockImplementation((buf: Buffer) => actual.shrinkImage(buf))
+  return { ...actual, shrinkImage: shrinkImageMock }
+})
 
 // vi.mock is hoisted — redirect configPath() for config tests.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -735,6 +748,49 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
     const out = path.join(tmpHome, 'redirect-loop.bin')
     await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow()
     expect(capturedErr()).toMatch(/too many redirects/i)
+  })
+
+  // Regression: with no --out, the default destination was always `.bin` regardless of the
+  // response's actual content-type, so e.g. a JPEG response landed under a name that hid its
+  // real format. The default extension should come from the content-type header instead.
+  it('derives the default (no --out) extension from the response content-type header', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'image/jpeg' },
+      body: Buffer.from('fake-jpeg-bytes'),
+    }))
+    await cmdFetchImage({ url: 'http://example.test/photo.jpg', json: true })
+    const parsed = JSON.parse(captured()) as { out: string }
+    expect(parsed.out.endsWith('.jpg')).toBe(true)
+    expect(fs.existsSync(parsed.out)).toBe(true)
+  })
+
+  // Regression: same root bug as screenshot.ts's takeScreenshot -- shrinkImage may re-encode
+  // the fetched bytes to a different container format (JPEG/WebP), but the shrunk bytes were
+  // written verbatim under the originally-requested (or default) extension, mislabeling the
+  // file's real format.
+  it('renames the destination extension to match a format-changing shrink', async () => {
+    performHttpFetchMock.mockImplementationOnce(async () => ({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'image/png' },
+      body: Buffer.from('fake-png-bytes'),
+    }))
+    shrinkImageMock.mockResolvedValueOnce({
+      data: Buffer.from('fake-jpeg-bytes'),
+      format: 'jpeg',
+      shrunkBytes: 15,
+      width: 10,
+      height: 10,
+    })
+    const requestedOut = path.join(tmpHome, 'shrink-format-change.png')
+    await cmdFetchImage({ url: 'http://example.test/image.png', out: requestedOut })
+    const expectedOut = path.join(tmpHome, 'shrink-format-change.jpg')
+    expect(fs.existsSync(expectedOut)).toBe(true)
+    expect(fs.existsSync(requestedOut)).toBe(false)
+    expect(fs.readFileSync(expectedOut).toString()).toBe('fake-jpeg-bytes')
+    expect(captured()).toContain(expectedOut)
   })
 })
 

@@ -1,9 +1,29 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { resolveBrowserExecutablePath } from '../src/screenshot.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { resolveBrowserExecutablePath, takeScreenshot } from '../src/screenshot.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { shrinkImage } from '../src/image_shrink.js'
+
+// Stub out the real browser drive so takeScreenshot's own extension/path-correction logic can
+// be exercised without an actual Chrome install or network access. The captured "PNG" bytes
+// are arbitrary; what matters is that shrinkImage (mocked below) reports a format change and
+// takeScreenshot reacts to it correctly.
+vi.mock('puppeteer-core', () => ({
+  launch: vi.fn(async () => ({
+    newPage: vi.fn(async () => ({
+      setViewport: vi.fn(async () => {}),
+      goto: vi.fn(async () => {}),
+      screenshot: vi.fn(async () => Buffer.from('fake-png-bytes')),
+    })),
+    close: vi.fn(async () => {}),
+  })),
+}))
+
+vi.mock('../src/image_shrink.js', () => ({
+  shrinkImage: vi.fn(),
+}))
 
 const tmpDirs: string[] = []
 
@@ -94,5 +114,48 @@ describe('resolveBrowserExecutablePath', () => {
       },
       dir,
     )
+  })
+})
+
+describe('takeScreenshot', () => {
+  // Regression: shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the
+  // shrink threshold, but the shrunk bytes were written verbatim under the originally
+  // requested (e.g. `.png`) destPath -- silently mislabeling the file's real format -- and the
+  // success result still reported that same requested path.
+  it('renames the destination extension to match a format-changing shrink and reports the actual saved path', async () => {
+    const dir = makeTmpDir()
+    const fakeChrome = path.join(dir, 'chrome.exe')
+    fs.writeFileSync(fakeChrome, 'not a real binary, just needs to exist')
+
+    vi.mocked(shrinkImage).mockResolvedValueOnce({
+      data: Buffer.from('fake-jpeg-bytes'),
+      format: 'jpeg',
+      shrunkBytes: 15,
+      width: 10,
+      height: 10,
+    } as Awaited<ReturnType<typeof shrinkImage>>)
+
+    const destPath = path.join(dir, 'out.png')
+    const result = await takeScreenshot('https://example.com', destPath, { executablePath: fakeChrome })
+
+    const expectedPath = path.join(dir, 'out.jpg')
+    expect(result.path).toBe(expectedPath)
+    expect(fs.existsSync(expectedPath)).toBe(true)
+    expect(fs.existsSync(destPath)).toBe(false)
+    expect(fs.readFileSync(expectedPath).toString()).toBe('fake-jpeg-bytes')
+  })
+
+  it('keeps the requested destPath extension when shrinkImage does not change the format (null result)', async () => {
+    const dir = makeTmpDir()
+    const fakeChrome = path.join(dir, 'chrome.exe')
+    fs.writeFileSync(fakeChrome, 'not a real binary, just needs to exist')
+
+    vi.mocked(shrinkImage).mockResolvedValueOnce(null)
+
+    const destPath = path.join(dir, 'out.png')
+    const result = await takeScreenshot('https://example.com', destPath, { executablePath: fakeChrome })
+
+    expect(result.path).toBe(destPath)
+    expect(fs.existsSync(destPath)).toBe(true)
   })
 })

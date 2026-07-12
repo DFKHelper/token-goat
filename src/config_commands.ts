@@ -21,7 +21,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension } from './util.js'
 import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -507,7 +507,12 @@ const FETCH_IMAGE_MAX_SIZE_BYTES = 50 * 1024 * 1024
  * than after buffering it whole, and bounds the whole request — redirects
  * included — by FETCH_IMAGE_TIMEOUT_SEC.
  */
-async function fetchBuffer(url: string): Promise<Buffer> {
+interface FetchedImage {
+  body: Buffer
+  contentType: string | undefined
+}
+
+async function fetchBuffer(url: string): Promise<FetchedImage> {
   const result = await performHttpFetch(url, {
     deadlineAt: Date.now() + FETCH_IMAGE_TIMEOUT_SEC * 1000,
     timeoutSec: FETCH_IMAGE_TIMEOUT_SEC,
@@ -518,28 +523,57 @@ async function fetchBuffer(url: string): Promise<Buffer> {
   if (result.status < 200 || result.status >= 300) {
     throw new Error(`HTTP ${result.status} for ${url}`)
   }
-  return result.body
+  const contentType = result.headers['content-type']?.split(';')[0]?.trim().toLowerCase()
+  return { body: result.body, contentType }
+}
+
+/** Maps a response `content-type` to a default file extension for `fetch-image` when the
+ * caller didn't pass `--out`, so a fetched JPEG/WebP/GIF doesn't land under a hardcoded
+ * `.bin` name that misrepresents its actual format. */
+const CONTENT_TYPE_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/bmp': '.bmp',
+  'image/svg+xml': '.svg',
+  'image/avif': '.avif',
+  'image/tiff': '.tiff',
+}
+
+function extensionForContentType(contentType: string | undefined): string {
+  if (contentType === undefined) return '.bin'
+  return CONTENT_TYPE_EXT[contentType] ?? '.bin'
 }
 
 export async function cmdFetchImage(opts: { url: string; out?: string; json?: boolean }): Promise<void> {
-  const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}.bin`)
-  let buf: Buffer
+  let fetched: FetchedImage
   try {
-    buf = await fetchBuffer(opts.url)
+    fetched = await fetchBuffer(opts.url)
   } catch (e) {
     emitErr(`fetch-image: network error — ${e instanceof Error ? e.message : String(e)}`)
     throw new Error(`fetch failed: ${opts.url}`, { cause: e })
   }
+  const buf = fetched.body
+  // Default extension (when --out wasn't given) comes from the response content-type rather
+  // than a hardcoded `.bin`, so e.g. a JPEG response lands under `.jpg` even before any shrink.
+  const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}${extensionForContentType(fetched.contentType)}`)
   const originalBytes = buf.length
   let shrunkBytes: number
   let outData: Buffer
   let wasShrunk = false
+  let finalPath = outPath
   try {
     const result = await shrinkImage(buf)
     if (result !== null) {
       outData = result.data
       shrunkBytes = result.shrunkBytes
       wasShrunk = true
+      // shrinkImage may re-encode to a different container format (JPEG/WebP); correct the
+      // destination extension to match the actual bytes being written, rather than silently
+      // writing e.g. JPEG bytes under a `.png`/`.bin` name.
+      finalPath = withExtension(outPath, result.format)
     } else {
       outData = buf
       shrunkBytes = originalBytes
@@ -548,13 +582,13 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
     outData = buf
     shrunkBytes = originalBytes
   }
-  fs.writeFileSync(outPath, outData)
+  fs.writeFileSync(finalPath, outData)
   if (opts.json === true) {
-    emit(JSON.stringify({ url: opts.url, out: outPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
+    emit(JSON.stringify({ url: opts.url, out: finalPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
     return
   }
   const savings = wasShrunk ? ` (saved ${originalBytes - shrunkBytes} bytes)` : ' (not shrunk — already small or unsupported format)'
-  emit(`Fetched ${originalBytes} bytes → ${outPath}${savings}`)
+  emit(`Fetched ${originalBytes} bytes → ${finalPath}${savings}`)
 }
 
 // ── history ───────────────────────────────────────────────────────────────────
