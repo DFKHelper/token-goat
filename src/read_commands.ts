@@ -184,6 +184,14 @@ export interface SymbolOptions {
   limit?: number
   json?: boolean
   context?: number
+  /**
+   * Project root to scope the search to. Defaults to `process.cwd()`; same field name as
+   * {@link SemanticOptions.projectRoot}. When `file` is a relative path, this is the base it
+   * resolves against. When no `file` filter is given, this also scopes a bare-name search to
+   * the given project instead of matching a same-named symbol anywhere across the machine-wide
+   * index -- relevant for callers (e.g. an MCP server) whose cwd is not the workspace root.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat symbol <name>``. */
@@ -197,9 +205,12 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
-  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file)
+  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
+  // path there's nothing left to disambiguate across projects.
+  if (opts.file === undefined && opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
 
   const results = querySymbols(queryOpts)
 
@@ -220,7 +231,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
   })
-  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file)) : ''
+  const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   return { text: guardText(warning + blocks.join('\n\n'), 'symbol'), code: 0 }
 }
 
@@ -231,6 +242,14 @@ export interface ReadOptions {
   json?: boolean
   contextLines?: number
   forceRefresh?: boolean
+  /**
+   * Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name
+   * as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g.
+   * an MCP server launched from an opaque directory) should pass the actual workspace root
+   * explicitly -- otherwise a bare/partial file spec can resolve against the wrong project,
+   * or an ambiguous symbol name can match a same-named definition in an unrelated project.
+   */
+  projectRoot?: string
 }
 
 function parseReadSpec(spec: string): { file: string; symbol?: string } {
@@ -373,11 +392,11 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   return lines.join('\n')
 }
 
-function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResolution {
+function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') return { kind: 'none' }
 
-  const resolved = resolveIndexPath(file)
+  const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
   }
@@ -431,7 +450,11 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResoluti
     // codebase (index_prune.ts, walk_index.ts, worker.ts) — this filter runs in plain JS, not
     // SQL, so it is not covered by querySymbols' own COLLATE NOCASE and needs its own fold.
     const foldedFile = foldPath(file)
-    candidates = querySymbols({ name: lookupName, limit: 50 }).filter((s) => {
+    candidates = querySymbols({
+      name: lookupName,
+      limit: 50,
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    }).filter((s) => {
       const foldedFilePath = foldPath(s.filePath)
       return (
         foldedFilePath === foldedFile ||
@@ -446,7 +469,11 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean): SymbolResoluti
   // each with their own `refresh`), narrow to candidates whose line range falls inside a
   // symbol named symBase in the same file — otherwise the wrong class's method can win.
   if (methodName !== undefined && candidates.length > 1) {
-    const containers = querySymbols({ name: symBase, limit: 50 })
+    const containers = querySymbols({
+      name: symBase,
+      limit: 50,
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    })
     // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
     // class symbol with lineEnd === lineStart (single-line span at the class header, not the
     // full body), so the line-containment check below always misses for them -- they instead
@@ -486,7 +513,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text: guardText(text, 'symbol'), code: 0 }
   }
 
-  const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh)
+  const resolution = resolveSymbolSpec(opts.spec, opts.forceRefresh, opts.projectRoot)
 
   if (resolution.kind === 'ambiguous') {
     // Genuine same-file ambiguity (a bare name matching several classes' methods, or a
@@ -500,7 +527,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 
   if (resolution.kind === 'none') {
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
-    const resolved = resolveIndexPath(file)
+    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
     return { text: messages.join('\n'), code: 1 }
@@ -528,6 +555,13 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 export interface SectionOptions {
   spec: string
   json?: boolean
+  /**
+   * Project root a relative file spec resolves against. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative file spec would otherwise
+   * resolve on disk relative to the wrong directory.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat section "file::Heading"``. */
@@ -536,20 +570,22 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   if (colonIdx === -1) {
     return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
   }
-  const filePath = opts.spec.slice(0, colonIdx)
+  const specFilePath = opts.spec.slice(0, colonIdx)
+  // Only resolve against projectRoot when explicitly given and the spec's file part is
+  // relative -- an absolute path, or the no-projectRoot default, stays byte-identical to the
+  // pre-existing behavior (readSection/listAllSections resolve a relative path against
+  // process.cwd() themselves, same as the CLI always has).
+  const filePath =
+    opts.projectRoot !== undefined && !path.isAbsolute(specFilePath)
+      ? path.resolve(opts.projectRoot, specFilePath)
+      : specFilePath
   const heading = opts.spec.slice(colonIdx + 2)
 
   const result = readSection(filePath, heading)
   if (result === null) {
     const messages = [`Section '${heading}' not found in '${filePath}'`]
     const available = listAllSections(filePath)
-    if (available.length > 0) {
-      const lines = ['Available sections:']
-      for (const s of available) {
-        lines.push(`  - ${s}`)
-      }
-      messages.push(lines.join('\n'))
-    }
+    if (available.length > 0) messages.push(didYouMean(available))
     return { text: messages.join('\n'), code: 1 }
   }
 
@@ -691,6 +727,13 @@ export interface SkeletonOptions {
   minLines?: number
   forceRefresh?: boolean
   stats?: boolean
+  /**
+   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
+   * to the wrong absolute index key and silently match nothing.
+   */
+  projectRoot?: string
 }
 
 /**
@@ -710,7 +753,7 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file)
+  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
   }
@@ -727,7 +770,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
 
   const refCounts =
     opts.stats === true
-      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: process.cwd() }))
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
   if (opts.json === true) {
@@ -766,11 +809,18 @@ export interface OutlineOptions {
   minLines?: number
   forceRefresh?: boolean
   stats?: boolean
+  /**
+   * Project root `file` resolves against when relative. Defaults to `process.cwd()`; same
+   * field name as {@link SemanticOptions.projectRoot}. Relevant for callers (e.g. an MCP
+   * server) whose cwd is not the workspace root -- a relative `file` would otherwise resolve
+   * to the wrong absolute index key and silently match nothing.
+   */
+  projectRoot?: string
 }
 
 /** Handle ``token-goat outline file``. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file)
+  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
   }
@@ -787,7 +837,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
 
   const refCounts =
     opts.stats === true
-      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: process.cwd() }))
+      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
   if (opts.json === true) {
