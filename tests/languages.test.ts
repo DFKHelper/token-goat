@@ -574,6 +574,47 @@ describe('html adapter', () => {
     expect(nextHeading?.kind).toBe('heading')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
+
+  it('does not match id=/class= inside a longer attribute name lacking a left boundary', () => {
+    // Regression: ID_RE/CLASS_RE had no left boundary, so they matched inside longer attribute
+    // names like data-id=, data-testid=, gid=, uuid=, valid=, data-class= etc, falsely feeding
+    // html_id/html_class symbols. The same unboundaried pattern was inlined a third time in the
+    // heading-anchor extraction, so a heading like `<h2 data-id="x">` registered a false anchor.
+    const content = `<div data-id="phantom-id" data-testid="phantom-testid" gid="phantom-gid" data-class="phantom-class">real</div>
+<div id="real-id" class="real-class">content</div>
+<h2 data-id="not-an-anchor">Real Heading</h2>`
+    const { symbols, sections } = extractHtml(content, 'boundary.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('phantom-id')
+    expect(names).not.toContain('phantom-testid')
+    expect(names).not.toContain('phantom-gid')
+    expect(names).not.toContain('phantom-class')
+    expect(names).toContain('real-id')
+    expect(names).toContain('real-class')
+    expect(sections.some((s) => s.heading === 'not-an-anchor')).toBe(false)
+    expect(sections.some((s) => s.heading === 'Real Heading')).toBe(true)
+  })
+
+  it('dedupes and caps id/class symbols instead of emitting one row per occurrence unbounded', () => {
+    // Regression: extractHtml pushed one symbol per id= occurrence and per class token with no
+    // MAX_SYMBOLS cap and no dedup, unlike every other language adapter in this codebase.
+    // Minified/framework-generated HTML can emit thousands of duplicate symbol rows.
+    const lines: string[] = []
+    for (let i = 0; i < 600; i++) {
+      lines.push(`<div id="dup-widget" class="dup-token">item ${i}</div>`)
+    }
+    const content = lines.join('\n')
+    const { symbols } = extractHtml(content, 'huge.html')
+    // Each id/class occurrence is on its own line, so (name, line) dedup does not collapse them
+    // - without a cap this would emit 1200 symbol rows (600 ids + 600 classes). The cap must
+    // stop emission at exactly MAX_SYMBOLS.
+    expect(symbols.length).toBe(500)
+    // Duplicate id/class values within the SAME line must be deduped, not just capped.
+    const sameLineContent = '<div id="only-once" class="only-once-cls only-once-cls">x</div>'
+    const { symbols: sameLineSymbols } = extractHtml(sameLineContent, 'sameline.html')
+    const onlyOnceCount = sameLineSymbols.filter((s) => s.name === 'only-once-cls').length
+    expect(onlyOnceCount).toBe(1)
+  })
 })
 
 // ---------------------------------------------------------------------------
