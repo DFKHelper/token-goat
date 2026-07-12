@@ -186,6 +186,11 @@ describe('helpers: command parsing', () => {
   it('stripPrefixes strips env assignments that follow a passthrough wrapper', () => {
     expect(stripPrefixes(['env', 'FOO=bar', 'git', 'log'])).toEqual(['git', 'log'])
   })
+
+  it('stripPrefixes treats -i as a valueless flag for sudo/env (no value to consume)', () => {
+    expect(stripPrefixes(['sudo', '-i', 'docker', 'ps'])).toEqual(['docker', 'ps'])
+    expect(stripPrefixes(['env', '-i', 'cargo', 'build'])).toEqual(['cargo', 'build'])
+  })
 })
 
 describe('CompressedOutput', () => {
