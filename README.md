@@ -264,13 +264,13 @@ token-goat install
 token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
 ```
 
-Three commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
 
 **Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
 
-On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, and on macOS, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
+The background indexer is not started by `install`. Run `token-goat worker start` on any platform to launch it as a detached process; `token-goat worker status` / `token-goat worker stop` manage it from there.
 
 ### Codex CLI users
 
@@ -348,15 +348,12 @@ Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`win
 
 ### Updating
 
-Updates ship automatically. `token-goat install` schedules a weekly `npm install -g token-goat@latest` run at Sunday 03:00 local time (Windows scheduled task; Linux/macOS crontab line tagged `# token-goat-autoupdate`). `token-goat uninstall` reverses it.
-
-Manual paths:
+There is no auto-update mechanism — token-goat never schedules or runs anything on its own. Updating is always a manual `npm install -g token-goat@latest`.
 
 | When | Command |
 |------|---------|
 | Update now | `npm install -g token-goat@latest` |
 | Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
-| Disable auto-updates | Delete the `token-goat-update` scheduled task (Windows) or the `# token-goat-autoupdate` crontab line (Linux/macOS) |
 
 ### Upgrading from the Python version
 
@@ -540,23 +537,9 @@ Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 
-**Worker autostart** (one of the following, picked by platform)
+**Background worker.** token-goat does not register any persistent OS-level autostart entry — no Windows registry `Run` key, no systemd user unit, no XDG `.desktop` entry, and no macOS launchd `.plist`. The worker that drains the reindex queue is started manually as a detached child process: `token-goat worker start` launches `node <npm-prefix>/lib/node_modules/token-goat/dist/token-goat.mjs --worker-daemon` and returns immediately, and the child keeps running independent of the parent shell. `token-goat worker status` reports whether it's running; `token-goat worker stop` kills it. It does not restart itself after a reboot or logout — re-run `token-goat worker start` when you want it running again.
 
-| Platform | Entry |
-|---------|------|
-| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\token-goat-worker`. No admin rights required. |
-| Linux (with `systemd --user`) | `~/.config/systemd/user/token-goat-worker.service`, enabled. |
-| Linux (no systemd, incl. WSL) | `~/.config/autostart/token-goat-worker.desktop`. On WSL without systemd, the SessionStart hook also starts the worker on every Claude Code session. |
-| macOS (untested) | `~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist`, loaded via `launchctl`. |
-
-The autostart command is `node <npm-prefix>/lib/node_modules/token-goat/dist/cli.js worker --daemon`. No compiled `.exe` is dropped; AV/EDR products do not behavior-flag this invocation pattern.
-
-**Weekly auto-update** (Sunday 03:00 local time, runs `npm install -g token-goat@latest`)
-
-| Platform | Entry |
-|---------|------|
-| Windows | Scheduled task `token-goat-update` (`schtasks`). |
-| Linux / macOS | A `crontab` line tagged with `# token-goat-autoupdate`. |
+There is no auto-update mechanism. Updating token-goat is always a manual `npm install -g token-goat@latest`.
 
 **Data directory** (created on first run)
 
@@ -616,7 +599,7 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 
 ## Zero maintenance
 
-After install, there is nothing to start, stop, or restart. The worker runs at logon on Windows, Linux, and macOS; on WSL without systemd, the SessionStart hook covers it. Survives reboots on every platform. `token-goat uninstall` reverses every change, including the startup entry.
+Hooks fire automatically on every tool call once installed — nothing to start or restart there. The background worker is a separate, manual step: `token-goat worker start` launches it as a detached process, `token-goat worker status` checks it, `token-goat worker stop` kills it. It does not survive a reboot or logout; re-run `worker start` after either. `token-goat uninstall` removes the hook entries, `CLAUDE.md` block, and skill directory, but does not touch a running worker — stop it separately with `token-goat worker stop` if you no longer want it running.
 
 ## Verify
 
