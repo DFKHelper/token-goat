@@ -146,8 +146,18 @@ export function extractKotlin(
     // Companion objects only occur nested inside a class/object body (classStack non-empty), and
     // are checked ahead of CLASS_HEADER_RE since the `companion` keyword would otherwise prevent
     // CLASS_HEADER_RE from matching at all (see COMPANION_RE comment above).
-    const companionM = classStack.length > 0 ? COMPANION_RE.exec(stripped) : null
-    const cm = companionM === null && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
+    // Function-local classes/companion objects (declared inside a method body) must not be
+    // indexed as members of the enclosing class -- matches the depthInClass === 1 gate already
+    // applied correctly to the method/const branch below (and to csharp.ts/powershell_idx.ts).
+    // classStack.length === 0 covers the top-level case (no enclosing class at all); otherwise
+    // the current position must be exactly one brace level inside the innermost class/companion
+    // frame's body (depthInClass === 1) -- a class/companion header nested two or more levels
+    // in (e.g. inside a method body) is function-local, not a real class member.
+    const outerFrame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
+    const outerDepthInClass = outerFrame !== null ? braceDepth - outerFrame.braceDepth : 0
+    const classDetectionGateOk = classStack.length === 0 || outerDepthInClass === 1
+    const companionM = classStack.length > 0 && classDetectionGateOk ? COMPANION_RE.exec(stripped) : null
+    const cm = companionM === null && classDetectionGateOk && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
     if (companionM) {
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
