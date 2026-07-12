@@ -70,6 +70,13 @@ let _webFetches = new Map<string, string>()
 
 // commandHash -> outputId index for bash-output dedup.
 let _bashOutputs = new Map<string, string>()
+// Command hashes (same key space as _bashOutputs, i.e. the stripped-command
+// hash used by recordBashOutput/getBashOutputId) for which a store call
+// overwrote an already-present entry this session -- i.e. an older cached
+// run under this exact key was beaten by a newer one. Used only by
+// hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw
+// transcript copies that are provably superseded by the surviving cached id.
+let _bashReruns = new Set<string>()
 
 // url -> saved file path for curl -o download dedup (Item 2).
 let _curlDownloads = new Map<string, string>()
@@ -339,6 +346,21 @@ export function recordBashOutput(commandHash: string, outputId: string, _sizeByt
   _bashOutputs.set(commandHash, outputId)
 }
 
+/** All bash-output cache entries currently tracked this session: [commandHash, outputId] pairs. */
+export function getSessionBashOutputs(): Array<[string, string]> {
+  return Array.from(_bashOutputs.entries())
+}
+
+/** Marks `commandHash` as rerun: a store call overwrote an already-present cached entry under this exact key. */
+export function recordBashRerun(commandHash: string): void {
+  _bashReruns.add(commandHash)
+}
+
+/** Command hashes rerun this session (see {@link recordBashRerun}). */
+export function getSessionBashReruns(): string[] {
+  return Array.from(_bashReruns)
+}
+
 /** Return the output id previously recorded for `commandHash`, or null. */
 export function getBashOutputId(commandHash: string): string | null {
   return _bashOutputs.get(commandHash) ?? null
@@ -447,6 +469,7 @@ export interface SerializedSession {
   hintsShown: string[]
   webFetches: Array<[string, string]>
   bashOutputs: Array<[string, string]>
+  bashReruns?: string[]
   curlDownloads: Array<[string, string]>
   fileLineRanges?: Array<[string, Array<[number, number]>]>
   cliReads?: string[]
@@ -467,6 +490,7 @@ export function exportSessionState(): SerializedSession {
     hintsShown: Array.from(_hintsShown),
     webFetches: Array.from(_webFetches.entries()),
     bashOutputs: Array.from(_bashOutputs.entries()),
+    bashReruns: Array.from(_bashReruns),
     curlDownloads: Array.from(_curlDownloads.entries()),
     fileLineRanges: Array.from(_fileLineRanges.entries()),
     cliReads: Array.from(_cliReads),
@@ -491,6 +515,7 @@ export function importSessionState(s: SerializedSession): void {
   _hintsShown = new Set(s.hintsShown)
   _webFetches = new Map(s.webFetches)
   _bashOutputs = new Map(s.bashOutputs)
+  _bashReruns = new Set(s.bashReruns ?? [])
   _curlDownloads = new Map(s.curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
   _cliReads = new Set(s.cliReads ?? [])
@@ -504,6 +529,7 @@ registerReset(() => {
   _hintsShown = new Set()
   _webFetches = new Map()
   _bashOutputs = new Map()
+  _bashReruns = new Set()
   _curlDownloads = new Map()
   _fileLineRanges = new Map()
   _cliReads = new Set()

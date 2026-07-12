@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
@@ -1826,6 +1826,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
     if (priorEntry !== null) {
+      // Item G: a store call just overwrote an already-present cached entry under this exact
+      // key -- record it so hooks_compact.ts's SAFE_TO_DISCARD manifest section can name the
+      // now-superseded prior run as provably safe to drop from context.
+      recordBashRerun(simpleHash)
       const delta = summarizeOutputDelta(priorEntry.output, output)
       if (delta !== null) {
         recordStat('session_hint', 0, 0)
