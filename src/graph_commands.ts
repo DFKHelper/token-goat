@@ -454,6 +454,14 @@ export interface TypesOptions {
 }
 
 export function runTypes(opts: TypesOptions): number {
+  // A limit of 0 (or negative) would translate to SQL `LIMIT 0` on every kind-scan, always
+  // returning zero rows regardless of whether type declarations exist -- silently reporting "no
+  // type declarations found". Reject it explicitly instead of querying with it.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
   const limit = opts.limit ?? 500
   const filePath = opts.file !== undefined ? resolveIndexPath(opts.file) : undefined
   const fpOpt = filePath !== undefined ? { filePath } : {}
