@@ -711,6 +711,32 @@ describe('html adapter', () => {
     const onlyOnceCount = sameLineSymbols.filter((s) => s.name === 'only-once-cls').length
     expect(onlyOnceCount).toBe(1)
   })
+
+  it('does not index commented-out markup and preserves the real section line range', () => {
+    // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
+    // script regexes ran, so dead/commented-out markup was indexed identically to live markup -
+    // including corrupting the real subsequent section's start/end-line bookkeeping.
+    const content = `<!--
+<h1>Deprecated Title</h1>
+<div id="dead-panel" class="dead-widget"></div>
+<link href="legacy.css">
+<script src="old-analytics.js"></script>
+-->
+<h1>Real Title</h1>
+<p>content</p>`
+    const { symbols, imports, sections } = extractHtml(content, 'commented.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('dead-panel')
+    expect(names).not.toContain('dead-widget')
+    expect(sections.some((s) => s.heading === 'Deprecated Title')).toBe(false)
+    expect(imports.some((i) => i.target === 'legacy.css')).toBe(false)
+    expect(imports.some((i) => i.target === 'old-analytics.js')).toBe(false)
+
+    const realSection = sections.find((s) => s.heading === 'Real Title')
+    expect(realSection).toBeDefined()
+    expect(realSection?.line).toBe(7)
+    expect(realSection?.endLine).toBe(8)
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, stripXmlComments } from './common.js'
 
 export interface HtmlImport {
   readonly kind: string
@@ -71,10 +71,15 @@ export function extractHtml(
   const symbols: SymbolEntry[] = []
   const imports: HtmlImport[] = []
   const sections: MiniSection[] = []
-  const lineIndex = buildLineIndex(content)
+  // Blank out `<!-- ... -->` comment spans (offset-preserving, mirrors stripCstyleComments'
+  // approach in common.ts) before running any extraction regexes, so commented-out markup
+  // isn't indexed as live symbols/sections/imports and doesn't corrupt section line-range
+  // bookkeeping for the real markup that follows it.
+  const code = stripXmlComments(content)
+  const lineIndex = buildLineIndex(code)
 
   // Headings → sections
-  for (const m of content.matchAll(HEADING_RE)) {
+  for (const m of code.matchAll(HEADING_RE)) {
     const level = parseInt(m[1] ?? '1', 10)
     const raw = m[2] ?? ''
     const heading = raw.replace(TAG_STRIP_RE, '').trim()
@@ -96,7 +101,7 @@ export function extractHtml(
 
   // Sort and assign end-lines
   sections.sort((a, b) => a.line - b.line)
-  const totalLines = content.split('\n').length
+  const totalLines = code.split('\n').length
   assignFlatEndLines(sections, totalLines)
 
   // id and class attributes. Deduped by (name, line) - first occurrence wins, mirroring
@@ -105,7 +110,7 @@ export function extractHtml(
   const seenIdClass = new Set<string>()
 
   // id attributes
-  for (const m of content.matchAll(ID_RE)) {
+  for (const m of code.matchAll(ID_RE)) {
     if (symbols.length >= MAX_SYMBOLS) break
     const idVal = m[1] ?? ''
     if (idVal && !isNoise(idVal)) {
@@ -119,7 +124,7 @@ export function extractHtml(
   }
 
   // class attributes
-  for (const m of content.matchAll(CLASS_RE)) {
+  for (const m of code.matchAll(CLASS_RE)) {
     if (symbols.length >= MAX_SYMBOLS) break
     const classVal = m[1] ?? ''
     if (classVal) {
@@ -138,7 +143,7 @@ export function extractHtml(
   }
 
   // link href
-  for (const m of content.matchAll(LINK_RE)) {
+  for (const m of code.matchAll(LINK_RE)) {
     const href = m[1] ?? ''
     if (href) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
@@ -147,7 +152,7 @@ export function extractHtml(
   }
 
   // script src
-  for (const m of content.matchAll(SCRIPT_RE)) {
+  for (const m of code.matchAll(SCRIPT_RE)) {
     const src = m[1] ?? ''
     if (src) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
