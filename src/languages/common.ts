@@ -213,7 +213,7 @@ export function stripSqlLineComments(text: string): string {
  * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
  * string that never closes.
  */
-function isInsideStringLiteral(line: string, index: number, from = 0): boolean {
+export function isInsideStringLiteral(line: string, index: number, from = 0): boolean {
   let openQuote: '"' | "'" | null = null
   let i = from
   while (i < index) {
