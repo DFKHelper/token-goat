@@ -125,26 +125,33 @@ function encodeCell(cell: { r: number; c: number }): string {
   return `${indexToColLetters(cell.c)}${cell.r}`
 }
 
+// ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell
+// types) its own `cell.text` getter does NOT apply the cell's number format for dates --
+// it just calls `.toString()` on the Date internally, so relying on `cell.text` here would
+// still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000
+// (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a
+// clean ISO date when the value carries no time-of-day component (the common case for a
+// date-formatted cell), a full ISO datetime otherwise.
+function formatDateCell(d: Date): string {
+  const isDateOnly =
+    d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
+  return isDateOnly ? d.toISOString().slice(0, 10) : d.toISOString()
+}
+
 function cellText(cell: ExcelCell): string {
   if (cell.value === null || cell.value === undefined) return ''
-  if (cell.value instanceof Date) {
-    // ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell
-    // types) its own `cell.text` getter does NOT apply the cell's number format for dates --
-    // it just calls `.toString()` on the Date internally, so relying on `cell.text` here would
-    // still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000
-    // (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a
-    // clean ISO date when the value carries no time-of-day component (the common case for a
-    // date-formatted cell), a full ISO datetime otherwise.
-    const d = cell.value
-    const isDateOnly =
-      d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
-    return isDateOnly ? d.toISOString().slice(0, 10) : d.toISOString()
-  }
+  if (cell.value instanceof Date) return formatDateCell(cell.value)
   const v = cell.value as { result?: unknown; text?: unknown; richText?: { text: string }[] } | unknown
   if (typeof v === 'object' && v !== null) {
     const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[] }
     if (Array.isArray(obj.richText)) return obj.richText.map((t) => t.text).join('')
-    if (obj.result !== undefined) return String(obj.result)
+    if (obj.result !== undefined) {
+      if (obj.result instanceof Date) return formatDateCell(obj.result)
+      if (typeof obj.result === 'object' && obj.result !== null && typeof (obj.result as { error?: unknown }).error === 'string') {
+        return (obj.result as { error: string }).error
+      }
+      return String(obj.result)
+    }
     if (obj.text !== undefined) return String(obj.text)
   }
   // Plain (non-rich, non-formula, non-Date) values: prefer ExcelJS's pre-formatted display
@@ -259,15 +266,16 @@ export function formatXlsxRange(result: XlsxRangeResult): string {
 /** Hand-rolled sheet_to_csv equivalent: ExcelJS has no direct API for this. */
 async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
   const rowCount = ws.rowCount || 0
+  // Every emitted row must have the same field count, or csv-parse's default strict mode
+  // throws "Invalid Record Length" on any row that happens to have empty trailing cells
+  // (row.eachCell({includeEmpty:false}) stops at that row's own last populated column, which
+  // is not necessarily the sheet's widest column). Pad every row out to the sheet's actual
+  // used-column-count, same as headSheet already does per-row against the header width.
+  const { cols: sheetCols } = usedRange(ws)
   const lines: string[] = []
   for (let r = 1; r <= rowCount; r++) {
-    const row = ws.getRow(r)
-    let maxCol = 0
-    row.eachCell({ includeEmpty: false }, (_c, colNumber) => {
-      if (colNumber > maxCol) maxCol = colNumber
-    })
     const vals: string[] = []
-    for (let c = 1; c <= maxCol; c++) {
+    for (let c = 1; c <= sheetCols; c++) {
       vals.push(cellText(ws.getCell(encodeCell({ r, c }))))
     }
     lines.push(vals.map(quoteCsvCell).join(','))
