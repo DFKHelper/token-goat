@@ -27,6 +27,10 @@ vi.mock('../src/parser.js', () => ({
   indexFileSync: vi.fn(),
 }))
 
+vi.mock('../src/hooks_index.js', () => ({
+  appendDirtyPath: vi.fn(),
+}))
+
 vi.mock('../src/constants.js', () => ({
   globalDbPath: vi.fn(() => ':memory:'),
 }))
@@ -74,8 +78,10 @@ import { indexFileSync } from '../src/parser.js'
 import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
+import { appendDirtyPath } from '../src/hooks_index.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
+const mockAppendDirtyPath = vi.mocked(appendDirtyPath)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
 const mockGetFileEntry = vi.mocked(getFileEntry)
 const mockFindContainingSection = vi.mocked(findContainingSection)
@@ -747,6 +753,22 @@ describe('read_commands', () => {
         ])
         runRead({ spec: `${f}::newSymbol`, forceRefresh: true })
         expect(mockIndexFileSync).toHaveBeenCalled()
+        // Regression: a --force-refresh reindexFileSync call wipes files.embed_sha (writeParseResult
+        // deletes and reinserts the files row without one) but, before this fix, never enqueued the
+        // file for the worker to re-embed -- token-goat semantic would then serve stale embedded
+        // content (or match nothing) for this file indefinitely. Mirrors cmdReplace's (cli.ts)
+        // enqueueDirtyPathSafe call after its own write.
+        expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f))
+      })
+
+      it('does not enqueue the dirty queue when --force-refresh is not set', () => {
+        const f = path.join(tempDir, 'no-refresh.ts')
+        fs.writeFileSync(f, 'export function foo() {\n  return 1\n}')
+        mockQuerySymbols.mockReturnValue([
+          { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: 'export function foo() {}' } as never,
+        ])
+        runRead({ spec: `${f}::foo` })
+        expect(mockAppendDirtyPath).not.toHaveBeenCalled()
       })
 
       it('prefers reading a real file named "notes@2024" over treating it as a line-range spec', () => {
@@ -885,6 +907,27 @@ describe('read_commands', () => {
       expect(stdout).toContain('2 symbols')
     })
 
+    it('enqueues the dirty queue for a --force-refresh reindex (regression: embed_sha silently wiped)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      runSkeleton({ file: 'a.ts', forceRefresh: true })
+      expect(mockIndexFileSync).toHaveBeenCalled()
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('a.ts', process.cwd()))
+    })
+
+    it('does not enqueue the dirty queue without --force-refresh', () => {
+      const syms: MockSymbol[] = [
+        { name: 'foo', kind: 'function', filePath: 'a.ts', lineStart: 5, lineEnd: 15, body: 'function foo() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      runSkeleton({ file: 'a.ts' })
+      expect(mockAppendDirtyPath).not.toHaveBeenCalled()
+    })
+
     it('reports correct total lines when filtering by minLines', () => {
       const syms: MockSymbol[] = [
         { name: 'tiny', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
@@ -997,6 +1040,27 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([])
       const { code } = runOutline({ file: 'empty.ts' })
       expect(code).toBe(1)
+    })
+
+    it('enqueues the dirty queue for a --force-refresh reindex (regression: embed_sha silently wiped)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'function myFunc() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      runOutline({ file: 'f.ts', forceRefresh: true })
+      expect(mockIndexFileSync).toHaveBeenCalled()
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('f.ts', process.cwd()))
+    })
+
+    it('does not enqueue the dirty queue without --force-refresh', () => {
+      const syms: MockSymbol[] = [
+        { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'function myFunc() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      runOutline({ file: 'f.ts' })
+      expect(mockAppendDirtyPath).not.toHaveBeenCalled()
     })
 
     it('prints outline with line ranges', () => {
