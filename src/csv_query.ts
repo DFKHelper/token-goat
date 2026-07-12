@@ -51,6 +51,34 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
   })
 }
 
+/**
+ * `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the
+ * FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never
+ * be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a
+ * genuine `a<b` column exists and was the intended target).
+ *
+ * Re-checks the naive split against the real header: reconstructs the raw spec text from
+ * `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column,
+ * op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a
+ * remainder that still parses as a valid `op value` pair. The longest such header entry wins,
+ * so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g.
+ * `a<b`) that is actually present in this file's header -- never to an arbitrary substring.
+ */
+function resolveWhereColumn(where: CsvWhere, allColumns: string[]): CsvWhere {
+  const rawSpec = where.column + where.op + where.value
+  let best: CsvWhere = where
+  for (const col of allColumns) {
+    if (col.length <= best.column.length) continue
+    if (!rawSpec.startsWith(col)) continue
+    const rest = rawSpec.slice(col.length)
+    const m = /^(!=|~=|>=|<=|=|>|<)(.*)$/.exec(rest)
+    if (m) {
+      best = { column: col, op: m[1] as CsvWhereOp, value: m[2] as string }
+    }
+  }
+  return best
+}
+
 function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
   const cell = row[where.column] ?? ''
   switch (where.op) {
@@ -99,15 +127,16 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
       throw new Error(`unknown column: ${c} (available: ${allColumns.join(', ')})`)
     }
   }
-  for (const w of opts.wheres ?? []) {
+  const wheres = (opts.wheres ?? []).map((w) => resolveWhereColumn(w, allColumns))
+
+  for (const w of wheres) {
     if (!allColumns.includes(w.column)) {
       throw new Error(`unknown column: ${w.column} (available: ${allColumns.join(', ')})`)
     }
   }
 
   let filtered = records
-  if (opts.wheres !== undefined && opts.wheres.length > 0) {
-    const wheres = opts.wheres
+  if (wheres.length > 0) {
     filtered = records.filter((r) => wheres.every((w) => matchesWhere(r, w)))
   }
 
