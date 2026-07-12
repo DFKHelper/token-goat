@@ -348,7 +348,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
 // ── project ───────────────────────────────────────────────────────────────────
 
-export function cmdProject(opts: { action: string; pathArg?: string; json?: boolean }): void {
+export function cmdProject(opts: { action: string; pathArg?: string; json?: boolean; dryRun?: boolean }): void {
   const { action } = opts
 
   if (action === 'list') {
@@ -403,6 +403,22 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
       try { return fs.existsSync(r) } catch { return false }
     })
     const removed = before.length - after.length
+    const stale = before.filter((r) => !after.includes(r))
+
+    if (opts.dryRun === true) {
+      if (opts.json === true) {
+        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, blocked_roots: before }, null, 2))
+        return
+      }
+      if (removed === 0) {
+        emit('Would prune 0 stale root(s). Nothing to do.')
+      } else {
+        emit(`Would prune ${removed} stale root(s):`)
+        for (const r of stale) emit(`  ${r}`)
+      }
+      return
+    }
+
     cfg.worker.blocked_roots = after
     saveConfigSafe(cfg)
     invalidateConfigCache()
