@@ -130,6 +130,21 @@ describe('queryCsv', () => {
     expect(result.header).toEqual(['col1', 'col2']);
     expect(result.rows[0]).toEqual(['1', 'Alice']);
   });
+
+  it('resolves a --where spec against the correct column when a header name contains operator characters', () => {
+    // Regression: WHERE_SPEC_RE's column capture excludes = < > ~ ! outright, so it always
+    // splits at the FIRST operator-class character. With headers `a` and `a<b`, the spec
+    // "a<b=x" naively parses as column "a", op "<", value "b=x" -- and since column "a"
+    // genuinely exists, the query used to run silently against the wrong column instead of
+    // targeting the real "a<b" column or erroring.
+    const csv = 'a,a<b\nfoo,x\nbar,y\n';
+    const wheres = parseWhereSpecs(['a<b=x']);
+    const result = queryCsv(csv, { wheres });
+    // Correct behavior: this targets column "a<b" with op "=" and value "x", matching only the
+    // first row. The old behavior (column "a", op "<", value "b=x") would run a string
+    // comparison "a" < "b=x" against both rows' "a" values ("foo" and "bar"), matching neither.
+    expect(result.rows).toEqual([['foo', 'x']]);
+  });
 });
 
 describe('parseWhereSpecs', () => {
