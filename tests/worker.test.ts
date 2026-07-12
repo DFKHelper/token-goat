@@ -23,6 +23,8 @@ import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { loadConfig } from '../src/config.js'
 import { store } from '../src/snapshots.js'
+import { foldPath } from '../src/util.js'
+import { pathEqClause } from '../src/sql_path.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
@@ -36,6 +38,17 @@ function writeQueue(dir: string, lines: string[]): void {
   const qp = queueFile(dir)
   fs.mkdirSync(path.dirname(qp), { recursive: true })
   fs.writeFileSync(qp, lines.map((l) => `${l}\n`).join(''))
+}
+
+// Reads files.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via
+// foldPath()/pathEqClause() -- so this observes the exact same row a real transient-failure
+// requeue bumps.
+function getRetryCount(dbPath: string, absPath: string): number {
+  const db = getDb(dbPath)
+  const row = db.prepare(`SELECT retry_count FROM files WHERE ${pathEqClause('path')}`).get(foldPath(absPath)) as
+    | { retry_count: number | null }
+    | undefined
+  return row?.retry_count ?? 0
 }
 
 beforeEach(() => {
@@ -83,6 +96,45 @@ describe('stopWorker', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     expect(stopWorker(DIR)).toBe(false)
     expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
+  })
+
+  // Regression (double-daemon race): stopWorker used to delete the pid file unconditionally
+  // after killing the pid it read, with no re-check. Race: between stopWorker's kill and its
+  // rmSync, a concurrent `worker start` can observe the just-killed pid as dead, reclaim the
+  // pid-file slot via claimWorkerPidFile, and write a NEW daemon's pid into that same file --
+  // which the still-running stopWorker call then deletes anyway, orphaning the new daemon (no
+  // pid file left for a later `worker stop` to find it by). A subsequent `worker start` would
+  // then "fix" the missing pid file by spawning a THIRD daemon, leaving two live daemons
+  // draining one queue. Simulate the race directly: after stopWorker's kill would have fired
+  // (this test's own live pid stands in for "the process stopWorker just killed"), have a
+  // concurrent claim overwrite the pid file with a different pid before stopWorker reaches its
+  // cleanup step -- proven here by writing the pid file back to a different value between the
+  // kill and the cleanup that the exit-handler-style guard must check.
+  it('does not delete a pid file that a concurrent worker start already reclaimed for a new daemon', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+
+    // Stand in for the race window: monkey-patch fs.rmSync so that, at the exact moment
+    // stopWorker is about to remove the pid file, we simulate a concurrent claimWorkerPidFile
+    // call having already reclaimed the slot for a brand-new daemon pid. If stopWorker's guard
+    // re-reads the pid file immediately before deleting (rather than deleting unconditionally),
+    // it must see the new pid and skip the delete entirely.
+    const originalWrite = fs.writeFileSync
+    let reclaimed = false
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (!reclaimed && pid === process.pid && (signal === undefined || signal === 'SIGTERM')) {
+        reclaimed = true
+        originalWrite(workerPidPath(DIR), '424242\n')
+      }
+      return true
+    })
+
+    const alive = stopWorker(DIR)
+
+    expect(alive).toBe(true)
+    // The reclaimed pid file must survive stopWorker's cleanup untouched.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+
+    killSpy.mockRestore()
   })
 })
 
@@ -690,6 +742,35 @@ describe('drainOnce', () => {
 
       // The .draining file should be cleaned up.
       expect(fs.existsSync(drainingPath)).toBe(false)
+    })
+
+    // Regression (same-cycle retry double-bump): when a transient read failure happens while
+    // recovering an abandoned .draining file in stage (a), the old requeueDirtyPath appended the
+    // path straight to the LIVE dirty.txt -- which stage (b) of this SAME drainOnce call then
+    // claims and reprocesses microseconds later, while the lock/condition that caused the
+    // original failure has almost certainly not cleared yet. That silently bumped the transient
+    // retry counter TWICE per drain cycle instead of once, roughly halving the effective
+    // MAX_TRANSIENT_RETRIES budget (5 real failure cycles exhausted it in ~3 calls instead of 5).
+    // No live dirty.txt exists before this call -- isolating the bug to exactly the stage
+    // (a)-recovers/stage (b)-immediately-reclaims interaction, not any pre-existing queue content.
+    it('bumps the transient-retry count only once per drainOnce call when stage (a) recovering an abandoned .draining file requeues a path stage (b) of the SAME cycle would otherwise immediately reclaim', () => {
+      const lockedPath = path.join(DIR, 'stuck-samecycle.ts')
+      fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR every time
+      const dbPath = path.join(DIR, 'global.db')
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${lockedPath}\n`)
+      expect(fs.existsSync(queuePath)).toBe(false)
+
+      drainOnce(DIR)
+
+      // Exactly one bump for this single drainOnce call -- not two.
+      expect(getRetryCount(dbPath, lockedPath)).toBe(1)
+
+      // The path is still requeued for the next drain cycle either way -- the fix defers WHEN
+      // the append lands in the live queue, not WHETHER it does.
+      expect(getDirtyPathsFor(DIR)).toEqual([lockedPath])
     })
   })
 
