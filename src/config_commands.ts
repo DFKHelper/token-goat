@@ -21,7 +21,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
 import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -466,12 +466,12 @@ export function cmdCompactDoc(opts: {
 
   let sentences: number | undefined
   if (opts.sentences !== undefined) {
-    const n = Number.parseInt(opts.sentences, 10)
-    if (!Number.isFinite(n) || n <= 0) {
+    try {
+      sentences = requirePositiveStrictInt('--sentences', opts.sentences)
+    } catch (e) {
       emitErr(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
-      throw new Error(`invalid --sentences: ${opts.sentences}`)
+      throw new Error(`invalid --sentences: ${opts.sentences}`, { cause: e })
     }
-    sentences = n
   }
 
   const compactPath = compactPathFor(resolved)
@@ -627,12 +627,12 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
 export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
 
   const bashItems = listBlobs(BASH_OUTPUT_SUBDIR)

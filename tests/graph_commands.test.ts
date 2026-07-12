@@ -285,6 +285,18 @@ describe('runScope integration', () => {
     const result = runScope({ spec: 'src/__nonexistent_file_xyzzy__.ts:1', json: true })
     expect(result).toBe(1)
   })
+
+  // #232 regression: Number.parseInt('12abc', 10) silently parsed as 12 instead of rejecting the
+  // trailing garbage, so `scope file:12abc` resolved the line number as if it had been `file:12`.
+  it('exits 1 for a line number with trailing garbage instead of silently truncating it', () => {
+    const result = runScope({ spec: 'src/cli.ts:12abc' })
+    expect(result).toBe(1)
+  })
+
+  it('exits 1 for a line number in exponential notation instead of silently truncating it', () => {
+    const result = runScope({ spec: 'src/cli.ts:1e3' })
+    expect(result).toBe(1)
+  })
 })
 
 // ---- integration: runTypes against the real repo index ---------------------

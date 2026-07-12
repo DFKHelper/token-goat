@@ -438,6 +438,41 @@ export function extractErrorMessage(err: unknown, fallback: string = ''): string
   return err instanceof Error ? err.message : (fallback || String(err))
 }
 
+// Parses a numeric CLI flag value, rejecting anything but an exact integer literal (optional
+// leading minus, followed by digits) instead of letting a bare Number.parseInt/parseFloat accept
+// trailing garbage ("30x" -> 30) or exponential notation ("1e3" -> 1). Mirrors cli.ts's
+// requireInt/requireNonNegativeInt/requirePositiveInt for command modules cli.ts itself imports
+// (config_commands.ts, cache_session_commands.ts) — those can't import cli.ts back without a
+// circular dependency, so this shared, dependency-free copy lives in util.ts instead.
+export function requireStrictInt(flag: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) {
+    throw new Error(`${flag} must be a number, got: "${raw}"`)
+  }
+  return n
+}
+
+/** Same as {@link requireStrictInt}, plus a sign check: rejects a strictly-negative value. */
+export function requireNonNegativeStrictInt(flag: string, raw: string): number {
+  const n = requireStrictInt(flag, raw)
+  if (n < 0) {
+    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
+}
+
+/** Same as {@link requireStrictInt}, plus a sign check: rejects zero or a negative value. */
+export function requirePositiveStrictInt(flag: string, raw: string): number {
+  const n = requireStrictInt(flag, raw)
+  if (n <= 0) {
+    throw new Error(`${flag} must be a positive number, got: "${raw}"`)
+  }
+  return n
+}
+
 /** Check if a line is a code fence delimiter (``` or ~~~). Extracted from 7 call sites in skill_cache.ts. */
 export function isCodeFenceDelimiter(line: string): boolean {
   const s = line.trim()

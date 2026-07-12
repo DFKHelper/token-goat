@@ -569,8 +569,14 @@ export function runScope(opts: ScopeOptions): number {
 
   const file = opts.spec.slice(0, colonIdx)
   const lineStr = opts.spec.slice(colonIdx + 1)
-  const line = Number.parseInt(lineStr, 10)
 
+  // Reject anything but an exact integer literal so trailing garbage (e.g. "12abc") is caught
+  // instead of Number.parseInt silently truncating it to 12.
+  if (!/^\d+$/.test(lineStr)) {
+    emitErr(`Invalid line number: ${lineStr}`)
+    return 1
+  }
+  const line = Number.parseInt(lineStr, 10)
   if (!Number.isFinite(line) || line < 1) {
     emitErr(`Invalid line number: ${lineStr}`)
     return 1

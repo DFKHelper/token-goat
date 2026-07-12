@@ -13,7 +13,7 @@ import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
-import { ensureNewline } from './util.js'
+import { ensureNewline, requireNonNegativeStrictInt } from './util.js'
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
@@ -57,12 +57,12 @@ function listParentSessionBlobs(): Array<{ id: string; mtime: number; value: unk
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`bash-history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`bash-history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
   const items = blobs
@@ -101,12 +101,12 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
 export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`web-history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`web-history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
   const blobs = listBlobs(WEB_OUTPUT_SUBDIR)
   const items = blobs
@@ -165,11 +165,11 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
   let maxAgeMs = DEFAULT_MAX_AGE_MS
 
   if (opts.maxCount !== undefined) {
-    const parsed = Number.parseInt(opts.maxCount, 10)
-    if (Number.isNaN(parsed)) {
+    try {
+      maxCount = requireNonNegativeStrictInt('--maxCount', opts.maxCount)
+    } catch {
       throw new Error(`--maxCount must be a valid integer, got '${opts.maxCount}'`)
     }
-    maxCount = Math.max(0, parsed)
   }
 
   if (opts.maxAgeHours !== undefined) {
