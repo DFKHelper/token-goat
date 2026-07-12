@@ -24,6 +24,18 @@ describe('detectLanguage', () => {
     expect(detectLanguage('noextension')).toBe('unknown')
   })
 
+  it('returns markdown for .md / .markdown / .mdx, but unknown for .rst', () => {
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so detectLanguage returned 'unknown' for
+    // it and the indexer (cmdIndex) skipped .mdx files entirely -- no headings ever got into the
+    // symbol index. MDX heading syntax is plain ATX and works with the existing markdown
+    // extractor, unlike .rst, which genuinely needs an underline-style heading parser that isn't
+    // implemented, so 'unknown' remains correct there.
+    expect(detectLanguage('README.md')).toBe('markdown')
+    expect(detectLanguage('README.markdown')).toBe('markdown')
+    expect(detectLanguage('docs/Guide.mdx')).toBe('markdown')
+    expect(detectLanguage('docs/notes.rst')).toBe('unknown')
+  })
+
   it('classifies named files (Dockerfile, pyproject.toml) by basename', () => {
     expect(detectLanguage('Dockerfile')).toBe('dockerfile')
     expect(detectLanguage('repo/pyproject.toml')).toBe('toml')

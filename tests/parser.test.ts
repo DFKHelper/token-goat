@@ -620,6 +620,18 @@ describe('parseFile reference extraction', () => {
     const result = await parseFile(file)
     expect(result.refs).toEqual([])
   })
+
+  it('indexes .mdx headings as markdown symbols instead of skipping the file as unknown', async () => {
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so parseFile/detectLanguage classified
+    // it as 'unknown' and cmdIndex skipped it entirely -- no headings ever made it into the
+    // symbol index for MDX docs.
+    const file = write('guide.mdx', '# Title\n\n## Setup\n\nsome content\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('markdown')
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Title')
+    expect(names).toContain('Setup')
+  })
 })
 
 describe('isTreeSitterAvailable', () => {

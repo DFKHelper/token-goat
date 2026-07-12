@@ -114,6 +114,10 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.bash', 'bash'],
   ['.md', 'markdown'],
   ['.markdown', 'markdown'],
+  // MDX heading syntax is plain ATX and works with the existing markdown extractor as-is,
+  // unlike .rst which genuinely needs an underline-style heading parser this extractor doesn't
+  // implement (left as 'unknown' deliberately).
+  ['.mdx', 'markdown'],
   ['.toml', 'toml'],
   ['.json', 'json'],
   ['.yaml', 'yaml'],
