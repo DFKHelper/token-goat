@@ -2545,8 +2545,16 @@ export function buildProgram(): Command {
     .command('project <action> [path]')
     .description('manage indexed project roots (list|exclude|prune). list = active project + blocked roots; exclude <path> = add to block list; prune = remove stale entries.')
     .option('-j, --json', 'output as JSON')
-    .action((action: string, pathArg: string | undefined, opts: { json?: boolean }) =>
-      guard(() => cmdProject({ action, ...(pathArg !== undefined ? { pathArg } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+    .option('--dry-run', 'with prune, preview removals without touching the config file')
+    .action((action: string, pathArg: string | undefined, opts: { json?: boolean; dryRun?: boolean }) =>
+      guard(() =>
+        cmdProject({
+          action,
+          ...(pathArg !== undefined ? { pathArg } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.dryRun === true ? { dryRun: true } : {}),
+        }),
+      )())
 
   program
     .command('compact-doc <path>')

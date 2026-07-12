@@ -586,6 +586,42 @@ describe('cmdProject prune', () => {
     expect(typeof parsed.pruned).toBe('number')
     expect(Array.isArray(parsed.blocked_roots)).toBe(true)
   })
+
+  it('--dry-run reports what would be pruned without touching the config file', () => {
+    const real = tmpHome
+    const fake = '/this/does/not/exist/ever'
+    const cfg = loadConfig()
+    cfg.worker.blocked_roots = [real, fake]
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    cmdProject({ action: 'prune', dryRun: true })
+
+    invalidateConfigCache()
+    const after = loadConfig()
+    expect(after.worker.blocked_roots).toContain(real)
+    expect(after.worker.blocked_roots).toContain(fake)
+  })
+
+  it('--dry-run --json reports the would-be-pruned entries without persisting', () => {
+    const real = tmpHome
+    const fake = '/this/does/not/exist/ever'
+    const cfg = loadConfig()
+    cfg.worker.blocked_roots = [real, fake]
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    cmdProject({ action: 'prune', dryRun: true, json: true })
+    const parsed = JSON.parse(captured()) as { dryRun: boolean; wouldPrune: number; stale: string[]; blocked_roots: string[] }
+    expect(parsed.dryRun).toBe(true)
+    expect(parsed.wouldPrune).toBe(1)
+    expect(parsed.stale).toEqual([fake])
+    expect(parsed.blocked_roots).toEqual([real, fake])
+
+    invalidateConfigCache()
+    const after = loadConfig()
+    expect(after.worker.blocked_roots).toContain(fake)
+  })
 })
 
 // ── compact-doc ──────────────────────────────────────────────────────────────
