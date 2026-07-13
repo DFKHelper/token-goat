@@ -684,6 +684,35 @@ input[type="text"] {
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not split a selector-list on a comma nested inside a quoted attribute value or a functional pseudo-class (regression: the comma-separated selector-list splitter ran a plain split(\',\') over the raw selector text, so a comma inside `[data-x="a,b"]` or `:is(.foo, .bar)` was mistaken for a top-level selector-list separator and shredded the selector into bogus fragments)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'nested-comma.css')
+
+      const content = `input[data-x="a,b"] {
+  color: red;
+}
+:is(.foo, .bar) {
+  color: blue;
+}
+.one, .two {
+  color: green;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('input[data-x="a,b"]')
+      expect(names).toContain(':is(.foo, .bar)')
+      expect(names).toContain('.one')
+      expect(names).toContain('.two')
+      expect(names).not.toContain('input[data-x="a')
+      expect(names).not.toContain(':is(.foo')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('dockerfile symbols', () => {
