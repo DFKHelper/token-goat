@@ -59,8 +59,9 @@ function maskDefineBlocks(text: string): string {
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
 const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
-// define VARNAME at column 0
-const DEFINE_RE = /^define\s+([\w./%$()-]+)/gm
+// define VARNAME, tolerating GNU make's legal leading spaces (matching DEFINE_LINE_RE's
+// tolerance in maskDefineBlocks - a leading tab is never legal here since that's a recipe line).
+const DEFINE_RE = /^ *define\s+([\w./%$()-]+)/gm
 
 // Internal GNU make special targets — never emitted as symbols.
 const SPECIAL_TARGETS = new Set([

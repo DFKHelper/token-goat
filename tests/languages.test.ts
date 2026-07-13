@@ -2097,6 +2097,27 @@ third:
     expect(names).toContain('third')
   })
 
+  it('emits a makefile_define symbol for a legally space-indented define block, not just column-0', () => {
+    // Regression: DEFINE_LINE_RE (used by maskDefineBlocks to detect and mask the block body)
+    // tolerates GNU make's legal leading spaces before `define`, but DEFINE_RE (the separate
+    // regex that actually emits the makefile_define symbol) was hard-anchored at column 0 with
+    // no such tolerance - so a legally space-indented `  define VAR` block was correctly masked
+    // (its body didn't corrupt target scanning) but VAR itself was never surfaced as a symbol,
+    // silently vanishing from the index despite valid Makefile syntax.
+    const content = `  define GREETING
+  echo hi
+  endef
+
+build:
+\techo building
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('GREETING')
+    expect(names).toContain('build')
+    expect(symbols.find((s) => s.name === 'GREETING')?.kind).toBe('makefile_define')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
