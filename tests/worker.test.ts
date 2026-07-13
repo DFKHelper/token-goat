@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   claimWorkerPidFile,
   drainOnce,
+  ensureWorkerAlive,
   getDirtyPathsFor,
   isWorkerRunning,
   processDirtyBatch,
@@ -88,6 +89,47 @@ describe('isWorkerRunning', () => {
   it('returns true when the pid file names a live process', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
     expect(isWorkerRunning(DIR)).toBe(true)
+  })
+})
+
+describe('ensureWorkerAlive (auto-heal regression)', () => {
+  // Regression: before ensureWorkerAlive, startDetachedWorker was only ever invoked from the
+  // `worker start` CLI command -- nothing anywhere restarted a daemon that died (crash, a manual
+  // taskkill, a machine sleep/wake race, anything). A dead worker stayed dead indefinitely, with
+  // no automatic recovery, until a human happened to notice and ran `worker start` by hand.
+
+  it('does nothing when a live worker is already running', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    ensureWorkerAlive(DIR)
+    // The pid file must still name the already-live process -- no restart was attempted.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
+    expect(isWorkerRunning(DIR)).toBe(true)
+  })
+
+  it('spawns a fresh worker when the recorded pid is stale/dead', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    ensureWorkerAlive(DIR)
+    try {
+      // A real detached daemon was spawned and claimed the pid-file slot with a live pid --
+      // distinct from the stale one that was there before.
+      expect(isWorkerRunning(DIR)).toBe(true)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe('999999999')
+    } finally {
+      // Stop the real spawned daemon before DIR is torn down in afterEach -- otherwise it keeps
+      // polling a directory that no longer exists.
+      stopWorker(DIR)
+    }
+  })
+
+  it('rate-limits repeated checks so a burst of calls does not re-spawn on every one', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    // Simulate a healthcheck that already ran recently: a fresh marker file blocks the next
+    // check from even looking at the pid file, let alone attempting a restart.
+    fs.writeFileSync(path.join(DIR, 'worker-healthcheck.marker'), '')
+    ensureWorkerAlive(DIR)
+    // No restart was attempted -- the stale pid is untouched.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('999999999')
+    expect(isWorkerRunning(DIR)).toBe(false)
   })
 })
 
