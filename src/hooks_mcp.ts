@@ -17,6 +17,7 @@ import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_commo
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
+import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 
 /**
  * Pull the textual result out of a tool_response payload. Handles the plain
@@ -95,13 +96,17 @@ function postMcpHandler(event: HookEvent): HookOutput {
   const resultText = extractMcpResultText(event.raw)
   if (!resultText) return passOutput()
   const id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
-  // Deterministic structural compression (see mcp_compress.ts): only attempted when the
-  // full result was actually cached (id !== null), so the "full via mcp-output <id>"
-  // label always resolves, size-gated so small results are never touched, and
-  // opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's
-  // existing convention elsewhere in this codebase.
+  // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts):
+  // only attempted when the full result was actually cached (id !== null), so the
+  // "full via mcp-output <id>" label always resolves, size-gated so small results are
+  // never touched, and opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match
+  // TOKEN_GOAT_BASH_COMPRESS's existing convention elsewhere in this codebase. Per-server
+  // packs run first (GitHub, browser-automation): a schema-aware pack strips known
+  // boilerplate before handing the result to the same generic table-ifying pass. When no
+  // pack matches or pays off, the generic pass runs on the untransformed text exactly as
+  // before the packs existed.
   if (id !== null && resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
-    const compressed = compressMcpResult(resultText)
+    const compressed = compressMcpResultWithPacks(toolName, resultText) ?? compressMcpResult(resultText)
     if (compressed !== null) {
       return {
         hookType: 'rewriteOutput',
