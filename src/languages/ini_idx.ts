@@ -66,7 +66,7 @@ function _isEscapedQuote(line: string, i: number, q: string): boolean {
 }
 
 /** Returns true if `line` contains an unescaped occurrence of the open quote char `q`, closing it. */
-function _lineClosesQuote(line: string, q: string): boolean {
+export function _lineClosesQuote(line: string, q: string): boolean {
   for (let i = 0; i < line.length; i++) {
     if (line[i] === q && !_isEscapedQuote(line, i, q)) return true
   }
@@ -75,7 +75,7 @@ function _lineClosesQuote(line: string, q: string): boolean {
 
 /** If a value's leading char is a quote that isn't closed again later on the same line, returns
  * that quote char (the value continues, embedded-newline-style, onto following lines); else null. */
-function _detectOpenQuote(value: string): string | null {
+export function _detectOpenQuote(value: string): string | null {
   const trimmed = value.replace(/^\s+/, '')
   const q = trimmed[0]
   if (q !== '"' && q !== "'") return null

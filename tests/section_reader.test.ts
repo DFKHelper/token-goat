@@ -439,6 +439,39 @@ describe('readSection', () => {
     expect(readSection(file, 'do not edit by hand')).toBeNull()
   })
 
+  it('does not split a multi-line quoted YAML value into a phantom section (regression: the key-value header finder had no open-quote tracking across lines, unlike the yaml indexer, so a continuation line that itself looked like a key surfaced as a false header and truncated the real one)', () => {
+    const yaml = [
+      'title: "This is a long',
+      'subtitle: not a real key',
+      'still part of the title value"',
+      'realkey: hello',
+      '',
+    ].join('\n')
+    const file = tmpFile('config.yaml', yaml)
+    expect(listSections(file)).toEqual(['title', 'realkey'])
+    const title = readSection(file, 'title')
+    expect(title?.lineStart).toBe(1)
+    expect(title?.lineEnd).toBe(3)
+    expect(title?.content).toContain('still part of the title value')
+    expect(readSection(file, 'subtitle')).toBeNull()
+  })
+
+  it('does not split a multi-line quoted .env value into a phantom section (same bug family as the YAML case above, but through the .env quote-tracking path)', () => {
+    const env = [
+      'CERT="-----BEGIN CERT-----',
+      'PRIVATE_KEY=not a real key',
+      '-----END CERT-----"',
+      'REALKEY=hello',
+      '',
+    ].join('\n')
+    const file = tmpFile('.env', env)
+    expect(listSections(file)).toEqual(['CERT', 'REALKEY'])
+    const cert = readSection(file, 'CERT')
+    expect(cert?.lineStart).toBe(1)
+    expect(cert?.lineEnd).toBe(3)
+    expect(readSection(file, 'PRIVATE_KEY')).toBeNull()
+  })
+
   it('finds an INI [section] when a # comment precedes it', () => {
     const ini = ['# global config', '[database]', 'host=localhost', '[logging]', 'level=info', ''].join('\n')
     const file = tmpFile('settings.ini', ini)
