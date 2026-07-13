@@ -20,10 +20,12 @@ function stripComments(text: string): string {
   return text.replace(COMMENT_RE, (m) => ' '.repeat(m.length))
 }
 
-// Recognize `define`/`endef` lines, tolerating GNU make's legal leading whitespace before
-// `endef` (and `define`, for symmetry).
-const DEFINE_LINE_RE = /^\s*define\s+/
-const ENDEF_LINE_RE = /^\s*endef\b/
+// Recognize `define`/`endef` lines, tolerating GNU make's legal leading spaces before `endef`
+// (and `define`, for symmetry) - but never a leading tab, since a tab-indented line is always a
+// recipe (arbitrary shell text handed to the shell), never a make directive, even if its first
+// word happens to be "define" or "endef".
+const DEFINE_LINE_RE = /^ *define\s+/
+const ENDEF_LINE_RE = /^ *endef\b/
 
 // Mask define...endef block bodies (replacing with spaces, preserving newlines/offsets) so
 // TARGET_RE never scans script content embedded inside a define block (e.g. an embedded
