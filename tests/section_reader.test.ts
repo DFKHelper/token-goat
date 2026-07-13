@@ -439,6 +439,46 @@ describe('readSection', () => {
     expect(inner?.lineEnd).toBe(4)
   })
 
+  it('does not treat a def/class line inside a triple-quoted Python string as a phantom header (regression: findPythonHeaders had no open-delimiter tracking, unlike the tree-sitter indexer which never emits symbols from inside a string node, so text quoted inside a `"""..."""` template was misread as real headers and truncated the enclosing function at the string literal)', () => {
+    const py = [
+      'TEMPLATE = """',
+      'def generated_handler():',
+      '    return 42',
+      '',
+      'class GeneratedThing:',
+      '    pass',
+      '"""',
+      '',
+      '',
+      'def real_function():',
+      '    return TEMPLATE',
+      '',
+    ].join('\n')
+    const file = tmpFile('templates.py', py)
+    expect(listSections(file)).toEqual(['real_function'])
+    const real = readSection(file, 'real_function')
+    expect(real?.lineStart).toBe(10)
+
+    const py2 = [
+      'def build_module():',
+      '    return """',
+      'def generated():',
+      '    return 1',
+      '"""',
+      '',
+      '',
+      'def after():',
+      '    return 2',
+      '',
+    ].join('\n')
+    const file2 = tmpFile('gen.py', py2)
+    expect(listSections(file2)).toEqual(['build_module', 'after'])
+    const buildModule = readSection(file2, 'build_module')
+    expect(buildModule?.lineStart).toBe(1)
+    expect(buildModule?.lineEnd).toBe(5)
+    expect(buildModule?.content).toContain('def generated():')
+  })
+
   it('returns null for an unreadable file', () => {
     expect(readSection('/no/such/path/nope.md', 'X')).toBeNull()
   })
