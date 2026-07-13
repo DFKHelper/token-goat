@@ -141,6 +141,27 @@ describe('apex adapter', () => {
     expect(helper?.lineEnd).toBe(5)
   })
 
+  it('does not drop interface method signatures because the interface\'s own span overlaps them', () => {
+    // Regression: overlapsExisting only excluded the container kind 'apex_class' from its
+    // overlap check, so a class's own whole-body span never suppressed its methods - but an
+    // interface (or enum) type declaration is also a container span emitted by TYPE_DECL_RE, and
+    // was missing from that exclusion. Every brace-less method signature inside an interface fell
+    // within the interface's own [startLine, endLine] span and was silently dropped from the index.
+    const content = `public interface MyIntf {
+    public void methodA();
+    public String methodB(Integer x);
+}
+`
+    const { symbols } = extractApex(content, 'MyIntf.cls')
+    const names = symbols.map((s) => s.name)
+
+    expect(names).toContain('MyIntf')
+    expect(names).toContain('methodA')
+    expect(names).toContain('methodB')
+    expect(symbols.find((s) => s.name === 'methodA')?.kind).toBe('apex_method')
+    expect(symbols.find((s) => s.name === 'methodB')?.kind).toBe('apex_method')
+  })
+
   it('is used by parseFile for .cls files', async () => {
     const file = tmp(
       'ExampleService.cls',

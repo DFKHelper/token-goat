@@ -95,8 +95,15 @@ function spanForMatch(
   }
 }
 
+// A type-container span (class, interface, or enum body) must never suppress a method that falls
+// inside it - otherwise a brace-less interface/enum method signature, which legally shares lines
+// with its own container's span, would be silently dropped from the index.
+const CONTAINER_KINDS = new Set(['apex_class', 'apex_interface', 'apex_enum'])
+
 function overlapsExisting(symbols: readonly SymbolEntry[], line: number): boolean {
-  return symbols.some((s) => line >= s.lineStart && line <= s.lineEnd && s.kind !== 'apex_class')
+  return symbols.some(
+    (s) => line >= s.lineStart && line <= s.lineEnd && !CONTAINER_KINDS.has(s.kind),
+  )
 }
 
 export function extractApex(content: string, filePath: string): { symbols: SymbolEntry[] } {
