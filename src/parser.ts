@@ -1115,6 +1115,66 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
+// Multi-line TOML strings (`"""..."""` or `'''...'''`) can span many lines; text inside
+// them (e.g. a description field quoting example TOML) must never be scanned for
+// key/section syntax. Track whether a triple-quote span opened on an earlier line is still
+// open across the loop, keyed by which delimiter opened it.
+//
+// The two delimiter styles' run counts cannot be tallied independently per line (e.g. via
+// separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string
+// whose body happens to contain a ''' sequence (e.g. a description quoting example TOML
+// syntax) must treat that ''' as inert text, not as its own independent open/close toggle.
+// Counting each style's occurrences separately loses that positional relationship: an ODD
+// number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly
+// read as opening a real multi-line literal string, desyncing every line after it until an
+// unrelated ''' happened to appear later in the file. Scan the line once, left to right,
+// tracking a single open-delimiter slot instead.
+//
+// Exported so the live section reader's TOML table finder (section_reader.ts) can share this
+// exact state machine instead of re-implementing it and drifting out of sync with the indexer.
+export function lineOpenDelimiterAfter(line: string, startIdx: number): string | null {
+  let pos = startIdx
+  let open: string | null = null
+  for (;;) {
+    if (open === null) {
+      const dIdx = line.indexOf('"""', pos)
+      const sIdx = line.indexOf("'''", pos)
+      if (dIdx === -1 && sIdx === -1) return null
+      if (dIdx !== -1 && (sIdx === -1 || dIdx <= sIdx)) {
+        open = '"""'
+        pos = dIdx + 3
+      } else {
+        open = "'''"
+        pos = sIdx + 3
+      }
+    } else {
+      const closeIdx = line.indexOf(open, pos)
+      if (closeIdx === -1) return open
+      open = null
+      pos = closeIdx + 3
+    }
+  }
+}
+
+// TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of
+// arrays, one row per line). A continuation row of such an array - especially a nested
+// array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be
+// misread by the section regex as a new table header. Track the net bracket depth opened
+// by an unclosed array so continuation lines are skipped from key/section matching
+// entirely until the array actually closes. Brackets inside string literals are ignored
+// (a quoted value like "a[b]" must never affect array depth).
+//
+// Exported for the same reason as lineOpenDelimiterAfter above.
+export function tomlBracketDelta(line: string): number {
+  const stripped = stripStringLiterals(line)
+  let delta = 0
+  for (const ch of stripped) {
+    if (ch === '[') delta++
+    else if (ch === ']') delta--
+  }
+  return delta
+}
+
 function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
@@ -1148,64 +1208,8 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
     }
   }
 
-  // Multi-line TOML strings (`"""..."""` or `'''...'''`) can span many lines; text inside
-  // them (e.g. a description field quoting example TOML) must never be scanned for
-  // key/section syntax. Track whether a triple-quote span opened on an earlier line is still
-  // open across the loop, keyed by which delimiter opened it.
-  //
-  // The two delimiter styles' run counts cannot be tallied independently per line (e.g. via
-  // separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string
-  // whose body happens to contain a ''' sequence (e.g. a description quoting example TOML
-  // syntax) must treat that ''' as inert text, not as its own independent open/close toggle.
-  // Counting each style's occurrences separately loses that positional relationship: an ODD
-  // number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly
-  // read as opening a real multi-line literal string, desyncing every line after it until an
-  // unrelated ''' happened to appear later in the file. Scan the line once, left to right,
-  // tracking a single open-delimiter slot instead.
-  function lineOpenDelimiterAfter(line: string, startIdx: number): string | null {
-    let pos = startIdx
-    let open: string | null = null
-    for (;;) {
-      if (open === null) {
-        const dIdx = line.indexOf('"""', pos)
-        const sIdx = line.indexOf("'''", pos)
-        if (dIdx === -1 && sIdx === -1) return null
-        if (dIdx !== -1 && (sIdx === -1 || dIdx <= sIdx)) {
-          open = '"""'
-          pos = dIdx + 3
-        } else {
-          open = "'''"
-          pos = sIdx + 3
-        }
-      } else {
-        const closeIdx = line.indexOf(open, pos)
-        if (closeIdx === -1) return open
-        open = null
-        pos = closeIdx + 3
-      }
-    }
-  }
-
   let openDelim: string | null = null
-
-  // TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of
-  // arrays, one row per line). A continuation row of such an array - especially a nested
-  // array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be
-  // misread by the section regex as a new table header. Track the net bracket depth opened
-  // by an unclosed array so continuation lines are skipped from key/section matching
-  // entirely until the array actually closes. Brackets inside string literals are ignored
-  // (a quoted value like "a[b]" must never affect array depth).
   let arrayDepth = 0
-
-  function bracketDelta(line: string): number {
-    const stripped = stripStringLiterals(line)
-    let delta = 0
-    for (const ch of stripped) {
-      if (ch === '[') delta++
-      else if (ch === ']') delta--
-    }
-    return delta
-  }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -1221,13 +1225,13 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
     }
 
     if (arrayDepth > 0) {
-      arrayDepth = Math.max(0, arrayDepth + bracketDelta(line))
+      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(line))
       continue
     }
 
     matchLine(line, i)
     openDelim = lineOpenDelimiterAfter(line, 0)
-    if (openDelim === null) arrayDepth = Math.max(0, bracketDelta(line))
+    if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
   }
 
   return out

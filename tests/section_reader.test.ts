@@ -472,6 +472,30 @@ describe('readSection', () => {
     expect(readSection(file, 'PRIVATE_KEY')).toBeNull()
   })
 
+  it('does not treat a `[section]`-looking line inside a triple-quoted TOML string as a phantom table header (regression: the live table header finder had no multi-line-string tracking, unlike the toml indexer, so text quoted inside a `"""..."""` description was misread as a real table and truncated the enclosing one)', () => {
+    const toml = [
+      '[project]',
+      'name = "demo"',
+      'description = """',
+      'Example config you might paste:',
+      '[server]',
+      'host = "localhost"',
+      '"""',
+      'license = "MIT"',
+      '',
+      '[deploy]',
+      'target = "prod"',
+      '',
+    ].join('\n')
+    const file = tmpFile('repro.toml', toml)
+    expect(listSections(file)).toEqual(['project', 'deploy'])
+    const project = readSection(file, 'project')
+    expect(project?.lineStart).toBe(1)
+    expect(project?.lineEnd).toBe(8)
+    expect(project?.content).toContain('license = "MIT"')
+    expect(readSection(file, 'server')).toBeNull()
+  })
+
   it('finds an INI [section] when a # comment precedes it', () => {
     const ini = ['# global config', '[database]', 'host=localhost', '[logging]', 'level=info', ''].join('\n')
     const file = tmpFile('settings.ini', ini)
