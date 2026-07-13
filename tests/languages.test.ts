@@ -2332,6 +2332,33 @@ real:
     expect(names).toHaveLength(2)
   })
 
+  it('does not let a backslash-terminated define-body line swallow the endef and drop every target after it', () => {
+    // Regression: continuation-masking and define-block-masking ran as two independent line
+    // scans. maskContinuationLines had no awareness of define/endef boundaries, so a define
+    // body's last line ending in `\` caused the following `endef` line to be blanked as a
+    // "continuation" even though GNU make does not join continuations across an endef
+    // terminator - endef is a literal directive line regardless of what the previous body line
+    // ended with. Blanking it meant maskDefineBlocks's depth counter never saw the endef and
+    // masked every line through EOF, dropping every real target declared after the block.
+    const content = [
+      'define BUILD',
+      'gcc -o foo \\',
+      'endef',
+      '',
+      'all:',
+      '\techo hi',
+      '',
+      'clean:',
+      '\techo bye',
+    ].join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).toContain('clean')
+    expect(names).toContain('BUILD')
+    expect(symbols.filter((s) => s.kind === 'makefile_target')).toHaveLength(2)
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
