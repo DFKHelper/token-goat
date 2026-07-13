@@ -140,16 +140,23 @@ export function extractKotlin(
       continue
     }
 
-    // Resolve a body-less pop deferred from a prior line: a wrapped Kotlin supertype list can
-    // continue via a *leading* `:` or `,` on this new line (`class Foo(val x: Int)` /
-    // `    : Bar(x) {`), so a pending pop only fires once this line's leading character rules
-    // that out too. Must run before class/companion/member detection below so a genuinely
-    // finished body-less header's stack frame is gone before this new line is evaluated as its
-    // own (possibly top-level) declaration.
+    // Resolve a body-less pop deferred from a prior line. A Kotlin class header can legally
+    // continue onto this new line several ways: a wrapped supertype list via a *leading* `:` or
+    // `,` (`class Foo(val x: Int)` / `    : Bar(x) {`), an Allman-style body brace on its own
+    // line (`class Foo` / `{`), or a multi-line `where` type-constraint clause (`class Foo<T>` /
+    // `    where T : Comparable<T> {`). A pending pop only fires once this line's leading
+    // character rules out all of those too. Must run before class/companion/member detection
+    // below so a genuinely finished body-less header's stack frame is gone before this new line
+    // is evaluated as its own (possibly top-level) declaration.
     if (classStack.length > 0) {
       const pendingTop = classStack[classStack.length - 1]!
       if (pendingTop.pendingPop) {
-        if (stripped.startsWith(':') || stripped.startsWith(',')) {
+        if (
+          stripped.startsWith(':') ||
+          stripped.startsWith(',') ||
+          stripped.startsWith('{') ||
+          /^where\b/.test(stripped)
+        ) {
           pendingTop.pendingPop = false
         } else {
           classStack.pop()

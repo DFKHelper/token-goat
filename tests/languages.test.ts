@@ -1404,6 +1404,39 @@ fun main() {}
     expect(main?.kind).toBe('function')
     expect(main?.docstring).toBe('')
   })
+
+  it('does not drop members of a class whose Allman-style body brace is on its own line', () => {
+    // Regression: the pendingPop resolution only whitelisted a leading `:`/`,` continuation
+    // (the wrapped-supertype-list case) and ran before this line's own brace-counting, so a
+    // standalone `{` on its own line was treated as "not a continuation" and popped the frame
+    // before the brace-counting below ever got a chance to flip bodyEntered.
+    const content = `class Foo
+{
+    fun bar() {}
+    fun baz() {}
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('bar')
+    expect(names).toContain('baz')
+    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'baz')?.docstring).toBe('Foo')
+  })
+
+  it('does not drop members of a class with a multi-line where type-constraint clause', () => {
+    const content = `class Container<T>
+    where T : Comparable<T> {
+    fun add(item: T) {}
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Container')
+    expect(names).toContain('add')
+    expect(symbols.find((s) => s.name === 'add')?.docstring).toBe('Container')
+  })
 })
 
 // ---------------------------------------------------------------------------
