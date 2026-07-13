@@ -161,13 +161,18 @@ export function extractPhp(
       continue
     }
 
-    // property
+    // property. Gated on the same "directly inside the class body" pre-line-depth check as the
+    // method branch above - PROP_RE's modifier alternation includes `static`, which also matches
+    // an ordinary function-local `static $var` declaration inside a method body. Without the
+    // gate, that local variable was mistaken for a class property of whatever class happened to
+    // still be on top of the context stack.
     const propM = PROP_RE.exec(stripped)
     if (propM) {
       const name = propM[1] ?? ''
-      const parent = currentClass()
-      if (parent) {
-        symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), parent))
+      const preLineDepth = braceDepth - openB + closeB
+      const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+      if (topFrame !== undefined && preLineDepth === topFrame[1] + 1) {
+        symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), topFrame[0]))
       }
       continue
     }
