@@ -82,6 +82,22 @@ describe('todo command', () => {
     expect(r.stdout).toMatch(/:\d+\s+TODO/)
   })
 
+  it('does not drop a TODO whose comment line has an apostrophe before the marker (fail-on-buggy: single-quote parity misreads an apostrophe as an open string)', () => {
+    const src = path.join(tmpDir, 'apostrophe.ts')
+    fs.writeFileSync(src, "# can't stop now, TODO: fix the parser\n", 'utf8')
+    const r = run(['todo', src])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/:\d+\s+TODO/)
+  })
+
+  it('still excludes a TODO inside a single-quoted-looking string when a real double-quoted string is open (guard: dropping single-quote gating must not reopen the double-quote exclusion)', () => {
+    const src = path.join(tmpDir, 'still_excluded.ts')
+    fs.writeFileSync(src, 'const msg = "it\'s a TODO: fake marker"\n', 'utf8')
+    const r = run(['todo', src])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toMatch(/:\d+\s+TODO/)
+  })
+
   it('--kinds limits which markers are reported', () => {
     const src = path.join(tmpDir, 'kinds.ts')
     fs.writeFileSync(src, '// TODO: a\n// FIXME: b\n// HACK: c\n', 'utf8')

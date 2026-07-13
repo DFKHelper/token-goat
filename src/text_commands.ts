@@ -74,12 +74,17 @@ function countUnescapedQuotes(text: string, quoteChar: string): number {
   return count
 }
 
-/** Returns true when markerIndex falls inside an opening string literal on the line. */
+/**
+ * Returns true when markerIndex falls inside an opening double-quoted string literal on the
+ * line. Only double quotes are checked - a single quote in a comment or prose line (where TODO
+ * markers overwhelmingly live) is almost always an apostrophe (a contraction or possessive), not
+ * a string delimiter, so gating on single-quote parity too would flip to "inside a string" on
+ * ordinary text like "can't stop now, TODO: fix the parser" and silently drop the marker.
+ */
 function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   const before = line.slice(0, markerIndex)
   const dqCount = countUnescapedQuotes(before, '"')
-  const sqCount = countUnescapedQuotes(before, "'")
-  return dqCount % 2 !== 0 || sqCount % 2 !== 0
+  return dqCount % 2 !== 0
 }
 
 /** Escape regex-special characters so a string matches only itself. */
