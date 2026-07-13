@@ -864,7 +864,18 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, 0, 100_000)
   hi.large_read_redirect_bytes = validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
-  hi.reread_deny_min_bytes = validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 0, 100_000_000)
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
+  // round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated
+  // key got the then-in-memory default reread_deny_min_bytes (2048) permanently persisted, even
+  // though the field had zero consumers at the time and nobody could have deliberately chosen it.
+  // a1fad4c6 wired this key up as the real re-read-deny gate and bumped the in-code default to
+  // 51_200 -- but those stale 2048s now load back in and silently make the gate 25x more
+  // aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall
+  // through to the current default instead of trusting it; any other persisted value (including a
+  // deliberate 2048 set after upgrading) is respected as-is.
+  hi.reread_deny_min_bytes = hi_raw['reread_deny_min_bytes'] === 2048
+    ? hi.reread_deny_min_bytes
+    : validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 0, 100_000_000)
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)

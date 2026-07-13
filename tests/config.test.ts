@@ -307,6 +307,20 @@ describe('loadConfig', () => {
     expect(loaded.image_shrink.jpeg_quality).toBe(85)
   })
 
+  it('treats a persisted reread_deny_min_bytes of exactly 2048 as the stale pre-a1fad4c6 default and falls through to the current default (51_200), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before a1fad4c6 permanently persisted the then-in-memory-only 2048 default, which a1fad4c6 later wired up as the real re-read-deny gate)', () => {
+    fs.writeFileSync(_testConfigPath, '[hints]\nreread_deny_min_bytes = 2048\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.reread_deny_min_bytes).toBe(51_200)
+  })
+
+  it('respects a persisted reread_deny_min_bytes that is not the legacy 2048 sentinel (proving the fix only clobbers the exact stale default, not real user values)', () => {
+    fs.writeFileSync(_testConfigPath, '[hints]\nreread_deny_min_bytes = 4096\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.reread_deny_min_bytes).toBe(4096)
+  })
+
   it('round-trips warn_unbalanced_shell_quoting, cross_session_read_dedup, and cross_session_read_dedup_ttl_secs (fail-on-buggy: saveConfig previously omitted these three hints fields, silently resetting them to defaults on every save)', () => {
     const cfg = defaultConfig()
     cfg.hints.warn_unbalanced_shell_quoting = !cfg.hints.warn_unbalanced_shell_quoting
