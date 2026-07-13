@@ -28,6 +28,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: node_modules/@xenova/transformers/.cache
+          key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Test
         run: npm test
 
@@ -40,5 +45,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: node_modules/@xenova/transformers/.cache
+          key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Test
         run: npm test
