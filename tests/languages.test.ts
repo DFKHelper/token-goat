@@ -1229,6 +1229,67 @@ fun afterEmpty(): Int {
     expect(afterEmpty?.docstring).toBe('')
   })
 
+  it('does not drop declarations after a body-less data class (no trailing brace at all)', () => {
+    const content = `data class Point(val x: Int, val y: Int)
+
+fun foo(): Int {
+  return 1
+}
+
+fun bar(): Int {
+  return 2
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    // Regression: a class/data class declared with only a primary constructor and no body block
+    // at all (idiomatic Kotlin, e.g. DTOs) never opens a `{`, so bodyEntered never flipped true
+    // and the phantom class frame lingered forever - every declaration after it, including foo
+    // and bar, was silently dropped instead of being recognized as top-level functions.
+    const point = symbols.find((s) => s.name === 'Point')
+    expect(point?.kind).toBe('class')
+    const foo = symbols.find((s) => s.name === 'foo')
+    expect(foo?.kind).toBe('function')
+    expect(foo?.docstring).toBe('')
+    const bar = symbols.find((s) => s.name === 'bar')
+    expect(bar?.kind).toBe('function')
+    expect(bar?.docstring).toBe('')
+  })
+
+  it('does not drop declarations after several consecutive body-less data classes', () => {
+    const content = `data class A(val x: Int)
+data class B(val y: Int)
+data class C(val z: Int)
+
+fun afterAll(): Int {
+  return 1
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    expect(symbols.find((s) => s.name === 'A')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'B')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'C')?.kind).toBe('class')
+    const afterAll = symbols.find((s) => s.name === 'afterAll')
+    expect(afterAll?.kind).toBe('function')
+    expect(afterAll?.docstring).toBe('')
+  })
+
+  it('still recognizes a multi-line constructor header whose body opens on the closing-paren line', () => {
+    const content = `class Foo(
+  val x: Int
+) {
+  fun method(): Int {
+    return 1
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    // Guards against a naive fix that pops on any paren-balanced, brace-less line - a genuinely
+    // multi-line constructor header must stay on the stack until its body actually opens.
+    const method = symbols.find((s) => s.name === 'method')
+    expect(method?.kind).toBe('method')
+    expect(method?.docstring).toBe('Foo')
+  })
+
   it('does not index local functions/vals inside method bodies as class members', () => {
     const content = `class Service {
   fun handle() {
