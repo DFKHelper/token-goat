@@ -37,6 +37,26 @@ describe('language adapters never emit inverted symbol ranges', () => {
     }
   })
 
+  it('SQL: a table and a function sharing a name and start line each keep their own lineEnd (regression: propagateEndLinesToSymbols keyed its section lookup on `heading\\0line` with no `kind` dimension, so the second kind pushed for that key silently overwrote the first, and both symbols were handed the wrong, later kind\'s endLine)', () => {
+    const content = [
+      'CREATE TABLE foo (id INT); CREATE FUNCTION foo() RETURNS INT AS $$',
+      'BEGIN',
+      '  RETURN 1;',
+      'END;',
+      '$$ LANGUAGE plpgsql;',
+      '',
+    ].join('\n')
+    const symbols = extractSql(content, 'x.sql')
+
+    const table = symbols.find((s) => s.kind === 'sql_table' && s.name === 'foo')
+    const fn = symbols.find((s) => s.kind === 'sql_function' && s.name === 'foo')
+    expect(table).toBeDefined()
+    expect(fn).toBeDefined()
+    // The table statement is entirely on line 1; the function body runs through line 5.
+    expect(table?.lineEnd).toBe(1)
+    expect(fn?.lineEnd).toBe(6)
+  })
+
   it('HTML: a heading with an inline id anchor keeps endLine >= line', () => {
     const content = [
       '<html>',
