@@ -203,6 +203,59 @@ describe('LsFilter dir.exe output', () => {
   })
 })
 
+describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
+  const f = new LsFilter()
+  const argv = ['ls', '-la']
+
+  it('preserves literal $& in file extensions when building hidden-entry marker (String.replace special sequence)', () => {
+    // Regression test for: _LS_HIDDEN_MARKER_EXT.replace('{ext_summary}', extPart)
+    // where extPart contains `$&` (which JS String.replace treats as a special sequence).
+    //
+    // The filter must compress large directory listings and emit a marker like:
+    // "[token-goat: 5 more entries — by type: .ts×8 .js×4 .c$&d×1 other×0]"
+    //
+    // If the bug exists, JavaScript's String.replace will interpret `$&` in the
+    // replacement string as "re-insert the matched text", corrupting the output.
+    //
+    // Use a large enough listing to force compression (> _LS_MAX_ENTRIES = 10).
+    const lines = [
+      'total 1024',
+      ...Array.from({ length: 80 }, (_, i) => `-rw-r--r-- 1 u g 100 Jan 1 file${i}.ts`),
+    ]
+    // Inject a file with $& in the name into the list (as if it were in the real directory)
+    lines.push('-rw-r--r-- 1 u g 300 Jan 1 weird.c$&d')
+
+    const out = compress(f, lines.join('\n'), argv)
+
+    // Output should be compressed
+    expect(out.split('\n').length).toBeLessThan(lines.length)
+
+    // The marker line with extension summary should exist
+    expect(out).toContain('[token-goat:')
+    expect(out).toContain('by type:')
+
+    // CRITICAL: the marker must preserve the literal `.c$&d` in the extension summary.
+    // If the bug exists (unfixed .replace), $& is re-interpreted as the matched placeholder,
+    // corrupting the text. We assert the literal string is present.
+    expect(out).toContain('.c$&d×1')
+  })
+
+  it('preserves literal $$ in file extensions when building hidden-entry marker', () => {
+    // Similar to above: test the $$ special sequence (which JS treats as a literal $ in replacements).
+    const lines = [
+      'total 1024',
+      ...Array.from({ length: 80 }, (_, i) => `-rw-r--r-- 1 u g 100 Jan 1 file${i}.ts`),
+      '-rw-r--r-- 1 u g 300 Jan 1 weird.c$$d',
+    ]
+
+    const out = compress(f, lines.join('\n'), argv)
+
+    expect(out.split('\n').length).toBeLessThan(lines.length)
+    expect(out).toContain('[token-goat:')
+    expect(out).toContain('.c$$d×1')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // EzaFilter
 // ---------------------------------------------------------------------------
