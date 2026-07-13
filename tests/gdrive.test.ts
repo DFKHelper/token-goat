@@ -242,6 +242,40 @@ More info.
       const expected2ndStart = Buffer.byteLength('# **First** {#first}\r\nContent\r\n\r\n', 'utf8')
       expect(sections[1].byteStart).toBe(expected2ndStart)
     })
+
+    it('does not mistake a "#" comment line inside a fenced code block for a heading', async () => {
+      // Regression: parseDocSections had no fenced-code-block tracking, unlike every other
+      // section parser in this codebase (which routes through eachUnfencedLine in
+      // markdown_lines.ts). Google Docs' markdown export renders code-formatted text as
+      // ```/~~~ fences, and a shell/Python comment starting with "#" is common inside one -
+      // it was misread as a real ATX heading, both polluting the section list with phantom
+      // headings and truncating the real section's content at the first phantom.
+      const docText = `# **Setup** {#setup}
+Run the installer below.
+
+\`\`\`bash
+# Install dependencies
+npm install
+# Build the project
+npm run build
+\`\`\`
+
+Done.
+`
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('fenced-id')
+      expect(sections.length).toBe(1)
+      expect(sections[0].heading).toBe('Setup')
+      expect(sections[0].content).toContain('npm install')
+      expect(sections[0].content).toContain('npm run build')
+      expect(sections[0].content).toContain('Done.')
+    })
   })
 
   describe('formatSections', () => {
