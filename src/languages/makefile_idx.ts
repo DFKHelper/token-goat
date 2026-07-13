@@ -29,60 +29,73 @@ function stripComments(text: string): string {
 const DEFINE_LINE_RE = /^ *(?:(?:override|export|private)\s+)*define\s+/
 const ENDEF_LINE_RE = /^ *endef\b/
 
-// Mask define...endef block bodies (replacing with spaces, preserving newlines/offsets) so
-// TARGET_RE never scans script content embedded inside a define block (e.g. an embedded
-// Python/shell help-generation script) for spurious colon-bearing "target" lines. GNU make
-// allows `define`/`endef` to nest (a define block containing its own nested define block), so
-// this is a depth-tracking line scanner rather than a single first-match regex: a non-greedy
-// regex stops masking at the FIRST (innermost) `endef`, leaving the remainder of the outer
-// block's body unmasked and scanned as real rule text.
-function maskDefineBlocks(text: string): string {
-  const lines = text.split('\n')
-  let depth = 0
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const isDefine = DEFINE_LINE_RE.test(line)
-    const isEndef = ENDEF_LINE_RE.test(line)
-    if (depth > 0) {
-      // Inside a define block: mask this line (define/endef delimiter lines included), then
-      // update depth for nested define/endef pairs.
-      lines[i] = ' '.repeat(line.length)
-      if (isDefine) depth++
-      else if (isEndef) depth--
-    } else if (isDefine) {
-      // Outer define opener: mask it and enter the block.
-      lines[i] = ' '.repeat(line.length)
-      depth++
-    }
-  }
-  return lines.join('\n')
+interface MaskResult {
+  // Continuation lines blanked, but define...endef bodies left intact (DEFINE_RE still scans
+  // this so a nested `define` inside a block's body still gets its own symbol, matching
+  // pre-existing behavior).
+  noContinuation: string
+  // Continuation lines AND define...endef bodies blanked, for TARGET_RE to scan.
+  forTargets: string
 }
 
-// Mask (blank) any line that is a backslash-continuation of the line before it, so a colon
-// appearing inside a continued logical line - a variable assignment's wrapped value (a search
-// path, a sed substitution `s/a:/b:/`, ...) or a target's wrapped prerequisite list - is never
-// mistaken by TARGET_RE for a new rule header on its own physical line. GNU make joins
-// `line1 \` + `line2` into a single logical line, so a continuation line can never
-// independently open a rule regardless of what it contains.
-function maskContinuationLines(text: string): string {
+// Single combined pass tracking both backslash-continuation state and define/endef nesting
+// depth together, rather than two independent line scans run in sequence. Two prior bugs each
+// came from running continuation-masking and define-block-masking as separate passes with an
+// implicit ordering assumption that turned out to be wrong in one direction or the other:
+//   - continuation masking BEFORE define detection is required so a wrapped assignment whose
+//     continuation line happens to start with the word "define" (e.g. a list of directive
+//     names) isn't misread as a real define opener.
+//   - but once genuinely inside a define block, a body line ending in `\` is just literal body
+//     text (GNU make does not join continuations across an `endef` terminator), so the
+//     following line - even if it's the closing `endef` - must NOT be blanked as a
+//     "continuation of the previous line", or maskDefineBlocks's depth counter never sees the
+//     `endef` and masks every line through EOF, dropping every real target after the block.
+// Tracking both states in one pass (continuation only applies while depth === 0) satisfies both
+// constraints at once instead of re-deriving depth twice on divergent inputs.
+function maskContinuationAndDefines(text: string): MaskResult {
   const lines = text.split('\n')
+  const contLines = lines.slice()
+  const targetLines = lines.slice()
+  let depth = 0
   let continuing = false
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
+    if (depth > 0) {
+      // Inside a define block body: mask it out of the targets scan (define/endef delimiter
+      // lines included), then update depth for nested define/endef pairs. GNU make allows
+      // define/endef to nest, so this is depth-tracking rather than a single first-match regex.
+      targetLines[i] = ' '.repeat(line.length)
+      if (DEFINE_LINE_RE.test(line)) depth++
+      else if (ENDEF_LINE_RE.test(line)) depth--
+      continuing = false
+      continue
+    }
     if (continuing) {
-      lines[i] = ' '.repeat(line.length)
+      // A continuation of the previous (non-define-body) line: blank it from both views so a
+      // colon or the word "define" appearing in a wrapped logical line is never mistaken for a
+      // new rule header or a real define opener.
+      contLines[i] = ' '.repeat(line.length)
+      targetLines[i] = ' '.repeat(line.length)
+      continuing = line.endsWith('\\')
+      continue
+    }
+    if (DEFINE_LINE_RE.test(line)) {
+      targetLines[i] = ' '.repeat(line.length)
+      depth++
+      continuing = false
+      continue
     }
     continuing = line.endsWith('\\')
   }
-  return lines.join('\n')
+  return { noContinuation: contLines.join('\n'), forTargets: targetLines.join('\n') }
 }
 
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
 const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
 // define VARNAME, tolerating GNU make's legal leading spaces and modifier prefixes (matching
-// DEFINE_LINE_RE's tolerance in maskDefineBlocks - a leading tab is never legal here since
-// that's a recipe line).
+// DEFINE_LINE_RE's tolerance in maskContinuationAndDefines - a leading tab is never legal here
+// since that's a recipe line).
 const DEFINE_RE = /^ *(?:(?:override|export|private)\s+)*define\s+([\w./%$()-]+)/gm
 
 // Internal GNU make special targets — never emitted as symbols.
@@ -103,18 +116,11 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   const totalLines = content.split('\n').length
   const lineIndex = buildLineIndex(stripped)
 
-  // Blank backslash-continuation lines FIRST, before define-block detection ever sees them.
-  // A wrapped variable assignment's value can legitimately contain the ordinary word `define`
-  // as one of its wrapped-line tokens (e.g. a list of make directive names) - without this
-  // running before maskDefineBlocks/DEFINE_RE, that continuation line is misread as a real
-  // `define` opener: maskDefineBlocks then enters a phantom block with no matching `endef`,
-  // masking every line through EOF (dropping every real target after it), and DEFINE_RE
-  // separately emits a phantom makefile_define symbol for it.
-  const strippedNoContinuation = maskContinuationLines(stripped)
+  const { noContinuation: strippedNoContinuation, forTargets: strippedForTargets } = maskContinuationAndDefines(stripped)
 
-  // Targets (scan a copy with define...endef bodies masked out, so script content embedded
-  // in a define block is never mistaken for a target declaration)
-  const strippedForTargets = maskDefineBlocks(strippedNoContinuation)
+  // Targets (scan a copy with continuation lines and define...endef bodies masked out, so
+  // wrapped assignments and script content embedded in a define block are never mistaken for a
+  // target declaration)
   for (const m of strippedForTargets.matchAll(TARGET_RE)) {
     const rawTarget = m[1]?.trim() ?? ''
     if (!rawTarget) continue
