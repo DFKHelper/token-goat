@@ -286,6 +286,28 @@ public class Foo {
     expect(after?.docstring).toBe('Foo')
   })
 
+  it('does not let a nested quote inside an interpolation hole desync scope depth', () => {
+    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the
+    // nested `"` in `Replace("}", "")` was read as closing the outer `$"..."` string early,
+    // exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into
+    // braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
+    const content = `class Formatter {
+    void clean() {
+        var x = $"{raw.Replace("}", "")}";
+    }
+    void after() {
+    }
+    void after2() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Formatter.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['Formatter', 'clean', 'after', 'after2'])
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after2')?.docstring).toBe('Formatter')
+  })
+
   it('detects an Allman-style auto-property with get/set on their own line', () => {
     const content = `public class Foo
 {
@@ -967,6 +989,28 @@ class Config {
     const { symbols, imports } = extractKotlin('', 'empty.kt')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
+  })
+
+  it('does not let a nested quote inside an interpolation hole desync scope depth', () => {
+    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the
+    // nested `"` in `replace("}", "")` was read as closing the outer `"..."` string early,
+    // exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into
+    // braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
+    const content = `class Formatter {
+    fun clean() {
+        val x = "\${raw.replace("}", "")}"
+    }
+    fun after() {
+    }
+    fun after2() {
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Formatter.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['Formatter', 'clean', 'after', 'after2'])
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after2')?.docstring).toBe('Formatter')
   })
 
   it('indexes members of a modifier-prefixed companion object instead of dropping them', () => {
