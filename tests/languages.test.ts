@@ -308,6 +308,28 @@ public class Foo {
     expect(symbols.find((s) => s.name === 'after2')?.docstring).toBe('Formatter')
   })
 
+  it('does not let a nested quote inside a verbatim interpolated string ($@"...") hole desync scope depth', () => {
+    // Regression: findMultilineOpener/findMultilineCloser's 'verbatim' case (used for C#
+    // $@"..."/@$"..." strings, which stripMultilineStringSpan handles before stripStringLiterals
+    // ever sees the line) had no interpolation-hole awareness, unlike stripStringLiterals's own
+    // bareBraceHole handling for the non-verbatim $"..." case above. The nested `"` in
+    // `Map("}")` was read as closing the outer $@"..." string early, exposing the hole's own
+    // `"}"` as bare unstripped code and leaking an unmatched `}` into braceDepth - popping Foo's
+    // scope one method early and dropping Baz.
+    const content = `class Foo {
+    public void Bar() {
+        var s = $@"{Map("}")}";
+    }
+    public void Baz() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['Foo', 'Bar', 'Baz'])
+    expect(symbols.find((s) => s.name === 'Baz')?.docstring).toBe('Foo')
+  })
+
   it('detects an Allman-style auto-property with get/set on their own line', () => {
     const content = `public class Foo
 {
