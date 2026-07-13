@@ -1,7 +1,7 @@
 import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
-import { buildLineIndex, offsetToLine, stripXmlComments } from './common.js'
+import { buildLineIndex, offsetToLine, stripXmlComments, type AdapterSpan, makeSpanSymbol } from './common.js'
 
 const MAX_SYMBOLS = 1000
 const MAX_REFS = 1000
@@ -25,12 +25,6 @@ const FLOW_TAG_KIND: Readonly<Record<string, string>> = {
   textTemplates: 'sf_flow_text_template',
   transforms: 'sf_flow_transform',
   variables: 'sf_flow_variable',
-}
-
-interface Span {
-  readonly startLine: number
-  readonly endLine: number
-  readonly body: string
 }
 
 function xmlText(content: string, tag: string): string | null {
@@ -95,7 +89,7 @@ function objectNameFromPath(filePath: string): string | null {
   return match?.[1] ?? null
 }
 
-function wholeFileSpan(content: string): Span {
+function wholeFileSpan(content: string): AdapterSpan {
   const lines = content.split(/\r?\n/)
   return {
     startLine: 1,
@@ -111,31 +105,13 @@ function spanFromOffsets(
   lineIndex: readonly number[],
   startOffset: number,
   endOffset: number,
-): Span {
+): AdapterSpan {
   const startLine = offsetToLine(lineIndex, startOffset)
   const endLine = offsetToLine(lineIndex, Math.max(startOffset, endOffset - 1))
   return {
     startLine,
     endLine,
     body: content.slice(startOffset, endOffset).trimEnd(),
-  }
-}
-
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  span: Span,
-  docstring = '',
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: span.startLine,
-    lineEnd: span.endLine,
-    body: span.body,
-    docstring,
   }
 }
 
@@ -255,7 +231,7 @@ function addFlowElements(
     const endOffset = startOffset + match[0].length
     const span = spanFromOffsets(content, lineIndex, startOffset, endOffset)
     const kind = FLOW_TAG_KIND[tag] ?? 'sf_flow_element'
-    emit(symbols, seen, makeSymbol(filePath, name, kind, span, flowName))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, kind, span, flowName))
   }
 }
 
@@ -286,16 +262,16 @@ export function extractSalesforceMetadata(
   if (base.endsWith('.object-meta.xml')) {
     const name = metadataName(filePath, content, '.object-meta.xml')
     const isPlatformEvent = name.endsWith('__e') || xmlText(content, 'eventType') !== null
-    emit(symbols, seen, makeSymbol(filePath, name, isPlatformEvent ? 'sf_platform_event' : 'sf_object', whole))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, isPlatformEvent ? 'sf_platform_event' : 'sf_object', whole))
     return { symbols, refs }
   }
 
   if (base.endsWith('.field-meta.xml')) {
     const name = metadataName(filePath, content, '.field-meta.xml')
     const objectName = objectNameFromPath(filePath) ?? ''
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_custom_field', whole, objectName))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_custom_field', whole, objectName))
     if (objectName !== '') {
-      emit(symbols, seen, makeSymbol(filePath, `${objectName}.${name}`, 'sf_custom_field', whole, objectName))
+      emit(symbols, seen, makeSpanSymbol(filePath, `${objectName}.${name}`, 'sf_custom_field', whole, objectName))
     }
     return { symbols, refs }
   }
@@ -303,16 +279,16 @@ export function extractSalesforceMetadata(
   if (base.endsWith('.validationrule-meta.xml')) {
     const name = metadataName(filePath, content, '.validationRule-meta.xml')
     const objectName = objectNameFromPath(filePath) ?? ''
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_validation_rule', whole, objectName))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_validation_rule', whole, objectName))
     if (objectName !== '') {
-      emit(symbols, seen, makeSymbol(filePath, `${objectName}.${name}`, 'sf_validation_rule', whole, objectName))
+      emit(symbols, seen, makeSpanSymbol(filePath, `${objectName}.${name}`, 'sf_validation_rule', whole, objectName))
     }
     return { symbols, refs }
   }
 
   if (base.endsWith('.flow-meta.xml')) {
     const name = basenameWithout(filePath, '.flow-meta.xml')
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_flow', whole))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_flow', whole))
     addFlowElements(symbols, seen, content, filePath, name)
     addTagRefs(refs, seenRefs, content, filePath, ['actionName', 'flowName'])
     for (const tag of ['recordLookups', 'recordCreates', 'recordUpdates', 'recordDeletes']) {
@@ -334,19 +310,19 @@ export function extractSalesforceMetadata(
 
   if (base.endsWith('.permissionset-meta.xml')) {
     const name = basenameWithout(filePath, '.permissionset-meta.xml')
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_permission_set', whole))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_permission_set', whole))
     return { symbols, refs }
   }
 
   if (base.endsWith('.profile-meta.xml')) {
     const name = basenameWithout(filePath, '.profile-meta.xml')
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_profile', whole))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_profile', whole))
     return { symbols, refs }
   }
 
   if (base.endsWith('.md-meta.xml')) {
     const name = basenameWithout(filePath, '.md-meta.xml')
-    emit(symbols, seen, makeSymbol(filePath, name, 'sf_custom_metadata_record', whole))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_custom_metadata_record', whole))
     return { symbols, refs }
   }
 
@@ -363,7 +339,7 @@ export function extractSalesforceMetadata(
     const member = xmlText(content, 'fullName') ?? basenameWithout(filePath, `.${memberEntry[0]}`)
     const objectName = objectNameFromPath(filePath)
     const name = objectName === null ? member : `${objectName}.${member}`
-    emit(symbols, seen, makeSymbol(filePath, name, memberEntry[1], whole, objectName ?? ''))
+    emit(symbols, seen, makeSpanSymbol(filePath, name, memberEntry[1], whole, objectName ?? ''))
     return { symbols, refs }
   }
 
@@ -372,7 +348,7 @@ export function extractSalesforceMetadata(
     companion ??
     (base.endsWith('.labels-meta.xml') ? null : xmlText(content, 'fullName')) ??
     metadataArtifactName(filePath)
-  emit(symbols, seen, makeSymbol(filePath, name, `sf_${snakeCase(root)}`, whole))
+  emit(symbols, seen, makeSpanSymbol(filePath, name, `sf_${snakeCase(root)}`, whole))
 
   if (base.endsWith('.labels-meta.xml')) {
     const lineIndex = buildLineIndex(content)
@@ -382,7 +358,7 @@ export function extractSalesforceMetadata(
       emit(
         symbols,
         seen,
-        makeSymbol(
+        makeSpanSymbol(
           filePath,
           labelName,
           'sf_custom_label',
@@ -403,7 +379,7 @@ export function extractSalesforceMetadata(
       emit(
         symbols,
         seen,
-        makeSymbol(
+        makeSpanSymbol(
           filePath,
           targetName,
           'sf_lwc_target',
@@ -420,7 +396,7 @@ export function extractSalesforceMetadata(
         emit(
           symbols,
           seen,
-          makeSymbol(
+          makeSpanSymbol(
             filePath,
             property.name,
             'sf_lwc_property',

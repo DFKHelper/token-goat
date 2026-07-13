@@ -12,13 +12,9 @@ import {
   stripMultilineStringSpan,
   stripStringLiterals,
   type MultilineStringState,
+  type AdapterImport,
+  makeLineSymbol,
 } from './common.js'
-
-export interface CsharpImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 interface ClassFrame {
   name: string
@@ -78,31 +74,12 @@ const METHOD_RE = new RegExp(
   '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:<[^<>]*>\\s*)?\\(',
 )
 
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  line: number,
-  sig?: string,
-  parent?: string,
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: line,
-    lineEnd: line,
-    body: sig ?? '',
-    docstring: parent ?? '',
-  }
-}
-
 export function extractCsharp(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: CsharpImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
-  const imports: CsharpImport[] = []
+  const imports: AdapterImport[] = []
   const lines = content.split(/\r?\n/)
 
   const classStack: ClassFrame[] = []
@@ -144,13 +121,13 @@ export function extractCsharp(
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
     }
 
     // delegate
     const delM = DELEGATE_RE.exec(stripped)
     if (delM) {
-      symbols.push(makeSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200)))
     }
 
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
@@ -168,7 +145,7 @@ export function extractCsharp(
         : keyword === 'enum' ? 'enum'
         : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent))
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
     }
 
@@ -181,14 +158,14 @@ export function extractCsharp(
         if (ctorM && ctorM[1] === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-          symbols.push(makeSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
         // property
         let isPropertyLine = false
         const propM = PROPERTY_RE.exec(line)
         if (propM) {
           isPropertyLine = true
-          symbols.push(makeSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
         } else {
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
           // following lines rather than trailing the header line, so PROPERTY_RE (which
@@ -199,7 +176,7 @@ export function extractCsharp(
             const accessorLine = (lines[i + 2] ?? '').trim()
             if (braceLineNext === '{' && ALLMAN_ACCESSOR_RE.test(accessorLine)) {
               isPropertyLine = true
-              symbols.push(makeSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+              symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
             }
           } else {
             // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
@@ -207,7 +184,7 @@ export function extractCsharp(
             const arrowM = PROPERTY_ARROW_RE.exec(line)
             if (arrowM) {
               isPropertyLine = true
-              symbols.push(makeSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+              symbols.push(makeLineSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
             }
           }
         }
@@ -219,7 +196,7 @@ export function extractCsharp(
           if (mname && mname !== frame.name) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-            symbols.push(makeSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name))
+            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name))
           }
         }
       }

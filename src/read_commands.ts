@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp } from './util.js'
 import { stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -1582,11 +1582,6 @@ export function runGrep(opts: GrepOptions): number {
 export interface ConfigGetOptions {
   file: string
   key: string
-}
-
-// Escapes regex metacharacters so a user-supplied key can be safely embedded in a RegExp.
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // Splits off a trailing inline comment (# or ;) from a TOML/INI value, but only when the

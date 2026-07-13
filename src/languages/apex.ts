@@ -1,5 +1,5 @@
 import type { SymbolEntry } from '../parser_types.js'
-import { buildLineIndex, offsetToLine, stripCstyleComments, stripStringLiterals } from './common.js'
+import { buildLineIndex, offsetToLine, stripCstyleComments, stripStringLiterals, type AdapterSpan, makeSpanSymbol } from './common.js'
 
 const MAX_SYMBOLS = 500
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*'
@@ -29,30 +29,6 @@ const CONTROL_NAMES = new Set([
   'throw',
   'new',
 ])
-
-interface Span {
-  readonly startLine: number
-  readonly endLine: number
-  readonly body: string
-}
-
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  span: Span,
-  docstring = '',
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: span.startLine,
-    lineEnd: span.endLine,
-    body: span.body,
-    docstring,
-  }
-}
 
 function lineStartOffset(lineIndex: readonly number[], line: number): number {
   return lineIndex[Math.max(0, line - 1)] ?? 0
@@ -100,7 +76,7 @@ function spanForMatch(
   startOffset: number,
   bodyStartLine: number,
   matchText: string,
-): Span {
+): AdapterSpan {
   // A brace-less declaration (an abstract/interface method signature, permitted by METHOD_RE's
   // `(?:\{|;)` terminator alternation) has no body of its own to span. Calling findBlockEndLine
   // here would search past this declaration for the next `{` in the file, which belongs to
@@ -145,12 +121,12 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   const stringFree = stripStringLiterals(blockCommentFree)
   const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
 
-  const emit = (name: string, kind: string, span: Span, docstring = ''): void => {
+  const emit = (name: string, kind: string, span: AdapterSpan, docstring = ''): void => {
     if (!name || symbols.length >= MAX_SYMBOLS) return
     const key = `${name}\0${kind}\0${span.startLine}`
     if (seen.has(key)) return
     seen.add(key)
-    symbols.push(makeSymbol(filePath, name, kind, span, docstring))
+    symbols.push(makeSpanSymbol(filePath, name, kind, span, docstring))
   }
 
   for (const match of code.matchAll(TRIGGER_RE)) {

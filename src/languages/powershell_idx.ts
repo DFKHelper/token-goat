@@ -1,6 +1,6 @@
 // PowerShell language adapter (.ps1, .psm1) using regex-based symbol extraction.
 import type { SymbolEntry } from '../parser_types.js'
-import { stripMultilineStringSpan, type MultilineStringState } from './common.js'
+import { stripMultilineStringSpan, type MultilineStringState, makeLineSymbol } from './common.js'
 
 const MAX_SYMBOLS = 500
 
@@ -51,25 +51,6 @@ function stripPowershellStringLiterals(line: string): string {
     i++
   }
   return out
-}
-
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  line: number,
-  sig?: string,
-  parent?: string,
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: line,
-    lineEnd: line,
-    body: sig ?? '',
-    docstring: parent ?? '',
-  }
 }
 
 // Finds the index of the first unquoted occurrence of `needle` in `text`,
@@ -204,7 +185,7 @@ export function extractPowershell(
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {
-          symbols.push(makeSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200)))
         }
       }
     }
@@ -216,7 +197,7 @@ export function extractPowershell(
         const cname = classMatch[2] ?? ''
         const kind = (classMatch[1] ?? '').toLowerCase() === 'enum' ? 'enum' : 'class'
         if (symbols.length < MAX_SYMBOLS) {
-          symbols.push(makeSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
         }
         if (kind === 'class') {
           // Count on a string-stripped copy, not the raw line: a literal brace inside a
@@ -256,7 +237,7 @@ export function extractPowershell(
           if (mname && symbols.length < MAX_SYMBOLS) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-            symbols.push(makeSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass))
+            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass))
           }
         }
       }

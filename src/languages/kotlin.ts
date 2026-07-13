@@ -13,13 +13,9 @@ import {
   stripMultilineStringSpan,
   stripStringLiterals,
   type MultilineStringState,
+  type AdapterImport,
+  makeLineSymbol,
 } from './common.js'
-
-export interface KotlinImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 interface ClassFrame {
   name: string
@@ -76,31 +72,12 @@ const TOP_FUN_RE = new RegExp(
   'fun\\s+(?:<[^>]*>\\s*)?([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
 )
 
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  line: number,
-  sig?: string,
-  parent?: string,
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: line,
-    lineEnd: line,
-    body: sig ?? '',
-    docstring: parent ?? '',
-  }
-}
-
 export function extractKotlin(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: KotlinImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
-  const imports: KotlinImport[] = []
+  const imports: AdapterImport[] = []
   const lines = content.split(/\r?\n/)
 
   const classStack: ClassFrame[] = []
@@ -196,12 +173,12 @@ export function extractKotlin(
     if (companionM) {
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     } else if (cm) {
       const cname = cm[1] ?? ''
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     }
 
@@ -218,11 +195,11 @@ export function extractKotlin(
           const fname = fm[1] ?? ''
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
-          symbols.push(makeSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
         const constM = CONST_RE.exec(line)
         if (constM) {
-          symbols.push(makeSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name))
         }
       }
     } else if (!isIndented) {
@@ -231,12 +208,12 @@ export function extractKotlin(
         const fname = tfm[1] ?? ''
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
-        symbols.push(makeSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200)))
       }
       // Top-level SCREAMING_SNAKE const/val declarations (no parent class).
       const topConstM = CONST_RE.exec(line)
       if (topConstM) {
-        symbols.push(makeSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
       }
     }
 

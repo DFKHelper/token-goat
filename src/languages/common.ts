@@ -7,6 +7,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
+import { escapeRegExp } from '../util.js'
 
 // ---------------------------------------------------------------------------
 // Line-index helpers
@@ -591,10 +592,6 @@ export interface MultilineStringState {
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
 export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell'
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
   maskEnd: number
@@ -935,10 +932,69 @@ export interface MiniSection {
   endLine: number
 }
 
+/** An import/include/using directive found by a regex-based language adapter. */
+export interface AdapterImport {
+  readonly kind: string
+  readonly target: string
+  readonly line: number
+}
+
+/** A symbol's line span plus its extracted body text, used by adapters that resolve a
+ * multi-line block's extent via a forward search (e.g. brace-matching) rather than treating
+ * every symbol as single-line. */
+export interface AdapterSpan {
+  readonly startLine: number
+  readonly endLine: number
+  readonly body: string
+}
+
+/** Build a SymbolEntry from a resolved multi-line span. */
+export function makeSpanSymbol(
+  filePath: string,
+  name: string,
+  kind: string,
+  span: AdapterSpan,
+  docstring = '',
+): SymbolEntry {
+  return {
+    filePath,
+    name,
+    kind,
+    lineStart: span.startLine,
+    lineEnd: span.endLine,
+    body: span.body,
+    docstring,
+  }
+}
+
 /**
  * Factory that returns a closure for emitting one (symbol + section) pair.
  * Deduplicates by (name, line). Caps at maxSymbols (default 500).
  */
+/**
+ * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`
+ * and `parent` becomes `docstring` — the "parent lives in the docstring field" convention
+ * several regex adapters share for single-line symbols that don't have a real docstring.
+ */
+export function makeLineSymbol(
+  filePath: string,
+  name: string,
+  kind: string,
+  line: number,
+  sig?: string,
+  parent?: string,
+): SymbolEntry {
+  return {
+    filePath,
+    name,
+    kind,
+    lineStart: line,
+    lineEnd: line,
+    body: sig ?? '',
+    docstring: parent ?? '',
+  }
+}
+
 export function makeSymbolEmitter(
   symbols: SymbolEntry[],
   sections: MiniSection[],
@@ -1008,17 +1064,4 @@ export function propagateEndLinesToSymbols(
     }
     return sym
   })
-}
-
-// ---------------------------------------------------------------------------
-// Source decoding
-// ---------------------------------------------------------------------------
-
-/** Decode bytes to string, returning null on failure. */
-export function decodeSource(source: Uint8Array): string | null {
-  try {
-    return new TextDecoder('utf-8', { fatal: false }).decode(source)
-  } catch {
-    return null
-  }
 }

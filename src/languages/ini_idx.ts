@@ -7,7 +7,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { assignFlatEndLines } from './common.js'
+import { assignFlatEndLines, propagateEndLinesToSymbols, makeLineSymbol } from './common.js'
 
 const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200
@@ -20,15 +20,6 @@ const HEADER_RE = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/
 
 // Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace.
 const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/
-
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  lineStart: number,
-): SymbolEntry {
-  return { filePath, name, kind, lineStart, lineEnd: lineStart, body: '', docstring: '' }
-}
 
 export function extractIni(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
@@ -48,17 +39,14 @@ export function extractIni(content: string, filePath: string): SymbolEntry[] {
     const key = `${name}\0${i + 1}`
     if (seen.has(key)) continue
     seen.add(key)
-    symbols.push(makeSymbol(filePath, name, 'ini_section', i + 1))
+    symbols.push(makeLineSymbol(filePath, name, 'ini_section', i + 1))
     sections.push({ heading: name, level: 1, line: i + 1, endLine: i + 1 })
   }
 
   sections.sort((a, b) => a.line - b.line)
   assignFlatEndLines(sections, totalLines)
 
-  return symbols.map((sym) => {
-    const sec = sections.find((s) => s.heading === sym.name && s.line === sym.lineStart)
-    return sec !== undefined ? { ...sym, lineEnd: sec.endLine } : sym
-  })
+  return propagateEndLinesToSymbols(symbols, sections)
 }
 
 /** Returns true if the quote char `q` at index `i` in `line` is escaped: an odd count of
@@ -123,7 +111,7 @@ export function extractEnv(content: string, filePath: string): SymbolEntry[] {
     const key = `${name}\0${i + 1}`
     if (seen.has(key)) continue
     seen.add(key)
-    symbols.push(makeSymbol(filePath, name, 'env_key', i + 1))
+    symbols.push(makeLineSymbol(filePath, name, 'env_key', i + 1))
     openQuote = _detectOpenQuote(line.slice(m[0].length))
   }
 

@@ -16,7 +16,7 @@ import { normalizeDarwinSystemAlias } from './paths.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
-import { foldPath } from './util.js'
+import { foldPath, escapeRegExp } from './util.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -85,11 +85,6 @@ function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   const before = line.slice(0, markerIndex)
   const dqCount = countUnescapedQuotes(before, '"')
   return dqCount % 2 !== 0
-}
-
-/** Escape regex-special characters so a string matches only itself. */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {

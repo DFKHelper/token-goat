@@ -8,7 +8,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import type { MiniSection, MultilineStringState } from './common.js'
+import type { MiniSection, MultilineStringState, AdapterImport } from './common.js'
 import {
   assignFlatEndLines,
   buildLineIndex,
@@ -113,20 +113,14 @@ function stripGraphqlDescriptions(text: string): string {
   return outLines.join('\n')
 }
 
-export interface GraphqlImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
-
 export function extractGraphql(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: GraphqlImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
   const sections: MiniSection[] = []
   const seen = new Set<string>()
-  const imports: GraphqlImport[] = []
+  const imports: AdapterImport[] = []
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
   const contentLineIndex = buildLineIndex(content)

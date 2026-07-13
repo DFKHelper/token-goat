@@ -13,14 +13,8 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import type { MiniSection } from './common.js'
+import type { MiniSection, AdapterImport } from './common.js'
 import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
-
-export interface HtmlImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 export interface HtmlSection {
   readonly heading: string
@@ -59,9 +53,9 @@ const MAX_SYMBOLS = 500
 export function extractHtml(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: HtmlImport[]; sections: HtmlSection[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[]; sections: HtmlSection[] } {
   const symbols: SymbolEntry[] = []
-  const imports: HtmlImport[] = []
+  const imports: AdapterImport[] = []
   const sections: MiniSection[] = []
   // Blank out comments, <script> bodies, and CDATA sections (offset-preserving; see
   // maskHtmlNoise in common.ts) before running any extraction regexes, so commented-out
