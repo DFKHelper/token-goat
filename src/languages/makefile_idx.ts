@@ -103,9 +103,18 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   const totalLines = content.split('\n').length
   const lineIndex = buildLineIndex(stripped)
 
+  // Blank backslash-continuation lines FIRST, before define-block detection ever sees them.
+  // A wrapped variable assignment's value can legitimately contain the ordinary word `define`
+  // as one of its wrapped-line tokens (e.g. a list of make directive names) - without this
+  // running before maskDefineBlocks/DEFINE_RE, that continuation line is misread as a real
+  // `define` opener: maskDefineBlocks then enters a phantom block with no matching `endef`,
+  // masking every line through EOF (dropping every real target after it), and DEFINE_RE
+  // separately emits a phantom makefile_define symbol for it.
+  const strippedNoContinuation = maskContinuationLines(stripped)
+
   // Targets (scan a copy with define...endef bodies masked out, so script content embedded
   // in a define block is never mistaken for a target declaration)
-  const strippedForTargets = maskContinuationLines(maskDefineBlocks(stripped))
+  const strippedForTargets = maskDefineBlocks(strippedNoContinuation)
   for (const m of strippedForTargets.matchAll(TARGET_RE)) {
     const rawTarget = m[1]?.trim() ?? ''
     if (!rawTarget) continue
@@ -121,7 +130,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
   }
 
   // define blocks
-  for (const m of stripped.matchAll(DEFINE_RE)) {
+  for (const m of strippedNoContinuation.matchAll(DEFINE_RE)) {
     const name = m[1]?.trim() ?? ''
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
