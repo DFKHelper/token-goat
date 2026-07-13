@@ -75,9 +75,13 @@ function toolResultLine(toolUseId: string, text: string): unknown {
 
 describe('projectTranscriptsDir / findLatestTranscript', () => {
   it('slugifies every non-alphanumeric character of the resolved project root', () => {
-    const dir = projectTranscriptsDir('C:/Projects/my-app')
+    // Build a genuinely absolute path on any platform (OS root + segments) rather than
+    // hardcoding a Windows drive letter, which resolves as relative-to-cwd on POSIX.
+    const input = path.join(path.parse(process.cwd()).root, 'Projects', 'my-app')
+    const dir = projectTranscriptsDir(input)
     expect(dir).toContain(path.join('.claude', 'projects'))
-    expect(path.basename(dir)).toMatch(/^C--Projects-my-app$/)
+    const expectedSlug = path.resolve(input).replace(/[^A-Za-z0-9]/g, '-')
+    expect(path.basename(dir)).toBe(expectedSlug)
   })
 
   it('returns null when no transcripts directory exists', () => {
