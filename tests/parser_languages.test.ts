@@ -713,6 +713,31 @@ input[type="text"] {
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not drop a single selector written in Allman brace style, where the `{` sits alone on the line after the selector (regression: the continuation-candidate accumulator only started collecting a bare selector-fragment line when it ended in a trailing comma or a comma-list was already underway, so the FIRST and only fragment of an Allman-brace single selector - which has neither - fell through to the discard case and was silently dropped)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'allman.css')
+
+      const content = `body
+{
+  margin: 0;
+}
+
+.button
+{
+  color: red;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('body')
+      expect(names).toContain('.button')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('dockerfile symbols', () => {

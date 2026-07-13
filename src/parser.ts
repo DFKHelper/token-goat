@@ -1258,6 +1258,19 @@ function splitTopLevelSelectors(rawCapture: string, strippedCapture: string): st
   return parts
 }
 
+// True when the next non-blank line after `i` opens a bare Allman-style rule brace (`{` alone on
+// its own line, e.g. `body\n{\n...`). Used to start selector-fragment accumulation for the FIRST
+// fragment of a rule, which - unlike every later fragment of a multi-line comma list - has no
+// trailing comma of its own to signal "more of this selector is still coming".
+function nextContentLineOpensBrace(lines: readonly string[], i: number): boolean {
+  for (let j = i + 1; j < lines.length; j++) {
+    const next = lines[j]?.trim() ?? ''
+    if (next.length === 0) continue
+    return next === '{'
+  }
+  return false
+}
+
 function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   // Strip /* */ block comments (newlines preserved so line numbers stay correct) before
@@ -1366,12 +1379,15 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
     }
 
     // Continuation candidate: a bare selector-fragment line with no brace, not an at-rule
-    // header, and not a declaration (no `;`). Two shapes are accepted: a line ending in a
-    // trailing comma (starts or continues a comma list, e.g. `.a,`), or - once a comma-list is
-    // already underway (`pending.length > 0`) - a bare trailing-fragment line with no comma at
-    // all (e.g. the final `.b` in `.a,\n.b\n{`), which precedes a brace on its own line rather
-    // than sharing a line with the brace. Either way the fragment is accumulated until the
-    // line that actually opens the brace (matched above) is reached, instead of being dropped.
+    // header, and not a declaration (no `;`). Three shapes are accepted: a line ending in a
+    // trailing comma (starts or continues a comma list, e.g. `.a,`); once a comma-list is
+    // already underway (`pending.length > 0`), a bare trailing-fragment line with no comma at
+    // all (e.g. the final `.b` in `.a,\n.b\n{`); or a single Allman-brace selector whose `{`
+    // sits alone on the very next content line (e.g. `body\n{`) - this last shape has no
+    // trailing comma and starts with an empty `pending`, so without the forward-scan it fails
+    // both of the other two conditions and the selector is silently dropped. Either way the
+    // fragment is accumulated until the line that actually opens the brace (matched above) is
+    // reached, instead of being dropped.
     if (
       trimmed.length > 0 &&
       !trimmed.startsWith('@') &&
@@ -1380,7 +1396,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
       !trimmed.includes(';')
     ) {
       const endsWithComma = trimmed.endsWith(',')
-      if (endsWithComma || pending.length > 0) {
+      if (endsWithComma || pending.length > 0 || nextContentLineOpensBrace(lines, i)) {
         const name = endsWithComma ? trimmed.slice(0, -1).trim() : trimmed
         if (name) pending.push({ name, line: i + 1, body: trimmed })
         continue
