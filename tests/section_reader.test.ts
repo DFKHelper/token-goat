@@ -504,6 +504,19 @@ describe('readSection', () => {
     expect(result?.heading).toBe('database')
   })
 
+  it('finds a TOML/INI table header that has a trailing inline comment on the same line (regression: TABLE_HEADER_RE was anchored to end-of-line with nothing allowed after the closing bracket, so a table declared as `[section] # comment` or `[section] ; comment` - both legal, common syntax - was silently dropped by the live reader even though the real indexer correctly captures it)', () => {
+    const toml = ['[server]', 'host = "a"', '', '[database] # production settings', 'host = "b"', ''].join('\n')
+    const tomlFile = tmpFile('x.toml', toml)
+    expect(listSections(tomlFile)).toEqual(['server', 'database'])
+    const database = readSection(tomlFile, 'database')
+    expect(database?.heading).toBe('database')
+    expect(database?.content).toContain('host = "b"')
+
+    const ini2 = ['[database] ; prod', 'host=localhost', ''].join('\n')
+    const iniFile = tmpFile('settings2.ini', ini2)
+    expect(readSection(iniFile, 'database')?.heading).toBe('database')
+  })
+
   it('finds an <h2> heading in an HTML file', () => {
     // Regression: html/liquid fell through findHeaders' unknown-language sniff, which never
     // recognizes <hN> tags, so every html/liquid file routed to the key-value finder and
