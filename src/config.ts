@@ -761,7 +761,20 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   bc.max_lines = validatedInt(bc_raw['max_lines'], bc.max_lines, 50, 100_000)
   bc.max_bytes = validatedInt(bc_raw['max_bytes'], bc.max_bytes, 1024, 16 * 1024 * 1024)
   bc.timeout_seconds = validatedInt(bc_raw['timeout_seconds'], bc.timeout_seconds, 5, 7200)
-  bc.cache_min_bytes = validatedInt(bc_raw['cache_min_bytes'], bc.cache_min_bytes, 0, 100 * 1024 * 1024)
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
+  // round trip (see saveConfig), so any pre-687758ae user who ran `config set` for an unrelated
+  // key got the then-in-memory default cache_min_bytes (0) permanently persisted, even though
+  // the field had zero consumers at the time and nobody could have deliberately chosen it.
+  // 687758ae wired this key up as the real cache minimum-size gate and bumped the in-code
+  // default to 512 -- but those stale 0s now load back in and silently disable caching.
+  // Treat an exactly-persisted 0 as that stale default and fall through to the current default
+  // instead of trusting it; any other persisted value (including a deliberate 0 set after
+  // upgrading) is respected as-is. Note: 0 is a more plausible value someone might
+  // deliberately choose post-upgrade (cache everything with no minimum size) than the other
+  // sentinel values were, so callers who really want 0 can work around this by setting 1 instead.
+  bc.cache_min_bytes = bc_raw['cache_min_bytes'] === 0
+    ? bc.cache_min_bytes
+    : validatedInt(bc_raw['cache_min_bytes'], bc.cache_min_bytes, 0, 100 * 1024 * 1024)
   bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, 1, 1_000_000)
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
   bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
