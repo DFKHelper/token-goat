@@ -122,6 +122,9 @@ const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
 // (e.g. "https://example.com") must NOT match as a false "https" heading -- the colon there
 // is a URL scheme separator immediately followed by "//", not a key/value split.
 const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
+// Mirrors ENV_KEY_RE in languages/ini_idx.ts - .env/.envrc files commonly prefix an exported
+// key with `export `, which the plain KEYVALUE_HEADER_RE above does not tolerate.
+const ENV_KEYVALUE_HEADER_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 
 /**
  * Locate every section header in `lines` for a markdown-style document.
@@ -253,7 +256,7 @@ function findKeyValueHeaders(lines: readonly string[], language: string): Sectio
       continue
     }
 
-    const m = KEYVALUE_HEADER_RE.exec(line)
+    const m = (isEnv ? ENV_KEYVALUE_HEADER_RE : KEYVALUE_HEADER_RE).exec(line)
     if (m === null || m[1] === undefined) continue
     headers.push({ heading: m[1], level: 1, index: i })
     openQuote = isEnv
