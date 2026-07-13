@@ -116,6 +116,36 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
+    if (ch === '"') {
+      // A `"..."` delimited identifier's *contents* must pass through unblanked (unlike a
+      // single-quoted literal's contents, which are masked) - the whole point of this branch is
+      // preserving legitimate delimited names for downstream regex matching. But the span still
+      // needs to be consumed as one opaque unit here: standard SQL permits ANY character inside a
+      // delimited identifier, including `'`, `--`, and `/*`. Without this branch those characters
+      // fell through to the generic `out += ch` path below one at a time, so a `'` inside a
+      // quoted identifier (e.g. `"user's_data"`, a common possessive/label-style column or table
+      // name) opened a phantom single-quoted string on the *next* scan iteration that never found
+      // a real closing `'`, blanking every DDL statement after it through EOF. `""` is honored as
+      // the doubled-quote escape for a literal `"` inside the identifier, symmetric to `''` above.
+      out += ch
+      i++
+      while (i < text.length) {
+        const c = text[i]
+        if (c === '"') {
+          if (text[i + 1] === '"') {
+            out += '""'
+            i += 2
+            continue
+          }
+          out += c
+          i++
+          break
+        }
+        out += c
+        i++
+      }
+      continue
+    }
     if (ch === '-' && text[i + 1] === '-') {
       // `--` line comment: only recognized outside a string literal (guaranteed here, since the
       // branch above consumes any open `'...'` span in full before returning to this point).
