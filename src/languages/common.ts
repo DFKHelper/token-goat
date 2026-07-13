@@ -1057,13 +1057,29 @@ export function propagateEndLinesToSymbols(
   symbols: SymbolEntry[],
   sections: MiniSection[],
 ): SymbolEntry[] {
-  const sectionMap = new Map<string, number>()
+  // MiniSection carries no `kind`, so two DIFFERENT-kind symbols sharing a name and start line
+  // (e.g. a same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`, legal in sql_idx,
+  // graphql_idx, proto_idx, and makefile_idx, all of which funnel through makeSymbolEmitter)
+  // cannot be told apart by `${heading}\0${line}` alone. A plain Map keyed on that pair let the
+  // second kind's section silently overwrite the first's, so both symbols were handed the same
+  // (and for one of them, wrong) endLine. Queuing endLines per key instead of overwriting fixes
+  // this without needing a `kind` field on MiniSection: makeSymbolEmitter always pushes one
+  // symbol and one section per emit() call in lockstep, so for any group of entries sharing a
+  // key, the Nth section pushed for that key always corresponds to the Nth symbol pushed for it
+  // - callers may stable-sort `sections` and/or `symbols` by line afterward (sql_idx sorts both,
+  // proto_idx/graphql_idx/makefile_idx sort only sections), but a stable sort never reorders
+  // entries that share the same key, so consuming each key's queue in encounter order still
+  // pairs the right symbol with the right section even after sorting.
+  const sectionMap = new Map<string, number[]>()
   for (const sec of sections) {
-    sectionMap.set(`${sec.heading}\0${sec.line}`, sec.endLine)
+    const key = `${sec.heading}\0${sec.line}`
+    const queue = sectionMap.get(key)
+    if (queue !== undefined) queue.push(sec.endLine)
+    else sectionMap.set(key, [sec.endLine])
   }
   return symbols.map((sym) => {
     const key = `${sym.name}\0${sym.lineStart}`
-    const endLine = sectionMap.get(key)
+    const endLine = sectionMap.get(key)?.shift()
     if (endLine !== undefined && endLine !== sym.lineEnd) {
       return { ...sym, lineEnd: endLine }
     }
