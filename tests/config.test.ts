@@ -321,6 +321,20 @@ describe('loadConfig', () => {
     expect(cfg.hints.reread_deny_min_bytes).toBe(4096)
   })
 
+  it('treats a persisted large_read_redirect_bytes of exactly 45_000 as the stale pre-4b6f30dc default and falls through to the current default (512_000), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before 4b6f30dc permanently persisted the then-in-memory-only 45_000 default, which 4b6f30dc later wired up as the real pressure-scaled first-read deny gate)', () => {
+    fs.writeFileSync(_testConfigPath, '[hints]\nlarge_read_redirect_bytes = 45000\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.large_read_redirect_bytes).toBe(512_000)
+  })
+
+  it('respects a persisted large_read_redirect_bytes that is not the legacy 45_000 sentinel (proving the fix only clobbers the exact stale default, not real user values)', () => {
+    fs.writeFileSync(_testConfigPath, '[hints]\nlarge_read_redirect_bytes = 100000\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.hints.large_read_redirect_bytes).toBe(100000)
+  })
+
   it('round-trips warn_unbalanced_shell_quoting, cross_session_read_dedup, and cross_session_read_dedup_ttl_secs (fail-on-buggy: saveConfig previously omitted these three hints fields, silently resetting them to defaults on every save)', () => {
     const cfg = defaultConfig()
     cfg.hints.warn_unbalanced_shell_quoting = !cfg.hints.warn_unbalanced_shell_quoting
