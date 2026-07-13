@@ -4,7 +4,19 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.15] - 2026-07-12
+
+### Added
+
+- **The background worker daemon now restarts itself if it dies.** `startDetachedWorker()` was previously only ever invoked from `token-goat worker start` -- a crash, manual kill, or sleep/wake race left the daemon dead indefinitely, so the dirty queue kept growing and `read`/`symbol`/`section`/`skeleton`/`outline` served stale index content with no recovery until someone noticed and restarted it by hand. `ensureWorkerAlive()` now checks liveness and respawns the daemon from the hot edit-hook path (`postEditHandler`), rate-limited via a marker-file mtime so a burst of edits doesn't retrigger the check on every call. See [src/worker.ts](src/worker.ts), [src/hooks_edit.ts](src/hooks_edit.ts); regression-tested in [tests/worker.test.ts](tests/worker.test.ts).
+
+### Fixed
+
+- **The shared `global.db` index had no automatic recovery for dead file rows.** `pruneDeletedFiles` only ever ran via the manual `token-goat index` CLI command, so a machine that never ran it could accumulate stale symbol/ref/chunk rows for deleted files indefinitely. Every edit hook now records its project root into a new `known_roots` table (throttled to once an hour), and the worker sweeps known roots once a day, pruning dead rows for roots that still resolve on disk. A root that goes unreachable -- drive unmounted, project deleted -- gets a 7-day grace period before it's fully pruned and forgotten, rather than being pruned immediately or skipped forever; a root where more than half its rows (and at least 20) would be deleted in one pass is flagged and skipped instead, in case a mount point inside it is only temporarily offline. Both mechanisms are purely additive to the schema and run automatically from the existing worker loop, so anyone upgrading gets them with no migration step. See [src/index_prune.ts](src/index_prune.ts), [src/worker.ts](src/worker.ts), [src/hooks_edit.ts](src/hooks_edit.ts), [src/db.ts](src/db.ts); regression-tested in [tests/index_prune.test.ts](tests/index_prune.test.ts) and [tests/worker.test.ts](tests/worker.test.ts).
+- **`hints.reread_deny` and `reread_deny_min_bytes` were configurable but never enforced.** Both keys were defined, validated, persisted, and displayed by `config.ts`, but the real re-read deny logic in `hooks_read.ts`'s `preReadHandler` (truncated-file deny, markdown second-read deny, count-based deny, size-based deny) fired unconditionally, gated only by a hardcoded 50KB constant that ignored both settings. All four deny branches are now gated on `hints.reread_deny`, and the size-based deny uses the configured `reread_deny_min_bytes` in place of the removed constant; its default is bumped from 2048 to 51200 bytes to match the old hardcoded value, so wiring it up as the real gate doesn't silently change default behavior for existing users. See [src/config.ts](src/config.ts).
+
 ## [2.6.14] - 2026-07-11
+
 
 ### Added
 
