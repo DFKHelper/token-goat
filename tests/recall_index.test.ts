@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { mkdtempSync, rmSync } from 'node:fs'
 
 // bm25() ranking is computed from corpus-wide statistics (avgdl, total row count), not just the
 // rows a query's MATCH filter returns -- a nonce-prefixed id is enough to keep two test files'
@@ -10,11 +11,35 @@ import { tmpdir } from 'node:os'
 // bug in hint_stats), so a nonce alone isn't reliable for the ranking test below. This mock is
 // hoisted, so it must be self-contained (no top-level variables referenced before their own
 // declaration) -- mirrors the same pattern in tests/hooks_bash.test.ts's configPath() mock.
+//
+// mkdtempSync (not a bare pid-keyed filename): a pid-only path leaves an orphaned .db file in
+// the OS temp dir forever (nothing ever deletes it), and Windows recycles pids quickly enough
+// across separate test invocations in one dev session that a later run can reopen an earlier
+// run's leftover, already-populated file -- reproduced directly: 14 stale
+// tg-recall-index-test-<pid>.db files were found accumulated in %TEMP% after repeated `vitest
+// run` invocations, and the ranking test below flaked specifically when a run's pid collided
+// with one of them. mkdtempSync's random suffix guarantees a fresh path every process, and the
+// exit hook removes it the same way tests/setup/isolate-home.ts cleans up its own temp dirs.
+// A `mock`-prefixed name is required here: Vitest hoists `vi.mock()` calls (and any
+// `mock`-prefixed const the factory closes over) above the rest of the file's top-level code,
+// including regular `const` declarations -- referencing a non-`mock`-prefixed local from inside
+// the factory throws "There was an error when mocking a module... make sure there are no top
+// level variables inside" at import time, since that variable would still be in its temporal
+// dead zone when the hoisted factory first runs.
+const mockRecallTestDir = mkdtempSync(join(tmpdir(), 'tg-recall-index-test-'))
+process.on('exit', () => {
+  try {
+    rmSync(mockRecallTestDir, { recursive: true, force: true })
+  } catch {
+    // best-effort
+  }
+})
+
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
   return {
     ...actual,
-    globalDbPath: () => join(tmpdir(), `tg-recall-index-test-${process.pid}.db`),
+    globalDbPath: () => join(mockRecallTestDir, 'global.db'),
   }
 })
 
@@ -158,9 +183,17 @@ describe('searchRecall — ranking', () => {
     for (let i = 0; i < 4; i++) {
       indexRecallEntry('bash', `decoy-${n}-${i}`, `decoy label ${i}`, `completely unrelated filler content number ${i} with no query term at all`, Date.now())
     }
-    // Strong match: the query term is the whole label and repeated in the content.
-    indexRecallEntry('bash', `strong-${n}`, `rankterm-${n}`, `rankterm-${n} rankterm-${n} rankterm-${n} exact focus`, Date.now())
-    // Weak match: the query term appears once, buried in a longer, unrelated body.
+    // Strong match, stored EARLIER: the query term is the whole label and repeated in the
+    // content. Regression (recall_index.ts's ftsSearch used to alias cache_recall_fts as `f`
+    // and write `WHERE f MATCH ?` -- aliasing an FTS5 virtual table on the left side of MATCH
+    // throws `no such column: f` in this project's SQLite build, so ftsSearch threw on every
+    // call and searchRecall's catch silently degraded to likeSearch): storing the strong match
+    // earlier than the weak one means the LIKE fallback's `ORDER BY stored_at DESC` would rank
+    // weak first, disagreeing with a correct bm25-ranked result -- so this test fails loudly on
+    // a fallback regression instead of only flaking on insertion-order timing.
+    indexRecallEntry('bash', `strong-${n}`, `rankterm-${n}`, `rankterm-${n} rankterm-${n} rankterm-${n} exact focus`, Date.now() - 60_000)
+    // Weak match, stored more recently: the query term appears once, buried in a longer,
+    // unrelated body.
     indexRecallEntry(
       'bash',
       `weak-${n}`,
