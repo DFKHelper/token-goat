@@ -622,6 +622,25 @@ function afterGlob() {}
     expect(afterGlob?.docstring).toBe('')
   })
 
+  it('does not index a function-local `static $var` declaration as a phantom class property (regression: the property branch had no brace-depth gate, unlike the method branch, so PROP_RE\'s `static` modifier alternation matched an ordinary function-local static variable and attributed it to whatever class was still on top of the context stack)', () => {
+    const content = `<?php
+class Counter {
+    public static $shared = 0;
+
+    public function next(): int {
+        static $counter = 0;
+        return ++$counter;
+    }
+}
+`
+    const { symbols } = extractPhp(content, 'Counter.php')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('shared')
+    expect(names).toContain('next')
+    expect(names).not.toContain('counter')
+    expect(symbols.find((s) => s.name === 'shared')?.docstring).toBe('Counter')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
