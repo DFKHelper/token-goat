@@ -1613,6 +1613,30 @@ CREATE TABLE real_table (id int);
     expect(names).toContain('real_table')
   })
 
+  it('does not drop symbols after a backtick-delimited (MySQL) identifier containing an apostrophe', () => {
+    // Same phantom-string failure mode as the double-quoted case above, for the sibling
+    // backtick-quoting form the adapter's own NAME_PAT also matches.
+    const content = `
+CREATE TABLE \`user's_data\` (id int);
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
+  it('does not drop symbols after a bracket-delimited (SQL Server) identifier containing an apostrophe', () => {
+    const content = `
+CREATE TABLE [user's_data] (id int);
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
   it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
     // Regression: a `--` inside a multi-line string literal used to be blanked out by a
     // line-scoped comment pre-pass that ran before string-literal stripping and had no
