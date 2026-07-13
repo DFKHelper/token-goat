@@ -18,6 +18,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
+import { applyHintTracking, classifyEditHint } from './hint_stats.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
@@ -37,7 +38,7 @@ import type { HookOutput } from './types.js'
  * without touching the queue. Returns a context hint for markdown/rst files
  * suggesting the token-goat section command for re-reading.
  */
-export function postEditHandler(event: HookEvent): HookOutput {
+function postEditHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
 
@@ -91,6 +92,11 @@ export function postEditHandler(event: HookEvent): HookOutput {
   }
 
   return passOutput()
+}
+
+/** Public wrapper: intercepts every `context` (hint) output from {@link postEditHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment. */
+export function postEditHandler(event: HookEvent): HookOutput {
+  return applyHintTracking(event, postEditHandlerInner(event), classifyEditHint)
 }
 
 registerHook('post_tool_use', postEditHandler, { toolName: 'Write' })

@@ -142,6 +142,8 @@ import { runWasteCommand } from './cli_waste.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
+import { runHintStatsCommand } from './cli_hint_stats.js'
+import { isHintCategory } from './hint_stats.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -674,6 +676,21 @@ function cmdRecall(query: string, opts: { type?: string; limit?: string; json?: 
     ...(type !== undefined ? { type } : {}),
     ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
     ...(opts.json === true ? { json: true } : {}),
+  })
+}
+
+function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string } = {}): void {
+  if (opts.markEffective !== undefined && !isHintCategory(opts.markEffective)) {
+    throw new CliError(`--mark-effective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markEffective})`)
+  }
+  if (opts.markIneffective !== undefined && !isHintCategory(opts.markIneffective)) {
+    throw new CliError(`--mark-ineffective must be one of: bash_redirect, bash_recall, read_reread_dedup, read_structural_nav, edit_reread_suggest (got: ${opts.markIneffective})`)
+  }
+  runHintStatsCommand({
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.reset === true ? { reset: true } : {}),
+    ...(opts.markEffective !== undefined && isHintCategory(opts.markEffective) ? { markEffective: opts.markEffective } : {}),
+    ...(opts.markIneffective !== undefined && isHintCategory(opts.markIneffective) ? { markIneffective: opts.markIneffective } : {}),
   })
 }
 
@@ -2174,6 +2191,15 @@ export function buildProgram(): Command {
     .option('--limit <n>', 'max results to return (default: 10)')
     .option('--json', 'output JSON')
     .action(guard(cmdRecall))
+
+  program
+    .command('hint-stats')
+    .description('per-category efficacy report for token-goat\'s discretionary hint hooks (emitted/acted-on/suppression)')
+    .option('--json', 'output JSON')
+    .option('--reset', 'clear all tracked emissions and manual marks')
+    .option('--mark-effective <category>', 'record a manual "effective" vote for a hint category')
+    .option('--mark-ineffective <category>', 'record a manual "ineffective" vote for a hint category')
+    .action(guard(cmdHintStats))
 
   program
     .command('bash-output [id]')

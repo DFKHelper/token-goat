@@ -18,6 +18,7 @@ import * as path from 'node:path'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
+import { applyHintTracking, classifyReadHint } from './hint_stats.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
 import { loadConfig } from './config.js'
@@ -450,7 +451,7 @@ function recordActualRead(event: HookEvent, filePath: string): void {
   recordFileRead(filePath)
 }
 
-export function preReadHandler(event: HookEvent): HookOutput {
+function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
     const rawPath = event.toolInput['path']
@@ -1004,6 +1005,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
   return passOutput()
 }
 
+/** Public wrapper: intercepts every `context` (hint) output from {@link preReadHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment. */
+export function preReadHandler(event: HookEvent): HookOutput {
+  return applyHintTracking(event, preReadHandlerInner(event), classifyReadHint)
+}
+
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Read' })
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Grep' })
 
@@ -1037,7 +1043,7 @@ function countTextLines(content: string): number {
   return parts.length
 }
 
-export function postReadHandler(event: HookEvent): HookOutput {
+function postReadHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   const normalized = normalizePath(filePath)
@@ -1112,6 +1118,11 @@ export function postReadHandler(event: HookEvent): HookOutput {
   }
 
   return passOutput()
+}
+
+/** Public wrapper: same tracking as {@link preReadHandler} above. */
+export function postReadHandler(event: HookEvent): HookOutput {
+  return applyHintTracking(event, postReadHandlerInner(event), classifyReadHint)
 }
 
 registerHook('post_tool_use', postReadHandler, { toolName: 'Read' })
