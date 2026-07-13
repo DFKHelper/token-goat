@@ -193,6 +193,24 @@ steps:
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
+    it('extracts a dotted flat-config key (regression: the yaml key regex character class omitted `.`, so a Spring-Boot/flat-config-style key like `server.host:` was silently skipped by the indexer even though the live section reader already found it)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'flat.yaml')
+
+      const content = `server.host: localhost
+server.port: 8080
+plain_key: value
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toEqual(['server.host', 'server.port', 'plain_key'])
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
     it('does not read a bare URL on its own line as a phantom `https` key (regression: the yaml key regex matched `:` unconditionally, so the scheme separator in a bare `https://example.com` value line was mistaken for a key/value split)', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
       const yamlFile = path.join(tmpDir, 'url.yaml')
