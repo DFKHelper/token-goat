@@ -212,11 +212,26 @@ function findTableHeaders(lines: readonly string[]): SectionHeader[] {
 function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   const indentStack: number[] = []
+  // Tracks a `"""`/`'''` triple-quoted string left open across lines, shared with the toml
+  // table finder's state machine (lineOpenDelimiterAfter, in parser.ts) so a `def`/`class` line
+  // that lives entirely inside a docstring/template string body is not mistaken for a real
+  // header - matching what the tree-sitter Python indexer already sees, since a string node
+  // never yields symbols.
+  let openDelim: string | null = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+    if (openDelim !== null) {
+      const closeIdx = line.indexOf(openDelim)
+      if (closeIdx === -1) continue
+      openDelim = lineOpenDelimiterAfter(line, closeIdx + openDelim.length)
+      continue
+    }
     const m = PYTHON_HEADER_RE.exec(line)
-    if (m === null || m[1] === undefined || m[2] === undefined) continue
+    if (m === null || m[1] === undefined || m[2] === undefined) {
+      openDelim = lineOpenDelimiterAfter(line, 0)
+      continue
+    }
     const indent = m[1].replace(/\t/g, '    ').length
     while (indentStack.length > 0 && indent <= (indentStack[indentStack.length - 1] ?? -1)) {
       indentStack.pop()
@@ -224,6 +239,7 @@ function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
     const level = indentStack.length + 1
     indentStack.push(indent)
     headers.push({ heading: m[2], level, index: i })
+    openDelim = lineOpenDelimiterAfter(line, 0)
   }
   return headers
 }
