@@ -49,6 +49,60 @@ describe('apex adapter', () => {
     expect(find('InnerDto', 'apex_class')).toBeDefined()
   })
 
+  it('extracts a method with no access modifier at all (regression: METHOD_RE required at least one modifier, so an implicitly-private helper method - legal Apex, modifier omission defaults to private - was silently dropped from the index)', () => {
+    const content = `public class MyClass {
+  void helperMethod(String input) {
+    System.debug(input);
+  }
+
+  public void publicMethod() {
+    System.debug('ok');
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyClass.cls')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('helperMethod')
+    expect(names).toContain('publicMethod')
+  })
+
+  it('extracts every method signature in an interface, which never carries an access modifier (regression: same METHOD_RE gap, but total - every Apex interface method is modifier-less by language rule, so this dropped 100% of interface methods)', () => {
+    const content = `public interface MyInterface {
+  void doSomething(String input);
+  Integer calculate(Integer a, Integer b);
+}
+`
+
+    const { symbols } = extractApex(content, 'MyInterface.cls')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('doSomething')
+    expect(names).toContain('calculate')
+  })
+
+  it('does not mistake a plain no-modifier statement call inside a method body for a new method declaration (regression guard: relaxing METHOD_RE modifier group to zero-or-more, with no brace-depth tracking in this whole-file matchAll extractor, would otherwise let `someHelper(input);` or `return calculate(a, b);` inside a real method body match as their own phantom method)', () => {
+    const content = `public class MyClass {
+  public void doWork() {
+    someHelper(1);
+    anotherCall(2, 3);
+    return calculate(4, 5);
+  }
+
+  private void someHelper(Integer x) {}
+  private void anotherCall(Integer a, Integer b) {}
+  private Integer calculate(Integer a, Integer b) {
+    return a + b;
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyClass.cls')
+    const methodSymbols = symbols.filter((s) => s.kind === 'apex_method')
+    expect(methodSymbols).toHaveLength(4)
+    const names = methodSymbols.map((s) => s.name).sort()
+    expect(names).toEqual(['anotherCall', 'calculate', 'doWork', 'someHelper'])
+  })
+
   it('extracts Apex triggers with their target object as context', () => {
     const content = `trigger ExampleTrigger on Example_Object__c (before insert, after update) {
   ExampleHandler.run(Trigger.new);
