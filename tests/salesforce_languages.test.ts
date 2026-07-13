@@ -116,6 +116,31 @@ describe('apex adapter', () => {
     expect(find('MethodTwo', 'apex_method')).toBeDefined()
   })
 
+  it('does not let a semicolon-terminated abstract method swallow the next method body', () => {
+    // Regression: METHOD_RE matches a declaration ending in either `{` or `;` (to capture
+    // abstract/interface-style signatures), but spanForMatch always called findBlockEndLine,
+    // which searches forward from the declaration for the next `{` in the file with no bound.
+    // A brace-less declaration has none of its own, so the search found the FOLLOWING method's
+    // opening brace instead, over-extending the abstract method's span to cover that method's
+    // entire body - which then made overlapsExisting treat the following method as already
+    // covered and drop it from the index outright.
+    const content = `public abstract class Base {
+    public abstract void doWork();
+    public void helper() {
+        System.debug('x');
+    }
+}
+`
+    const { symbols } = extractApex(content, 'Base.cls')
+    const find = (name: string, kind: string) => symbols.find((s) => s.name === name && s.kind === kind)
+
+    expect(find('doWork', 'apex_method')?.lineEnd).toBe(2)
+    const helper = find('helper', 'apex_method')
+    expect(helper).toBeDefined()
+    expect(helper?.lineStart).toBe(3)
+    expect(helper?.lineEnd).toBe(5)
+  })
+
   it('is used by parseFile for .cls files', async () => {
     const file = tmp(
       'ExampleService.cls',

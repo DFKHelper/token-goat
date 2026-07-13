@@ -99,10 +99,18 @@ function spanForMatch(
   lineIndex: readonly number[],
   startOffset: number,
   bodyStartLine: number,
+  matchText: string,
 ): Span {
-  const blockEndLine = findBlockEndLine(code, lineIndex, startOffset)
+  // A brace-less declaration (an abstract/interface method signature, permitted by METHOD_RE's
+  // `(?:\{|;)` terminator alternation) has no body of its own to span. Calling findBlockEndLine
+  // here would search past this declaration for the next `{` in the file, which belongs to
+  // whatever concrete method happens to follow - over-extending this span to swallow that
+  // method's entire body (and, via overlapsExisting, dropping it from the index outright).
+  const semicolonTerminated = matchText.trimEnd().endsWith(';')
   const startOffsetForBody = lineStartOffset(lineIndex, bodyStartLine)
-  const endLine = blockEndLine ?? offsetToLine(lineIndex, startOffset)
+  const endLine = semicolonTerminated
+    ? offsetToLine(lineIndex, startOffset + matchText.length - 1)
+    : (findBlockEndLine(code, lineIndex, startOffset) ?? offsetToLine(lineIndex, startOffset))
   const endOffset = lineEndOffset(content, lineIndex, endLine)
   return {
     startLine: bodyStartLine,
@@ -150,7 +158,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const objectName = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
-    emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, line), objectName)
+    emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, line, match[0]), objectName)
   }
 
   const typeNames = new Set<string>()
@@ -161,7 +169,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const line = offsetToLine(lineIndex, startOffset)
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
-    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line))
+    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line, match[0]))
   }
 
   for (const match of code.matchAll(METHOD_RE)) {
@@ -172,7 +180,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     if (overlapsExisting(symbols, line)) continue
     const bodyStartLine = annotationStartLine(rawLines, line)
     const kind = typeNames.has(name) ? 'apex_constructor' : 'apex_method'
-    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine))
+    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 
   return { symbols }
