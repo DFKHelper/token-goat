@@ -640,9 +640,21 @@ export async function readSkillHits(skillName: string): Promise<{ count: number;
 // incrementing the same skill's hit count at once can't both read the same pre-increment count
 // and silently drop one hit. Directory creation is atomic on both POSIX and Windows, so an
 // mkdir-based lock doubles as a cross-process mutex: the loser gets EEXIST.
-const SKILL_HIT_LOCK_MAX_ATTEMPTS = 20
+//
+// The retry budget must comfortably outlast a legitimately-held (non-stale) lock, not just a
+// crashed one: under N-way same-process contention, a caller can be queued behind up to N-1
+// other callers' full critical sections before it ever gets a turn. A budget sized only for
+// "wait out a slow disk op" (previously 20 attempts * 5ms = 100ms) can exhaust while the holder
+// is still doing legitimate work, sending the caller down the unlocked fallback path below and
+// reintroducing the exact lost-update race the lock exists to prevent -- reproduced directly via
+// tests/skill_cache.test.ts's 5-way concurrency regression test under load. Sizing the budget to
+// match SKILL_HIT_LOCK_STALE_MS means a caller only gives up once it has waited at least as long
+// as it would take to detect and reclaim a genuinely abandoned lock, so ordinary contention (any
+// number of legitimate concurrent holders finishing in bounded time) is never mistaken for
+// exhaustion.
 const SKILL_HIT_LOCK_RETRY_MS = 5
 const SKILL_HIT_LOCK_STALE_MS = 5000
+const SKILL_HIT_LOCK_MAX_ATTEMPTS = Math.ceil(SKILL_HIT_LOCK_STALE_MS / SKILL_HIT_LOCK_RETRY_MS)
 
 // Acquires the lock directory for hitsFile, reclaiming a lock older than SKILL_HIT_LOCK_STALE_MS
 // as abandoned (left behind by a crashed process) instead of wedging future increments forever.
