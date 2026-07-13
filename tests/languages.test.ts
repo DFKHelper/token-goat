@@ -2306,6 +2306,32 @@ real:
     expect(names).toHaveLength(1)
   })
 
+  it('does not misread a backslash-continued value line starting with the word "define" as a real define opener', () => {
+    // Regression: maskContinuationLines ran AFTER maskDefineBlocks, so a wrapped variable
+    // assignment whose continuation line happens to start with the ordinary word "define" (e.g.
+    // a list of make directive names) was still visible to DEFINE_LINE_RE when maskDefineBlocks
+    // scanned. That opened a phantom define block with no matching endef, masking every line
+    // through EOF (dropping every real target after it), and DEFINE_RE (which read the
+    // continuation-unaware `stripped` copy) separately emitted a phantom makefile_define symbol.
+    const content = [
+      'DIRECTIVES = include ifdef \\',
+      '    define undef pragma \\',
+      '    endif',
+      '',
+      'all:',
+      '\techo building',
+      '',
+      'clean:',
+      '\techo cleaning',
+    ].join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).toContain('clean')
+    expect(symbols.some((s) => s.kind === 'makefile_define')).toBe(false)
+    expect(names).toHaveLength(2)
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
