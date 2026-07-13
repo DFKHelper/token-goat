@@ -2638,6 +2638,23 @@ function AfterClass {
     expect(names).toContain('AfterClass')
   })
 
+  it('clears currentClass after a one-liner class whose string literal contains an unbalanced brace', () => {
+    // Regression: the one-liner check counted braces on the raw line, not the string-stripped
+    // copy the real braceDepth tracker uses. A default value like "}" nets the real braces to
+    // zero but adds a phantom close-brace to the raw count, so openCount !== closeCount, the
+    // class is wrongly treated as multi-line, and currentClass is never cleared - stranding it
+    // and dropping every top-level declaration that follows.
+    const content = `class Foo { [string]$X = "}" }
+function Bar { "hi" }
+function Baz { "yo" }
+`
+    const { symbols } = extractPowershell(content, 'oneliner_string_brace_class.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+    expect(names).toContain('Baz')
+  })
+
   it('classifies a class whose name contains the substring "enum" as class, not enum', () => {
     const content = `class EnumHelper {
     [void] DoWork() {}
