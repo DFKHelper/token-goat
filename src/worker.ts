@@ -26,7 +26,7 @@ import { foldPath, isUnderBlockedRoot } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
-import { removeFileFromIndex, pruneDeletedFiles } from './index_prune.js'
+import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
 import { cleanup_stale } from './snapshots.js'
 import { findProject } from './project.js'
 import { registerReset } from './reset.js'
@@ -1180,6 +1180,13 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
  * loop deterministically; in the worker-thread case it is wired to a message
  * from the parent.
  */
+// How often the worker loop auto-prunes dead file rows across every known project root (see
+// sweepKnownRoots in index_prune.ts). Deliberately much longer than SNAPSHOT_CLEANUP_INTERVAL_MS
+// -- a full existence-check pass over every indexed file under every known root is heavier than
+// the snapshot sweep, and dead-row accumulation is a slow-moving problem that doesn't need a
+// tight cadence to stay bounded.
+const KNOWN_ROOTS_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+
 export async function runWorkerLoop(
   dir: string,
   pollIntervalMs: number,
@@ -1189,6 +1196,7 @@ export async function runWorkerLoop(
   // throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across
   // tests in the same process).
   let lastSnapshotCleanupMs = 0
+  let lastKnownRootsSweepMs = 0
   while (!shouldStop()) {
     try {
       drainOnce(dir)
@@ -1213,6 +1221,25 @@ export async function runWorkerLoop(
         // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
       }
       lastSnapshotCleanupMs = Date.now()
+    }
+    // Auto-prune dead file rows across every known project root -- see sweepKnownRoots'
+    // docstring for the safety guarantees (grace period before treating an unreachable root as
+    // gone, anomaly-ratio guard against a mount-point outage under a live root). This is what
+    // keeps the shared global.db from silently accumulating dead rows indefinitely the way it
+    // used to, when pruning only ever ran via a manually-invoked `token-goat index`.
+    if (Date.now() - lastKnownRootsSweepMs >= KNOWN_ROOTS_SWEEP_INTERVAL_MS) {
+      try {
+        const result = sweepKnownRoots(path.join(dir, 'global.db'))
+        if (result.flaggedRoots.length > 0) {
+          appendWorkerErrorLog(
+            dir,
+            `${new Date().toISOString()} sweepKnownRoots flagged ${result.flaggedRoots.length} root(s) for anomalously large dead-row ratio (skipped, not pruned): ${result.flaggedRoots.join(', ')}\n`,
+          )
+        }
+      } catch {
+        // Best-effort housekeeping; a sweep failure must not kill the daemon either.
+      }
+      lastKnownRootsSweepMs = Date.now()
     }
     if (shouldStop()) break
     await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))

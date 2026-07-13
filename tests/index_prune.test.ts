@@ -35,7 +35,13 @@ import * as fs from 'node:fs'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { indexFileSync } from '../src/parser.js'
-import { pruneDeletedFiles, removeFileFromIndex } from '../src/index_prune.js'
+import {
+  pruneDeletedFiles,
+  removeFileFromIndex,
+  recordKnownRoot,
+  recordKnownRootThrottled,
+  sweepKnownRoots,
+} from '../src/index_prune.js'
 import * as embeddingsModule from '../src/embeddings.js'
 
 // Count symbol rows for a given normalized path key in the isolated DB.
@@ -276,4 +282,209 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
     expect(filesRowCount()).toBe(1)
   })
+})
+
+// Regression: before recordKnownRoot/sweepKnownRoots, pruneDeletedFiles only ever ran via the
+// manual `token-goat index [path]` CLI command -- nothing periodic existed, so a shared
+// global.db could (and did) accumulate hundreds of dead rows indefinitely with zero automatic
+// recovery. These cover the registry (recordKnownRoot) and the worker-driven sweep
+// (sweepKnownRoots) that closes that gap.
+describe('known_roots auto-prune (regression)', () => {
+  let dir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-known-roots-'))
+    dbPath = path.join(dir, 'test.db')
+  })
+
+  afterEach(() => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if files are still locked
+    }
+  })
+
+describe('recordKnownRoot', () => {
+  it('upserts the project root for an edited file, refreshing last_seen and clearing first_missing', () => {
+    fs.mkdirSync(path.join(dir, '.git'))
+    const filePath = path.join(dir, 'a.ts')
+    fs.writeFileSync(filePath, 'export const a = 1\n')
+
+    recordKnownRoot(normalizePath(filePath), dbPath)
+
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT root, first_missing_ms FROM known_roots').get() as
+      | { root: string; first_missing_ms: number | null }
+      | undefined
+    expect(row).toBeDefined()
+    expect(normalizePath(row!.root)).toBe(normalizePath(dir))
+    expect(row!.first_missing_ms).toBeNull()
+
+    // A second observation refreshes the existing row (and clears a stale first_missing_ms)
+    // rather than duplicating it.
+    db.prepare('UPDATE known_roots SET first_missing_ms = ?').run(Date.now())
+    recordKnownRoot(normalizePath(filePath), dbPath)
+    const rows = db.prepare('SELECT * FROM known_roots').all()
+    expect(rows.length).toBe(1)
+    const updated = db.prepare('SELECT first_missing_ms FROM known_roots').get() as {
+      first_missing_ms: number | null
+    }
+    expect(updated.first_missing_ms).toBeNull()
+  })
+
+  it('is a no-op for a file with no recognizable project root', () => {
+    // `dir` itself has no PROJECT_MARKERS (.git, package.json, ...), so findProject walks up to
+    // the os.tmpdir() boundary without finding one and returns null.
+    const filePath = path.join(dir, 'a.ts')
+    fs.writeFileSync(filePath, 'export const a = 1\n')
+    recordKnownRoot(normalizePath(filePath), dbPath)
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }
+    expect(row.n).toBe(0)
+  })
+})
+
+describe('recordKnownRootThrottled', () => {
+  it('records on first call and skips a second call within the rate-limit window', () => {
+    fs.mkdirSync(path.join(dir, '.git'))
+    const filePath = path.join(dir, 'a.ts')
+    fs.writeFileSync(filePath, 'export const a = 1\n')
+
+    recordKnownRootThrottled(normalizePath(filePath), dir, dbPath)
+    const db = getDb(dbPath)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).n).toBe(1)
+
+    // A second call within the throttle window must not touch the DB again -- proven by
+    // deleting the row and confirming it is NOT recreated (a real re-record would recreate it).
+    db.prepare('DELETE FROM known_roots').run()
+    recordKnownRootThrottled(normalizePath(filePath), dir, dbPath)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).n).toBe(0)
+  })
+})
+
+describe('sweepKnownRoots', () => {
+  it('prunes dead rows for a reachable known root', () => {
+    fs.mkdirSync(path.join(dir, '.git'))
+    const aPath = path.join(dir, 'a.ts')
+    const bPath = path.join(dir, 'b.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    fs.writeFileSync(bPath, 'export const b = 1\n')
+    indexFileSync(normalizePath(aPath), dbPath)
+    indexFileSync(normalizePath(bPath), dbPath)
+    recordKnownRoot(normalizePath(aPath), dbPath)
+    fs.rmSync(aPath)
+
+    const result = sweepKnownRoots(dbPath)
+    expect(result.prunedRows).toBe(1)
+    expect(result.prunedRoots.map(normalizePath)).toContain(normalizePath(dir))
+    expect(result.flaggedRoots).toEqual([])
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBe(0)
+    expect(symbolCount(dbPath, normalizePath(bPath))).toBeGreaterThan(0)
+  })
+
+  it('does not prune an unreachable root on first sight -- starts the missing-since clock instead', () => {
+    const projectDir = path.join(dir, 'proj')
+    fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true })
+    const aPath = path.join(projectDir, 'a.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    indexFileSync(normalizePath(aPath), dbPath)
+    recordKnownRoot(normalizePath(aPath), dbPath)
+
+    fs.rmSync(projectDir, { recursive: true, force: true })
+
+    const result = sweepKnownRoots(dbPath, { now: 1000 })
+    expect(result.prunedRows).toBe(0)
+    expect(result.prunedRoots).toEqual([])
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBeGreaterThan(0)
+
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT first_missing_ms FROM known_roots').get() as {
+      first_missing_ms: number | null
+    }
+    expect(row.first_missing_ms).toBe(1000)
+  })
+
+  it('does not prune yet while still within the missing grace period', () => {
+    const projectDir = path.join(dir, 'proj')
+    fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true })
+    const aPath = path.join(projectDir, 'a.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    indexFileSync(normalizePath(aPath), dbPath)
+    recordKnownRoot(normalizePath(aPath), dbPath)
+
+    fs.rmSync(projectDir, { recursive: true, force: true })
+
+    const graceMs = 7 * 24 * 60 * 60 * 1000
+    sweepKnownRoots(dbPath, { now: 1000, missingGraceMs: graceMs })
+    const result = sweepKnownRoots(dbPath, { now: 1000 + graceMs - 1, missingGraceMs: graceMs })
+
+    expect(result.prunedRows).toBe(0)
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBeGreaterThan(0)
+  })
+
+  it('fully prunes and forgets a root once it has been missing past the grace period', () => {
+    const projectDir = path.join(dir, 'proj')
+    fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true })
+    const aPath = path.join(projectDir, 'a.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    indexFileSync(normalizePath(aPath), dbPath)
+    recordKnownRoot(normalizePath(aPath), dbPath)
+
+    fs.rmSync(projectDir, { recursive: true, force: true })
+
+    const graceMs = 1000
+    sweepKnownRoots(dbPath, { now: 0, missingGraceMs: graceMs })
+    const result = sweepKnownRoots(dbPath, { now: graceMs + 1, missingGraceMs: graceMs })
+
+    expect(result.prunedRows).toBe(1)
+    expect(result.prunedRoots.map(normalizePath)).toContain(normalizePath(projectDir))
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBe(0)
+
+    const db = getDb(dbPath)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).toEqual({ n: 0 })
+  })
+
+  it('flags instead of pruning when a reachable root would lose an anomalously large fraction of its rows', () => {
+    const projectDir = path.join(dir, 'proj')
+    fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true })
+    // 25 files total; delete 21 of them (84%, well past the 50% ratio and 20-file minimum)
+    // while the root itself stays reachable -- simulating a mount point/subdirectory inside the
+    // root going offline, not the files actually being deleted.
+    const files: string[] = []
+    for (let i = 0; i < 25; i++) {
+      const p = path.join(projectDir, `f${i}.ts`)
+      fs.writeFileSync(p, `export const f${i} = ${i}\n`)
+      indexFileSync(normalizePath(p), dbPath)
+      files.push(p)
+    }
+    recordKnownRoot(normalizePath(files[0]!), dbPath)
+    for (let i = 0; i < 21; i++) fs.rmSync(files[i]!)
+
+    const result = sweepKnownRoots(dbPath)
+    expect(result.flaggedRoots.map(normalizePath)).toContain(normalizePath(projectDir))
+    expect(result.prunedRows).toBe(0)
+    // Every row -- including the genuinely-deleted ones -- survives; nothing was pruned this
+    // cycle. A human can investigate and re-run a manual `token-goat index` once confirmed.
+    for (const f of files) {
+      expect(symbolCount(dbPath, normalizePath(f))).toBeGreaterThan(0)
+    }
+  })
+
+  it('never prunes a too-shallow root even if one somehow ends up in known_roots', () => {
+    const db = getDb(dbPath)
+    db.prepare(
+      'INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, ?, NULL)',
+    ).run('c:/', Date.now())
+
+    const result = sweepKnownRoots(dbPath)
+    expect(result.prunedRoots).toEqual([])
+    expect(result.flaggedRoots).toEqual([])
+    const row = db.prepare('SELECT first_missing_ms FROM known_roots WHERE root = ?').get('c:/') as
+      | { first_missing_ms: number | null }
+      | undefined
+    expect(row?.first_missing_ms).toBeNull()
+  })
+})
 })

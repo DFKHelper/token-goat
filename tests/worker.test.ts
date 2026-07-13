@@ -18,6 +18,7 @@ import {
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
+import { recordKnownRoot } from '../src/index_prune.js'
 import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
@@ -1449,5 +1450,38 @@ describe('runWorkerLoop worker state file rotation (regression)', () => {
 
     const statAfter = fs.statSync(logPath)
     expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
+  })
+})
+
+// Regression: before this, pruneDeletedFiles only ever ran via the manual `token-goat index`
+// CLI command -- nothing periodic pruned the shared global.db, so it could accumulate dead file
+// rows indefinitely. runWorkerLoop now runs sweepKnownRoots on the same periodic-sweep
+// mechanism as the snapshot cleanup above. Drives the real default path end-to-end: index a
+// file, record its project root as known, delete the file, run one real loop cycle, and assert
+// its rows were actually pruned.
+describe('runWorkerLoop known-roots auto-prune sweep (regression)', () => {
+  it('prunes dead rows for a known root via the default periodic loop', async () => {
+    fs.mkdirSync(path.join(DIR, '.git'))
+    const dbPath = path.join(DIR, 'global.db')
+    const aPath = path.join(DIR, 'a.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    const aKey = normalizePath(aPath)
+    parserModule.indexFileSync(aKey, dbPath)
+    recordKnownRoot(aKey, dbPath)
+    fs.rmSync(aPath)
+
+    const db = getDb(dbPath)
+    const symbolCountFor = (key: string): number =>
+      (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE file_path = ?').get(key) as { n: number }).n
+    expect(symbolCountFor(aKey)).toBeGreaterThan(0)
+
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    expect(symbolCountFor(aKey)).toBe(0)
   })
 })
