@@ -961,6 +961,66 @@ export function isWorkerRunning(dir: string = dataDir()): boolean {
   return pidAlive(pid)
 }
 
+/** Absolute path to the auto-heal rate-limit marker for `dir`. */
+function workerHealthCheckMarkerPath(dir: string): string {
+  return path.join(dir, 'worker-healthcheck.marker')
+}
+
+/**
+ * Minimum time between {@link ensureWorkerAlive} liveness checks, so a burst of edit-hook calls
+ * (e.g. a multi-file refactor) doesn't re-check the pid file and attempt a respawn on every
+ * single one -- one check per interval is enough to notice and heal a dead daemon promptly.
+ */
+const WORKER_HEALTHCHECK_MIN_INTERVAL_MS = 5 * 60 * 1000
+
+/**
+ * Best-effort auto-heal: if the detached worker for `dir` isn't running, start a fresh one.
+ *
+ * Before this, {@link startDetachedWorker} was only ever invoked from the `worker start` CLI
+ * command -- nothing anywhere restarted a daemon that died (crash, a manual `taskkill`, machine
+ * sleep/wake races, anything). A dead worker stayed dead indefinitely: the dirty queue kept
+ * accumulating, `token-goat read`/`symbol`/`section`/`outline` kept serving stale index content
+ * with no automatic recovery, until a human happened to notice and ran `worker start` by hand.
+ *
+ * Called from {@link postEditHandler in hooks_edit.ts}, the hot path where real work is actually
+ * queued for the worker to drain, self-rate-limited via a marker-file mtime ({@link
+ * WORKER_HEALTHCHECK_MIN_INTERVAL_MS}) so it isn't re-triggered on every hook call. Fail-soft
+ * throughout: marker-file I/O errors, spawn failures, and a lost {@link claimWorkerPidFile} race
+ * against a worker that started in the same instant are all swallowed -- this function's job is
+ * to nudge a dead worker back to life, never to guarantee one is running or to throw out of a
+ * hook handler.
+ */
+export function ensureWorkerAlive(dir: string = dataDir()): void {
+  const markerPath = workerHealthCheckMarkerPath(dir)
+  try {
+    const stat = fs.statSync(markerPath)
+    if (Date.now() - stat.mtimeMs < WORKER_HEALTHCHECK_MIN_INTERVAL_MS) return
+  } catch {
+    // No marker yet: first check ever for this data dir, proceed.
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(markerPath, '')
+  } catch {
+    // If we can't even write the marker, don't let that block the liveness check below --
+    // worst case we just check more often than intended.
+  }
+  if (isWorkerRunning(dir)) return
+  try {
+    startDetachedWorker({ dataDir: dir })
+  } catch (e) {
+    if (e instanceof WorkerAlreadyRunningError) return
+    try {
+      appendWorkerErrorLog(
+        dir,
+        `${new Date().toISOString()} ensureWorkerAlive: auto-restart failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      )
+    } catch {
+      // best-effort
+    }
+  }
+}
+
 /**
  * Kill the detached worker for this project, if one is running.
  *

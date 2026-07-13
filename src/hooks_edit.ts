@@ -24,6 +24,7 @@ import { recordFileEdit } from './session.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { compactPathFor, markCompactStale } from './doc_compact.js'
+import { ensureWorkerAlive } from './worker.js'
 import type { HookOutput } from './types.js'
 
 /**
@@ -49,6 +50,15 @@ export function postEditHandler(event: HookEvent): HookOutput {
     // and the rest of this handler's work (the markdown hint below) should still
     // run rather than the exception propagating out of postEditHandler.
     recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
+
+  // Work was just queued above for the background worker to drain -- nudge it back to life if
+  // the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring).
+  // Rate-limited internally, so this is cheap on every call after the first in a given window.
+  try {
+    ensureWorkerAlive()
+  } catch (e) {
+    recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
   }
 
   // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid
