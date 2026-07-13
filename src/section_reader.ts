@@ -109,7 +109,13 @@ function normalizeHeadingStrip(s: string): string {
 }
 
 const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
-const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*$/
+// TOML permits a trailing `# comment` after a table header, and INI files very commonly write
+// `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s)
+// without treating the header line as anything other than a table header. Deliberately NOT fully
+// unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the
+// unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be
+// misread as a table header, which the comment-only relaxation avoids.
+const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
 // A generic `key = value` or `key:` block header at column zero. A bare URL on its own line
