@@ -415,6 +415,35 @@ real_key = "yes"
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not misread a multi-line array-of-arrays row as a phantom section (regression: no continuation tracking for multi-line arrays meant a nested-array row like `[1, 0, 0],` was matched by the section regex as a new table header)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'matrix.toml')
+
+      const content = `[package]
+name = "myapp"
+
+matrix = [
+  [1, 0, 0],
+  [0, 1, 0],
+]
+
+[deps]
+value = 1
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('matrix')
+      expect(names).toContain('deps')
+      expect(names).not.toContain('1, 0, 0')
+      expect(names).not.toContain('0, 1, 0')
+      expect(result.symbols.filter((s) => s.kind === 'section')).toHaveLength(2)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('css symbols', () => {
