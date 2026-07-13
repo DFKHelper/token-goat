@@ -1172,7 +1172,16 @@ describe('a corrupt config.toml warns on stderr instead of silently falling back
   }
 
   function configTomlPath(dataDir: string): string {
-    return path.join(dataDir, 'dfk-helper', 'token-goat', 'config.toml')
+    // Mirrors constants.ts's defaultDataDir(): on Windows/Linux, LOCALAPPDATA/XDG_DATA_HOME
+    // (set directly to dataDir by runWithDataDir) take priority over the home-relative
+    // fallback; only macOS ignores env vars and always derives from HOME.
+    if (process.platform === 'win32') {
+      return path.join(dataDir, 'dfk-helper', 'token-goat', 'config.toml')
+    }
+    if (process.platform === 'darwin') {
+      return path.join(dataDir, 'Library', 'Application Support', 'token-goat', 'config.toml')
+    }
+    return path.join(dataDir, 'token-goat', 'config.toml')
   }
 
   it('warns on stderr and points at `config validate` when config.toml exists but fails to parse', () => {
