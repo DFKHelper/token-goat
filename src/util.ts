@@ -427,15 +427,14 @@ export function withFileLock<T>(
   }
 }
 
-/** Truncate `s` to `maxChars`, appending a single ellipsis when it overflows. */
-export function ellipsize(s: string, maxChars: number): string {
-  if (s.length <= maxChars) return s
-  return s.slice(0, maxChars - 1) + '…'
-}
-
 /** Strip leading/trailing whitespace and lowercase (matches util.py strip_lower). */
 export function stripLower(s: string): string {
   return s.trim().toLowerCase()
+}
+
+/** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Basename of a path, mirroring Python's os.path.basename for convenience. */

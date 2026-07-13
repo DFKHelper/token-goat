@@ -162,11 +162,6 @@ function gitStateFingerprintSync(cwd: string): string | null {
   }
 }
 
-/** Async wrapper kept for existing callers/tests that `await` this. */
-export async function gitStateFingerprint(cwd: string): Promise<string | null> {
-  return gitStateFingerprintSync(cwd)
-}
-
 function dirStateFingerprintSync(path: string): string | null {
   try {
     const stat = statSync(path)
@@ -175,11 +170,6 @@ function dirStateFingerprintSync(path: string): string | null {
   } catch {
     return null
   }
-}
-
-/** Async wrapper kept for existing callers/tests that `await` this. */
-export async function dirStateFingerprint(path: string): Promise<string | null> {
-  return dirStateFingerprintSync(path)
 }
 
 /** Fingerprint a single file's mtime + size (used for `cat <file>`). */

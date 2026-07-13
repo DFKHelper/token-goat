@@ -380,11 +380,6 @@ export function capBytes(text: string, maxBytes: number): string {
   return slice.toString('utf8') + marker
 }
 
-/** Convert a byte count to an approximate token count (~3.5 chars/token). */
-export function bytesToTokens(n: number): number {
-  return Math.max(1, Math.ceil(n / 3.5))
-}
-
 /**
  * Truncate `text` to approximately `maxTokens` tokens, measured on the
  * ANSI-stripped string so escape sequences don't trip the cap early.
@@ -416,19 +411,6 @@ export function headTailCompress(lines: string[], head: number, tail: number, la
   return [...lines.slice(0, head), `... [${elided} more ${label} elided by token-goat]`, ...lines.slice(total - tail)].join(
     '\n',
   )
-}
-
-/**
- * Replace `lines` with a single `[token-goat: collapsed N <label> lines]`
- * marker, optionally keeping the last `keepLast` lines verbatim. Returns
- * `lines` unchanged when empty.
- */
-export function collapseToCount(lines: string[], label: string, opts: { keepLast?: number } = {}): string[] {
-  if (lines.length === 0) return lines
-  const keepLast = opts.keepLast ?? 0
-  const marker = `[token-goat: collapsed ${lines.length} ${label} lines]`
-  if (keepLast > 0 && keepLast < lines.length) return [marker, ...lines.slice(lines.length - keepLast)]
-  return [marker]
 }
 
 /** Keep only the first `keep` lines matching `pattern`; drop the rest with a count. */

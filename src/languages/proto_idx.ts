@@ -7,7 +7,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
-import type { MiniSection } from './common.js'
+import type { MiniSection, AdapterImport } from './common.js'
 import {
   assignFlatEndLines,
   buildLineIndex,
@@ -20,12 +20,6 @@ import {
 
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 120
-
-export interface ProtoImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 function stripComments(text: string): string {
   const out = stripCstyleComments(text)
@@ -106,11 +100,11 @@ function findBlockEndLine(
 export function extractProto(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: ProtoImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
   const sections: MiniSection[] = []
   const seen = new Set<string>()
-  const imports: ProtoImport[] = []
+  const imports: AdapterImport[] = []
   const emit = makeSymbolEmitter(symbols, sections, seen, filePath, MAX_SYMBOLS, MAX_HEADING_LEN)
 
   const stripped = stripComments(content)

@@ -12,13 +12,9 @@ import {
   stripMultilineStringSpan,
   stripStringLiterals,
   type MultilineStringState,
+  type AdapterImport,
+  makeLineSymbol,
 } from './common.js'
-
-export interface PhpImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/
 const CLASS_RE = /^(?:(?:abstract|final)\s+)?(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
@@ -37,31 +33,12 @@ const PROP_RE = new RegExp(
 const USE_RE = /^use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/
 const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/
 
-function makeSymbol(
-  filePath: string,
-  name: string,
-  kind: string,
-  line: number,
-  sig?: string,
-  parent?: string,
-): SymbolEntry {
-  return {
-    filePath,
-    name,
-    kind,
-    lineStart: line,
-    lineEnd: line,
-    body: sig ?? '',
-    docstring: parent ?? '',
-  }
-}
-
 export function extractPhp(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: PhpImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
-  const imports: PhpImport[] = []
+  const imports: AdapterImport[] = []
   const lines = content.split(/\r?\n/)
 
   // Stack of (className, braceDepthAtEntry, bodyEntered)
@@ -128,7 +105,7 @@ export function extractPhp(
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
       continue
     }
 
@@ -152,7 +129,7 @@ export function extractPhp(
       const kind = clsM[1] ?? 'class'
       const name = clsM[2] ?? ''
       const parent = currentClass()
-      symbols.push(makeSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
+      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
       contextStack.push([name, braceDepth - openB + closeB, false])
       if (openB > 0 && openB === closeB) {
         // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration
@@ -180,7 +157,7 @@ export function extractPhp(
       const kind = parent ? 'method' : 'function'
       const sigEnd = stripped.indexOf(')')
       const sig = sigEnd >= 0 ? stripped.slice(0, sigEnd + 1) : stripped
-      symbols.push(makeSymbol(filePath, name, kind, lineNum, sig.slice(0, 200), parent ?? undefined))
+      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, sig.slice(0, 200), parent ?? undefined))
       continue
     }
 
@@ -190,7 +167,7 @@ export function extractPhp(
       const name = propM[1] ?? ''
       const parent = currentClass()
       if (parent) {
-        symbols.push(makeSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), parent))
       }
       continue
     }
@@ -200,14 +177,14 @@ export function extractPhp(
     if (constM) {
       const name = constM[1] ?? ''
       const parent = currentClass()
-      symbols.push(makeSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent ?? undefined))
+      symbols.push(makeLineSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent ?? undefined))
       continue
     }
 
     // global define()
     const defineM = DEFINE_RE.exec(stripped)
     if (defineM) {
-      symbols.push(makeSymbol(filePath, defineM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, defineM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
     }
   }
 

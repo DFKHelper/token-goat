@@ -15,14 +15,8 @@
 
 import * as path from 'node:path'
 import type { SymbolEntry } from '../parser_types.js'
-import type { MiniSection } from './common.js'
+import type { MiniSection, AdapterImport } from './common.js'
 import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
-
-export interface LiquidImport {
-  readonly kind: string
-  readonly target: string
-  readonly line: number
-}
 
 export interface LiquidSection {
   readonly heading: string
@@ -45,9 +39,9 @@ export function extractLiquid(
   content: string,
   filePath: string,
   relPath?: string,
-): { symbols: SymbolEntry[]; imports: LiquidImport[]; sections: LiquidSection[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[]; sections: LiquidSection[] } {
   const symbols: SymbolEntry[] = []
-  const imports: LiquidImport[] = []
+  const imports: AdapterImport[] = []
   const sections: MiniSection[] = []
   const lineIndex = buildLineIndex(content)
   // Blank out HTML comments and CDATA sections (offset-preserving; see maskHtmlNoise in
