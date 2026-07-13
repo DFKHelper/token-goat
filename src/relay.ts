@@ -35,6 +35,7 @@ import './hooks_skill.js'
 import './hooks_bash.js'
 import './hooks_mcp.js'
 import './hooks_screenshot.js'
+import './hooks_agent_spawn.js'
 import './image_shrink.js'
 
 /** Default stdin read timeout: long enough for a piped payload, short enough
