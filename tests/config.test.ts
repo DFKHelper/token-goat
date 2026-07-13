@@ -17,8 +17,10 @@ const _testConfigPath = path.join(os.tmpdir(), `tg-config-test-${process.pid}.to
 
 import {
   defaultConfig,
+  getLastConfigParseError,
   invalidateConfigCache,
   loadConfig,
+  loadPersistedConfig,
   saveConfig,
 } from '../src/config.js'
 import { ENV_KEYS } from '../src/constants.js'
@@ -317,6 +319,60 @@ describe('loadConfig', () => {
     expect(loaded.hints.warn_unbalanced_shell_quoting).toBe(cfg.hints.warn_unbalanced_shell_quoting)
     expect(loaded.hints.cross_session_read_dedup).toBe(cfg.hints.cross_session_read_dedup)
     expect(loaded.hints.cross_session_read_dedup_ttl_secs).toBe(cfg.hints.cross_session_read_dedup_ttl_secs)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Corrupt config.toml handling (#249 regression)
+// ---------------------------------------------------------------------------
+
+describe('loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression)', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+  })
+
+  it('getLastConfigParseError() is null when config.toml is simply absent', () => {
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).toBeNull()
+  })
+
+  it('getLastConfigParseError() reports the parse failure when config.toml exists but is invalid TOML, while loadConfig still falls back to defaults', () => {
+    fs.writeFileSync(_testConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).not.toBeNull()
+  })
+
+  it('getLastConfigParseError() clears back to null on the next load once the file is fixed', () => {
+    fs.writeFileSync(_testConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    invalidateConfigCache()
+    loadConfig()
+    expect(getLastConfigParseError()).not.toBeNull()
+
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nenabled = false\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(false)
+    expect(getLastConfigParseError()).toBeNull()
+  })
+
+  it('loadPersistedConfig() also reports the parse failure, distinct from an absent file', () => {
+    const cfg1 = loadPersistedConfig()
+    expect(cfg1.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).toBeNull()
+
+    fs.writeFileSync(_testConfigPath, '[[[not toml\n', 'utf8')
+    const cfg2 = loadPersistedConfig()
+    expect(cfg2.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).not.toBeNull()
   })
 })
 

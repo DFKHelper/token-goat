@@ -620,6 +620,38 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
+// Set by loadConfig()/loadPersistedConfig() whenever the on-disk config.toml exists but fails
+// to parse (as opposed to being simply absent, which is not an error). Both loaders otherwise
+// treat a parse failure identically to a missing file — silently falling back to defaults with
+// no signal — so callers that need to warn the user (the CLI entry point, `config set`) check
+// this after loading instead of duplicating TOML-read/error-classification logic themselves.
+let _lastConfigParseError: string | null = null
+
+/**
+ * The error message from the most recent config.toml parse failure, or `null` if the most
+ * recent load either succeeded or found no file at all. See {@link _lastConfigParseError}.
+ */
+export function getLastConfigParseError(): string | null {
+  return _lastConfigParseError
+}
+
+/**
+ * Read and parse `p` as TOML, distinguishing "file does not exist" (not an error — returns
+ * `{}` with no message) from a genuine parse/read failure (returns `{}` with the error
+ * message). Shared by {@link loadConfig} and {@link loadPersistedConfig} so both loaders
+ * classify failures the same way.
+ */
+function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: string | null } {
+  try {
+    const text = fs.readFileSync(p, 'utf8')
+    return { raw: parse(text) as Record<string, unknown>, parseError: null }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { raw: {}, parseError: null }
+    return { raw: {}, parseError: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // load / save
 // ---------------------------------------------------------------------------
@@ -641,12 +673,11 @@ export function loadConfig(): Config {
 
   let raw: Record<string, unknown> = {}
   if (currentMtime !== 0) {
-    try {
-      const text = fs.readFileSync(p, 'utf8')
-      raw = parse(text) as Record<string, unknown>
-    } catch {
-      // unreadable — fall back to defaults
-    }
+    const result = readConfigToml(p)
+    raw = result.raw
+    _lastConfigParseError = result.parseError
+  } else {
+    _lastConfigParseError = null
   }
 
   const cfg = deepFreeze(_buildConfig(raw))
@@ -699,13 +730,8 @@ export function buildPersistedConfig(raw: Record<string, unknown>): Config {
  */
 export function loadPersistedConfig(): Config {
   const p = configPath()
-  let raw: Record<string, unknown> = {}
-  try {
-    const text = fs.readFileSync(p, 'utf8')
-    raw = parse(text) as Record<string, unknown>
-  } catch {
-    // missing/unreadable — fall back to defaults
-  }
+  const { raw, parseError } = readConfigToml(p)
+  _lastConfigParseError = parseError
   return buildPersistedConfig(raw)
 }
 
