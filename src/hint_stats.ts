@@ -248,12 +248,21 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
   }
 }
 
+// Matches "token-goat" only when it appears as a standalone command/argument token (bounded by
+// start-of-string, whitespace, or a shell operator on the left and whitespace/end-of-string on the
+// right) -- NOT when it's merely a path segment, e.g. `cat C:/Projects/token-goat/src/foo.ts`. This
+// project's own working directory is literally named "token-goat", so a naive `.includes('token-goat')`
+// would be trivially satisfied by any command whose target path lies inside this repo, defeating the
+// whole point of checking that the CLI was actually invoked.
+const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])token-goat(?=[\s]|$)/
+
 /** True when a subsequent Bash `command` honestly demonstrates the agent followed this specific hint's pointer: it invokes token-goat AND mentions the exact correlator the hint text gave. */
 function isActedOn(category: HintCategory, correlator: string, command: string): boolean {
+  if (!TOKEN_GOAT_INVOCATION_RE.test(command)) return false
   if (category === 'bash_recall') {
-    return command.includes('token-goat') && command.includes('bash-output') && command.includes(correlator)
+    return command.includes('bash-output') && command.includes(correlator)
   }
-  return command.includes('token-goat') && command.includes(correlator)
+  return command.includes(correlator)
 }
 
 /**

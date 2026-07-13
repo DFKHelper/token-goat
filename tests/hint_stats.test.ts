@@ -247,6 +247,25 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.acted_on).toBe(0)
     expect(row.resolved).toBe(0)
   })
+
+  it('does not credit acted_on when "token-goat" only appears as a path segment, not an actual CLI invocation', () => {
+    // This project's own working directory is literally named "token-goat", so a command that
+    // re-runs the exact wasteful pattern the hint warned about -- but whose target path merely
+    // lies inside this repo -- must not falsely satisfy the "did the agent invoke token-goat" check.
+    const n = nonce()
+    const correlator = 'C:/Projects/token-goat/src/hint_stats.ts'
+    logHintEmission('bash_redirect', n, correlator)
+    resolvePendingHintsForEvent(bashEvent(n, `cat ${correlator}`))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on, calls_remaining FROM hint_emissions WHERE session_id = ?').get(n) as {
+      resolved: number
+      acted_on: number
+      calls_remaining: number
+    }
+    expect(row.acted_on).toBe(0)
+    expect(row.resolved).toBe(0) // still pending, window merely decremented -- not falsely resolved as acted-on
+  })
 })
 
 describe('efficacy calculation', () => {
