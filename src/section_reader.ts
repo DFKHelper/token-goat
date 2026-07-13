@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
-import { yamlOpenQuoteAfter, yamlLineClosesQuote } from './parser.js'
+import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta } from './parser.js'
 import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
 
 /** One extracted section: its header text, body, and 1-based line span. */
@@ -146,14 +146,44 @@ function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
  * full dotted name is kept as the heading so `extractSection("tool.ruff")`
  * works.
  */
+/**
+ * Locate every TOML-table / INI-section header in `lines`.
+ *
+ * A TOML `"""`/`'''` multi-line string or a multi-line array can legally contain text that
+ * looks like a `[section]` header (a description quoting example TOML, an array-of-arrays row
+ * starting with `[`). Track the same open-delimiter/bracket-depth state the TOML indexer
+ * (extractTomlSymbols in parser.ts) uses so a line inside one of those spans is never mistaken
+ * for a real table header here while the indexer correctly skips it. Inert for INI, which has
+ * neither construct, so it is safe to always apply.
+ */
 function findTableHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
+  let openDelim: string | null = null
+  let arrayDepth = 0
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+
+    if (openDelim !== null) {
+      const closeIdx = line.indexOf(openDelim)
+      if (closeIdx === -1) continue
+      const restStart = closeIdx + openDelim.length
+      const m = TABLE_HEADER_RE.exec(line.slice(restStart))
+      if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
+      openDelim = lineOpenDelimiterAfter(line, restStart)
+      continue
+    }
+
+    if (arrayDepth > 0) {
+      arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(line))
+      continue
+    }
+
     const m = TABLE_HEADER_RE.exec(line)
-    if (m === null || m[1] === undefined) continue
-    headers.push({ heading: m[1].trim(), level: 1, index: i })
+    if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
+    openDelim = lineOpenDelimiterAfter(line, 0)
+    if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
   }
   return headers
 }
