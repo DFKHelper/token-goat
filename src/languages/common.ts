@@ -395,15 +395,29 @@ function lineCommentStartIndex(line: string, markers: string[], from = 0): numbe
  * by a brace-depth tracker. Quote delimiters themselves are left in place so column positions
  * and any surrounding-context checks are unaffected; only the interior is replaced with spaces.
  *
- * This targets the common case that caused the reported bug: a single-line double- or
- * single-quoted string containing an unbalanced brace. It is intentionally not a full string
- * lexer for every language's syntax, and callers should be aware of these gaps:
- *  - C# verbatim (`@"..."`) and interpolated (`$"..."`) strings are still blanked correctly in
- *    the common case: an escaped `""` inside a verbatim string is read as "close quote,
- *    immediately reopen", which blanks the same characters either way. The one edge case this
- *    misreads is a literal backslash directly before the closing quote of a verbatim string
- *    (e.g. `@"path\"`), which this function treats as an escaped quote and so does not close the
- *    string where the verbatim-string rules actually would. Rare in practice.
+ * String-interpolation holes are tracked so a nested quote inside one can't prematurely close
+ * the outer string: C# `$"...{expr}..."` (a bare `{` opens a hole once the string is `$`-prefixed),
+ * Kotlin `"...${expr}..."`, and PHP `"...{$expr}..."` all get a brace-depth-aware hole scan - the
+ * hole's own `{`/`}` are left unblanked (they're real code, and balanced, so they don't disturb a
+ * caller's net brace count), nested code braces inside the hole (e.g. a lambda body) are tracked
+ * via a depth counter so they don't close the hole early, and any string literal nested inside the
+ * hole (e.g. `raw.Replace("}", "")`) is recursively scanned with the same quote/escape/hole rules
+ * so its content is blanked like any other string and can't leak an unmatched brace. This targets
+ * the reported bug: `$"{raw.Replace("}", "")}"` used to read the nested `"` as closing the outer
+ * interpolated string early, exposing the hole's own `"}"` as bare unstripped code and leaking an
+ * unmatched `}` into the caller's brace-depth counter.
+ *
+ * It is intentionally not a full string lexer for every language's syntax, and callers should be
+ * aware of these remaining gaps:
+ *  - C# `{{`/`}}` (the escape for a literal brace inside an interpolated string) is not
+ *    special-cased, so a `{{` is read as an interpolation hole opening rather than a literal `{`.
+ *    Rare in practice.
+ *  - C# verbatim (`@"..."`) strings are still blanked correctly in the common case: an escaped
+ *    `""` inside a verbatim string is read as "close quote, immediately reopen", which blanks the
+ *    same characters either way. The one edge case this misreads is a literal backslash directly
+ *    before the closing quote of a verbatim string (e.g. `@"path\"`), which this function treats
+ *    as an escaped quote and so does not close the string where the verbatim-string rules
+ *    actually would. Rare in practice.
  *  - PHP heredoc/nowdoc, Kotlin triple-quoted raw strings (`"""..."""`), and PowerShell
  *    here-strings (`@"..."@` / `@'...'@`) can all span multiple lines and are NOT tracked across
  *    lines here - a brace inside one of those can still desync a caller's brace-depth counter.
@@ -411,48 +425,118 @@ function lineCommentStartIndex(line: string, markers: string[], from = 0): numbe
  *    `stripBlockCommentSpan` above.
  */
 export function stripStringLiterals(line: string): string {
+  // A string frame blanks its content until the matching quote (unless a hole is open on top of
+  // it). A hole frame passes its content through unblanked - it's real code - tracking nested
+  // `{`/`}` depth so a nested code brace doesn't close the hole early, and pushing a new string
+  // frame for any quote it encounters (e.g. the nested string in `Replace("}", "")`).
+  type Frame = { kind: 'string'; quote: string; bareBraceHole: boolean } | { kind: 'hole'; depth: number }
+
   let out = ''
   let i = 0
+  const stack: Frame[] = []
+
   while (i < line.length) {
     const ch = line[i]
-    if (ch === '"' || ch === "'") {
-      const quote = ch
-      out += quote
+
+    // A real single-line string/hole never contains a raw, unescaped newline. Some callers (e.g.
+    // Apex, which runs this over an entire file's content rather than one line at a time - see
+    // extractApex - so it can see a `//` comment's text before comment-stripping runs) can
+    // otherwise hand this a false "open string" state, e.g. an apostrophe inside a `// Don't ...`
+    // comment. Without this, an unmatched quote like that would blank every character - including
+    // newlines - until the next stray matching quote anywhere later in the file, collapsing lines
+    // together and desyncing any line-offset bookkeeping built from the original content. Treating
+    // `\n` as an implicit terminator that closes everything still open on the stack matches what
+    // every other caller of this function already does implicitly by only ever passing it one
+    // line (with no embedded `\n`) at a time.
+    if (ch === '\n') {
+      out += ch
       i++
-      while (i < line.length) {
-        const c = line[i]
-        // A real single-line string literal never contains a raw, unescaped newline. Some
-        // callers (e.g. Apex, which runs this over an entire file's content rather than one
-        // line at a time - see extractApex - so it can see a `//` comment's text before
-        // comment-stripping runs) can otherwise hand this a false "open string" state, e.g. an
-        // apostrophe inside a `// Don't ...` comment. Without this, an unmatched quote like that
-        // would blank every character - including newlines - until the next stray matching
-        // quote anywhere later in the file, collapsing lines together and desyncing any
-        // line-offset bookkeeping built from the original content. Treating `\n` as an implicit
-        // terminator closes the phantom string at end-of-line instead, matching what every
-        // other caller of this function already does implicitly by only ever passing it one
-        // line (with no embedded `\n`) at a time.
-        if (c === '\n') {
-          out += c
-          i++
-          break
-        }
-        if (c === '\\' && i + 1 < line.length) {
-          out += '  '
-          i += 2
-          continue
-        }
-        if (c === quote) {
-          out += quote
-          i++
-          break
-        }
-        out += ' '
-        i++
-      }
+      stack.length = 0
       continue
     }
-    out += ch
+
+    const top = stack[stack.length - 1]
+
+    if (top === undefined) {
+      if (ch === '"' || ch === "'") {
+        // A `$` immediately before the opening `"` marks a C# interpolated string, where a bare
+        // `{` (not `${`) opens an interpolation hole.
+        const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
+        stack.push({ kind: 'string', quote: ch, bareBraceHole })
+        out += ch
+        i++
+        continue
+      }
+      out += ch
+      i++
+      continue
+    }
+
+    if (top.kind === 'hole') {
+      if (ch === '"' || ch === "'") {
+        const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
+        stack.push({ kind: 'string', quote: ch, bareBraceHole })
+        out += ch
+        i++
+        continue
+      }
+      if (ch === '{') {
+        top.depth++
+        out += ch
+        i++
+        continue
+      }
+      if (ch === '}') {
+        if (top.depth > 0) {
+          top.depth--
+        } else {
+          stack.pop()
+        }
+        out += ch
+        i++
+        continue
+      }
+      out += ch
+      i++
+      continue
+    }
+
+    // top.kind === 'string'
+    if (ch === '\\' && i + 1 < line.length) {
+      out += '  '
+      i += 2
+      continue
+    }
+    if (ch === top.quote) {
+      stack.pop()
+      out += ch
+      i++
+      continue
+    }
+    if (top.quote === '"') {
+      if (top.bareBraceHole && ch === '{') {
+        // C# interpolated-string hole: a bare `{expr}` inside a `$"..."` string.
+        stack.push({ kind: 'hole', depth: 0 })
+        out += ch
+        i++
+        continue
+      }
+      if (!top.bareBraceHole && ch === '$' && line[i + 1] === '{') {
+        // Kotlin interpolation hole: `${expr}`.
+        stack.push({ kind: 'hole', depth: 0 })
+        out += line.slice(i, i + 2)
+        i += 2
+        continue
+      }
+      if (!top.bareBraceHole && ch === '{' && line[i + 1] === '$') {
+        // PHP complex-variable interpolation: `{$expr}`.
+        stack.push({ kind: 'hole', depth: 0 })
+        out += ch
+        i++
+        continue
+      }
+    }
+    out += ' '
     i++
   }
   return out
