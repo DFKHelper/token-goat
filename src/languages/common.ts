@@ -567,6 +567,15 @@ export interface MultilineStringState {
    * `'3'` here too. Unused for `verbatim`/`psHereDouble`/`psHereSingle`.
    */
   identifier: string
+  /**
+   * True only for a C# verbatim *interpolated* string (`$@"..."` / `@$"..."`). A bare `{` inside
+   * one opens an interpolation hole (real code, not string content) rather than literal text, so
+   * `findMultilineCloser`'s `verbatim` case must scan hole-aware - a `"` opening a nested string
+   * literal inside the hole (e.g. `$@"{Map("}")}"`) must not be misread as this verbatim string's
+   * own closing quote. Unused (implicitly false) for every other kind, including a plain
+   * non-interpolated `@"..."` verbatim string.
+   */
+  interpolated?: boolean
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
@@ -600,11 +609,63 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
       return m === null ? null : { maskEnd: from + m.index + m[0].length }
     }
     case 'verbatim': {
-      // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
-      // quote and does not close it.
+      if (!state.interpolated) {
+        // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
+        // quote and does not close it.
+        let j = from
+        while (j < line.length) {
+          if (line[j] === '"') {
+            if (line[j + 1] === '"') {
+              j += 2
+              continue
+            }
+            return { maskEnd: j + 1 }
+          }
+          j++
+        }
+        return null
+      }
+      // Interpolated verbatim string (`$@"..."` / `@$"..."`): a bare `{` opens an interpolation
+      // hole whose content is real code, not string content, so a `"` inside a nested string
+      // literal within the hole (e.g. `Map("}")` in `$@"{Map("}")}"`) must not be misread as this
+      // verbatim string's own closing quote - mirrors `stripStringLiterals`'s own bareBraceHole
+      // handling for the single-line `$"..."` case (see that function's doc comment), scoped to
+      // one line only. A hole (or its nested string) that itself spans multiple lines is a known,
+      // documented gap - same class of imprecision `stripStringLiterals` and this function's own
+      // non-interpolated branch above already accept.
       let j = from
+      let holeDepth = 0
+      let nestedQuote: string | null = null
       while (j < line.length) {
-        if (line[j] === '"') {
+        const c = line[j]
+        if (nestedQuote !== null) {
+          if (c === '\\' && j + 1 < line.length) {
+            j += 2
+            continue
+          }
+          if (c === nestedQuote) {
+            nestedQuote = null
+          }
+          j++
+          continue
+        }
+        if (holeDepth > 0) {
+          if (c === '"' || c === "'") {
+            nestedQuote = c
+            j++
+            continue
+          }
+          if (c === '{') holeDepth++
+          else if (c === '}') holeDepth--
+          j++
+          continue
+        }
+        if (c === '{') {
+          holeDepth = 1
+          j++
+          continue
+        }
+        if (c === '"') {
           if (line[j + 1] === '"') {
             j += 2
             continue
@@ -754,13 +815,15 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
       return { openStart: tripleIdx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: String(tripleLen) } }
     }
 
-    // Verbatim: content starts right after the opening `"`.
+    // Verbatim: content starts right after the opening `"`. `$@"..."` / `@$"..."` marks an
+    // interpolated verbatim string - findMultilineCloser needs to know so it scans hole-aware.
     const quoteIdx = verbIdx + (verbM?.[0].length ?? 1) - 1
-    const closer = findMultilineCloser(line, quoteIdx + 1, { kind: 'verbatim', identifier: '' })
+    const interpolated = (verbM?.[0] ?? '').includes('$')
+    const closer = findMultilineCloser(line, quoteIdx + 1, { kind: 'verbatim', identifier: '', interpolated })
     if (closer !== null) {
-      return { openStart: verbIdx, closesSameLine: closer.maskEnd, state: { kind: 'verbatim', identifier: '' } }
+      return { openStart: verbIdx, closesSameLine: closer.maskEnd, state: { kind: 'verbatim', identifier: '', interpolated } }
     }
-    return { openStart: verbIdx, closesSameLine: null, state: { kind: 'verbatim', identifier: '' } }
+    return { openStart: verbIdx, closesSameLine: null, state: { kind: 'verbatim', identifier: '', interpolated } }
   }
 
   if (lang === 'powershell') {
