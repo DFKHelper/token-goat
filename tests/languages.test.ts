@@ -330,6 +330,29 @@ public class Foo {
     expect(symbols.find((s) => s.name === 'Baz')?.docstring).toBe('Foo')
   })
 
+  it('does not let a C# `{{` escaped literal brace inside an interpolated string open a hole', () => {
+    // Regression: stripStringLiterals's bareBraceHole branch treated any `{` as opening an
+    // interpolation hole unconditionally, with no check for C#'s `{{` literal-brace escape. A
+    // `{{` inside a `$"..."` string opened a hole that never closed on this line, so the rest of
+    // the line (and the real code after it) was read as hole content instead of blanked string
+    // content, desyncing braceDepth and dropping every symbol after the offending method.
+    const content = `public class Alpha {
+    public void First() {
+        var s = $"{{";
+    }
+    public void Second() {
+    }
+    public void Third() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Alpha.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['Alpha', 'First', 'Second', 'Third'])
+    expect(symbols.find((s) => s.name === 'Second')?.docstring).toBe('Alpha')
+    expect(symbols.find((s) => s.name === 'Third')?.docstring).toBe('Alpha')
+  })
+
   it('detects an Allman-style auto-property with get/set on their own line', () => {
     const content = `public class Foo
 {
