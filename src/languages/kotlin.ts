@@ -28,8 +28,14 @@ interface ClassFrame {
   // Running open-minus-close count of the primary constructor's (and any same-line supertype
   // call's) parentheses, tracked only until bodyEntered flips true. A body-less class/interface/
   // object header (e.g. `data class Point(val x: Int, val y: Int)`, no trailing `{`) balances
-  // this back to 0 with no body ever opening -- see the immediate-pop check below.
+  // this back to 0 with no body ever opening -- see the pendingPop resolution below.
   parenBalance: number
+  // Set once a line leaves the frame body-less with balanced parens AND that line does not end
+  // in `:`/`,` (a Kotlin wrapped-supertype-list continuation marker). Popping does not happen
+  // immediately: a header can still legally continue onto the next line via a *leading* `:`/`,`
+  // (e.g. `class Foo(val x: Int)` / `    : Bar(x) {`), so the pop is deferred to the start of the
+  // next line, once that line's leading character rules out a continuation too.
+  pendingPop: boolean
 }
 
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
@@ -134,6 +140,23 @@ export function extractKotlin(
       continue
     }
 
+    // Resolve a body-less pop deferred from a prior line: a wrapped Kotlin supertype list can
+    // continue via a *leading* `:` or `,` on this new line (`class Foo(val x: Int)` /
+    // `    : Bar(x) {`), so a pending pop only fires once this line's leading character rules
+    // that out too. Must run before class/companion/member detection below so a genuinely
+    // finished body-less header's stack frame is gone before this new line is evaluated as its
+    // own (possibly top-level) declaration.
+    if (classStack.length > 0) {
+      const pendingTop = classStack[classStack.length - 1]!
+      if (pendingTop.pendingPop) {
+        if (stripped.startsWith(':') || stripped.startsWith(',')) {
+          pendingTop.pendingPop = false
+        } else {
+          classStack.pop()
+        }
+      }
+    }
+
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
     // import
@@ -167,12 +190,12 @@ export function extractKotlin(
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
-      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0 })
+      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     } else if (cm) {
       const cname = cm[1] ?? ''
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
-      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0 })
+      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     }
 
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
@@ -234,12 +257,12 @@ export function extractKotlin(
     // no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave
     // it on the stack forever, silently misattributing every later top-level declaration as one
     // of its members. Once this frame's own constructor parens (if any) are back in balance and
-    // no body brace opened on this same line, its header is complete with nothing left to enter
-    // -- pop it immediately. A genuinely multi-line constructor header (`class Foo(\n  val x: Int\n)
-    // {`) is unaffected: parenBalance stays > 0 until its closing-paren line, and that same line's
-    // trailing `{` flips bodyEntered to true before this check runs.
+    // no body brace opened on this same line, its header *might* be complete -- but a wrapped
+    // supertype list can still continue onto a later line (trailing `:`/`,` on this line, or a
+    // leading `:`/`,` on the next), so this only arms a pending pop; the top-of-loop check above
+    // resolves it once a following line proves no continuation follows.
     if (frame !== null && !frame.bodyEntered && frame.parenBalance <= 0) {
-      classStack.pop()
+      frame.pendingPop = !(stripped.endsWith(':') || stripped.endsWith(','))
     }
     // Pop finished class frames. A frame only pops once its own opening brace has actually been
     // entered (bodyEntered) - this guards a class whose primary-constructor header spans
