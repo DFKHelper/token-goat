@@ -855,6 +855,14 @@ describe('html adapter', () => {
     expect(onlyOnceCount).toBe(1)
   })
 
+  it('does not let a class token suppress an id of the same name on the same line (regression: html_id and html_class shared one dedup set keyed only on (name, line) with no kind component, so the id loop running first silently swallowed a class token equal to that id value as a false duplicate)', () => {
+    const content = '<section id="pricing" class="pricing"></section>'
+    const { symbols } = extractHtml(content, 'test.html')
+    const kinds = symbols.map((s) => `${s.kind}:${s.name}`)
+    expect(kinds).toContain('html_id:pricing')
+    expect(kinds).toContain('html_class:pricing')
+  })
+
   it('does not index commented-out markup and preserves the real section line range', () => {
     // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
     // script regexes ran, so dead/commented-out markup was indexed identically to live markup -

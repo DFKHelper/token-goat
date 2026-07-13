@@ -87,10 +87,15 @@ export function extractHtml(
   const totalLines = code.split('\n').length
   assignFlatEndLines(sections, totalLines)
 
-  // id and class attributes. Deduped by (name, line) - first occurrence wins, mirroring
-  // makeSymbolEmitter's `${name}\0${line}` key semantics in common.ts - and capped at
-  // MAX_SYMBOLS total, consistent with the other language adapters.
-  const seenIdClass = new Set<string>()
+  // id and class attributes. Deduped by (kind, name, line) - first occurrence wins within its
+  // own kind, mirroring makeSymbolEmitter's `${name}\0${line}` key semantics in common.ts - and
+  // capped at MAX_SYMBOLS total, consistent with the other language adapters. `kind` must be
+  // part of the key: html_id and html_class are distinct namespaces, and an element commonly
+  // repeats the same token as both (`id="pricing" class="pricing"`); a shared set keyed only on
+  // (name, line) let the id loop, which runs first, silently swallow the class as a false
+  // duplicate.
+  const seenId = new Set<string>()
+  const seenClass = new Set<string>()
 
   // id attributes
   for (const m of code.matchAll(ID_RE)) {
@@ -99,8 +104,8 @@ export function extractHtml(
     if (idVal && !isNoise(idVal)) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       const key = `${idVal}\0${line}`
-      if (!seenIdClass.has(key)) {
-        seenIdClass.add(key)
+      if (!seenId.has(key)) {
+        seenId.add(key)
         symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '' })
       }
     }
@@ -116,8 +121,8 @@ export function extractHtml(
         if (symbols.length >= MAX_SYMBOLS) break
         if (cls && !isNoise(cls)) {
           const key = `${cls}\0${line}`
-          if (!seenIdClass.has(key)) {
-            seenIdClass.add(key)
+          if (!seenClass.has(key)) {
+            seenClass.add(key)
             symbols.push({ filePath, name: cls, kind: 'html_class', lineStart: line, lineEnd: line, body: '', docstring: '' })
           }
         }
