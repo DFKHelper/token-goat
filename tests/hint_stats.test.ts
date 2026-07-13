@@ -383,6 +383,35 @@ describe('applyHintTracking', () => {
     const row = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ?').get(n) as { n: number }
     expect(row.n).toBe(0)
   })
+
+  it('preserves the full ACTED_ON_WINDOW of genuinely subsequent chances for a pre_tool_use-emitted hint, despite the guaranteed self-resolving post_tool_use pass for the same tool call', () => {
+    const n = nonce()
+    // preBashHandler fires on pre_tool_use — the real production caller of applyHintTracking for
+    // bash_redirect hints. Its own post_tool_use event for this SAME command is guaranteed to run
+    // resolvePendingHintsForEvent next, before any genuinely later tool call can occur.
+    const triggerCommand = 'cat C:/repo/file.ts'
+    const preEvent: HookEvent = { eventName: 'pre_tool_use', toolName: 'Bash', toolInput: { command: triggerCommand }, sessionId: n, agentId: undefined, raw: {} }
+    const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/file.ts::Foo"` instead.' }
+    applyHintTracking(preEvent, contextOut, classify)
+
+    // The self-resolving post_tool_use pass for the same triggering command.
+    resolvePendingHintsForEvent(bashEvent(n, triggerCommand))
+
+    // Four more genuinely subsequent, unrelated tool calls must still not exhaust the window.
+    for (let i = 0; i < 4; i++) {
+      resolvePendingHintsForEvent(readEvent(n, `C:/repo/unrelated-${i}.ts`))
+    }
+    let db = getDb(globalDbPath())
+    let row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.resolved).toBe(0) // still pending after the self-resolve + 4 unrelated calls
+
+    // The 5th genuinely subsequent call is the correct follow-through — must still count.
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/file.ts::Foo"'))
+    db = getDb(globalDbPath())
+    row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.acted_on).toBe(1)
+    expect(row.resolved).toBe(1)
+  })
 })
 
 describe('manual marks', () => {

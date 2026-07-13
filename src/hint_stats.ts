@@ -209,15 +209,28 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
   if (shouldSuppress(category, event.sessionId)) {
     return passOutput()
   }
-  logHintEmission(category, event.sessionId, correlator)
+  // A pre_tool_use-emitted hint (bash_redirect/bash_recall from preBashHandler,
+  // read_structural_nav/read_reread_dedup from preReadHandler) is always followed, in a
+  // guaranteed-next, separate `token-goat hook post_tool_use` process invocation, by
+  // resolvePendingHintsForEvent processing that SAME tool call's own post_tool_use event before
+  // any genuinely later tool call can occur -- consuming one calls_remaining unit against the
+  // very command the hint was warning about, not a "further" call. A post_tool_use-emitted hint
+  // (edit_reread_suggest from postEditHandler, or any hint from postReadHandler) does not have
+  // this problem: resolvePendingHintsForEvent is registered before those handlers (hint_stats.ts
+  // is pulled in transitively by hooks_read.ts, the first hook module relay.ts imports), so it
+  // runs earlier in the same runHook pass and never sees a row that handler hasn't inserted yet.
+  // Compensate only for the pre_tool_use case so both paths get the documented ACTED_ON_WINDOW
+  // worth of genuinely subsequent chances.
+  logHintEmission(category, event.sessionId, correlator, event.eventName === 'pre_tool_use')
   return output
 }
 
 /** Fail-soft: never throws, matching every other hook-path DB write in this codebase (see recall_index.ts's indexRecallEntry doc comment). */
-export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null): void {
+export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null, compensateSelfResolve = false): void {
   try {
     const db = getDb(globalDbPath())
     const resolved = correlator === null ? 1 : 0
+    const window = ACTED_ON_WINDOW + (compensateSelfResolve ? 1 : 0)
     db.prepare(
       `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining)
        VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, 0, @callsRemaining)`,
@@ -228,7 +241,7 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
       correlator,
       emittedAt: Date.now(),
       resolved,
-      callsRemaining: correlator === null ? 0 : ACTED_ON_WINDOW,
+      callsRemaining: correlator === null ? 0 : window,
     })
   } catch {
     // Fail-soft: a hint-tracking failure must never block the hint (or the tool call) it accompanies.
