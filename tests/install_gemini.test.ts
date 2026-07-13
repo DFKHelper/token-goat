@@ -151,6 +151,36 @@ describe('installGemini', () => {
     }
   })
 
+  // Regression: a token-goat hook command bakes in process.argv[1] (the running
+  // entry path) as a trailing arg. That path goes stale whenever the entry
+  // moves -- an npm reinstall, switching from a local checkout to a global
+  // install, etc. installGemini used to only check whether a token-goat entry
+  // was PRESENT (groupHasTokenGoat), never whether its baked path was still
+  // CURRENT, so a stale entry was treated as already installed and left
+  // pointing at a path that may no longer exist, forever.
+  it('repairs a stale baked entry path in an existing token-goat hook command instead of leaving it in place', () => {
+    installGemini()
+    const p = geminiSettingsPath()
+    // JSON.stringify doubles each backslash in a string, so a Windows entry
+    // path's on-disk representation has \\ where process.argv[1] has \.
+    const jsonEscapedEntryPath = process.argv[1]!.replace(/\\/g, '\\\\')
+    const entryPathPattern = new RegExp(jsonEscapedEntryPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+    const staleContent = fs.readFileSync(p, 'utf8').replace(entryPathPattern, '/some/stale/old-install-path/token-goat.mjs')
+    fs.writeFileSync(p, staleContent)
+    expect(readSettings().hooks?.['BeforeTool']).toBeDefined()
+
+    const result = installGemini()
+
+    expect(result.alreadyInstalled).toBe(false)
+    const settings = readSettings()
+    for (const event of ['BeforeTool', 'AfterTool', 'PreCompress']) {
+      for (const command of commandsFor(settings, event)) {
+        expect(command).not.toContain('old-install-path')
+        expect(command).toContain(`"${process.argv[1]}"`)
+      }
+    }
+  })
+
   it('preserves pre-existing unrelated settings.json keys and hook entries', () => {
     const p = geminiSettingsPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })

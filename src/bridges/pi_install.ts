@@ -138,7 +138,7 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
  * was actually present and removed; false when nothing was installed (no
  * write occurs in that case).
  */
-export function uninstallPi(opts: PiScopeOptions = {}): boolean {
+function uninstallPiScope(opts: PiScopeOptions): boolean {
   const extensionPath = piExtensionPath(opts)
   try {
     fs.unlinkSync(piEntrySidecarPath(opts))
@@ -151,6 +151,21 @@ export function uninstallPi(opts: PiScopeOptions = {}): boolean {
   } catch {
     return false
   }
+}
+
+// Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain
+// `token-goat uninstall --pi` (opts.local left unset) must remove the extension wherever
+// it actually is, not just the global scope, or a --local install silently survives
+// (the user has to remember to pass --local again at uninstall time, which they usually
+// won't). Only when the caller explicitly asks for the local scope (opts.local === true)
+// do we narrow to that one scope and leave a coexisting global install untouched.
+export function uninstallPi(opts: PiScopeOptions = {}): boolean {
+  if (opts.local === true) {
+    return uninstallPiScope({ local: true })
+  }
+  const globalRemoved = uninstallPiScope({ local: false })
+  const localRemoved = uninstallPiScope({ local: true })
+  return globalRemoved || localRemoved
 }
 
 /**

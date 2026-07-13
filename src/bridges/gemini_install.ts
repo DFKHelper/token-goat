@@ -219,20 +219,24 @@ function isGeminiTokenGoatCommand(command: string): boolean {
 }
 
 /**
- * True when `command` is exactly the *current* exec-path-hardened form
- * {@link geminiHookCommand} produces -- never the legacy bare `token-goat hook
- * <event>` form. Distinguishing this from {@link isGeminiTokenGoatCommand}
- * (which also matches the legacy form) lets {@link installGemini} tell "already
- * upgraded" apart from "still on the old, `.cmd`-shim-unsafe command" so a
- * re-install actually upgrades a legacy entry instead of treating it as
- * sufficient to skip.
+ * True when `command` is exactly `desiredCommand`, the *current*
+ * exec-path-hardened form {@link geminiHookCommand} produces for this event --
+ * never the legacy bare `token-goat hook <event>` form, and never a
+ * same-shape command whose baked entry path is stale (an `npm install -g`
+ * reinstall, or switching between a local dev checkout and a global install,
+ * changes `process.argv[1]` -- a prior install's baked path still matches the
+ * generic {@link GEMINI_ENTRY_PATH_MARKER_PATTERN} marker, so only an exact
+ * string comparison against the freshly-computed command can tell current
+ * from stale). Distinguishing this from {@link isGeminiTokenGoatCommand}
+ * (which matches ANY token-goat entry, legacy or stale-path or current) lets
+ * {@link installGemini} tell "already upgraded and current" apart from
+ * "still on the old, `.cmd`-shim-unsafe command, or pointing at a path that
+ * no longer exists" so a re-install actually repairs a stale/legacy entry
+ * instead of treating it as sufficient to skip.
  */
-function isCurrentGeminiTokenGoatCommand(command: string): boolean {
+function isCurrentGeminiTokenGoatCommand(command: string, desiredCommand: string): boolean {
   if (typeof command !== 'string') return false
-  const match = GEMINI_COMMAND_PATTERN.exec(command)
-  if (!match) return false
-  const entryPath = match[1] ?? ''
-  return GEMINI_ENTRY_PATH_MARKER_PATTERN.test(entryPath)
+  return command === desiredCommand
 }
 
 /** True when `groups` already has a hook entry matching `predicate` under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */
@@ -335,7 +339,7 @@ export function installGemini(): GeminiInstallResult {
     const command = geminiHookCommand(GEMINI_EVENT_ARG[event])
     const groups = [...(hooks[event] ?? [])]
     for (const matcher of desiredMatchersFor(event)) {
-      if (groupHasTokenGoat(groups, matcher, isCurrentGeminiTokenGoatCommand)) continue
+      if (groupHasTokenGoat(groups, matcher, (c) => isCurrentGeminiTokenGoatCommand(c, command))) continue
 
       // A stale entry (legacy bare command, or a same-shape command whose
       // baked entry path is otherwise not current) is not "already installed"
@@ -441,8 +445,9 @@ export function isGeminiInstalled(): boolean {
   const hooks = settings.hooks
   if (hooks === undefined) return false
   for (const event of GEMINI_HOOK_EVENTS) {
+    const command = geminiHookCommand(GEMINI_EVENT_ARG[event])
     for (const matcher of desiredMatchersFor(event)) {
-      if (!groupHasTokenGoat(hooks[event], matcher, isCurrentGeminiTokenGoatCommand)) return false
+      if (!groupHasTokenGoat(hooks[event], matcher, (c) => isCurrentGeminiTokenGoatCommand(c, command))) return false
     }
   }
   return true

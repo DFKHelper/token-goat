@@ -451,8 +451,16 @@ export function runDeps(opts: DepsOptions): number {
       if (fs.existsSync(base) && fs.statSync(base).isFile()) {
         resolved = base
       } else {
+        // NodeNext/ESM-style specifiers reference the compiled-.js output even when the
+        // source is TypeScript ("./foo.js" resolving to foo.ts) -- this codebase's own
+        // imports are written that way. Appending a source extension onto a base that
+        // already ends in one of them (e.g. base + '.ts' -> 'foo.js.ts') never matches
+        // anything, so strip a recognized source extension from base first and search from
+        // the bare stem instead.
+        const baseExt = path.extname(base)
+        const bareBase = SOURCE_EXTENSIONS.includes(baseExt) ? base.slice(0, -baseExt.length) : base
         for (const srcExt of SOURCE_EXTENSIONS) {
-          const candidate = base + srcExt
+          const candidate = bareBase + srcExt
           if (fs.existsSync(candidate)) {
             resolved = candidate
             break
@@ -694,13 +702,24 @@ export function runContextFor(opts: ContextForOptions): number {
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const hits = searchSymbolsFts(opts.task, top, undefined, rootDir)
 
+  if (hits.length === 0) {
+    emitErr(`No matches found for '${opts.task}'`)
+    return 1
+  }
+
   interface ContextEntry { file: string; symbol: string; kind: string; readCmd: string }
   const entries: ContextEntry[] = []
   let tokensSoFar = 0
 
   for (const h of hits) {
     const bodyTokens = estimateTokens(h.body ?? '')
-    if (budget !== undefined && tokensSoFar + bodyTokens > budget) break
+    // A `continue` (not `break`) here: hits are ranked by relevance, not by size, so one
+    // oversized top-ranked hit exceeding the remaining budget must not stop consideration of
+    // smaller, still-relevant hits ranked below it -- otherwise the whole result set can go
+    // empty even when plenty of smaller hits would fit. `hits` is already capped at `top` by
+    // searchSymbolsFts's own `limit` param above, so this loop can never emit more than `top`
+    // entries regardless.
+    if (budget !== undefined && tokensSoFar + bodyTokens > budget) continue
     tokensSoFar += bodyTokens
     entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, readCmd: `token-goat read "${h.filePath}::${h.name}"` })
   }
@@ -986,6 +1005,12 @@ export function runAsk(opts: AskOptions): number {
   }
 
   if (!backendLabel) return degrade()
+
+  // A configured backend with zero retrieval hits has no grounding context to answer from --
+  // calling the LLM anyway would hand it an empty SNIPPETS block and risk a hallucinated answer
+  // presented as if it were grounded in this codebase. Degrade the same way an unconfigured
+  // backend does rather than proceeding to synthesis.
+  if (hits.length === 0) return degrade()
 
   const isWin = process.platform === 'win32'
   let backendPath: string | null = null

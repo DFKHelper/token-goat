@@ -18,12 +18,20 @@
  *   with `updatedInput` (a `PreToolUse` rewrite). Used by the bash-compression
  *   hook to transparently wrap a command in `token-goat compress`; the object
  *   replaces the entire `tool_input`, so it must carry every original field.
+ * - `rewriteOutput` — the tool already ran; replace the result text the model
+ *   sees with `updatedOutput` (a `PostToolUse` rewrite, wire field
+ *   `updatedToolOutput`). Confirmed against https://code.claude.com/docs/en/hooks
+ *   (verified 2026-07-12): MCP-tool support has existed since before v2.1.121;
+ *   support for built-in tools (Bash, Read, Edit, ...) was added in v2.1.121.
+ *   As of this writing token-goat only emits this for MCP tools (see
+ *   `hooks_mcp.ts`'s spike handler, gated by `TOKEN_GOAT_MCP_REWRITE_SPIKE`).
  * - `pass`    — no-op; let the call proceed unchanged.
  */
 export type HookOutput =
   | { readonly hookType: 'deny'; readonly message: string }
   | { readonly hookType: 'context'; readonly context: string }
   | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
+  | { readonly hookType: 'rewriteOutput'; readonly updatedOutput: string }
   | { readonly hookType: 'pass' }
 
 /**

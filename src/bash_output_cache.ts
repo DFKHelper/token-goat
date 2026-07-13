@@ -463,6 +463,42 @@ function extractCatTarget(cmd: string, cwd: string): string | null {
   return null
 }
 
+/** A line that looks like it reports a problem: generic error/failure/warning marker, not tied to any specific test-runner or linter's output format. */
+const ISSUE_LINE_PATTERN = /\b(?:error|fail(?:ed|ure)?|warning)\b/i
+
+/**
+ * A generic, structural summary of the difference between a repeat command's
+ * cached prior output and its fresh output — folds a large rerun diff (test
+ * runner, linter, build tool, ...) into a short delta instead of repeating the
+ * full new output. Comparison is exact-line-match only; there is no
+ * tool-specific parsing of any particular runner's summary format.
+ *
+ * When the prior output contains at least one line matching a generic
+ * error/failure/warning marker ({@link ISSUE_LINE_PATTERN}), reports how many
+ * of those exact lines are no longer present verbatim in the new output
+ * ("resolved") against how many such lines remain in the new output. This is
+ * a conservative approximation — it counts exact line matches, not causally
+ * "the same issue" — but requires no knowledge of any specific tool's format.
+ *
+ * Otherwise (no issue-shaped lines to track) falls back to a plain line-count
+ * delta. Returns null when the two outputs are byte-identical (nothing to
+ * summarize).
+ */
+export function summarizeOutputDelta(oldOutput: string, newOutput: string): string | null {
+  if (oldOutput === newOutput) return null
+  const oldLines = oldOutput.split('\n')
+  const newLines = newOutput.split('\n')
+  const oldIssueLines = oldLines.filter((l) => ISSUE_LINE_PATTERN.test(l))
+  if (oldIssueLines.length > 0) {
+    const newIssueLineSet = new Set(newLines.filter((l) => ISSUE_LINE_PATTERN.test(l)))
+    const priorTotal = oldIssueLines.length
+    const resolved = oldIssueLines.filter((l) => !newIssueLineSet.has(l)).length
+    const remaining = newIssueLineSet.size
+    return `[token-goat: delta] ${resolved} of ${priorTotal} prior issues resolved; remaining: ${remaining}`
+  }
+  return `[token-goat: delta] output changed: ${oldLines.length} -> ${newLines.length} lines`
+}
+
 /**
  * Store a command's `output` and `exitCode`, returning its id.
  *

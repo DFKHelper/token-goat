@@ -2,7 +2,20 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// vi.mock is hoisted -- this redirects configPath() to a per-test-file temp file so the
+// hints.reread_deny / hints.reread_deny_min_bytes wiring tests below can set a non-default
+// config value deterministically. Mirrors tests/hooks_bash.test.ts's config.toml mock.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return {
+    ...original,
+    configPath: () => _testConfigPath,
+  }
+})
+
+const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-read-config-test-${process.pid}.toml`)
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler, postReadHandler, buildLineDiff } from '../src/hooks_read.js'
@@ -11,8 +24,10 @@ import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
 import { saveSessionState } from '../src/session_store.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
+import { compactPathFor, writeCompact } from '../src/doc_compact.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
@@ -166,6 +181,66 @@ describe('preReadHandler', () => {
       expect(result.message).toContain('To edit it anyway')
       expect(result.message).toContain('token-goat replace')
     }
+  })
+
+  // Regression (#247): hints.reread_deny/hints.reread_deny_min_bytes were defined, validated,
+  // persisted, and displayed in config.ts but had zero consumers -- the real deny logic in
+  // preReadHandler fired unconditionally, gated only by a hardcoded REREAD_DENY_BYTES constant.
+  describe('hints.reread_deny / reread_deny_min_bytes wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it('hints.reread_deny=false suppresses the deny for a file that would otherwise be denied', () => {
+      const cfg = defaultConfig()
+      cfg.hints.reread_deny = false
+      saveConfig(cfg)
+
+      // Large enough to trip the size-based deny, and re-read enough times (3rd read) to also
+      // trip the count-based deny -- both must be suppressed with reread_deny off.
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      const normalized = normalizePath(p)
+      recordFileRead(normalized)
+      recordFileRead(normalized)
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('already read this session')
+      }
+    })
+
+    it('hints.reread_deny_min_bytes raises the size threshold a re-read must clear to be denied', () => {
+      const cfg = defaultConfig()
+      // Well above this file's size, so the size-based deny at the default 50KB threshold would
+      // no longer fire once the configured threshold is honored.
+      cfg.hints.reread_deny_min_bytes = 200 * 1024
+      saveConfig(cfg)
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+    })
+
+    it('hints.reread_deny_min_bytes lowers the size threshold so a smaller re-read is denied', () => {
+      const cfg = defaultConfig()
+      cfg.hints.reread_deny_min_bytes = 1024
+      saveConfig(cfg)
+
+      // Below the default 50KB threshold but above the configured 1KB one.
+      const p = makeTmpFile('x'.repeat(2 * 1024))
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+    })
   })
 
   it('returns a large-file context hint for files between 100KB and 500KB', () => {
@@ -605,6 +680,59 @@ describe('preReadHandler', () => {
 
     const r3 = preReadHandler(readEvent(dir))
     expect(r3.hookType).toBe('deny')
+  })
+
+  it('does not intercept a Grep call against a doc file with a fresh compact sidecar — Grep must search the live content, not receive the served compact instead of running the search', () => {
+    const p = _makeTmpMdFile('# Title\n\nSome short doc content.\n')
+    const compactPath = compactPathFor(p)
+    writeCompact(compactPath, p, 'Title\nAn extractive summary of the doc.')
+
+    const result = preReadHandler(grepPathEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not intercept a Grep call against a .ipynb notebook — Grep must search the live content, not the output-stripped sidecar', () => {
+    const bigOutput = 'A'.repeat(6000)
+    const nb = {
+      cells: [
+        {
+          cell_type: 'code',
+          source: ['print("hi")'],
+          execution_count: 1,
+          outputs: [{ output_type: 'stream', name: 'stdout', text: [bigOutput] }],
+        },
+      ],
+      metadata: {},
+      nbformat: 4,
+      nbformat_minor: 5,
+    }
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ipynb`)
+    fs.writeFileSync(p, JSON.stringify(nb))
+    tmpFiles.push(p)
+
+    const result = preReadHandler(grepPathEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not intercept a Grep call against a large markdown file with >=3 headings — Grep must search, not receive the heading-tree hint in place of running the search', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here`
+
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(10000))
+    const result = preReadHandler(grepPathEvent(p))
+    expect(result.hookType).toBe('pass')
   })
 
   it('denies 2nd read of any .md file regardless of size', () => {

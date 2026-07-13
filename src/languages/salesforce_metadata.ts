@@ -43,6 +43,33 @@ function xmlText(content: string, tag: string): string | null {
   return decodeXml(match[1].trim())
 }
 
+// Like xmlText, but only returns a match that is a DIRECT child of `content` (nesting depth 0),
+// not one buried inside a descendant element. Salesforce serializes each Flow element's own
+// children alphabetically, so a collection child that sorts before "name" - e.g. a screen's
+// <fields> (each of which has its own <name> naming the field) or an actionCall's
+// <inputParameters> (each named too) - ends up BEFORE the element's own <name> in raw XML text.
+// A first-match-anywhere search like xmlText would then return the wrong, deeply-nested name
+// instead of the flow element's own.
+function directChildText(content: string, tag: string): string | null {
+  const candidateRe = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'gi')
+  const tagRe = /<(\/?)([A-Za-z][A-Za-z0-9_]*)\b[^>]*?(\/?)>/g
+  for (const cand of content.matchAll(candidateRe)) {
+    const idx = cand.index ?? 0
+    let depth = 0
+    tagRe.lastIndex = 0
+    let t: RegExpExecArray | null
+    while ((t = tagRe.exec(content)) !== null) {
+      if (t.index >= idx) break
+      const closing = t[1] === '/'
+      const selfClosing = t[3] === '/'
+      if (selfClosing) continue
+      depth += closing ? -1 : 1
+    }
+    if (depth === 0) return decodeXml((cand[1] ?? '').trim())
+  }
+  return null
+}
+
 function decodeXml(value: string): string {
   return value
     .replace(/&apos;/g, "'")
@@ -222,7 +249,7 @@ function addFlowElements(
     if (symbols.length >= MAX_SYMBOLS) return
     const tag = match[1] ?? ''
     const inner = match[2] ?? ''
-    const name = xmlText(inner, 'name')
+    const name = directChildText(inner, 'name')
     if (name === null || name === '') continue
     const startOffset = match.index ?? 0
     const endOffset = startOffset + match[0].length

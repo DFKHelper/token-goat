@@ -221,8 +221,8 @@ describe('real embeddings find meaning-based matches plain FTS misses', () => {
       const dbPath = path.join(TMP, 'index.db')
       const filePath = path.join(TMP, 'users.ts')
       const content =
-        'export function getUserByEmail(address: string): { id: number } | null {\n' +
-        '  const match = ACCOUNTS.find((row) => row.contact === address)\n' +
+        'export function getUserByEmail(input: string): { id: number } | null {\n' +
+        '  const match = ACCOUNTS.find((row) => row.contact === input)\n' +
         '  return match ? { id: match.id } : null\n' +
         '}\n\n' +
         'const ACCOUNTS = [{ id: 1, contact: "a@example.com" }]\n'
@@ -234,9 +234,11 @@ describe('real embeddings find meaning-based matches plain FTS misses', () => {
       const query = 'look up an account using its email address'
       const db = getDb(dbPath)
 
-      // Control: FTS ANDs every query word as a separate literal token (sanitizeFtsQuery); several
-      // ("look", "an", "using", "its") never appear in the fixture, so no row can satisfy every
-      // term - this is the exact fallback the pre-fix cmdSemantic always used.
+      // Control: searchSymbolsFts now retries with an OR-joined query when the AND-joined
+      // attempt returns zero rows, so this control must avoid *every* literal word overlap with
+      // the fixture (not just avoid an all-terms-present AND match) -- none of the query's words
+      // appear verbatim in the fixture's name/body/docstring, so even the OR-widened retry can't
+      // match it. That's what makes the embeddings match below a genuine meaning-based hit.
       const ftsHits = searchSymbolsFts(query, 20, dbPath)
       expect(ftsHits.some((s) => s.name === 'getUserByEmail')).toBe(false)
 

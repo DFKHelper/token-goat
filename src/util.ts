@@ -10,7 +10,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -245,10 +245,38 @@ export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array)
  * overwrite, so a bad merge or corrupt rewrite has a recovery copy. No-op if `p`
  * doesn't exist yet (nothing to back up).
  */
+// Caps how many timestamped backups pile up per file. backupFile runs on every install/
+// uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts,
+// gemini_install.ts, openclaw_install.ts), so a config directory a user re-installs into
+// repeatedly would otherwise accumulate one .bak.<timestamp> file forever.
+const MAX_BACKUPS_PER_FILE = 5
+
 export function backupFile(p: string): void {
   if (!existsSync(p)) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   copyFileSync(p, `${p}.bak.${stamp}`)
+  pruneOldBackups(p)
+}
+
+function pruneOldBackups(p: string): void {
+  const dir = path.dirname(p)
+  const prefix = `${path.basename(p)}.bak.`
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return
+  }
+  // ISO-with-dashes timestamps sort lexicographically in chronological order.
+  const backups = entries.filter((e) => e.startsWith(prefix)).sort()
+  const excess = backups.length - MAX_BACKUPS_PER_FILE
+  for (const stale of backups.slice(0, Math.max(0, excess))) {
+    try {
+      unlinkSync(path.join(dir, stale))
+    } catch {
+      // Best-effort cleanup; a failed unlink here shouldn't fail the caller's backup.
+    }
+  }
 }
 
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs

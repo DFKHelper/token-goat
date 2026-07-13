@@ -10,8 +10,30 @@ await esbuild.build({
   target: 'node22',
   format: 'esm',
   outfile: 'dist/token-goat.mjs',
-  // native addons cannot be bundled
-  external: ['better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*'],
+  // Native addons cannot be bundled, and every package here is declared
+  // optionalDependencies in package.json — bundling one anyway (as sharp,
+  // puppeteer-core, pdfjs-dist, exceljs, fflate, fast-xml-parser, and
+  // @modelcontextprotocol/sdk previously were, via their `await import(...)`
+  // call sites) defeats "optional": esbuild statically resolves and inlines
+  // even a dynamic `import('literal')`, so the feature only worked at runtime
+  // because a matching platform package happened to be present in
+  // node_modules, not because the graceful-degradation fallback ever ran.
+  external: [
+    'better-sqlite3',
+    'sqlite-vec',
+    'tree-sitter',
+    'tree-sitter-*',
+    'sharp',
+    'puppeteer-core',
+    'pdfjs-dist',
+    'pdfjs-dist/*',
+    'exceljs',
+    'fflate',
+    'fast-xml-parser',
+    '@modelcontextprotocol/sdk',
+    '@modelcontextprotocol/sdk/*',
+    '@xenova/transformers',
+  ],
   banner: {
     // The shebang lets the OS run this file directly.
     // The require polyfill makes esbuild's CJS-interop stub (__require2) work
@@ -44,7 +66,22 @@ await esbuild.build({
   target: 'node22',
   format: 'esm',
   outfile: 'dist/token-goat-hook.mjs',
-  external: ['better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*'],
+  external: [
+    'better-sqlite3',
+    'sqlite-vec',
+    'tree-sitter',
+    'tree-sitter-*',
+    'sharp',
+    'puppeteer-core',
+    'pdfjs-dist',
+    'pdfjs-dist/*',
+    'exceljs',
+    'fflate',
+    'fast-xml-parser',
+    '@modelcontextprotocol/sdk',
+    '@modelcontextprotocol/sdk/*',
+    '@xenova/transformers',
+  ],
   banner: {
     js: [
       "import { createRequire as __cjsRequire } from 'node:module';",

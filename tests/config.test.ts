@@ -17,8 +17,10 @@ const _testConfigPath = path.join(os.tmpdir(), `tg-config-test-${process.pid}.to
 
 import {
   defaultConfig,
+  getLastConfigParseError,
   invalidateConfigCache,
   loadConfig,
+  loadPersistedConfig,
   saveConfig,
 } from '../src/config.js'
 import { ENV_KEYS } from '../src/constants.js'
@@ -221,21 +223,6 @@ describe('loadConfig', () => {
     }
   })
 
-  it('clamps an out-of-range env var override for TOKEN_GOAT_WORKER_MAX_POOL to the documented max (1-8)', () => {
-    const orig = process.env['TOKEN_GOAT_WORKER_MAX_POOL']
-    try {
-      process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = '999'
-      const cfg = loadConfig()
-      expect(cfg.worker.max_pool_workers).toBe(8)
-    } finally {
-      if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_WORKER_MAX_POOL']
-      } else {
-        process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = orig
-      }
-    }
-  })
-
   it('clamps a below-range env var override for TOKEN_GOAT_HOOK_WATCHDOG_MS to the documented min (100ms)', () => {
     const orig = process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS']
     try {
@@ -251,6 +238,21 @@ describe('loadConfig', () => {
     }
   })
 
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WORKER_MAX_POOL to the documented max (1-8)', () => {
+    const orig = process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+    try {
+      process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = '999'
+      const cfg = loadConfig()
+      expect(cfg.worker.max_pool_workers).toBe(8)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+      } else {
+        process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = orig
+      }
+    }
+  })
+
   it('mtime cache: second call with unchanged file returns same object reference', () => {
     // Write a minimal TOML so the file exists
     fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
@@ -258,6 +260,21 @@ describe('loadConfig', () => {
     const first = loadConfig()
     const second = loadConfig()
     expect(second).toBe(first)
+  })
+
+  it('the cached object is frozen (regression: a caller mutating a sub-field of the shared cached config, e.g. loadConfig().hints.foo = x, used to silently corrupt every other caller sharing that same reference until the next cache invalidation)', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+
+    const cfg = loadConfig()
+
+    expect(Object.isFrozen(cfg)).toBe(true)
+    expect(Object.isFrozen(cfg.hints)).toBe(true)
+    expect(Object.isFrozen(cfg.worker.blocked_roots)).toBe(true)
+    expect(() => {
+      ;(cfg as { compact_assist: { min_events: number } }).compact_assist.min_events = 999
+    }).toThrow(TypeError)
+    // The failed mutation attempt above must not have partially applied.
+    expect(loadConfig().compact_assist.min_events).toBe(4)
   })
 
   it('mtime cache: invalidated by invalidateConfigCache()', () => {
@@ -276,7 +293,7 @@ describe('loadConfig', () => {
     cfg.compact_assist.min_events = 7
     cfg.bash_compress.max_lines = 500
     cfg.hints.git_hint_max_ms = 99
-    cfg.worker.max_pool_workers = 2
+    cfg.worker.blocked_roots = ['/tmp/blocked']
     cfg.image_shrink.jpeg_quality = 85
 
     saveConfig(cfg)
@@ -286,7 +303,7 @@ describe('loadConfig', () => {
     expect(loaded.compact_assist.min_events).toBe(7)
     expect(loaded.bash_compress.max_lines).toBe(500)
     expect(loaded.hints.git_hint_max_ms).toBe(99)
-    expect(loaded.worker.max_pool_workers).toBe(2)
+    expect(loaded.worker.blocked_roots).toEqual(['/tmp/blocked'])
     expect(loaded.image_shrink.jpeg_quality).toBe(85)
   })
 
@@ -302,6 +319,60 @@ describe('loadConfig', () => {
     expect(loaded.hints.warn_unbalanced_shell_quoting).toBe(cfg.hints.warn_unbalanced_shell_quoting)
     expect(loaded.hints.cross_session_read_dedup).toBe(cfg.hints.cross_session_read_dedup)
     expect(loaded.hints.cross_session_read_dedup_ttl_secs).toBe(cfg.hints.cross_session_read_dedup_ttl_secs)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Corrupt config.toml handling (#249 regression)
+// ---------------------------------------------------------------------------
+
+describe('loadConfig / loadPersistedConfig distinguish a parse failure from a missing file (#249 regression)', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+  })
+
+  it('getLastConfigParseError() is null when config.toml is simply absent', () => {
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).toBeNull()
+  })
+
+  it('getLastConfigParseError() reports the parse failure when config.toml exists but is invalid TOML, while loadConfig still falls back to defaults', () => {
+    fs.writeFileSync(_testConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).not.toBeNull()
+  })
+
+  it('getLastConfigParseError() clears back to null on the next load once the file is fixed', () => {
+    fs.writeFileSync(_testConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    invalidateConfigCache()
+    loadConfig()
+    expect(getLastConfigParseError()).not.toBeNull()
+
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nenabled = false\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.enabled).toBe(false)
+    expect(getLastConfigParseError()).toBeNull()
+  })
+
+  it('loadPersistedConfig() also reports the parse failure, distinct from an absent file', () => {
+    const cfg1 = loadPersistedConfig()
+    expect(cfg1.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).toBeNull()
+
+    fs.writeFileSync(_testConfigPath, '[[[not toml\n', 'utf8')
+    const cfg2 = loadPersistedConfig()
+    expect(cfg2.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
+    expect(getLastConfigParseError()).not.toBeNull()
   })
 })
 
@@ -344,7 +415,7 @@ describe('defaultConfig field spot-checks', () => {
     const cfg = defaultConfig()
     expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10, 30])
     expect(cfg.hints.reread_deny).toBe(true)
-    expect(cfg.hints.reread_deny_min_bytes).toBe(2048)
+    expect(cfg.hints.reread_deny_min_bytes).toBe(51_200)
     expect(cfg.hints.large_read_redirect_bytes).toBe(512_000)
   })
 

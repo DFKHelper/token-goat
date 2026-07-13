@@ -63,8 +63,12 @@ export function stripCstyleComments(
     let j = 0
     while (j < line.length) {
       if (!inComment) {
+        const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
         let open = line.indexOf('/*', j)
-        while (open !== -1 && isInsideStringLiteral(line, open, j)) {
+        while (
+          open !== -1 &&
+          (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+        ) {
           open = line.indexOf('/*', open + 1)
         }
         if (open === -1) {
@@ -190,6 +194,83 @@ export function stripHashComments(text: string): string {
     .join('\n')
 }
 
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
+const HTML_SCRIPT_BODY_RE = /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi
+const HTML_CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g
+// Liquid's own comment tag, e.g. `{% comment %}...{% endcomment %}` or the whitespace-control
+// variant `{%- comment -%}...{%- endcomment -%}`. Blanked the same way as HTML `<!-- -->`
+// comments below; applying this mask universally (not just for .liquid files) is harmless since
+// `{% comment %}` syntax never occurs in plain HTML/other file kinds this function is used for.
+const LIQUID_COMMENT_RE = /{%-?\s*comment\s*-?%}[\s\S]*?{%-?\s*endcomment\s*-?%}/gi
+
+// Blanks HTML comments, Liquid {% comment %} blocks, <script> element bodies (tags kept intact so
+// callers that still need to read the opening tag, e.g. a script `src=` extractor, are
+// unaffected), and CDATA sections - all with spaces, never newlines, so line/offset math against
+// the original text stays valid. Without this, a heading-shaped string sitting inside
+// a comment, a JS template literal in a <script> block, or a CDATA-wrapped payload
+// gets scanned as if it were real markup and produces a phantom section/symbol.
+export function maskHtmlNoise(text: string): string {
+  // Script bodies are masked FIRST, before HTML-comment masking: a literal `<!--` sitting
+  // inside a <script> string (with no matching `-->` in that same script tag) would otherwise
+  // be treated by HTML_COMMENT_RE as a real comment opener, greedily matching everything up to
+  // the NEXT `-->` anywhere later in the document -- including real headings in between.
+  // Masking script bodies first blanks any such literal `<!--`/`-->` substrings before
+  // HTML_COMMENT_RE ever runs, so it can no longer misfire across a script boundary. An HTML
+  // comment that itself contains a `<script>`-shaped substring is unaffected by this reorder:
+  // HTML_SCRIPT_BODY_RE would just mask that fake script body too (a no-op either way, since
+  // the surrounding HTML_COMMENT_RE pass immediately after blanks that whole span regardless).
+  let out = text.replace(HTML_SCRIPT_BODY_RE, (_m, open: string, body: string, close: string) =>
+    open + body.replace(/[^\n]/g, ' ') + close,
+  )
+  out = out.replace(HTML_COMMENT_RE, (m) => m.replace(/[^\n]/g, ' '))
+  out = out.replace(LIQUID_COMMENT_RE, (m) => m.replace(/[^\n]/g, ' '))
+  out = out.replace(HTML_CDATA_RE, (m) => m.replace(/[^\n]/g, ' '))
+  return out
+}
+
+// ATX-style HTML/Liquid `<h1>`-`<h6>` headings. `s` (dotall) lets `.*?` cross newlines so a
+// heading formatted across multiple lines (e.g. `<h1>\n  Title\n</h1>`, common
+// HTML-formatter/pretty-printer output) still matches -- the non-greedy `.*?` still stops at
+// the first matching `</hN>`, so this doesn't introduce over-greedy matches.
+const HTML_HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
+const HTML_HEADING_TAG_STRIP_RE = /<[^>]+>/g
+
+/** One `<hN>...</hN>` match found by {@link findHtmlHeadingMatches}. */
+export interface HtmlHeadingMatch {
+  /** Heading level, 1-6. */
+  readonly level: number
+  /** Inner text with nested tags stripped and whitespace trimmed. May be empty. */
+  readonly heading: string
+  /** Character offset of the match start in the (unmasked) source text. */
+  readonly offset: number
+  /** The full matched `<hN ...>...</hN>` text, e.g. for callers that need to inspect attributes
+   * on the opening tag (such as an `id=` anchor) without re-scanning the source. */
+  readonly tag: string
+}
+
+/**
+ * Find every `<h1>`-`<h6>` heading in HTML/Liquid `content`, masking comments, `<script>`
+ * bodies, and CDATA sections first via {@link maskHtmlNoise} so heading-shaped text sitting
+ * inside one of those (a commented-out `<h1>`, a JS template literal, a CDATA payload) is not
+ * mistaken for a real heading.
+ *
+ * Shared by the indexer (`html.ts`, `liquid.ts`) and the live section-reading fallback
+ * (`section_reader.ts`) so a heading indexed as a symbol is always reachable via the live
+ * `section` command, and vice versa -- one regex/masking implementation instead of two that can
+ * drift out of sync.
+ */
+export function findHtmlHeadingMatches(content: string): HtmlHeadingMatch[] {
+  const masked = maskHtmlNoise(content)
+  const matches: HtmlHeadingMatch[] = []
+  for (const m of masked.matchAll(HTML_HEADING_RE)) {
+    const level = parseInt(m[1] ?? '1', 10)
+    const raw = m[2] ?? ''
+    const heading = raw.replace(HTML_HEADING_TAG_STRIP_RE, '').trim()
+    matches.push({ level, heading, offset: m.index ?? 0, tag: m[0] ?? '' })
+  }
+  return matches
+}
+
 /** Strip SQL ``-- …`` line comments. */
 export function stripSqlLineComments(text: string): string {
   return text
@@ -254,8 +335,12 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
   let comment = inComment
   while (j < line.length) {
     if (!comment) {
+      const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
       let open = line.indexOf('/*', j)
-      while (open !== -1 && isInsideStringLiteral(line, open, j)) {
+      while (
+        open !== -1 &&
+        (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+      ) {
         open = line.indexOf('/*', open + 1)
       }
       if (open === -1) {
@@ -282,15 +367,25 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
  * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
  */
 export function stripLineComment(line: string, markers: string[] = ['//']): string {
+  const cutIdx = lineCommentStartIndex(line, markers)
+  return cutIdx === -1 ? line : line.slice(0, cutIdx)
+}
+
+/**
+ * Index of the first real (not-inside-a-string-literal) occurrence of any marker in
+ * `markers`, or -1 if none is found. Shared scan logic behind {@link stripLineComment} and
+ * `findMultilineOpener`'s comment-awareness guard below.
+ */
+function lineCommentStartIndex(line: string, markers: string[], from = 0): number {
   let cutIdx = -1
   for (const marker of markers) {
-    let idx = line.indexOf(marker)
-    while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+    let idx = line.indexOf(marker, from)
+    while (idx !== -1 && isInsideStringLiteral(line, idx, from)) {
       idx = line.indexOf(marker, idx + 1)
     }
     if (idx !== -1 && (cutIdx === -1 || idx < cutIdx)) cutIdx = idx
   }
-  return cutIdx === -1 ? line : line.slice(0, cutIdx)
+  return cutIdx
 }
 
 /**
@@ -452,13 +547,76 @@ interface OpenerMatch {
   state: MultilineStringState
 }
 
+// Line-comment marker(s) recognized for each language's findMultilineOpener guard below --
+// an opener-shaped sequence sitting inside one of these is prose, not real syntax.
+const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = {
+  php: ['//', '#'],
+  kotlin: ['//'],
+  csharp: ['//'],
+  powershell: ['#'],
+}
+
+// Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
+// below. PowerShell is deliberately excluded: its block-comment opener `<#` always contains the
+// literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so
+// the line-comment guard above incidentally already treats everything from `<#` onward as
+// commented -- an equivalent check here would be redundant.
+const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp'])
+
+/**
+ * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
+ * or before `idx` and has not yet closed by `idx`. Mirrors the open/close scan
+ * `stripBlockCommentSpan` performs, but only answers the "is idx inside a same-line block
+ * comment" question for `findMultilineOpener`'s guard below -- a block comment that started on
+ * a PRIOR line is already handled by each caller's existing `inComment` gate, which skips
+ * calling `stripMultilineStringSpan` (and therefore this function) entirely on lines that start
+ * already inside one.
+ */
+function isInsideSameLineBlockComment(line: string, idx: number, from = 0): boolean {
+  let comment = false
+  let j = from
+  while (j < idx) {
+    if (!comment) {
+      const open = line.indexOf('/*', j)
+      if (open === -1 || open >= idx) return false
+      if (isInsideStringLiteral(line, open, from)) {
+        j = open + 2
+        continue
+      }
+      comment = true
+      j = open + 2
+    } else {
+      const close = line.indexOf('*/', j)
+      if (close === -1 || close >= idx) return true
+      comment = false
+      j = close + 2
+    }
+  }
+  return comment
+}
+
 function findMultilineOpener(line: string, from: number, lang: MultilineStringLang): OpenerMatch | null {
+  // Where this line's real (not-inside-a-string) `//`/`#` comment begins, if any. An opener
+  // match at or after this index is opener-shaped text inside a comment (e.g. `// see """docs`
+  // or `# example: @"`), not a genuine multi-line string opener -- without this, such a line
+  // desyncs every following line's parse state (brace counting, symbol extraction) until an
+  // unrelated later closer happens to be found.
+  // `from` marks where a previously-closed multi-line string (that closed mid-line) ends --
+  // everything in `line` before it is masked string content, not real code. Scanning these
+  // guards from index 0 instead would let a `//`/`#`, unbalanced `/*`, or odd quote count that
+  // merely happens to sit inside that ALREADY-CLOSED string's own content wrongly veto a genuine
+  // second opener later on the same line, so every guard below is bounded to start at `from`.
+  const commentIdx = lineCommentStartIndex(line, MULTILINE_OPENER_COMMENT_MARKERS[lang], from)
+  const isCommented = (idx: number): boolean =>
+    (commentIdx !== -1 && idx >= commentIdx) ||
+    (MULTILINE_OPENER_BLOCK_COMMENT_LANGS.has(lang) && isInsideSameLineBlockComment(line, idx, from))
+
   if (lang === 'php') {
     // <<<IDENTIFIER (heredoc) or <<<'IDENTIFIER'/<<<"IDENTIFIER" (nowdoc uses single quotes).
     const re = /<<<\s*(['"]?)([A-Za-z_]\w*)\1/g
     re.lastIndex = from
     const m = re.exec(line)
-    if (!m || isInsideStringLiteral(line, m.index)) return null
+    if (!m || isInsideStringLiteral(line, m.index, from) || isCommented(m.index)) return null
     const identifier = m[2] ?? ''
     const kind: MultilineStringKind = m[1] === "'" ? 'nowdoc' : 'heredoc'
     // Heredoc/nowdoc syntax never has real code after the opening marker on the same line.
@@ -469,7 +627,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const idx = line.indexOf('"""', from)
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
-    if (idx === -1 || isInsideStringLiteral(line, idx)) return null
+    if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const closeIdx = line.indexOf('"""', idx + 3)
     if (closeIdx !== -1) {
       return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
@@ -487,7 +645,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     let tripleIdx = tripleM ? tripleM.index : -1
     const tripleLen = tripleM ? tripleM[0].length : 0
     // Same guard as PHP's heredoc opener and Kotlin above.
-    if (tripleIdx !== -1 && isInsideStringLiteral(line, tripleIdx)) tripleIdx = -1
+    if (tripleIdx !== -1 && (isInsideStringLiteral(line, tripleIdx, from) || isCommented(tripleIdx))) tripleIdx = -1
 
     const verbRe = /\$?@\$?"/g
     verbRe.lastIndex = from
@@ -496,7 +654,8 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     // Same guard as the triple-quote branch above: an `@"` (or `$@"`) that textually appears
     // inside an already-open single-line string literal - e.g. the ordinary string `"@"` in
     // `private const string At = "@";` - is not a real verbatim-string opener.
-    if (verbIdx !== -1 && isInsideStringLiteral(line, verbIdx)) verbIdx = -1
+    if (verbIdx !== -1 && isCommented(verbIdx)) verbIdx = -1
+    if (verbIdx !== -1 && isInsideStringLiteral(line, verbIdx, from)) verbIdx = -1
 
     if (tripleIdx === -1 && verbIdx === -1) return null
     const useTriple = tripleIdx !== -1 && (verbIdx === -1 || tripleIdx < verbIdx)
@@ -522,16 +681,19 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
 
   if (lang === 'powershell') {
     // PowerShell here-strings require `@"` / `@'` to be the last non-whitespace token on the
-    // opening line; nothing (not even a trailing comment) may follow it.
+    // opening line; nothing (not even a trailing comment) may follow it. That end-of-line
+    // requirement alone doesn't rule out the opener-shaped text itself living inside a `#`
+    // comment (e.g. a line that is entirely `# example: @"`), so isCommented is still checked.
     const re = /@("|')\s*$/
     const tail = line.slice(from)
     const m = re.exec(tail)
     if (!m) return null
     const openStart = from + m.index
+    if (isCommented(openStart)) return null
     // Same guard as the other branches above: an ordinary string ending in `@"` (e.g.
     // `$email = "admin@"`) is not a real here-string opener - the `@` there falls inside an
     // already-open single-line string literal, not immediately after one.
-    if (isInsideStringLiteral(line, openStart)) return null
+    if (isInsideStringLiteral(line, openStart, from)) return null
     const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
     // Here-strings never close on the opening line by construction.
     return { openStart, closesSameLine: null, state: { kind, identifier: '' } }

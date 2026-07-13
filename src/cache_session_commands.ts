@@ -12,7 +12,7 @@ import { isInstalled } from './install.js'
 import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
-import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline, requireNonNegativeStrictInt } from './util.js'
 
 function emitErr(text: string): void {
@@ -134,6 +134,55 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
   for (const item of items) {
     process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${item.url}\n`)
+  }
+}
+
+// ── mcp-history ───────────────────────────────────────────────────────────────
+
+// MCP results share BASH_OUTPUT_SUBDIR with plain bash-output entries (see
+// mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it
+// mints; this listing filters bash-history's underlying blob set down to just
+// those. `command` is stored as `mcp:<toolName> <input preview>` (see
+// mcp_cache.ts's mcpInputPreview) — split off the `mcp:` marker and first space
+// to recover the tool name for its own column instead of the raw label.
+export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
+  let limit = 30
+  if (opts.limit !== undefined) {
+    const n = Number.parseInt(opts.limit, 10)
+    if (!Number.isFinite(n)) {
+      emitErr(`mcp-history: --limit must be a number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`)
+    }
+    limit = Math.max(1, n)
+  }
+  const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
+  const items = blobs
+    .map(({ id, mtime, value }) => {
+      if (typeof value !== 'object' || value === null) return null
+      const v = value as Record<string, unknown>
+      const command = typeof v['command'] === 'string' ? v['command'] : ''
+      const toolName = command.startsWith('mcp:') ? command.slice(4).split(' ')[0] || '' : ''
+      return {
+        id,
+        toolName,
+        storedAt: typeof v['storedAt'] === 'number' ? v['storedAt'] : mtime,
+        sizeBytes: typeof v['sizeBytes'] === 'number' ? v['sizeBytes'] : 0,
+      }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => b.storedAt - a.storedAt)
+    .slice(0, limit)
+  if (opts.json === true) {
+    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    return
+  }
+  if (items.length === 0) {
+    process.stdout.write('No mcp output entries cached.\n')
+    return
+  }
+  process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
+  for (const item of items) {
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${item.toolName}\n`)
   }
 }
 
@@ -356,12 +405,20 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
 // ── baseline ──────────────────────────────────────────────────────────────────
 
 /** Emit the project baseline map. --subagent = terser compact variant. */
-export function cmdBaseline(opts: { subagent?: boolean; json?: boolean }): void {
+export function cmdBaseline(opts: { subagent?: boolean; json?: boolean; suggestMem?: boolean }): void {
   const compact = opts.subagent === true
   const map = buildProjectMap(process.cwd(), { compact })
+  const suggestMem = opts.suggestMem === true
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify(map, null, 2) + '\n')
+    const jsonOut: Record<string, unknown> = { ...map }
+    if (suggestMem) jsonOut['memSuggestions'] = findMemSuggestionCandidates(process.cwd())
+    process.stdout.write(JSON.stringify(jsonOut, null, 2) + String.fromCharCode(10))
     return
   }
-  process.stdout.write(formatProjectMap(map, compact) + '\n')
+  let out = formatProjectMap(map, compact)
+  if (suggestMem) {
+    const suggestions = formatMemSuggestions(process.cwd())
+    if (suggestions !== '') out = out + String.fromCharCode(10) + suggestions
+  }
+  process.stdout.write(out + String.fromCharCode(10))
 }

@@ -1,7 +1,12 @@
 // Batch D golden tests — git filter family. Faithfully ported from the Python suite (test_bash_compress_git.py and test_bash_compress_git_commit_push.py). These are the regression spec for the 7 filters in src/tool_filters/git.ts.
 
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { configPath } from '../src/constants.js'
 import {
   GIT_FILTERS,
   GitBlameFilter,
@@ -1312,5 +1317,64 @@ describe('GitBlameFilter with filename column', () => {
     expect(result).toContain('Alice')
     expect(result).toContain('Bob')
     expect(result).toContain('more lines by Alice')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GitFilter (generic catch-all) diff/show branch — [bash_diff].max_hunks_per_file
+//
+// Note: in production, `selectFilter` picks GitDiffFilter (registered before
+// GitFilter in GIT_FILTERS, subcommands ['diff', 'show']) for real `git diff`/
+// `git show` invocations, so this branch inside GitFilter.compress is not
+// reached via the live dispatch path. It remains real, directly-testable
+// code (exercised here the same way the rest of this suite exercises
+// GitFilter), so the hardcoded-vs-config behavior is still verified against
+// the actual compression function, per this project's precedent for
+// tool-filter internals with no CLI-level exercise path.
+// ---------------------------------------------------------------------------
+
+function makeMultiHunkDiff(nHunks: number): string {
+  const hunks: string[] = []
+  for (let h = 0; h < nHunks; h++) {
+    hunks.push(`@@ -${h * 10 + 1},3 +${h * 10 + 1},3 @@`)
+    hunks.push(' context line')
+    hunks.push(`-old line ${h}`)
+    hunks.push(`+new line ${h}`)
+  }
+  return ['diff --git a/big.py b/big.py', '--- a/big.py', '+++ b/big.py', ...hunks].join('\n')
+}
+
+describe('GitFilter diff/show honors [bash_diff].max_hunks_per_file (not hardcoded 3)', () => {
+  // saveConfig does not create configPath()'s parent directory itself; make
+  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(configPath())
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('a configured max_hunks_per_file lower than the hardcoded default of 3 elides more hunks', () => {
+    const cfg = defaultConfig()
+    cfg.bash_diff.max_hunks_per_file = 2 // config.ts's validated floor is 1
+    saveConfig(cfg)
+
+    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
+    // With the hardcoded default of 3, this 6-hunk diff would elide 3 hunks
+    // ("+3 more hunks..."); a configured cap of 2 must elide 4 instead.
+    expect(out).toContain('[token-goat: +4 more hunks in this file elided]')
+    expect(out).not.toContain('+3 more hunks in this file elided')
+  })
+
+  it('an unconfigured (default) max_hunks_per_file of 10 keeps all hunks of a 6-hunk diff, unlike the old hardcoded 3', () => {
+    invalidateConfigCache()
+    const out = apply(_gitFilter, makeMultiHunkDiff(6), ['git', 'diff'])
+    expect(out).not.toContain('more hunks in this file elided')
+    expect(out).toContain('new line 0')
+    expect(out).toContain('new line 5')
   })
 })

@@ -14,7 +14,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines, stripXmlComments } from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
 
 export interface HtmlImport {
   readonly kind: string
@@ -38,14 +38,6 @@ const CLASS_RE = /(?<![\w-])class=["']([^"']+)["']/gi
 // Link and script imports
 const LINK_RE = /<link[^>]*href=["']([^"']+)["']/gi
 const SCRIPT_RE = /<script[^>]*src=["']([^"']+)["']/gi
-
-// ATX headings (h1–h6). `s` (dotall) lets `.*?` cross newlines so a heading formatted across
-// multiple lines (e.g. `<h1>\n  Title\n</h1>`, common HTML-formatter/pretty-printer output)
-// still matches — the existing non-greedy `.*?` still stops at the first matching `</hN>`,
-// so this doesn't introduce over-greedy matches. The `.trim()` below already strips the
-// resulting leading/trailing whitespace from a multi-line match.
-const HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
-const TAG_STRIP_RE = /<[^>]+>/g
 
 // Common/noisy ids and classes to suppress
 const NOISE_IDS_CLASSES = new Set([
@@ -71,30 +63,27 @@ export function extractHtml(
   const symbols: SymbolEntry[] = []
   const imports: HtmlImport[] = []
   const sections: MiniSection[] = []
-  // Blank out `<!-- ... -->` comment spans (offset-preserving, mirrors stripCstyleComments'
-  // approach in common.ts) before running any extraction regexes, so commented-out markup
-  // isn't indexed as live symbols/sections/imports and doesn't corrupt section line-range
-  // bookkeeping for the real markup that follows it.
-  const code = stripXmlComments(content)
+  // Blank out comments, <script> bodies, and CDATA sections (offset-preserving; see
+  // maskHtmlNoise in common.ts) before running any extraction regexes, so commented-out
+  // markup, JS inside a <script> tag, and CDATA payloads aren't indexed as live
+  // symbols/sections/imports and don't corrupt section line-range bookkeeping for the
+  // real markup that follows.
+  const code = maskHtmlNoise(content)
   const lineIndex = buildLineIndex(code)
 
   // Headings → sections
-  for (const m of code.matchAll(HEADING_RE)) {
-    const level = parseInt(m[1] ?? '1', 10)
-    const raw = m[2] ?? ''
-    const heading = raw.replace(TAG_STRIP_RE, '').trim()
-    if (heading) {
-      const line = offsetToLine(lineIndex, m.index ?? 0)
-      sections.push({ heading, level, line, endLine: line })
+  for (const hm of findHtmlHeadingMatches(content)) {
+    if (hm.heading) {
+      const line = offsetToLine(lineIndex, hm.offset)
+      sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })
     }
     // Check for id anchor inside the tag
-    const tagPart = m[0] ?? ''
-    const idM = /(?<![\w-])id=["']([^"']+)["']/i.exec(tagPart)
+    const idM = /(?<![\w-])id=["']([^"']+)["']/i.exec(hm.tag)
     if (idM) {
       const anchorId = idM[1] ?? ''
       if (anchorId && !isNoise(anchorId)) {
-        const line = offsetToLine(lineIndex, m.index ?? 0)
-        sections.push({ heading: anchorId, level, line, endLine: line })
+        const line = offsetToLine(lineIndex, hm.offset)
+        sections.push({ heading: anchorId, level: hm.level, line, endLine: line })
       }
     }
   }

@@ -6,8 +6,13 @@
  * YqFilter, CurlFilter, RsyncFilter, DiffFilter, FfmpegFilter,
  * BinaryInspectFilter, FileTypeFilter, PsFilter.
  */
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { configPath } from '../src/constants.js'
 import {
   GrepFilter,
   RgFilter,
@@ -664,6 +669,82 @@ describe('DiffFilter compression', () => {
     expect(out).not.toContain('large diff')
     expect(out.match(/--- a\/file\.sql/g)?.length ?? 0).toBe(1)
     expect(out).toContain('-- removed comment line')
+  })
+})
+
+describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (not hardcoded-disabled 0)', () => {
+  // saveConfig does not create configPath()'s parent directory itself; make
+  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(configPath())
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('a low configured max_hunks_per_file drops low-density hunks with the density-cap message, which the hardcoded-disabled default never emits', () => {
+    const cfg = defaultConfig()
+    cfg.bash_diff.max_hunks_per_file = 2 // config.ts's validated floor is 1
+    saveConfig(cfg)
+
+    const f = new DiffFilter()
+    const argv = ['diff', '-u', 'a.txt', 'b.txt']
+    const lines: string[] = ['--- a/file.ts', '+++ b/file.ts']
+    // Two high-density hunks (mostly +/- lines) ...
+    for (let h = 0; h < 2; h++) {
+      lines.push(`@@ -${h * 20 + 1},5 +${h * 20 + 1},5 @@`)
+      lines.push(`-old dense line ${h}`)
+      lines.push(`+new dense line ${h}`)
+      lines.push(`-old dense line ${h}b`)
+      lines.push(`+new dense line ${h}b`)
+    }
+    // ... and three low-density hunks (mostly unchanged context lines).
+    // Padded well past the 50-non-empty-line passthrough threshold so
+    // compression (and the density cap under test) actually runs.
+    for (let h = 2; h < 5; h++) {
+      lines.push(`@@ -${h * 20 + 1},20 +${h * 20 + 1},20 @@`)
+      for (let j = 0; j < 19; j++) lines.push(' context line')
+      lines.push(`-old sparse line ${h}`)
+    }
+    const out = compress(f, lines.join('\n'), argv)
+    // With max_hunks_per_file=2 the density cap keeps only the 2 dense hunks
+    // and reports the 3 dropped low-density ones by this exact message —
+    // impossible to see at all when the cap is hardcoded to 0 (disabled).
+    expect(out).toMatch(/\[\.\.\. 3 more hunks, avg density [\d.]+ — likely whitespace\/formatting\]/)
+    expect(out).toContain('new dense line 0')
+    expect(out).toContain('new dense line 1')
+  })
+
+  it('emits MORE than 3 hunks per file when max_hunks_per_file is configured above 3 (regression: a hardcoded stage-2 cap of 3 shadowed the config)', () => {
+    const cfg = defaultConfig()
+    cfg.bash_diff.max_hunks_per_file = 10 // above the former hardcoded cap of 3
+    saveConfig(cfg)
+
+    const f = new DiffFilter()
+    const argv = ['diff', '-u', 'a.txt', 'b.txt']
+    const lines: string[] = ['--- a/file.ts', '+++ b/file.ts']
+    // Six dense hunks (all changed lines) — none should be dropped by the
+    // density cap (6 <= 10). Before the fix, stage 2 re-capped to 3.
+    // Padded past the 50-non-empty-line passthrough threshold so compression
+    // (and the cap under test) actually runs.
+    for (let h = 0; h < 6; h++) {
+      lines.push(`@@ -${h * 20 + 1},10 +${h * 20 + 1},10 @@`)
+      for (let j = 0; j < 5; j++) {
+        lines.push(`-old dense line ${h}-${j}`)
+        lines.push(`+new dense line ${h}-${j}`)
+      }
+    }
+    const out = compress(f, lines.join('\n'), argv)
+    // All six hunks must survive — the single config-driven cap is 10.
+    for (let h = 0; h < 6; h++) {
+      expect(out).toContain(`new dense line ${h}-0`)
+    }
+    // And no "elided" second-stage message, since nothing was elided.
+    expect(out).not.toMatch(/more hunks in this file elided/)
   })
 })
 

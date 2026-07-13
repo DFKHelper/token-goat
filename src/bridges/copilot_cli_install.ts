@@ -198,7 +198,7 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
   return { configPath, scriptPath, alreadyInstalled: !scriptChanged && !configChanged }
 }
 
-export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean {
+function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
   const configPath = copilotCliConfigPath(opts)
   const scriptPath = copilotCliScriptPath(opts)
 
@@ -216,6 +216,21 @@ export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean 
     // Already absent; nothing to remove.
   }
   return removedAny
+}
+
+// Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain
+// `token-goat uninstall --copilot` (opts.local left unset) must remove the hook config
+// wherever it actually is, not just the user scope, or a --local (project-scoped)
+// install silently survives. Only when the caller explicitly asks for the local scope
+// (opts.local === true) do we narrow to that one scope and leave a coexisting
+// user-scoped install untouched (mirrors uninstallPi in ./pi_install.js).
+export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean {
+  if (opts.local === true) {
+    return uninstallCopilotCliScope({ local: true })
+  }
+  const userRemoved = uninstallCopilotCliScope({ local: false })
+  const localRemoved = uninstallCopilotCliScope({ local: true })
+  return userRemoved || localRemoved
 }
 
 export function isCopilotCliInstalled(opts: CopilotCliScopeOptions = {}): boolean {

@@ -2,12 +2,22 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { buildManifest, preCompactHandler } from '../src/hooks_compact.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileEdit, recordFileRead, recordWebFetch } from '../src/session.js'
+import { recordFileEdit, recordFileRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
+import { storeBashOutput } from '../src/bash_output_cache.js'
+
+// `mem epoch` (Item I) shells out via spawnSync -- mocked so the suite is deterministic
+// regardless of whether a real `mem` binary happens to be on the machine running it, and so
+// the ENOENT/non-zero/timeout fail-open paths can be exercised without a real absent/hanging
+// binary.
+const spawnSyncMock = vi.fn()
+vi.mock('node:child_process', () => ({
+  spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
+}))
 
 const tmpFiles: string[] = []
 
@@ -31,6 +41,10 @@ const compactEvent: HookEvent = {
 
 beforeEach(() => {
   clearModuleCaches()
+  spawnSyncMock.mockReset()
+  // Default: `mem` absent from PATH (ENOENT), matching most dev/CI machines and keeping
+  // pre-existing tests that don't care about mem epoch from seeing the new section.
+  spawnSyncMock.mockReturnValue({ error: new Error('ENOENT'), status: null, stdout: '' })
 })
 
 afterEach(() => {
@@ -110,16 +124,156 @@ describe('buildManifest', () => {
     expect(manifest.length).toBeLessThan(2000)
   })
 
-  it('does not list a file twice if it was both read and edited', () => {
+  it('does not list a file twice in the Read files / Edited files sections if it was both read and edited', () => {
     const p = makeTmpFile('data')
     recordFileRead(p)
     recordFileEdit(p)
     const manifest = buildManifest()
-    // Find the basename since paths are rendered with slashes
+    // The "### Read files"/"### Edited files" sections are mutually exclusive per file (a file
+    // is either read-only or edited, never both); the SAFE_TO_DISCARD section added afterward
+    // may separately reference the same file (a read followed by an edit is exactly what its
+    // "superseded file reads" class flags), so isolate the manifest to before that section.
+    const beforeSafeToDiscard = manifest.split('### SAFE_TO_DISCARD')[0]!
     const basename = path.basename(p)
-    // Count occurrences of the basename in the manifest
-    const matches = manifest.match(new RegExp(basename, 'g')) || []
-    // Should appear in exactly one section, not both
+    const matches = beforeSafeToDiscard.match(new RegExp(basename, 'g')) || []
     expect(matches.length).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('SAFE_TO_DISCARD section', () => {
+  it('is absent for an empty session', () => {
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('SAFE_TO_DISCARD')
+  })
+
+  it('lists a superseded rerun with its recall command, and does not list a single, non-rerun cached output as a rerun', async () => {
+    const rerunId = await storeBashOutput('pytest', 'all passed (latest)', 0)
+    recordBashOutput('pytest-hash', rerunId, 20)
+    recordBashRerun('pytest-hash')
+
+    const singleId = await storeBashOutput('eslint src', 'clean', 0)
+    recordBashOutput('eslint-hash', singleId, 5)
+
+    const manifest = buildManifest()
+    expect(manifest).toContain('SAFE_TO_DISCARD')
+    expect(manifest).toContain('Superseded reruns (1):')
+    expect(manifest).toContain('pytest')
+    expect(manifest).toContain('bash-output ' + rerunId)
+    expect(manifest).toContain('Other cached bash outputs (1):')
+    expect(manifest).toContain('eslint src')
+    expect(manifest).toContain('bash-output ' + singleId)
+  })
+
+  it('does not double-list a rerun command under "Other cached bash outputs"', async () => {
+    const id = await storeBashOutput('vitest run', 'ok', 0)
+    recordBashOutput('vitest-hash', id, 2)
+    recordBashRerun('vitest-hash')
+
+    const manifest = buildManifest()
+    // The command should appear exactly once total across the two bash sub-sections.
+    const matches = manifest.match(/vitest run/g) ?? []
+    expect(matches.length).toBe(1)
+    expect(manifest).not.toContain('Other cached bash outputs')
+  })
+
+  it('lists a re-read file as a superseded read', () => {
+    const p = makeTmpFile('hello')
+    recordFileRead(p)
+    recordFileRead(p)
+    const manifest = buildManifest()
+    expect(manifest).toContain('SAFE_TO_DISCARD')
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('re-read 2x')
+  })
+
+  it('lists a read-then-edited file as a superseded read', () => {
+    const p = makeTmpFile('hello')
+    recordFileRead(p)
+    recordFileEdit(p)
+    const manifest = buildManifest()
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('edited after being read')
+  })
+
+  it('does not flag a file read exactly once and never edited', () => {
+    const p = makeTmpFile('hello')
+    recordFileRead(p)
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+  })
+
+  it('includes an explicit total item count in the section header', async () => {
+    const p = makeTmpFile('hello')
+    recordFileRead(p)
+    recordFileRead(p)
+    const id = await storeBashOutput('npm run build', 'built', 0)
+    recordBashOutput('build-hash', id, 5)
+    recordBashRerun('build-hash')
+
+    const manifest = buildManifest()
+    expect(manifest).toContain('SAFE_TO_DISCARD (2 items')
+  })
+})
+
+describe('mem epoch section', () => {
+  it('includes the epoch value when `mem epoch` succeeds', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 0, stdout: '42\n' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).toContain('### mem epoch')
+    expect(manifest).toContain('mem epoch: 42')
+    expect(manifest).toContain('no live TGMEM block is tracked')
+    expect(spawnSyncMock).toHaveBeenCalledWith('mem', ['epoch'], expect.objectContaining({ timeout: expect.any(Number) }))
+  })
+
+  it('omits the section cleanly when `mem` is absent from PATH (ENOENT)', () => {
+    spawnSyncMock.mockReturnValue({ error: new Error('spawnSync mem ENOENT'), status: null, stdout: '' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when `mem epoch` exits non-zero', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 1, stdout: '' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when `mem epoch` times out', () => {
+    // node's spawnSync surfaces a timeout as result.error with code ETIMEDOUT and status null.
+    const err = Object.assign(new Error('spawnSync mem ETIMEDOUT'), { code: 'ETIMEDOUT' })
+    spawnSyncMock.mockReturnValue({ error: err, status: null, stdout: '', signal: 'SIGTERM' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when spawnSync itself throws', () => {
+    spawnSyncMock.mockImplementation(() => {
+      throw new Error('unexpected spawn failure')
+    })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('omits the section cleanly when stdout is not a bare integer', () => {
+    spawnSyncMock.mockReturnValue({ error: undefined, status: 0, stdout: 'not-a-number\n' })
+
+    const manifest = buildManifest()
+
+    expect(manifest).not.toContain('mem epoch')
+  })
+
+  it('never throws or hangs the manifest build when mem is absent', () => {
+    spawnSyncMock.mockReturnValue({ error: new Error('ENOENT'), status: null, stdout: '' })
+
+    expect(() => buildManifest()).not.toThrow()
   })
 })

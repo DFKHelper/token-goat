@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { querySymbols } from '../src/index_reader.js'
+import { querySymbols, searchSymbolsFts } from '../src/index_reader.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import {
   bfsCallChains,
@@ -49,7 +49,7 @@ import type { SymbolEntry } from '../src/parser_types.js'
 // runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited.
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
-  return { ...actual, querySymbols: vi.fn(actual.querySymbols) }
+  return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts) }
 })
 
 // ---- helpers ----------------------------------------------------------------
@@ -769,6 +769,38 @@ describe('runDeps integration', () => {
       expect(parsed.external).toContain('os')
       expect(parsed.external).not.toContain('.')
       expect(parsed.external).not.toContain('..pkg')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves a NodeNext-style "./foo.js" specifier to its .ts source file, not a literal "foo.js.ts" candidate', () => {
+    // This codebase's own source (and any TS project using NodeNext/ESM module resolution)
+    // writes relative imports with an explicit .js extension even though the source file on
+    // disk is .ts -- e.g. "import { x } from './foo.js'" resolving to foo.ts. Appending a
+    // source extension onto a base that already ends in one (foo.js + '.ts' -> 'foo.js.ts')
+    // never matches anything on disk, so the import stayed unresolved (just the literal
+    // specifier) instead of pointing at the real file.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-nodenext-'))
+    try {
+      const depFile = join(dir, 'helper.ts')
+      writeFileSync(depFile, 'export const helper = 1\n')
+      const entryFile = join(dir, 'entry.ts')
+      writeFileSync(entryFile, "import { helper } from './helper.js'\n")
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file: entryFile, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[] }
+      expect(parsed.internal).toContain(depFile)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1602,6 +1634,141 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
   })
 })
 
+// ---- runContextFor / runAsk (#248 regression) --------------------------------
+// Regression coverage for task #248: natural-language queries silently returning zero
+// results, runContextFor's empty-result silence, runAsk's zero-hits hallucination risk, and
+// runContextFor's --budget loop dropping the whole result set behind one oversized top hit.
+describe('runContextFor / runAsk (#248 regression)', () => {
+  it('runContextFor finds a match for a multi-word natural-language query where no single symbol contains every word (widen-on-empty)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-ctxfor-widen-'))
+    try {
+      const fileA = join(root, 'a.ts')
+      const fileB = join(root, 'b.ts')
+      // Neither symbol's indexed text (name/body/docstring) contains BOTH terms -- an AND-joined
+      // FTS query (requiring every term to co-occur in one symbol) matches nothing. Each term
+      // individually matches exactly one symbol, so an OR-joined widen-on-empty retry must find it.
+      writeFileSync(fileA, 'export function ctxWidenAlpha9k2() { /* zzznarwhalterm9k2 */ return 1 }\n')
+      writeFileSync(fileB, 'export function ctxWidenBeta9k2() { /* zzzwombatterm9k2 */ return 2 }\n')
+      indexFileSync(normalizePath(fileA))
+      indexFileSync(normalizePath(fileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        let code: number
+        try {
+          code = runContextFor({ task: 'zzznarwhalterm9k2 zzzwombatterm9k2', json: true, top: 50 })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        expect(code).toBe(0)
+        const parsed = JSON.parse(captured) as Array<{ symbol: string }>
+        expect(parsed.length).toBeGreaterThan(0)
+        expect(parsed.some((r) => r.symbol === 'ctxWidenAlpha9k2' || r.symbol === 'ctxWidenBeta9k2')).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runContextFor emits a clear "no matches found" message and exits 1 when nothing matches', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-ctxfor-empty-'))
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let errCaptured = ''
+        const origStderr = process.stderr.write.bind(process.stderr)
+        process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+        let code: number
+        try {
+          code = runContextFor({ task: 'zzzcompletelyunmatchedquery9k2' })
+        } finally {
+          process.stderr.write = origStderr
+        }
+        expect(code).toBe(1)
+        expect(errCaptured).toMatch(/No matches found/)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runAsk degrades instead of invoking a configured, resolvable backend when retrieval returns zero hits', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-ask-zerohits-'))
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      const origBackendEnv = process.env.TOKEN_GOAT_ASK_BACKEND
+      // "node" is guaranteed resolvable on PATH in this test environment -- proves the zero-hits
+      // guard fires BEFORE (and regardless of) backend resolution, not merely because the backend
+      // itself couldn't be found (a separate, already-tested degrade path).
+      process.env.TOKEN_GOAT_ASK_BACKEND = 'node'
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        let code: number
+        try {
+          code = runAsk({ question: 'zzzcompletelyunmatchedaskquery9k2' })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        expect(code).toBe(0)
+        expect(captured).toMatch(/degraded mode/)
+      } finally {
+        cwdSpy.mockRestore()
+        if (origBackendEnv === undefined) delete process.env.TOKEN_GOAT_ASK_BACKEND
+        else process.env.TOKEN_GOAT_ASK_BACKEND = origBackendEnv
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runContextFor --budget skips an oversized top-ranked hit and still returns a smaller hit that fits (continue, not break)', () => {
+    const oversized: SymbolEntry = {
+      filePath: 'big.ts',
+      name: 'oversizedHit',
+      kind: 'function',
+      lineStart: 1,
+      lineEnd: 1,
+      body: 'x'.repeat(3000),
+      docstring: '',
+    }
+    const fits: SymbolEntry = {
+      filePath: 'small.ts',
+      name: 'smallHit',
+      kind: 'function',
+      lineStart: 1,
+      lineEnd: 1,
+      body: 'y'.repeat(30),
+      docstring: '',
+    }
+    // Ranked with the oversized hit FIRST -- a `break` on the first hit exceeding budget would
+    // stop the loop immediately and never even consider the smaller hit ranked below it.
+    vi.mocked(searchSymbolsFts).mockReturnValueOnce([oversized, fits])
+
+    let captured = ''
+    const origWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+    let code: number
+    try {
+      code = runContextFor({ task: 'irrelevant-mocked-query', json: true, top: 50, budget: 50 })
+    } finally {
+      process.stdout.write = origWrite
+    }
+    expect(code).toBe(0)
+    const parsed = JSON.parse(captured) as Array<{ symbol: string }>
+    expect(parsed.some((r) => r.symbol === 'smallHit')).toBe(true)
+    expect(parsed.some((r) => r.symbol === 'oversizedHit')).toBe(false)
+  })
+})
+
 // ---- runArch (integration) --------------------------------------------------
 
 describe('runArch', () => {
@@ -1862,3 +2029,4 @@ describe('runAsk', () => {
     expect(captured).not.toMatch(/SessionStart/)
   })
 })
+

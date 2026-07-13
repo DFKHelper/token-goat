@@ -190,6 +190,27 @@ describe('extractSection — CRLF line endings', () => {
   })
 })
 
+describe('extractSection — key-value fallback does not mistake a bare URL for a heading', () => {
+  it('does not treat a bare URL line as a false "https"/"http" key-value heading', () => {
+    // Regression: KEYVALUE_HEADER_RE matched any "identifier followed by = or :" at column
+    // zero, so a line that's just a URL (e.g. a link on its own line in a plain-text/log file
+    // with no markdown/table headings) was mistaken for a key-value heading named "https" --
+    // the URL's scheme-separating ":" looks identical to a key/value ":" split.
+    const text = ['See docs at:', 'https://example.com/path', '', 'more text below'].join('\n')
+
+    expect(extractSection(text, 'https')).toBeNull()
+    expect(extractSection(text, 'http')).toBeNull()
+  })
+
+  it('still recognizes a real key-value heading that happens to precede a URL value', () => {
+    const text = ['docs_url = https://example.com/path', 'more text below'].join('\n')
+
+    const result = extractSection(text, 'docs_url')
+    expect(result).not.toBeNull()
+    expect(result?.content).toBe('docs_url = https://example.com/path\nmore text below')
+  })
+})
+
 describe('listSections', () => {
   it('returns all headings at all nesting levels from a file', () => {
     const file = tmpFile('doc.md', MD)
@@ -436,6 +457,31 @@ describe('readSection', () => {
     expect(result).not.toBeNull()
     expect(result?.heading).toBe('Install')
     expect(result?.content).toContain('run the installer')
+  })
+
+  it('finds a heading whose text spans multiple lines (matching the indexer\'s dotall, whole-text scan)', () => {
+    // Regression: findHtmlHeaders used a non-dotall regex and scanned line-by-line, so a
+    // heading formatted across multiple lines (as extractHtml/extractLiquid already handled
+    // via a `gis`-flagged whole-text scan) was indexed as a symbol but unreachable via the
+    // live `section` command -- the two implementations had drifted out of sync.
+    const html = ['<h1>', '  Multi-line Title', '</h1>', '<p>body text</p>'].join('\n')
+    const file = tmpFile('multiline.html', html)
+    const result = readSection(file, 'Multi-line Title')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Multi-line Title')
+    expect(result?.content).toContain('body text')
+  })
+
+  it('does not find a heading commented out with <!-- --> (matching the indexer, which masks HTML comments before scanning)', () => {
+    // Regression: findHtmlHeaders never called maskHtmlNoise, so a commented-out heading was
+    // reachable via the live `section` command even though the indexer correctly excludes it
+    // from symbols/sections -- the reverse of the multi-line-heading drift above.
+    const html = ['<!-- <h1>Old Title</h1> -->', '<h2>Real Title</h2>', '<p>real body</p>'].join('\n')
+    const file = tmpFile('commented.html', html)
+    expect(readSection(file, 'Old Title')).toBeNull()
+    const result = readSection(file, 'Real Title')
+    expect(result).not.toBeNull()
+    expect(result?.content).toContain('real body')
   })
 })
 

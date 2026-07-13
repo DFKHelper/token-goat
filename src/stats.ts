@@ -7,7 +7,11 @@
  *
  * Public API:
  * - summarize(windowDays?) — load all stat rows from the global DB and return a
- *   StatsSummary with aggregations by kind, day, project, source, and command.
+ *   StatsSummary with aggregations by kind, day, source, and command. `by_project`
+ *   is always `[]`: the `stats` table (see GLOBAL_SCHEMA_SQL below) has no
+ *   project-identifying column to aggregate by, so this dimension was never wired
+ *   up. The field is kept on StatsSummary/the `--json` output for compatibility
+ *   with callers that may depend on its presence, not because it carries data.
  * - renderShortStats(opts?) — print just the totals block + a hint to run --full.
  * - renderStats(opts?) — compute and print the full formatted breakdown to stdout.
  */
@@ -295,6 +299,10 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database, h
     .map(([date, bucket]) => ({ ...bucket, date }))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
+  // Always empty by design, not a bug: the `stats` table has no project-identifying
+  // column (see GLOBAL_SCHEMA_SQL), so there is no data source to aggregate by project
+  // from. Kept on StatsSummary/the `--json` output for shape compatibility — see the
+  // module docstring above.
   const byProjectList: ProjectRow[] = []
 
   const t1 = Date.now()

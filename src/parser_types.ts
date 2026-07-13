@@ -173,13 +173,15 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['package.json', 'json'],
   ['tsconfig.json', 'json'],
   ['.env', 'env_file'],
-  ['.env.local', 'env_file'],
-  ['.env.example', 'env_file'],
-  ['.env.sample', 'env_file'],
-  ['.env.test', 'env_file'],
-  ['.env.production', 'env_file'],
   ['.envrc', 'env_file'],
 ])
+
+// Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,
+// .production, plus anything a project invents -- .development, .staging, .ci, .docker, ...).
+// A fixed enumeration in FILENAME_LANGUAGE above could only ever cover the variants someone
+// remembered to list, silently falling through to 'unknown' for every other suffix. Does not
+// match ".envrc" (no dot after "env"), which FILENAME_LANGUAGE already handles separately.
+const DOTENV_VARIANT_RE = /^\.env(\..+)?$/
 
 /**
  * Detect the {@link Language} of a file from its path.
@@ -190,6 +192,8 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
  */
 export function detectLanguage(filePath: string): Language {
   const base = path.basename(filePath).toLowerCase()
+  if (DOTENV_VARIANT_RE.test(base)) return 'env_file'
+
   const byName = FILENAME_LANGUAGE.get(base)
   if (byName !== undefined) return byName
 

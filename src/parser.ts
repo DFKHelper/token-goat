@@ -21,6 +21,7 @@ import * as path from 'node:path'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { loadConfig } from './config.js'
+import type { IndexingConfig } from './config.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
@@ -1033,13 +1034,70 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
+function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
+  let i = startIdx
+  while (i < line.length) {
+    const ch = line[i]
+    if (ch === '"') {
+      let j = i + 1
+      while (j < line.length) {
+        if (line[j] === '\\') { j += 2; continue }
+        if (line[j] === '"') break
+        j++
+      }
+      if (j >= line.length) return '"'
+      i = j + 1
+      continue
+    }
+    if (ch === "'") {
+      let j = i + 1
+      while (j < line.length) {
+        if (line[j] === "'" && line[j + 1] === "'") { j += 2; continue }
+        if (line[j] === "'") break
+        j++
+      }
+      if (j >= line.length) return "'"
+      i = j + 1
+      continue
+    }
+    i++
+  }
+  return null
+}
+
+function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
+  let i = 0
+  while (i < line.length) {
+    if (quote === '"') {
+      if (line[i] === '\\') { i += 2; continue }
+      if (line[i] === '"') return true
+    } else {
+      if (line[i] === "'" && line[i + 1] === "'") { i += 2; continue }
+      if (line[i] === "'") return true
+    }
+    i++
+  }
+  return false
+}
+
 function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
+  // A top-level key's double/single-quoted value can wrap across multiple lines (YAML folds
+  // the embedded newline into a space). Without tracking that, a continuation line that
+  // happens to contain its own `word:` -shaped text (e.g. wrapped prose mentioning "ratio:
+  // 16:9", or any string content resembling a key) was read as a brand new top-level key.
+  let openQuote: '"' | "'" | null = null
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+
+    if (openQuote !== null) {
+      if (yamlLineClosesQuote(line, openQuote)) openQuote = null
+      continue
+    }
 
     const match = /^([a-zA-Z_][\w-]*)\s*:/.exec(line)
     if (match !== null && match[1] !== undefined) {
@@ -1052,6 +1110,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
         body: line.trim(),
         docstring: '',
       })
+      openQuote = yamlOpenQuoteAfter(line, match[0].length)
     }
   }
 
@@ -1095,31 +1154,57 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   // them (e.g. a description field quoting example TOML) must never be scanned for
   // key/section syntax. Track whether a triple-quote span opened on an earlier line is still
   // open across the loop, keyed by which delimiter opened it.
-  let inBasicString = false
-  let inLiteralString = false
+  //
+  // The two delimiter styles' run counts cannot be tallied independently per line (e.g. via
+  // separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string
+  // whose body happens to contain a ''' sequence (e.g. a description quoting example TOML
+  // syntax) must treat that ''' as inert text, not as its own independent open/close toggle.
+  // Counting each style's occurrences separately loses that positional relationship: an ODD
+  // number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly
+  // read as opening a real multi-line literal string, desyncing every line after it until an
+  // unrelated ''' happened to appear later in the file. Scan the line once, left to right,
+  // tracking a single open-delimiter slot instead.
+  function lineOpenDelimiterAfter(line: string, startIdx: number): string | null {
+    let pos = startIdx
+    let open: string | null = null
+    for (;;) {
+      if (open === null) {
+        const dIdx = line.indexOf('"""', pos)
+        const sIdx = line.indexOf("'''", pos)
+        if (dIdx === -1 && sIdx === -1) return null
+        if (dIdx !== -1 && (sIdx === -1 || dIdx <= sIdx)) {
+          open = '"""'
+          pos = dIdx + 3
+        } else {
+          open = "'''"
+          pos = sIdx + 3
+        }
+      } else {
+        const closeIdx = line.indexOf(open, pos)
+        if (closeIdx === -1) return open
+        open = null
+        pos = closeIdx + 3
+      }
+    }
+  }
+
+  let openDelim: string | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
 
-    if (inBasicString || inLiteralString) {
-      const closer = inBasicString ? '"""' : "'''"
-      const closeIdx = line.indexOf(closer)
+    if (openDelim !== null) {
+      const closeIdx = line.indexOf(openDelim)
       if (closeIdx === -1) continue // whole line is inside the open string body
-      inBasicString = false
-      inLiteralString = false
-      matchLine(line.slice(closeIdx + closer.length), i)
+      const restStart = closeIdx + openDelim.length
+      matchLine(line.slice(restStart), i)
+      openDelim = lineOpenDelimiterAfter(line, restStart)
       continue
     }
 
     matchLine(line, i)
-
-    // An odd count of """ (or ''') on this line means it opened a multi-line string that
-    // was not also closed on the same line.
-    const basicCount = (line.match(/"""/g) ?? []).length
-    const literalCount = (line.match(/'''/g) ?? []).length
-    if (basicCount % 2 === 1) inBasicString = true
-    if (literalCount % 2 === 1) inLiteralString = true
+    openDelim = lineOpenDelimiterAfter(line, 0)
   }
 
   return out
@@ -1131,23 +1216,118 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   // scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block)
   // is indexed as if it were live CSS.
   const lines = stripCstyleComments(content).split(/\r?\n/)
+  // Raw (pre-strip) lines, kept only to distinguish "blanked by comment stripping" from
+  // "genuinely blank in the source" below -- see the check at the top of the loop.
+  const rawLines = content.split(/\r?\n/)
+
+  // Selector fragments accumulated from preceding comma-continuation lines -- the common
+  // multi-line selector-list idiom (`.btn,\n.btn-primary,\n.btn-secondary {`). Each entry keeps
+  // its own line number/body so a fragment is indexed at the line it actually appears on, not
+  // the brace line, matching how a same-line comma list is already indexed per-fragment below.
+  let pending: Array<{ name: string; line: number; body: string }> = []
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+    const trimmed = line.trim()
 
-    const selectorMatch = /^([.#][\w-]+)[,\s{]/.exec(line)
-    if (selectorMatch !== null && selectorMatch[1] !== undefined) {
-      out.push({
-        filePath,
-        name: selectorMatch[1],
-        kind: 'selector',
-        lineStart: i + 1,
-        lineEnd: i + 1,
-        body: line.trim(),
-        docstring: '',
-      })
+    // A line that became empty ONLY because stripCstyleComments blanked a `/* ... */` comment
+    // sitting on its own line (e.g. `/* primary button */` between selector fragments of a
+    // multi-line comma-separated list) must be a no-op, not a break in accumulation -- treating
+    // it like a genuinely blank line would silently drop every fragment gathered in `pending`
+    // so far (see the discard fallback at the bottom of the loop). A line that was already
+    // blank in the raw source still falls through to that discard below, unchanged.
+    if (trimmed.length === 0 && (rawLines[i]?.trim().length ?? 0) > 0) {
+      continue
     }
+
+    // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a
+    // comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element
+    // (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`),
+    // or any selector indented under a nested @media/@supports block (leading whitespace
+    // broke the `^` anchor) were all silently skipped. Match anything up to the opening
+    // brace instead - excluding lines that start with `@` (an at-rule header like
+    // `@media (...) {` is not itself a selector, though selectors nested inside its block
+    // are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and
+    // split a same-line comma-separated selector list into one symbol per selector.
+    const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/.exec(line)
+    if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
+      for (const p of pending) {
+        out.push({
+          filePath,
+          name: p.name,
+          kind: 'selector',
+          lineStart: p.line,
+          lineEnd: p.line,
+          body: p.body,
+          docstring: '',
+        })
+      }
+      pending = []
+      for (const part of selectorLineMatch[1].split(',')) {
+        const name = part.trim()
+        if (name) {
+          out.push({
+            filePath,
+            name,
+            kind: 'selector',
+            lineStart: i + 1,
+            lineEnd: i + 1,
+            body: line.trim(),
+            docstring: '',
+          })
+        }
+      }
+      continue
+    }
+
+    // Brace-only line (nothing but `{`, possibly with surrounding whitespace) closing off a
+    // multi-line selector list whose fragments were accumulated via `pending` below (the
+    // idiom `.a,\n.b\n{\n...`). Flush those fragments as the selector list for this rule
+    // instead of falling through to the discard case at the bottom of the loop, which would
+    // otherwise silently drop every accumulated fragment because a bare `{` never matches
+    // `selectorLineMatch` above (it requires a non-`{`/`}`/`@` character before the brace).
+    if (trimmed === '{') {
+      for (const p of pending) {
+        out.push({
+          filePath,
+          name: p.name,
+          kind: 'selector',
+          lineStart: p.line,
+          lineEnd: p.line,
+          body: p.body,
+          docstring: '',
+        })
+      }
+      pending = []
+      continue
+    }
+
+    // Continuation candidate: a bare selector-fragment line with no brace, not an at-rule
+    // header, and not a declaration (no `;`). Two shapes are accepted: a line ending in a
+    // trailing comma (starts or continues a comma list, e.g. `.a,`), or - once a comma-list is
+    // already underway (`pending.length > 0`) - a bare trailing-fragment line with no comma at
+    // all (e.g. the final `.b` in `.a,\n.b\n{`), which precedes a brace on its own line rather
+    // than sharing a line with the brace. Either way the fragment is accumulated until the
+    // line that actually opens the brace (matched above) is reached, instead of being dropped.
+    if (
+      trimmed.length > 0 &&
+      !trimmed.startsWith('@') &&
+      !trimmed.includes('{') &&
+      !trimmed.includes('}') &&
+      !trimmed.includes(';')
+    ) {
+      const endsWithComma = trimmed.endsWith(',')
+      if (endsWithComma || pending.length > 0) {
+        const name = endsWithComma ? trimmed.slice(0, -1).trim() : trimmed
+        if (name) pending.push({ name, line: i + 1, body: trimmed })
+        continue
+      }
+    }
+
+    // Anything else (blank line, declaration, closing brace, ...) breaks the accumulation --
+    // the pending fragments weren't actually part of a selector list after all.
+    pending = []
   }
 
   return out
@@ -1161,9 +1341,10 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
     const line = lines[i]
     if (line === undefined) continue
 
-    const match = /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT)\s+(.+)/i.exec(
-      line,
-    )
+    const match =
+      /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
+        line,
+      )
     if (match !== null && match[1] !== undefined) {
       const cmd = match[1]
       const arg = (match[2] ?? '').substring(0, 40)
@@ -1460,6 +1641,34 @@ export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): 
   db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(folded)
 }
 
+/**
+ * True when any directory segment of `filePath` matches a basename in `skipDirs` -- the
+ * `indexing.skip_dirs` config knob. Splits on either separator since callers pass both
+ * forward-slash-normalized keys (resolveIndexPath) and raw absolute paths.
+ */
+export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): boolean {
+  if (skipDirs.length === 0) return false
+  const segments = filePath.split(/[/\\]/)
+  return segments.slice(0, -1).some((seg) => skipDirs.includes(seg))
+}
+
+/**
+ * True when `filePath` is excluded from the syntactic parse entirely by `indexing.skip_dirs`
+ * or `indexing.large_file_skip_kb`. Must be evaluated UNCONDITIONALLY (independent of any
+ * sha/parseUnchanged gate) because a file that becomes skip-eligible via a config change alone
+ * must still have its stale rows purged. A stat failure is treated as "not skip-eligible".
+ */
+export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): boolean {
+  if (isUnderSkipDir(filePath, cfg.skip_dirs)) return true
+  try {
+    const stat = fs.statSync(filePath)
+    if (stat.size > cfg.large_file_skip_kb * 1024) return true
+  } catch {
+    // let the caller's own read/stat attempt handle/report the failure
+  }
+  return false
+}
+
 function writeParseResult(
   filePath: string,
   content: Buffer | null,
@@ -1525,6 +1734,17 @@ function writeParseResult(
  * `processDirtyBatch` silently count this file as indexed.
  */
 export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
+  const ixCfg = loadConfig().indexing
+  if (ixCfg !== undefined && isParseSkipEligible(filePath, ixCfg)) {
+    // Purge stale rows AND the files row (sha) so the file settles into a stable
+    // not-indexed state instead of being re-selected as "changed" on every drain;
+    // also drop any embedding rows it held before becoming skip-eligible
+    // (indexFileSync is called directly from read_commands' --force-refresh path).
+    const db = getDb(dbPath)
+    deleteFileRows(db, filePath)
+    deleteFileEmbeddings(db, filePath)
+    return
+  }
   const language = detectLanguage(filePath)
   let raw: Buffer
   try {

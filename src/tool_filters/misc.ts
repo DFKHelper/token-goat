@@ -3,6 +3,7 @@
 // Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 14 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: its matches() returns true for every command so it must be a fallback of last resort.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
   capBytes,
@@ -1261,8 +1262,19 @@ export class SeverityLogFilter extends ToolFilter {
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const combined = this.combineOutput(stdout, stderr)
     if (!SeverityLogFilter.detect(combined)) return combined
-    // Default config: context_lines=2, score_threshold=0.5 (WARN and above)
-    return compressSeverityLog(combined, 2, 0.5)
+    // Config: [bash_severity_log] context_lines (default 3), score_threshold
+    // (default 0.5, WARN and above). Falls back to those defaults on config
+    // load failure so severity-log compression never hard-fails.
+    let contextLines = 3
+    let scoreThreshold = 0.5
+    try {
+      const sl = loadConfig().bash_severity_log
+      contextLines = sl.context_lines
+      scoreThreshold = sl.score_threshold
+    } catch {
+      // use defaults above
+    }
+    return compressSeverityLog(combined, contextLines, scoreThreshold)
   }
 }
 

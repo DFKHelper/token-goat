@@ -19,11 +19,13 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { appendDirtyPath } from './hooks_index.js'
+import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
 import { recordFileEdit } from './session.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { compactPathFor, markCompactStale } from './doc_compact.js'
+import { ensureWorkerAlive } from './worker.js'
 import type { HookOutput } from './types.js'
 
 /**
@@ -51,6 +53,24 @@ export function postEditHandler(event: HookEvent): HookOutput {
     recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
   }
 
+  // Work was just queued above for the background worker to drain -- nudge it back to life if
+  // the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring).
+  // Rate-limited internally, so this is cheap on every call after the first in a given window.
+  try {
+    ensureWorkerAlive()
+  } catch (e) {
+    recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
+
+  // Record this file's project root as known-alive so the worker's periodic sweep
+  // (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from --
+  // see recordKnownRootThrottled's docstring. Also rate-limited internally.
+  try {
+    recordKnownRootThrottled(normalized)
+  } catch (e) {
+    recordStat('known_root_record_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
+
   // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid
   // while the source is unchanged — mark it stale so pre_read falls back to a
   // full read instead of serving outdated content. markCompactStale is a
@@ -75,4 +95,5 @@ export function postEditHandler(event: HookEvent): HookOutput {
 
 registerHook('post_tool_use', postEditHandler, { toolName: 'Write' })
 registerHook('post_tool_use', postEditHandler, { toolName: 'Edit' })
+registerHook('post_tool_use', postEditHandler, { toolName: 'MultiEdit' })
 registerHook('post_tool_use', postEditHandler, { toolName: 'NotebookEdit' })

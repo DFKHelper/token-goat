@@ -47,6 +47,21 @@ describe('detectLanguage', () => {
     expect(detectLanguage('Bar.TS')).toBe('typescript')
   })
 
+  it('classifies any ".env.<suffix>" variant as env_file, not just an enumerated list', () => {
+    // FILENAME_LANGUAGE used to enumerate a fixed list of dotenv variants (.env.local,
+    // .env.example, .env.sample, .env.test, .env.production) -- any suffix a project actually
+    // uses that wasn't on that list (.env.development, .env.staging, .env.ci, .env.docker, ...)
+    // silently fell through to 'unknown'.
+    expect(detectLanguage('.env')).toBe('env_file')
+    expect(detectLanguage('.env.local')).toBe('env_file')
+    expect(detectLanguage('.env.development')).toBe('env_file')
+    expect(detectLanguage('.env.staging')).toBe('env_file')
+    expect(detectLanguage('.env.ci')).toBe('env_file')
+    expect(detectLanguage('backend/.env.docker')).toBe('env_file')
+    // .envrc (direnv) has no dot after "env" and must stay distinct from the .env.<suffix> family.
+    expect(detectLanguage('.envrc')).toBe('env_file')
+  })
+
   it('classifies Salesforce Apex and source-format metadata', () => {
     expect(detectLanguage('force-app/main/default/classes/ExampleController.cls')).toBe('apex')
     expect(detectLanguage('force-app/main/default/triggers/ExampleTrigger.trigger')).toBe('apex')

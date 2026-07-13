@@ -16,6 +16,7 @@ import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
+import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 
 /**
  * Pull the textual result out of a tool_response payload. Handles the plain
@@ -93,7 +94,21 @@ function postMcpHandler(event: HookEvent): HookOutput {
   if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
   const resultText = extractMcpResultText(event.raw)
   if (!resultText) return passOutput()
-  storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+  const id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+  // Deterministic structural compression (see mcp_compress.ts): only attempted when the
+  // full result was actually cached (id !== null), so the "full via mcp-output <id>"
+  // label always resolves, size-gated so small results are never touched, and
+  // opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's
+  // existing convention elsewhere in this codebase.
+  if (id !== null && resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
+    const compressed = compressMcpResult(resultText)
+    if (compressed !== null) {
+      return {
+        hookType: 'rewriteOutput',
+        updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${compressed}`,
+      }
+    }
+  }
   return passOutput()
 }
 

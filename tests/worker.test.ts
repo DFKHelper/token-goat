@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   claimWorkerPidFile,
   drainOnce,
+  ensureWorkerAlive,
   getDirtyPathsFor,
   isWorkerRunning,
   processDirtyBatch,
@@ -17,6 +18,7 @@ import {
 } from '../src/worker.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
+import { recordKnownRoot } from '../src/index_prune.js'
 import { querySymbols, queryRefs, getFileEntry } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
@@ -55,9 +57,12 @@ function getRetryCount(dbPath: string, absPath: string): number {
 beforeEach(() => {
   DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-'))
   // Permissive default so existing tests (which don't set blocked_roots) are unaffected;
-  // individual tests override as needed.
+  // individual tests override as needed. indexing.* size/skip_dirs fields are set generously
+  // permissive too, so this fixture-sized test content never trips indexFileSync/
+  // indexFileEmbeddings' size gates.
   vi.mocked(loadConfig).mockReturnValue({
     worker: { blocked_roots: [] },
+    indexing: { skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
   } as unknown as ReturnType<typeof loadConfig>)
 })
 
@@ -85,6 +90,47 @@ describe('isWorkerRunning', () => {
   it('returns true when the pid file names a live process', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
     expect(isWorkerRunning(DIR)).toBe(true)
+  })
+})
+
+describe('ensureWorkerAlive (auto-heal regression)', () => {
+  // Regression: before ensureWorkerAlive, startDetachedWorker was only ever invoked from the
+  // `worker start` CLI command -- nothing anywhere restarted a daemon that died (crash, a manual
+  // taskkill, a machine sleep/wake race, anything). A dead worker stayed dead indefinitely, with
+  // no automatic recovery, until a human happened to notice and ran `worker start` by hand.
+
+  it('does nothing when a live worker is already running', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    ensureWorkerAlive(DIR)
+    // The pid file must still name the already-live process -- no restart was attempted.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
+    expect(isWorkerRunning(DIR)).toBe(true)
+  })
+
+  it('spawns a fresh worker when the recorded pid is stale/dead', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    ensureWorkerAlive(DIR)
+    try {
+      // A real detached daemon was spawned and claimed the pid-file slot with a live pid --
+      // distinct from the stale one that was there before.
+      expect(isWorkerRunning(DIR)).toBe(true)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe('999999999')
+    } finally {
+      // Stop the real spawned daemon before DIR is torn down in afterEach -- otherwise it keeps
+      // polling a directory that no longer exists.
+      stopWorker(DIR)
+    }
+  })
+
+  it('rate-limits repeated checks so a burst of calls does not re-spawn on every one', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    // Simulate a healthcheck that already ran recently: a fresh marker file blocks the next
+    // check from even looking at the pid file, let alone attempting a restart.
+    fs.writeFileSync(path.join(DIR, 'worker-healthcheck.marker'), '')
+    ensureWorkerAlive(DIR)
+    // No restart was attempted -- the stale pid is untouched.
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('999999999')
+    expect(isWorkerRunning(DIR)).toBe(false)
   })
 })
 
@@ -583,6 +629,112 @@ describe('drainOnce', () => {
     }
   })
 
+  // Regression: indexFileSync/cmdIndex's skip_dirs and large_file_skip_kb early-returns left
+  // stale symbol/ref rows behind AND never cleared files.sha, so a file indexed while small/
+  // allowed that later crosses the cap (or whose directory is newly added to skip_dirs) got
+  // stuck in a self-perpetuating loop: the stale sha never matched current content, so every
+  // subsequent drainOnce re-selected it as changed, re-called indexFileSync, which re-skipped
+  // it again, forever, while the OLD rows kept resolving via symbol/read. This drives the real
+  // default drain path end-to-end (no injected index callback): index a file normally, EDIT it
+  // (so its sha changes and drainOnce's parseUnchanged gate does not skip the re-check) while
+  // also lowering large_file_skip_kb below its new size, re-drain, and assert (a) the stale
+  // symbol no longer resolves and (b) the files row is gone (sha cleared) so the file settles
+  // into a stable not-indexed state instead of endlessly re-processing.
+  it('default path clears stale rows and files.sha when a previously-indexed file becomes skip-eligible (no injected callback)', () => {
+    const src = path.join(DIR, 'growable.ts')
+    fs.writeFileSync(src, 'export function growableWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    // Index it once while comfortably under the (generously permissive) default cap.
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(getFileEntry(norm, projectDb)).not.toBeNull()
+
+      // Edit the file (sha changes, so the parseUnchanged gate in makeIndexer will not skip
+      // the re-check) and simultaneously make it skip-eligible by lowering large_file_skip_kb
+      // below its new size -- simulating the file crossing the cap (or its directory being
+      // newly added to skip_dirs) on a real edit.
+      fs.writeFileSync(
+        src,
+        'export function growableWorkerSymbol(): number {\n  return 2\n}\n// padding\n',
+      )
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+
+      // The stale symbol must no longer resolve, and the files row (including sha) must be
+      // cleared -- not just the symbols/refs rows -- so the file settles into a stable
+      // not-indexed state instead of being endlessly re-selected as changed.
+      expect(querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+
+      // A further re-queue+drain while still skip-eligible must settle at the same stable
+      // state -- no stale rows resurrect and no error is thrown -- rather than looping forever.
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  // Regression: makeIndexer's parseUnchanged sha-gate ran indexFileSync ONLY when content
+  // changed, so a file re-enqueued with BYTE-IDENTICAL content (same sha) after becoming
+  // skip-eligible purely from a config change (skip_dirs/large_file_skip_kb, no edit at all)
+  // never had indexFileSync called -- and the stale-row purge lives INSIDE indexFileSync -- so
+  // its symbols/refs/files rows were never cleared, even though embeddings correctly purge via
+  // their own independent wouldSkipFileEmbedding gate. This is the specific gap the sibling
+  // "becomes skip-eligible" test above does NOT cover, since that test also edits the file
+  // (changing its sha) to make parseUnchanged false, bypassing this exact code path. Drives the
+  // real default drain path end-to-end (no injected index callback, no content change).
+  it('default path clears stale rows for a skip-eligible file re-enqueued with unchanged content (parseUnchanged=true)', () => {
+    const src = path.join(DIR, 'unchanged.ts')
+    fs.writeFileSync(src, 'export function unchangedWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    // Index it once while comfortably under the (generously permissive) default cap.
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(getFileEntry(norm, projectDb)).not.toBeNull()
+
+      // Make the file skip-eligible via a CONFIG CHANGE ONLY -- content and sha are untouched,
+      // so makeIndexer's parseUnchanged gate would evaluate true (entry.sha === sha), exactly
+      // the gap this test targets.
+      vi.mocked(loadConfig).mockReturnValue({
+        worker: { blocked_roots: [] },
+        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+
+      // The stale symbol must no longer resolve, and the files row (including sha) must be
+      // cleared -- consistent with the embeddings side, which already purges correctly
+      // regardless of parseUnchanged via its own independent gate.
+      expect(
+        querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBe(0)
+      expect(getFileEntry(norm, projectDb)).toBeNull()
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
   // Regression: a rename/delete that never goes through the Edit hook path (git mv, a
   // directory rename, `git checkout <branch>`, `git clean`) never enqueues the old path, so
   // the dirty-queue reconciliation exercised by the sibling "prunes a deleted file's rows on
@@ -807,6 +959,36 @@ describe('drainOnce', () => {
       // the append lands in the live queue, not WHETHER it does.
       expect(getDirtyPathsFor(DIR)).toEqual([lockedPath])
     })
+
+    it('recovers multiple abandoned .draining/.draining.alt-<ts> files in a single cycle', () => {
+      // Regression: before listDrainingFiles, drainOnce only ever checked the single primary
+      // `.draining` name. A `.draining.alt-<ts>` fallback file (left behind when stage (b) had
+      // to claim under a fallback name because the primary was still occupied by a file a
+      // previous cycle could not clean up) would then sit on disk forever, unprocessed, on
+      // every future cycle -- listDrainingFiles must recover ALL of them, not just the first.
+      const D = path.join(DIR, 'stuck-a.ts')
+      fs.writeFileSync(D, 'export const stuckA = 1\n')
+      const F = path.join(DIR, 'stuck-b.ts')
+      fs.writeFileSync(F, 'export const stuckB = 2\n')
+
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      const altPath = `${drainingPath}.alt-1700000000000`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${D}\n`)
+      fs.writeFileSync(altPath, `${F}\n`)
+
+      const indexedPaths: string[] = []
+      const count = drainOnce(DIR, (p) => {
+        indexedPaths.push(p)
+      })
+
+      expect(count).toBe(2)
+      expect(indexedPaths).toContain(D)
+      expect(indexedPaths).toContain(F)
+      expect(fs.existsSync(drainingPath)).toBe(false)
+      expect(fs.existsSync(altPath)).toBe(false)
+    })
   })
 
   describe('drainOnce rm-after-process (crash-safety regression)', () => {
@@ -1012,7 +1194,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 
     vi.mocked(loadConfig).mockReturnValue({
       worker: { blocked_roots: [] },
-      indexing: { embeddings_enabled: false },
+      indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
     } as unknown as ReturnType<typeof loadConfig>)
 
     const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
@@ -1056,7 +1238,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       // First drain with embeddings disabled: only the disabled-marker embed_sha gets stamped.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: false },
+        indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
@@ -1076,7 +1258,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       // indexFileEmbeddings must be invoked again so the file actually gets embedded.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: true },
+        indexing: { embeddings_enabled: true, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       drainOnce(DIR)
@@ -1160,6 +1342,66 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     // content lost to stale content.
     expect(commits).toEqual([sha1, sha2])
   })
+
+  // Regression (#250): inFlightEmbeddings above only serializes duplicate work on the SAME
+  // file -- a dirty batch of N distinct changed files previously fired N concurrent
+  // indexFileEmbeddings pipelines with no global cap at all. The fix routes every embed call
+  // through a global slot counter honoring config.worker.max_pool_workers, queuing callers
+  // beyond the cap instead of firing them all at once. Drives the real default drain path
+  // (drainOnce(DIR), no injected index callback -- makeIndexer's actual production wiring);
+  // only indexFileEmbeddings is mocked, with each call's completion under this test's explicit
+  // control, so the assertions prove the production code never dispatches more than the
+  // configured cap concurrently, not an artifact of the mock's own timing.
+  it('caps concurrent embedding pipelines across different files at worker.max_pool_workers, queuing the rest', async () => {
+    // Reset worker.ts's process-wide embed-slot counter: an earlier test in this file may have
+    // dispatched a real (unresolved-by-test-end) embed call without awaiting it to settle,
+    // which would otherwise leave activeEmbedSlots polluted going into this test.
+    clearModuleCaches()
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [], max_pool_workers: 2 },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const files = ['cap-a.ts', 'cap-b.ts', 'cap-c.ts'].map((name, i) => {
+      const p = path.join(DIR, name)
+      fs.writeFileSync(p, `export function capFn${i}(): number {\n  return ${i}\n}\n`)
+      return normalizePath(p)
+    })
+
+    const invoked: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((filePath) => {
+      invoked.push(filePath)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(filePath, resolve)
+      })
+    })
+
+    writeQueue(DIR, files)
+    expect(drainOnce(DIR)).toBe(3)
+
+    // makeIndexer fires embedding fire-and-forget with no `await` in the drain loop, and
+    // embedFileSerialized dispatches synchronously (no microtask hop) whenever a slot is
+    // immediately free -- so with a cap of 2, only the first two of these three distinct files
+    // are dispatched to indexFileEmbeddings inline within drainOnce itself. The third is
+    // queued behind the cap, not fired concurrently, with no await needed to observe this.
+    expect(invoked.length).toBe(2)
+    expect(invoked).toEqual([files[0], files[1]])
+
+    // Resolving one of the two in-flight calls frees a slot for the third, queued file.
+    pendingResolvers.get(files[0])!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invoked.length).toBe(3)
+    expect(invoked).toContain(files[2])
+
+    // Let the remaining in-flight calls settle so this test's own promises don't dangle.
+    pendingResolvers.get(files[1])!()
+    pendingResolvers.get(files[2])!()
+    await Promise.resolve()
+  })
 })
 
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called
@@ -1208,5 +1450,38 @@ describe('runWorkerLoop worker state file rotation (regression)', () => {
 
     const statAfter = fs.statSync(logPath)
     expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
+  })
+})
+
+// Regression: before this, pruneDeletedFiles only ever ran via the manual `token-goat index`
+// CLI command -- nothing periodic pruned the shared global.db, so it could accumulate dead file
+// rows indefinitely. runWorkerLoop now runs sweepKnownRoots on the same periodic-sweep
+// mechanism as the snapshot cleanup above. Drives the real default path end-to-end: index a
+// file, record its project root as known, delete the file, run one real loop cycle, and assert
+// its rows were actually pruned.
+describe('runWorkerLoop known-roots auto-prune sweep (regression)', () => {
+  it('prunes dead rows for a known root via the default periodic loop', async () => {
+    fs.mkdirSync(path.join(DIR, '.git'))
+    const dbPath = path.join(DIR, 'global.db')
+    const aPath = path.join(DIR, 'a.ts')
+    fs.writeFileSync(aPath, 'export const a = 1\n')
+    const aKey = normalizePath(aPath)
+    parserModule.indexFileSync(aKey, dbPath)
+    recordKnownRoot(aKey, dbPath)
+    fs.rmSync(aPath)
+
+    const db = getDb(dbPath)
+    const symbolCountFor = (key: string): number =>
+      (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE file_path = ?').get(key) as { n: number }).n
+    expect(symbolCountFor(aKey)).toBeGreaterThan(0)
+
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    await runWorkerLoop(DIR, 5, shouldStop)
+
+    expect(symbolCountFor(aKey)).toBe(0)
   })
 })

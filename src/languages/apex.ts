@@ -120,11 +120,21 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   const seen = new Set<string>()
   const lineIndex = buildLineIndex(content)
   const rawLines = content.split(/\r?\n/)
+  // Block comments must be stripped BEFORE string-literal blanking, not after: `stripCstyleComments`
+  // already skips a `/*` opener that falls inside an open quote (isInsideStringLiteral), so it does
+  // not need string-free input to find real comment spans. Doing it the other way around - as this
+  // used to - lets a lone apostrophe from a contraction inside a `/* */` comment (e.g. "won't") get
+  // misread by `stripStringLiterals` as a string opener, blanking from the apostrophe to end-of-line
+  // and eating the comment's own same-line closing `*/` along with it. `stripCstyleComments` then
+  // finds an orphaned unclosed `/*` and blanks everything through EOF. Stripping block comments
+  // first removes the apostrophe (and the rest of the comment body) before `stripStringLiterals`
+  // ever sees it, so it can no longer be mistaken for a string opener.
+  const blockCommentFree = stripCstyleComments(content)
   // String literals must be blanked BEFORE `//` line-comment stripping: stripCstyleComments's
   // `lineCommentRe` application is not quote-aware, so a `//` inside a string (e.g. a URL literal
   // like 'https://example.com') would otherwise be treated as a real comment starter and blank
   // everything through end-of-line, corrupting any code that follows on the same line.
-  const stringFree = stripStringLiterals(content)
+  const stringFree = stripStringLiterals(blockCommentFree)
   const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
 
   const emit = (name: string, kind: string, span: Span, docstring = ''): void => {

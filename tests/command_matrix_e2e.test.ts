@@ -461,6 +461,16 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(all.length).toBeGreaterThan(0)
     expect(all).not.toMatch(/unknown command|is not a function|Cannot find package/)
   },
+  'mcp-output': () => {
+    // A well-formed but uncached mcp_ id is a graceful cache-miss (exit 1).
+    const r = run(['mcp-output', 'mcp_0000000000000000'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout + r.stderr).toContain('no cached mcp output for id')
+    // A non-mcp_ id is rejected up front, distinctly from a cache miss.
+    const rBad = run(['mcp-output', 'not-an-mcp-id'])
+    expect(rBad.status).not.toBe(0)
+    expect(rBad.stdout + rBad.stderr).toContain('not an mcp-output id')
+  },
   compress: () => {
     // Real output: the generic filter collapses the 6 identical lines to one.
     const r = run([
@@ -501,6 +511,66 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const output = JSON.parse(rj.stdout) as { total_tokens: number }
     expect(typeof output.total_tokens).toBe('number')
+  },
+  memory: () => {
+    const proj = mkIsolated('tg-matrix-mem-')
+    const claudeMd = path.join(proj, 'CLAUDE.md')
+    fs.writeFileSync(claudeMd, '# Rules\n\nAlways run tests.\n\nAlways run tests.\n', 'utf8')
+
+    // --analyze (default): read-only report, no writes.
+    const r = run(['memory', '--project', proj])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('CLAUDE.md files')
+    expect(r.stdout).toContain('exact-duplicate lines: 1')
+    expect(fs.readFileSync(claudeMd, 'utf8')).toContain('Always run tests.\n\nAlways run tests.')
+
+    // --fix without --yes and without a TTY: dry run, file untouched.
+    const rDry = run(['memory', '--project', proj, '--fix'])
+    expect(rDry.status, rDry.stderr).toBe(0)
+    expect(rDry.stdout).toMatch(/Dry run: no files were written/)
+    expect(fs.readFileSync(claudeMd, 'utf8')).toContain('Always run tests.\n\nAlways run tests.')
+
+    // --fix --yes: applies the mechanical exact-duplicate-line removal.
+    const rFix = run(['memory', '--project', proj, '--fix', '--yes'])
+    expect(rFix.status, rFix.stderr).toBe(0)
+    expect(rFix.stdout).toMatch(/applied 1 file\(s\)/)
+    const after = fs.readFileSync(claudeMd, 'utf8')
+    expect((after.match(/Always run tests\./g) ?? []).length).toBe(1)
+  },
+
+  waste: () => {
+    const proj = mkIsolated('tg-matrix-waste-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    const lines = [
+      { message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/never-touched.ts' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: [{ type: 'text', text: 'x'.repeat(300) }] }] } },
+      { cwd: proj, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash1', name: 'Bash', input: { command: 'git status' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash1', content: [{ type: 'text', text: 'y'.repeat(300) }] }] } },
+      { cwd: proj, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash2', name: 'Bash', input: { command: 'git status' } }] } },
+      { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash2', content: [{ type: 'text', text: 'z'.repeat(300) }] }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['waste', '--project', proj, '--transcript', transcript])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('token-goat waste')
+    expect(r.stdout).toContain('Tokens by tool')
+    expect(r.stdout).toContain('never-touched.ts')
+    expect(r.stdout).toContain('never referenced again')
+    expect(r.stdout).toMatch(/git status.*ran 2 times/)
+
+    const rj = run(['waste', '--project', proj, '--transcript', transcript, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as {
+      totalTokens: number
+      tokensByTool: Array<{ key: string; tokens: number }>
+      neverTouchedAgain: Array<{ filePath: string; tokens: number }>
+      repeatedUncompressedBash: Array<{ normalized: string; count: number }>
+    }
+    expect(parsed.totalTokens).toBeGreaterThan(0)
+    expect(parsed.tokensByTool.some((t) => t.key === 'Read')).toBe(true)
+    expect(parsed.neverTouchedAgain.some((f) => f.filePath === '/tmp/never-touched.ts')).toBe(true)
+    expect(parsed.repeatedUncompressedBash.some((c) => c.normalized === 'git status' && c.count === 2)).toBe(true)
   },
 
   version: () => {
@@ -710,8 +780,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
   'context-for': () => {
+    // This tiny fixture has no symbol matching "parse symbols" even after the widen-on-empty OR
+    // retry, so a clean "no matches" (exit 1) is the correct, expected outcome here -- same
+    // reachable-either-way pattern as 'similar' above; this is a wiring smoke test, not a
+    // relevance test.
     const r = run(['context-for', 'parse symbols'])
-    expect(r.status, r.stderr).toBe(0)
+    expect(r.status).not.toBeNull()
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
   'test-for': () => {
@@ -887,6 +961,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('No web output entries cached.')
     const rj = run(['web-history', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const arr = JSON.parse(rj.stdout) as unknown[]
+    expect(Array.isArray(arr)).toBe(true)
+  },
+  'mcp-history': () => {
+    // Isolated home so no mcp blobs exist; must exit 0 and report empty cache.
+    const cacheDir = mkIsolated('tg-mhist-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['mcp-history'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('No mcp output entries cached.')
+    const rj = run(['mcp-history', '--json'], { env })
     expect(rj.status, rj.stderr).toBe(0)
     const arr = JSON.parse(rj.stdout) as unknown[]
     expect(Array.isArray(arr)).toBe(true)

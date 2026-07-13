@@ -7,6 +7,7 @@
 // CRLF warning stripping runs via postNormalise on every stream before the per-subcommand compressor sees the text — the base class pipeline calls it after normalise() on both stdout and stderr.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   ERROR_SIGNAL_RE,
   dedupeCombinedOutput,
@@ -1365,8 +1366,19 @@ export class GitFilter extends GitBaseFilter {
     const subcommand = positionals[0] ?? ''
     if (subcommand === 'status') return _compressGitStatus(stdout, stderr)
     if (subcommand === 'log') return _compressGitLogSimple(stdout, stderr)
-    if (subcommand === 'diff' || subcommand === 'show')
-      return _compressGitDiffSimple(stdout, stderr)
+    if (subcommand === 'diff' || subcommand === 'show') {
+      // [bash_diff] max_hunks_per_file (default 10); falls back to this
+      // function's own built-in default (3) on config load failure.
+      let maxHunksPerFile: number | undefined
+      try {
+        maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
+      } catch {
+        maxHunksPerFile = undefined
+      }
+      return maxHunksPerFile === undefined
+        ? _compressGitDiffSimple(stdout, stderr)
+        : _compressGitDiffSimple(stdout, stderr, maxHunksPerFile)
+    }
     if (subcommand === 'ls-files' || subcommand === 'ls-tree')
       return _truncateListing(stdout, stderr, 100)
     if (

@@ -3,6 +3,7 @@
 // Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
 
 import { ToolFilter } from './base.js'
+import { loadConfig } from '../config.js'
 import {
   headTailCompress,
   maybeNote,
@@ -891,7 +892,6 @@ export class RsyncFilter extends ToolFilter {
 
 const _DIFF_FILE_HEADER_RE = /^(?:diff\s|---\s)/
 const _DIFF_HUNK_RE = /^@@ /
-const _DIFF_MAX_HUNKS_PER_FILE = 3
 const _DIFF_MAX_FULL_FILES = 20
 
 function _isDiffAdd(line: string): boolean {
@@ -1058,18 +1058,21 @@ export class DiffFilter extends ToolFilter {
         outParts.push(blockStr)
         continue
       }
-      // Apply density cap (max_hunks=0 means disabled — config not wired in TS yet)
-      const capped = _scoreAndCapHunks(blockLines, 0)
-      const hunkBlocks = _splitIntoHunks(capped)
-      if (hunkBlocks.length <= _DIFF_MAX_HUNKS_PER_FILE + 1) {
-        outParts.push(capped.join('\n'))
-        continue
+      // Apply density cap from [bash_diff] max_hunks_per_file (default 10);
+      // falls back to disabled (0) on config load failure.
+      let maxHunksPerFile = 0
+      try {
+        maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
+      } catch {
+        // use fallback above
       }
-      const head = hunkBlocks.slice(0, _DIFF_MAX_HUNKS_PER_FILE + 1)
-      const elided = hunkBlocks.length - _DIFF_MAX_HUNKS_PER_FILE - 1
-      const flat = head.flat()
-      flat.push(`[token-goat: +${elided} more hunks in this file elided]`)
-      outParts.push(flat.join('\n'))
+      // The config-driven density cap (_scoreAndCapHunks, honoring
+      // [bash_diff] max_hunks_per_file) is the SINGLE source of truth for the
+      // per-file hunk cap, matching git.ts. A former second stage re-capped to
+      // a hardcoded 3 here, shadowing any configured value above 3 (including
+      // the default of 10); removed.
+      const capped = _scoreAndCapHunks(blockLines, maxHunksPerFile)
+      outParts.push(capped.join('\n'))
     }
     return outParts.join('\n')
   }

@@ -27,10 +27,10 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
-import { indexFileSync, indexFileEmbeddings, isEmbedFresh } from './parser.js'
+import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
-import { pruneDeletedFiles } from './index_prune.js'
+import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
@@ -120,7 +120,7 @@ import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, 
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
 import { stripAnsi } from './render/ansi.js'
-import { loadConfig } from './config.js'
+import { loadConfig, getLastConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -134,9 +134,11 @@ import {
 } from './pack.js'
 import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
-import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
+import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
+import { runMemoryCommand } from './cli_memory.js'
+import { runWasteCommand } from './cli_waste.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -214,6 +216,7 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     files = collectWalkIndexFiles(root)
   }
   const blockedRoots = loadConfig().worker.blocked_roots
+  const ixCfg = loadConfig().indexing
   let indexed = 0
   let failed = 0
   let skipped = 0
@@ -224,7 +227,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
-
+    // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below.
+    // Without this pre-filter, indexFileSync's internal purge would run and then the
+    // unconditional indexFileEmbeddings call below would immediately re-embed a file meant
+    // to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
+    if (isParseSkipEligible(key, ixCfg)) {
+      removeFileFromIndex(getDb(dbPath), key)
+      continue
+    }
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
     // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
     // for every tracked file on every invocation, even ones byte-identical to what was already
@@ -235,12 +245,12 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = sha !== null && entry?.sha === sha
-    // While embeddings are disabled, indexFileEmbeddings stamps embed_sha with
-    // disabledEmbedSha(sha) rather than the bare sha (see its doc comment in parser.ts), so
-    // this gate must compare against the same marker form here -- otherwise a file that was
-    // only ever marker-stamped (never actually embedded) would look permanently "unchanged"
-    // the instant embeddings are re-enabled, and mirror makeIndexer's identical gate in
-    // worker.ts.
+    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's
+    // makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this
+    // sha counts as fresh; while enabled, a bare sha match is fresh (the file was really
+    // embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized
+    // salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and
+    // an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped
     // only because the optional model/sqlite-vec deps were absent) treated as stale so it is
@@ -519,9 +529,12 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --pi is additive, exactly like --codex above.
+  // --pi is additive, exactly like --codex above. --local narrows removal to the
+  // project-local scope only; without it, uninstallPi cleans up wherever the
+  // extension actually is (global and/or local) instead of requiring the caller
+  // to remember which scope --pi was originally installed with.
   if (opts.pi === true) {
-    const piRemoved = uninstallPi({ local: opts.local === true })
+    const piRemoved = opts.local === true ? uninstallPi({ local: true }) : uninstallPi()
     out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
   }
 
@@ -535,9 +548,11 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --copilot is additive, exactly like --codex above.
+  // --copilot is additive, exactly like --codex above. Same auto-detect-both-scopes
+  // reasoning as --pi above: --local narrows removal to the project scope only;
+  // without it, uninstallCopilotCli cleans up wherever the hook config actually is.
   if (opts.copilot === true) {
-    const copilotRemoved = uninstallCopilotCli({ local: opts.local === true })
+    const copilotRemoved = opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()
     out(
       copilotRemoved
         ? 'Removed token-goat Copilot CLI integration.'
@@ -622,6 +637,19 @@ function cmdDoctor(opts: { context?: boolean }): void {
 
 function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean } = {}): void {
   runContextStats(opts)
+}
+
+function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
+  return runMemoryCommand(opts)
+}
+
+function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean; top?: string } = {}): Promise<void> {
+  return runWasteCommand({
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
+    ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
+  })
 }
 
 function _applyFiltersAndPrint(
@@ -739,6 +767,29 @@ function cmdWebOutput(
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
   _applyFiltersAndPrint(content, opts)
+}
+
+// MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed
+// ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already
+// resolves one — this command exists for discoverability (the id printed in a
+// `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail
+// clearly on a non-MCP id rather than silently serving whatever bash-output happens
+// to be stored under it.
+function cmdMcpOutput(
+  id: string | undefined,
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+): void {
+  if (id === undefined) {
+    throw new CliError('provide an mcp-output <id>')
+  }
+  if (!id.startsWith('mcp_')) {
+    throw new CliError(`not an mcp-output id: ${id} (expected an id starting with 'mcp_')`)
+  }
+  const entry = getBashOutput(id)
+  if (entry === null) {
+    throw new CliError(`no cached mcp output for id: ${id}. The cache may have expired; re-run the MCP tool call to repopulate it.`)
+  }
+  _applyFiltersAndPrint(entry.output, opts)
 }
 
 async function cmdPdfExtract(
@@ -1851,6 +1902,14 @@ export function buildProgram(): Command {
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
       process.exitCode = undefined
+      // loadConfig() silently falls back to defaults on a config.toml parse failure, same as
+      // when the file is simply missing -- surface the distinction here, once per invocation,
+      // so a corrupt config doesn't look identical to "no config yet" for every command.
+      loadConfig()
+      const parseErr = getLastConfigParseError()
+      if (parseErr !== null) {
+        err(`token-goat: config.toml failed to parse (${parseErr}); using defaults — run \`token-goat config validate\` for details`)
+      }
       try {
         await fn(...(args as never[]))
         if (process.exitCode === undefined) {
@@ -2057,6 +2116,24 @@ export function buildProgram(): Command {
     .action(guard(cmdContextStats))
 
   program
+    .command('memory')
+    .description('analyze CLAUDE.md files for duplicate/overlapping content (--fix to apply safe mechanical fixes)')
+    .option('--project <path>', 'project root to analyze')
+    .option('--analyze', 'report-only analysis (default)')
+    .option('--fix', 'remove exact-duplicate lines (confirm-gated; shows a diff before writing)')
+    .option('--yes', 'apply --fix changes without prompting (non-interactive)')
+    .action(guard(cmdMemory))
+
+  program
+    .command('waste')
+    .description('session spend-ledger: token cost per tool/file from the current Claude Code session transcript, plus waste signals')
+    .option('--project <path>', 'project root to analyze')
+    .option('--transcript <path>', 'explicit transcript JSONL path (default: most-recently-modified transcript for this project)')
+    .option('--top <n>', 'number of top expensive tool calls to show (default: 10)')
+    .option('--json', 'output JSON')
+    .action(guard(cmdWaste))
+
+  program
     .command('bash-output [id]')
     .description('retrieve cached bash output by ID or file')
     .option('--head <n>', 'show first N lines')
@@ -2077,6 +2154,16 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
     .action(guard(cmdWebOutput))
+
+  program
+    .command('mcp-output [id]')
+    .description('retrieve a cached MCP tool result by ID (the id an MCP post_tool_use hook cached, or a `[token-goat: compressed, full via mcp-output <id>]` label points here)')
+    .option('--head <n>', 'show first N lines')
+    .option('--tail <n>', 'show last N lines')
+    .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
+    .option('--section <heading>', 'extract a specific section from the result')
+    .action(guard(cmdMcpOutput))
 
   program
     .command('exports <file>')
@@ -2481,6 +2568,13 @@ export function buildProgram(): Command {
     .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdWebHistory(opts))())
 
   program
+    .command('mcp-history')
+    .description('list cached MCP tool result entries, newest first')
+    .option('-l, --limit <n>', 'max results (default: 30)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdMcpHistory(opts))())
+
+  program
     .command('clean-cache')
     .description('prune all cache subdirs to default retention limits (200 entries, 24 h)')
     .option('-j, --json', 'output as JSON')
@@ -2531,8 +2625,9 @@ export function buildProgram(): Command {
     .command('baseline')
     .description('emit the project baseline map (file count, languages, top symbols, recent files)')
     .option('--subagent', 'emit terser compact variant for subagent context')
+    .option('--suggest-mem', 'also scan CLAUDE.md/AGENTS.md for preference-shaped bullets and suggest `mem import --from-md` (advisory only; never invokes mem)')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { subagent?: boolean; json?: boolean }) => guard(() => cmdBaseline(opts))())
+    .action((opts: { subagent?: boolean; json?: boolean; suggestMem?: boolean }) => guard(() => cmdBaseline(opts))())
 
   program
     .command('config <action> [key] [value]')

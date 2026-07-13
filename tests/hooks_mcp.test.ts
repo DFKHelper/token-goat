@@ -228,3 +228,99 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
     }
   })
 })
+
+describe('postMcpHandler generic compression (real runHook dispatch)', () => {
+  const compressTool = 'mcp__plugin_github_github__search_issues'
+  const compressInput = { query: 'is:issue' }
+
+  function homogeneousRows(n: number): Array<Record<string, unknown>> {
+    return Array.from({ length: n }, (_, i) => ({
+      id: i,
+      title: `issue number ${i}`,
+      state: 'open',
+      url: `https://github.com/o/r/issues/${i}`,
+    }))
+  }
+
+  let prevCompressFlag: string | undefined
+
+  beforeEach(() => {
+    prevCompressFlag = process.env['TOKEN_GOAT_MCP_COMPRESS']
+  })
+
+  afterEach(() => {
+    if (prevCompressFlag === undefined) delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    else process.env['TOKEN_GOAT_MCP_COMPRESS'] = prevCompressFlag
+  })
+
+  it('rewrites a large homogeneous-array MCP result to a labeled, compressed table', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const rows = homogeneousRows(200)
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: compressTool,
+        tool_input: compressInput,
+        session_id: sessionId,
+        tool_response: JSON.stringify(rows),
+      }),
+    )
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toMatch(/^\[token-goat: compressed, full via mcp-output mcp_[0-9a-f]{16}\]\n/)
+      // The full original is still recoverable via the labeled recall id.
+      const m = /mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
+      expect(m).not.toBeNull()
+      const entry = getBashOutput(m![1] as string)
+      expect(entry?.output).toBe(JSON.stringify(rows))
+    }
+  })
+
+  it('leaves a small result untouched (below the size threshold)', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const rows = homogeneousRows(3)
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: compressTool,
+        tool_input: compressInput,
+        session_id: sessionId,
+        tool_response: JSON.stringify(rows),
+      }),
+    )
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('leaves a large but non-homogeneous result untouched (generic pass only)', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const proseBody = 'a '.repeat(2000)
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: compressTool,
+        tool_input: compressInput,
+        session_id: sessionId,
+        tool_response: proseBody,
+      }),
+    )
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('is disabled by TOKEN_GOAT_MCP_COMPRESS=0, still caches the raw result', async () => {
+    process.env['TOKEN_GOAT_MCP_COMPRESS'] = '0'
+    const rows = homogeneousRows(200)
+    const rawText = JSON.stringify(rows)
+    const post = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: compressTool,
+        tool_input: compressInput,
+        session_id: sessionId,
+        tool_response: rawText,
+      }),
+    )
+    expect(post.hookType).toBe('pass')
+    // Caching/dedup still works normally with compression disabled.
+    const pre = await runHook(
+      buildEvent('pre_tool_use', { tool_name: compressTool, tool_input: compressInput, session_id: sessionId }),
+    )
+    expect(pre.hookType).toBe('deny')
+  })
+})
+

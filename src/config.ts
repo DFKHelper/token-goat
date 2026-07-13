@@ -41,7 +41,6 @@ export interface BashCompressConfig {
 
 export interface BashDiffConfig {
   max_hunks_per_file: number
-  hunk_density_cap: boolean
 }
 
 export interface SeverityLogConfig {
@@ -77,19 +76,6 @@ export interface SkillPreservationConfig {
   pre_skill_enabled: boolean
   first_load_compact: boolean
   post_compact_full_loads: boolean
-}
-
-export interface CuratorConfig {
-  enabled: boolean
-  min_samples: number
-  threshold_pct: number
-}
-
-export interface HintBudgetConfig {
-  enabled: boolean
-  max_per_session: number
-  max_structured_per_session: number
-  max_index_only_per_session: number
 }
 
 export interface ImageShrinkConfig {
@@ -166,9 +152,8 @@ export interface WebFetchConfig {
 }
 
 export interface WorkerConfig {
-  watchdog_enabled: boolean
-  max_pool_workers: number
   blocked_roots: string[]
+  max_pool_workers: number
 }
 
 export interface IndexingConfig {
@@ -205,8 +190,6 @@ export interface Config {
   post_read_code_compress: CodeCompressConfig
   session_brief: SessionBriefConfig
   skill_preservation: SkillPreservationConfig
-  curator: CuratorConfig
-  hint_budget: HintBudgetConfig
   image_shrink: ImageShrinkConfig
   screenshot: ScreenshotConfig
   repomap: RepomapConfig
@@ -258,7 +241,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   },
   bash_diff: {
     max_hunks_per_file: 10,
-    hunk_density_cap: true,
   },
   bash_severity_log: {
     context_lines: 3,
@@ -282,17 +264,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     pre_skill_enabled: true,
     first_load_compact: false,
     post_compact_full_loads: false,
-  },
-  curator: {
-    enabled: true,
-    min_samples: 10,
-    threshold_pct: 20,
-  },
-  hint_budget: {
-    enabled: true,
-    max_per_session: 100,
-    max_structured_per_session: 30,
-    max_index_only_per_session: 30,
   },
   image_shrink: {
     enabled: true,
@@ -336,7 +307,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // once the context window is nearly full.
     large_read_redirect_bytes: 512_000,
     reread_deny: true,
-    reread_deny_min_bytes: 2048,
+    // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this
+    // key up as the real gate for that logic does not silently change default behavior for
+    // existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.
+    reread_deny_min_bytes: 51_200,
     stable_doc_compacts: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
@@ -359,9 +333,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     compress_min_bytes: 16 * 1024,
   },
   worker: {
-    watchdog_enabled: true,
-    max_pool_workers: 4,
     blocked_roots: [],
+    max_pool_workers: 4,
   },
   indexing: {
     large_file_symbol_only_kb: 500,
@@ -393,8 +366,6 @@ export function defaultConfig(): Config {
     post_read_code_compress: getDefaultConfig('post_read_code_compress') as CodeCompressConfig,
     session_brief: getDefaultConfig('session_brief') as SessionBriefConfig,
     skill_preservation: getDefaultConfig('skill_preservation') as SkillPreservationConfig,
-    curator: getDefaultConfig('curator') as CuratorConfig,
-    hint_budget: getDefaultConfig('hint_budget') as HintBudgetConfig,
     image_shrink: getDefaultConfig('image_shrink') as ImageShrinkConfig,
     screenshot: getDefaultConfig('screenshot') as ScreenshotConfig,
     repomap: getDefaultConfig('repomap') as RepomapConfig,
@@ -632,6 +603,55 @@ interface CacheEntry {
 
 let _cached: CacheEntry | null = null
 
+// Recursively freezes a config tree before it enters the cache. loadConfig() intentionally
+// returns the SAME cached object reference on every hit within one mtime/env fingerprint
+// window (see the "second call with unchanged file returns same object reference" test) --
+// without this, a caller that does `loadConfig().hints.foo = x` instead of reading it would
+// silently corrupt that shared singleton for every other caller until the next cache
+// invalidation. Object.freeze() throws on such a write in strict mode (ESM is always strict)
+// instead of corrupting shared state, while leaving the returned reference itself unchanged.
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(v)
+    }
+  }
+  return value
+}
+
+// Set by loadConfig()/loadPersistedConfig() whenever the on-disk config.toml exists but fails
+// to parse (as opposed to being simply absent, which is not an error). Both loaders otherwise
+// treat a parse failure identically to a missing file — silently falling back to defaults with
+// no signal — so callers that need to warn the user (the CLI entry point, `config set`) check
+// this after loading instead of duplicating TOML-read/error-classification logic themselves.
+let _lastConfigParseError: string | null = null
+
+/**
+ * The error message from the most recent config.toml parse failure, or `null` if the most
+ * recent load either succeeded or found no file at all. See {@link _lastConfigParseError}.
+ */
+export function getLastConfigParseError(): string | null {
+  return _lastConfigParseError
+}
+
+/**
+ * Read and parse `p` as TOML, distinguishing "file does not exist" (not an error — returns
+ * `{}` with no message) from a genuine parse/read failure (returns `{}` with the error
+ * message). Shared by {@link loadConfig} and {@link loadPersistedConfig} so both loaders
+ * classify failures the same way.
+ */
+function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: string | null } {
+  try {
+    const text = fs.readFileSync(p, 'utf8')
+    return { raw: parse(text) as Record<string, unknown>, parseError: null }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { raw: {}, parseError: null }
+    return { raw: {}, parseError: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // load / save
 // ---------------------------------------------------------------------------
@@ -653,15 +673,14 @@ export function loadConfig(): Config {
 
   let raw: Record<string, unknown> = {}
   if (currentMtime !== 0) {
-    try {
-      const text = fs.readFileSync(p, 'utf8')
-      raw = parse(text) as Record<string, unknown>
-    } catch {
-      // unreadable — fall back to defaults
-    }
+    const result = readConfigToml(p)
+    raw = result.raw
+    _lastConfigParseError = result.parseError
+  } else {
+    _lastConfigParseError = null
   }
 
-  const cfg = _buildConfig(raw)
+  const cfg = deepFreeze(_buildConfig(raw))
 
   _cached = { config: cfg, mtime: currentMtime, envFp }
   return cfg
@@ -711,13 +730,8 @@ export function buildPersistedConfig(raw: Record<string, unknown>): Config {
  */
 export function loadPersistedConfig(): Config {
   const p = configPath()
-  let raw: Record<string, unknown> = {}
-  try {
-    const text = fs.readFileSync(p, 'utf8')
-    raw = parse(text) as Record<string, unknown>
-  } catch {
-    // missing/unreadable — fall back to defaults
-  }
+  const { raw, parseError } = readConfigToml(p)
+  _lastConfigParseError = parseError
   return buildPersistedConfig(raw)
 }
 
@@ -765,7 +779,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig
   bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, 1, 10000)
-  bd.hunk_density_cap = validatedBool(bd_raw['hunk_density_cap'], bd.hunk_density_cap)
 
   const sl_raw = section(raw, 'bash_severity_log')
   const sl = getDefaultConfig('bash_severity_log') as SeverityLogConfig
@@ -810,21 +823,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const sc_raw = section(raw, 'screenshot')
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
   sc_cfg.chrome_path = validatedStr(sc_raw['chrome_path'], sc_cfg.chrome_path)
-
-  const cur_raw = section(raw, 'curator')
-  const cur = getDefaultConfig('curator') as CuratorConfig
-  cur.enabled = validatedBool(cur_raw['enabled'], cur.enabled)
-  cur.min_samples = validatedInt(cur_raw['min_samples'], cur.min_samples, 0, 10000)
-  cur.threshold_pct = validatedInt(cur_raw['threshold_pct'], cur.threshold_pct, 0, 100)
-  cur.enabled = envBool('TOKEN_GOAT_CURATOR', cur.enabled)
-
-  const hb_raw = section(raw, 'hint_budget')
-  const hb = getDefaultConfig('hint_budget') as HintBudgetConfig
-  hb.enabled = validatedBool(hb_raw['enabled'], hb.enabled)
-  hb.max_per_session = validatedInt(hb_raw['max_per_session'], hb.max_per_session, 0, 1_000_000)
-  hb.max_structured_per_session = validatedInt(hb_raw['max_structured_per_session'], hb.max_structured_per_session, 0, 1_000_000)
-  hb.max_index_only_per_session = validatedInt(hb_raw['max_index_only_per_session'], hb.max_index_only_per_session, 0, 1_000_000)
-  hb.enabled = envBool('TOKEN_GOAT_HINT_BUDGET', hb.enabled)
 
   const rm_raw = section(raw, 'repomap')
   const rm = getDefaultConfig('repomap') as RepomapConfig
@@ -915,10 +913,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const wk_raw = section(raw, 'worker')
   const wk = getDefaultConfig('worker') as WorkerConfig
-  wk.watchdog_enabled = validatedBool(wk_raw['watchdog_enabled'], wk.watchdog_enabled)
-  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
-  wk.watchdog_enabled = envBool('TOKEN_GOAT_WORKER_WATCHDOG', wk.watchdog_enabled)
+  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
   wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, 1, 8)
 
   const ix_raw = section(raw, 'indexing')
@@ -956,8 +952,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
     post_read_code_compress: cc,
     session_brief: sb,
     skill_preservation: sp,
-    curator: cur,
-    hint_budget: hb,
     image_shrink: is_cfg,
     screenshot: sc_cfg,
     repomap: rm,
@@ -994,8 +988,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.pre_skill_enabled': ['TOKEN_GOAT_PRE_SKILL'],
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
-  'curator.enabled': ['TOKEN_GOAT_CURATOR'],
-  'hint_budget.enabled': ['TOKEN_GOAT_HINT_BUDGET'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
   'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
@@ -1016,7 +1008,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
   'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
-  'worker.watchdog_enabled': ['TOKEN_GOAT_WORKER_WATCHDOG'],
   'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
@@ -1059,7 +1050,6 @@ export function saveConfig(config: Config): void {
     },
     bash_diff: {
       max_hunks_per_file: config.bash_diff.max_hunks_per_file,
-      hunk_density_cap: config.bash_diff.hunk_density_cap,
     },
     bash_severity_log: {
       context_lines: config.bash_severity_log.context_lines,
@@ -1083,17 +1073,6 @@ export function saveConfig(config: Config): void {
       pre_skill_enabled: sp.pre_skill_enabled,
       first_load_compact: sp.first_load_compact,
       post_compact_full_loads: sp.post_compact_full_loads,
-    },
-    curator: {
-      enabled: config.curator.enabled,
-      min_samples: config.curator.min_samples,
-      threshold_pct: config.curator.threshold_pct,
-    },
-    hint_budget: {
-      enabled: config.hint_budget.enabled,
-      max_per_session: config.hint_budget.max_per_session,
-      max_structured_per_session: config.hint_budget.max_structured_per_session,
-      max_index_only_per_session: config.hint_budget.max_index_only_per_session,
     },
     image_shrink: {
       enabled: is_cfg.enabled,
@@ -1156,9 +1135,8 @@ export function saveConfig(config: Config): void {
       compress_min_bytes: config.webfetch.compress_min_bytes,
     },
     worker: {
-      watchdog_enabled: config.worker.watchdog_enabled,
-      max_pool_workers: config.worker.max_pool_workers,
       blocked_roots: config.worker.blocked_roots,
+      max_pool_workers: config.worker.max_pool_workers,
     },
     indexing: {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
