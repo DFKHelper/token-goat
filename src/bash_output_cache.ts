@@ -22,6 +22,7 @@ import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob } from './disk_cache.js'
 import { isBuildCommand } from './hints/lang_patterns.js'
+import { indexRecallEntry } from './recall_index.js'
 
 /** Subdir under the token-goat home where bash-output blobs live. */
 export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
@@ -520,6 +521,8 @@ export async function storeBashOutput(command: string, output: string, exitCode:
   _byId.set(id, entry)
   // Persist so a later, separate hook process (and the CLI) can recall it.
   storeBlob(BASH_OUTPUT_SUBDIR, id, entry)
+  // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
+  indexRecallEntry('bash', id, command, `${command}\n${output}`, entry.storedAt)
   return id
 }
 

@@ -18,6 +18,7 @@ import fs from 'fs'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { blobPath, DEFAULT_MAX_AGE_MS, loadBlob, storeBlob } from './disk_cache.js'
+import { indexRecallEntry } from './recall_index.js'
 
 /** Subdir under the token-goat home where web-output blobs live. */
 export const WEB_OUTPUT_SUBDIR = 'web_outputs'
@@ -61,6 +62,10 @@ export function storeWebOutput(url: string, content: string, dedupKey: string = 
   _urlIndex.set(url, cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.
   storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content })
+  // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
+  // Web blobs carry no storedAt field of their own; Date.now() at write time is the closest
+  // available signal, same as bash-history/web-history's own mtime-based ordering fallback.
+  indexRecallEntry('web', cacheId, url, `${url}\n${content}`, Date.now())
   return cacheId
 }
 

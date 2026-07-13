@@ -111,6 +111,25 @@ CREATE TABLE IF NOT EXISTS known_roots (
   last_seen_ms REAL NOT NULL,
   first_missing_ms REAL
 );
+
+-- Cross-cache full-text search index for 'token-goat recall' (recall_index.ts). One row
+-- per bash-output/web-output/mcp-output blob-store entry (see disk_cache.ts), refreshed
+-- in place (ON CONFLICT DO UPDATE) whenever storeBashOutput/storeWebOutput/storeMcpOutput
+-- write that entry, so recall never needs a separate rebuild step. row_id is a plain
+-- surrogate integer key -- entry_id is the real blob-store id (bash/mcp ids are hex,
+-- web ids are the cache's own scheme) and is not unique on its own since bash-output and
+-- mcp-output ids share one namespace (BASH_OUTPUT_SUBDIR) while web-output ids are a
+-- separate namespace; cache_type disambiguates.
+CREATE TABLE IF NOT EXISTS cache_recall (
+  row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cache_type TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  label TEXT,
+  content TEXT,
+  stored_at REAL,
+  UNIQUE(cache_type, entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cache_recall_type ON cache_recall(cache_type);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
@@ -136,12 +155,42 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
   INSERT INTO symbols_fts(rowid, name, body, docstring)
   VALUES (new.id, new.name, new.body, new.docstring);
 END;
+
+-- Content-linked FTS5 mirror of cache_recall (recall_index.ts), same shape as symbols_fts
+-- above. An INSERT ... ON CONFLICT DO UPDATE against cache_recall fires the AFTER UPDATE
+-- trigger (not AFTER INSERT) on the conflicting row, same as any other SQLite upsert, so the
+-- delete+reinsert pattern below keeps the fts index correct on a re-indexed (overwritten)
+-- entry, not just a brand-new one.
+CREATE VIRTUAL TABLE IF NOT EXISTS cache_recall_fts USING fts5(
+  label,
+  content,
+  content='cache_recall',
+  content_rowid='row_id'
+);
+CREATE TRIGGER IF NOT EXISTS cache_recall_ai AFTER INSERT ON cache_recall BEGIN
+  INSERT INTO cache_recall_fts(rowid, label, content)
+  VALUES (new.row_id, new.label, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS cache_recall_ad AFTER DELETE ON cache_recall BEGIN
+  INSERT INTO cache_recall_fts(cache_recall_fts, rowid, label, content)
+  VALUES ('delete', old.row_id, old.label, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS cache_recall_au AFTER UPDATE ON cache_recall BEGIN
+  INSERT INTO cache_recall_fts(cache_recall_fts, rowid, label, content)
+  VALUES ('delete', old.row_id, old.label, old.content);
+  INSERT INTO cache_recall_fts(rowid, label, content)
+  VALUES (new.row_id, new.label, new.content);
+END;
 `
 
 // Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an
 // already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add
 // the matching step to MIGRATIONS below. It represents the schema as it exists today.
-export const SCHEMA_VERSION = 3 as const
+// v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive --
+// `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a
+// pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment
+// on MIGRATIONS below for a bump with no registered step).
+export const SCHEMA_VERSION = 4 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 

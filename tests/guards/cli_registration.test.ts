@@ -59,7 +59,7 @@ describe('CLI command registration', () => {
       'index', 'map', 'hook', 'install', 'uninstall', 'stats', 'doctor',
       'bash-output', 'web-output', 'mcp-output', 'mcp-history', 'skill-body', 'skill-compact', 'skill-list',
       'skill-size', 'skill-history', 'skill-diff', 'skill-section', 'changed', 'config-get', 'write-file', 'replace', 'gdrive-sections',
-      'version', 'exports', 'imports', 'find', 'grep', 'memory', 'waste', 'mcp-audit',
+      'version', 'exports', 'imports', 'find', 'grep', 'memory', 'waste', 'mcp-audit', 'recall',
       'worker start', 'worker stop', 'worker status',
     ]
     const missing = required.filter((name) => !names.has(name))
