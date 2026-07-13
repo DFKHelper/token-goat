@@ -2271,6 +2271,41 @@ real:
     expect(names).not.toContain('one')
   })
 
+  it('does not create a phantom target from a colon inside a backslash-continued variable assignment', () => {
+    // Regression: TARGET_RE scanned every physical line independently, never accounting for
+    // GNU make's backslash-newline line continuation. A variable assignment wrapped across
+    // multiple physical lines (a search path, a sed substitution) legitimately has a colon in
+    // its continuation line, which TARGET_RE misread as a new rule header - even though that
+    // line is logically still part of the preceding assignment, not an independent statement.
+    const content = [
+      'PATHS = /usr/bin:/usr/local/bin \\',
+      '        /opt/bin:/sbin',
+      '',
+      'all:',
+      '\techo hi',
+    ].join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).not.toContain('/opt/bin')
+    expect(names).toHaveLength(1)
+  })
+
+  it('does not create a phantom target from a colon inside a backslash-continued sed-substitution value', () => {
+    const content = [
+      'SUBST = s/old/new/ \\',
+      '        first:second',
+      '',
+      'build:',
+      '\tgcc -o app app.c',
+    ].join('\n')
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('build')
+    expect(names).not.toContain('first')
+    expect(names).toHaveLength(1)
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `

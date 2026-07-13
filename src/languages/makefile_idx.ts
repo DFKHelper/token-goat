@@ -58,6 +58,25 @@ function maskDefineBlocks(text: string): string {
   return lines.join('\n')
 }
 
+// Mask (blank) any line that is a backslash-continuation of the line before it, so a colon
+// appearing inside a continued logical line - a variable assignment's wrapped value (a search
+// path, a sed substitution `s/a:/b:/`, ...) or a target's wrapped prerequisite list - is never
+// mistaken by TARGET_RE for a new rule header on its own physical line. GNU make joins
+// `line1 \` + `line2` into a single logical line, so a continuation line can never
+// independently open a rule regardless of what it contains.
+function maskContinuationLines(text: string): string {
+  const lines = text.split('\n')
+  let continuing = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (continuing) {
+      lines[i] = ' '.repeat(line.length)
+    }
+    continuing = line.endsWith('\\')
+  }
+  return lines.join('\n')
+}
+
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
 const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
@@ -86,7 +105,7 @@ export function extractMakefile(content: string, filePath: string): SymbolEntry[
 
   // Targets (scan a copy with define...endef bodies masked out, so script content embedded
   // in a define block is never mistaken for a target declaration)
-  const strippedForTargets = maskDefineBlocks(stripped)
+  const strippedForTargets = maskContinuationLines(maskDefineBlocks(stripped))
   for (const m of strippedForTargets.matchAll(TARGET_RE)) {
     const rawTarget = m[1]?.trim() ?? ''
     if (!rawTarget) continue
