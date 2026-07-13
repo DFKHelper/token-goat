@@ -407,11 +407,11 @@ function lineCommentStartIndex(line: string, markers: string[], from = 0): numbe
  * interpolated string early, exposing the hole's own `"}"` as bare unstripped code and leaking an
  * unmatched `}` into the caller's brace-depth counter.
  *
+ * C# `{{` (the escape for a literal brace inside an interpolated string) is special-cased so it
+ * blanks as a literal `{` rather than opening an interpolation hole.
+ *
  * It is intentionally not a full string lexer for every language's syntax, and callers should be
  * aware of these remaining gaps:
- *  - C# `{{`/`}}` (the escape for a literal brace inside an interpolated string) is not
- *    special-cased, so a `{{` is read as an interpolation hole opening rather than a literal `{`.
- *    Rare in practice.
  *  - C# verbatim (`@"..."`) strings are still blanked correctly in the common case: an escaped
  *    `""` inside a verbatim string is read as "close quote, immediately reopen", which blanks the
  *    same characters either way. The one edge case this misreads is a literal backslash directly
@@ -515,6 +515,16 @@ export function stripStringLiterals(line: string): string {
     }
     if (top.quote === '"') {
       if (top.bareBraceHole && ch === '{') {
+        if (line[i + 1] === '{') {
+          // C# `{{` is the escape for a literal `{` inside an interpolated string, not a hole
+          // opener - without this check the first `{` opened a hole unconditionally, passing the
+          // rest of the "escaped brace" text (and everything after it on the line) through as
+          // real code instead of blanked string content, desyncing brace depth for callers that
+          // brace-count this function's output (e.g. csharp.ts).
+          out += '  '
+          i += 2
+          continue
+        }
         // C# interpolated-string hole: a bare `{expr}` inside a `$"..."` string.
         stack.push({ kind: 'hole', depth: 0 })
         out += ch
