@@ -139,10 +139,36 @@ interface Classification {
  * run of non-whitespace/non-quote characters; trims trailing punctuation a hint's own sentence
  * structure might have appended (a period, closing backtick/quote, etc.).
  */
+// Literal `::<placeholder>` suffixes this codebase's own hint text templates splice onto a real
+// path (e.g. hooks_edit.ts's `... + '::HeadingName"` ...`, hooks_read.ts's `::SectionName`,
+// `::<field>`, `::Symbol`) so a human reads them as "put a heading/symbol name here" -- not
+// real values. An agent that actually follows the hint substitutes its own concrete heading or
+// symbol, so the command it runs shares the path but never this exact placeholder text, and
+// isActedOn's `command.includes(correlator)` check can then never match: acted_on is
+// permanently 0 for every hint text that embeds one of these, silently pinning the category's
+// efficacy at 0% until it crosses shouldSuppress's threshold and gets auto-suppressed despite
+// perfect real-world follow-through. `::compilerOptions` is deliberately excluded -- that one
+// names a real, specific tsconfig field in its hint text, not a fill-in-the-blank.
+const KNOWN_CORRELATOR_PLACEHOLDERS = new Set([
+  'HeadingName',
+  'SectionHeading',
+  'SectionName',
+  'Symbol',
+  'SymbolName',
+  'name',
+])
+
 export function extractPathCorrelator(text: string): string | null {
   const m = /(?:[A-Za-z]:[\\/]|\.{1,2}\/|\/)[^\s"'`]+/.exec(text)
   if (m === null) return null
-  return m[0].replace(/[`"'.,;:)]+$/, '')
+  const cleaned = m[0].replace(/[`"'.,;:)]+$/, '')
+  const sepIdx = cleaned.indexOf('::')
+  if (sepIdx === -1) return cleaned
+  const suffix = cleaned.slice(sepIdx + 2)
+  if (/^<[^<>]*>$/.test(suffix) || KNOWN_CORRELATOR_PLACEHOLDERS.has(suffix)) {
+    return cleaned.slice(0, sepIdx)
+  }
+  return cleaned
 }
 
 /** Classifier for hooks_bash.ts's preBashHandler hints. */

@@ -84,6 +84,28 @@ describe('extractPathCorrelator', () => {
   it('trims trailing sentence punctuation', () => {
     expect(extractPathCorrelator('See C:/repo/file.ts for details.')).toBe('C:/repo/file.ts')
   })
+
+  // Regression: hint text templates in hooks_edit.ts/hooks_read.ts splice a literal
+  // `::<placeholder>` (e.g. `::HeadingName`, `::SectionName`, `::<field>`, `::Symbol`,
+  // `::SymbolName`, `::name`, or a bracketed `::<...>` name) onto the real path so a human
+  // reads it as "put a heading/symbol name here" -- not a real value. An agent that actually
+  // follows the hint substitutes its own concrete heading/symbol, so isActedOn's
+  // `command.includes(correlator)` check could never match if the correlator kept the literal
+  // placeholder text, permanently pinning the category's efficacy at 0% and triggering
+  // auto-suppression despite perfect real-world follow-through. The correlator must therefore
+  // be just the bare path when the `::` suffix is one of these known placeholders.
+  it('strips a known literal placeholder suffix, keeping only the bare path', () => {
+    expect(extractPathCorrelator('Use `token-goat section "C:/repo/README.md::HeadingName"` to re-read a specific section.')).toBe('C:/repo/README.md')
+    expect(extractPathCorrelator('Use `token-goat section "' + '/a/b.md' + '::SectionName"` to read one section.')).toBe('/a/b.md')
+    expect(extractPathCorrelator('Use `token-goat section "' + '/a/b.json' + '::<field>"` to extract just the value.')).toBe('/a/b.json')
+    expect(extractPathCorrelator('Use `token-goat read "' + '/a/b.ts' + '::SymbolName"` for one function.')).toBe('/a/b.ts')
+  })
+
+  it('keeps a concrete, non-placeholder :: suffix (e.g. a real tsconfig field name)', () => {
+    expect(extractPathCorrelator('Use `token-goat section "/a/tsconfig.json::compilerOptions"` to extract compiler options.')).toBe(
+      '/a/tsconfig.json::compilerOptions',
+    )
+  })
 })
 
 describe('classifyBashHint', () => {
@@ -96,7 +118,10 @@ describe('classifyBashHint', () => {
   it('classifies a surgical-redirect hint by its embedded path when no bash-output id is present', () => {
     const result = classifyBashHint('`cat` loads the entire file into context. Use `token-goat read "C:/repo/file.ts::SymbolName"` to read one function or class.')
     expect(result.category).toBe('bash_redirect')
-    expect(result.correlator).toBe('C:/repo/file.ts::SymbolName')
+    // Regression: "SymbolName" is the literal placeholder this hint text template splices onto
+    // the path -- an agent following the hint substitutes a real symbol name, so the correlator
+    // must be the bare path (see extractPathCorrelator's regression test for the full explanation).
+    expect(result.correlator).toBe('C:/repo/file.ts')
   })
 
   it('falls back to a null correlator when the redirect hint has no extractable path', () => {
@@ -124,7 +149,11 @@ describe('classifyEditHint', () => {
   it('always classifies as edit_reread_suggest', () => {
     const result = classifyEditHint('README.md was edited. Use `token-goat section "C:/repo/README.md::HeadingName"` to re-read a specific section.')
     expect(result.category).toBe('edit_reread_suggest')
-    expect(result.correlator).toBe('C:/repo/README.md::HeadingName')
+    // Regression: "HeadingName" is the literal placeholder this hint text template splices onto
+    // the path -- an agent following the hint substitutes a real heading, so the correlator must
+    // be the bare path, not the placeholder text (see extractPathCorrelator's regression test
+    // above for the full explanation).
+    expect(result.correlator).toBe('C:/repo/README.md')
   })
 })
 
