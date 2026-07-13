@@ -415,6 +415,30 @@ describe('readSection', () => {
     expect(result?.content).not.toContain('def beta')
   })
 
+  it('spans a whole 2-space-indented class body, not just its header line (regression: level was computed as `floor(indent / 4) + 1`, so a 2-space or 3-space method indent floor-divided to the SAME level as its enclosing class, and the section resolver truncated the class at its very first method)', () => {
+    const py = ['class Foo:', '  def method_a(self):', '    return 1', '  def method_b(self):', '    return 2', ''].join(
+      '\n',
+    )
+    const file = tmpFile('two_space.py', py)
+    const result = readSection(file, 'Foo')
+    expect(result?.lineStart).toBe(1)
+    expect(result?.lineEnd).toBe(5)
+    expect(result?.content).toContain('method_b')
+  })
+
+  it('nests a class inside a class one level below its enclosing class regardless of indent width', () => {
+    const py = ['class Foo:', '  class Inner:', '    def m(self):', '      return 1', '  def method_a(self):', '    return 2', ''].join(
+      '\n',
+    )
+    const file = tmpFile('nested_class.py', py)
+    const foo = readSection(file, 'Foo')
+    expect(foo?.lineStart).toBe(1)
+    expect(foo?.lineEnd).toBe(6)
+    const inner = readSection(file, 'Inner')
+    expect(inner?.lineStart).toBe(2)
+    expect(inner?.lineEnd).toBe(4)
+  })
+
   it('returns null for an unreadable file', () => {
     expect(readSection('/no/such/path/nope.md', 'X')).toBeNull()
   })

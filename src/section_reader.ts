@@ -197,19 +197,29 @@ function findTableHeaders(lines: readonly string[]): SectionHeader[] {
 /**
  * Locate Python `def`/`class` headers, using indentation as nesting level.
  *
- * A top-level def/class is level 1; one indent step deeper is level 2, etc.
- * Indentation width is normalised in 4-space units (tabs counted as one step)
- * so a method inside a class nests one level below it.
+ * A top-level def/class is level 1; one indent step deeper is level 2, etc. Nesting is tracked
+ * with a stack of indent widths (the same relative-comparison approach Python's own lexer uses
+ * for blocks) rather than dividing the raw column count by a fixed 4-space unit - a fixed
+ * divisor mis-levels every def/class in a 2-space or 3-space indented file (both indent widths
+ * floor-divide to the SAME level as their enclosing class), which truncates the class's section
+ * at its very first method instead of spanning the whole body. Tabs are normalised to 4 spaces
+ * before comparison so a file mixing tabs and spaces at the same nesting depth still resolves
+ * consistently.
  */
 function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
+  const indentStack: number[] = []
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
     const m = PYTHON_HEADER_RE.exec(line)
     if (m === null || m[1] === undefined || m[2] === undefined) continue
     const indent = m[1].replace(/\t/g, '    ').length
-    const level = Math.floor(indent / 4) + 1
+    while (indentStack.length > 0 && indent <= (indentStack[indentStack.length - 1] ?? -1)) {
+      indentStack.pop()
+    }
+    const level = indentStack.length + 1
+    indentStack.push(indent)
     headers.push({ heading: m[2], level, index: i })
   }
   return headers
