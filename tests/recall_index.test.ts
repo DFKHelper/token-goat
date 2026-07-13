@@ -1,4 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+// bm25() ranking is computed from corpus-wide statistics (avgdl, total row count), not just the
+// rows a query's MATCH filter returns -- a nonce-prefixed id is enough to keep two test files'
+// rows from ever matching the same query, but NOT enough to keep another file's row *count*
+// from shifting a ranking-order assertion's relative scores. Files sharing this worker's process
+// can run interleaved (see tests/setup/reset-hint-stats.ts's doc comment for the same class of
+// bug in hint_stats), so a nonce alone isn't reliable for the ranking test below. This mock is
+// hoisted, so it must be self-contained (no top-level variables referenced before their own
+// declaration) -- mirrors the same pattern in tests/hooks_bash.test.ts's configPath() mock.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    globalDbPath: () => join(tmpdir(), `tg-recall-index-test-${process.pid}.db`),
+  }
+})
 
 import {
   indexRecallEntry,
@@ -9,16 +27,9 @@ import {
 } from '../src/recall_index.js'
 import { clearModuleCaches } from '../src/reset.js'
 
-// The recall index lives in the shared global.db (see tests/setup/isolate-home.ts: one
-// per-worker data dir, not reset between test files), so every seeded entry here uses a
-// randomized nonce prefix -- assertions search for that nonce, never for "the whole index",
-// so this file's results can never collide with another test file's synthetic entries.
-//
-// A nonce prefix is enough for MATCH filtering (which rows a query finds) but not for
-// bm25() ranking, which SQLite computes from corpus-wide statistics (avgdl, total row count)
-// regardless of the query's MATCH filter -- so clearRecallEntriesForTesting() gives every test
-// a clean, single-tenant corpus, preventing rows left by other test files sharing this worker
-// from shifting a ranking-order assertion's relative scores.
+// Every seeded entry still uses a randomized nonce prefix, on top of the private db above, so
+// assertions search for that nonce rather than "the whole index" and stay robust to any
+// leftover rows from an earlier test in this same file.
 function nonce(): string {
   return `rk${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
