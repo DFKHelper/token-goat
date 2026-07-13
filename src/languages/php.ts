@@ -177,12 +177,18 @@ export function extractPhp(
       continue
     }
 
-    // class constant
+    // class constant. Gated on the same "directly inside the class body" pre-line-depth check as
+    // the method and property branches above - an anonymous class body isn't pushed onto the
+    // context stack (it never matches CLASS_RE), so a const declared inside one sits at a deeper
+    // brace depth while a named outer class frame is still on top of the stack. Without the gate,
+    // that const was mistaken for a constant of the enclosing named class.
     const constM = CONST_RE.exec(stripped)
     if (constM) {
       const name = constM[1] ?? ''
-      const parent = currentClass()
-      symbols.push(makeLineSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent ?? undefined))
+      const preLineDepth = braceDepth - openB + closeB
+      const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+      const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : undefined
+      symbols.push(makeLineSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent))
       continue
     }
 

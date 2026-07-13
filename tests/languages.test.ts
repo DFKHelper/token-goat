@@ -641,6 +641,23 @@ class Counter {
     expect(symbols.find((s) => s.name === 'shared')?.docstring).toBe('Counter')
   })
 
+  it('does not attribute a constant declared inside an untracked anonymous class body to the enclosing named class (regression: the const branch had no brace-depth gate, unlike the method and property branches, so a const nested inside an anonymous class - which never gets pushed onto the context stack - was mistaken for a constant of whatever named class was still on top of it)', () => {
+    const content = `<?php
+class Outer {
+    public function make() {
+        return new class {
+            const INNER = 1;
+            public function inner() {}
+        };
+    }
+    const REAL = 2;
+}
+`
+    const { symbols } = extractPhp(content, 'Outer.php')
+    expect(symbols.find((s) => s.name === 'INNER')?.docstring).toBe('')
+    expect(symbols.find((s) => s.name === 'REAL')?.docstring).toBe('Outer')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
