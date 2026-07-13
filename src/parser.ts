@@ -1040,7 +1040,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
 // `#` comment - is never a delimiter and must not be scanned for parity, or a plain scalar with
 // an interior apostrophe silently swallows every key after it until a matching quote happens to
 // appear somewhere downstream.
-function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
+export function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
   const value = line.slice(startIdx)
   const trimmed = value.replace(/^\s+/, '')
   const q = trimmed[0]
@@ -1063,7 +1063,7 @@ function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
   return "'"
 }
 
-function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
+export function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
   let i = 0
   while (i < line.length) {
     if (quote === '"') {

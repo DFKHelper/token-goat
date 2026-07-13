@@ -17,6 +17,8 @@ import { readFileSync } from 'node:fs'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
+import { yamlOpenQuoteAfter, yamlLineClosesQuote } from './parser.js'
+import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
 
 /** One extracted section: its header text, body, and 1-based line span. */
 export interface SectionResult {
@@ -177,15 +179,40 @@ function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   return headers
 }
 
-/** Locate generic `key = value` / `key:` block headers at column zero. */
-function findKeyValueHeaders(lines: readonly string[]): SectionHeader[] {
+/**
+ * Locate generic `key = value` / `key:` block headers at column zero.
+ *
+ * A quoted value can wrap across multiple physical lines (YAML folds an embedded newline into
+ * a space; .env values can do the same). Without tracking an open quote across lines, a
+ * continuation line that happens to itself look like `word:`/`word=` (wrapped prose, an
+ * embedded "ratio: 16:9", part of a multi-line cert/PEM block, etc.) was read as a brand new
+ * top-level key, fragmenting the real section and producing phantom ones. Reuses the same
+ * quote-tracking helpers the yaml and .env indexers already use (extractYamlSymbols in
+ * parser.ts, extractEnv in ini_idx.ts) so the live reader and the index stay consistent.
+ */
+function findKeyValueHeaders(lines: readonly string[], language: string): SectionHeader[] {
   const headers: SectionHeader[] = []
+  const isEnv = language === 'env_file'
+  let openQuote: string | null = null
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+
+    if (openQuote !== null) {
+      const closed = isEnv
+        ? envLineClosesQuote(line, openQuote)
+        : yamlLineClosesQuote(line, openQuote as '"' | "'")
+      if (closed) openQuote = null
+      continue
+    }
+
     const m = KEYVALUE_HEADER_RE.exec(line)
     if (m === null || m[1] === undefined) continue
     headers.push({ heading: m[1], level: 1, index: i })
+    openQuote = isEnv
+      ? envDetectOpenQuote(line.slice(m[0].length))
+      : yamlOpenQuoteAfter(line, m[0].length)
   }
   return headers
 }
@@ -229,14 +256,14 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'ini') return { headers: findTableHeaders(lines), kind: 'table' }
   // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
   if (language === 'yaml' || language === 'env_file')
-    return { headers: findKeyValueHeaders(lines), kind: 'keyvalue' }
+    return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
 
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
   const tbl = findTableHeaders(lines)
   if (tbl.length > 0) return { headers: tbl, kind: 'table' }
-  return { headers: findKeyValueHeaders(lines), kind: 'keyvalue' }
+  return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
 }
 
 /**
