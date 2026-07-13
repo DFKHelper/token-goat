@@ -139,6 +139,7 @@ import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from 
 import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
+import { runMcpAuditCommand } from './cli_mcp_audit.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -649,6 +650,13 @@ function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean;
     ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
+  })
+}
+
+function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
+  return runMcpAuditCommand({
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
+    ...(opts.json === true ? { json: true } : {}),
   })
 }
 
@@ -2132,6 +2140,15 @@ export function buildProgram(): Command {
     .option('--top <n>', 'number of top expensive tool calls to show (default: 10)')
     .option('--json', 'output JSON')
     .action(guard(cmdWaste))
+
+
+
+  program
+    .command('mcp-audit')
+    .description('MCP server schema cost-vs-usage report: estimate per-server token cost from cached tool calls')
+    .option('--project <path>', 'project root to analyze')
+    .option('--json', 'output JSON')
+    .action(guard(cmdMcpAudit))
 
   program
     .command('bash-output [id]')
