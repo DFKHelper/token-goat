@@ -1774,6 +1774,24 @@ CREATE TABLE real_table (id int);
     expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
   })
 
+  it('does not create a phantom table from a CREATE TABLE sitting inside a `#` (MySQL/MariaDB) line comment', () => {
+    // Regression: stripSqlStringLiterals only recognized `--` and `/* */` comment forms, so a
+    // `#`-commented CREATE TABLE (MySQL's third comment syntax) survived masking and matched the
+    // live DDL patterns below, producing a phantom symbol - whether the comment leads a line or
+    // trails real, uncommented DDL on the same line.
+    const content = `
+# CREATE TABLE fake_from_hash (id int);
+CREATE TABLE real_table (id int);
+CREATE TABLE t2 (id int); # CREATE TABLE also_fake (x int)
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('real_table')
+    expect(names).toContain('t2')
+    expect(names).not.toContain('fake_from_hash')
+    expect(names).not.toContain('also_fake')
+  })
+
   it('does not drop symbols after a bracket-delimited (SQL Server) identifier containing an apostrophe', () => {
     const content = `
 CREATE TABLE [user's_data] (id int);

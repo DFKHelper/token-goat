@@ -205,6 +205,17 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
+    if (ch === '#') {
+      // `#` line comment: MySQL/MariaDB's third comment form, alongside `--` and `/* */`. Same
+      // string-literal guarantee as `--` above. Without this branch, a `CREATE TABLE ...`
+      // sitting inside a `#` comment (leading or trailing) survives masking and gets matched by
+      // the DDL patterns below as a live symbol.
+      while (i < text.length && text[i] !== '\n') {
+        out += ' '
+        i++
+      }
+      continue
+    }
     if (ch === '/' && text[i + 1] === '*') {
       // `/* ... */` block comment: only recognized outside a string literal, same guarantee as
       // `--` above. Blanks through to the closing `*/` (preserving newlines so line/offset
