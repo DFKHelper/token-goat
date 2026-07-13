@@ -193,6 +193,25 @@ steps:
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
+    it('does not read a bare URL on its own line as a phantom `https` key (regression: the yaml key regex matched `:` unconditionally, so the scheme separator in a bare `https://example.com` value line was mistaken for a key/value split)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'url.yaml')
+
+      const content = `homepage:
+https://example.com/docs
+name: myproject
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toEqual(['homepage', 'name'])
+      expect(names).not.toContain('https')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
     it('does not treat a line inside a wrapped multi-line quoted value as a real key (regression: extractYamlSymbols had no state tracking for a double/single-quoted flow scalar wrapping across lines, so wrapped prose that happened to contain its own "word:" -shaped text -- e.g. mentioning "ratio: 16:9" -- was misread as a brand new top-level key)', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
       const yamlFile = path.join(tmpDir, 'wrapped.yaml')

@@ -19,7 +19,11 @@ const MAX_ENV_KEYS = 200
 const HEADER_RE = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/
 
 // Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace.
-const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/
+// A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false `https`
+// key - the colon there is a URL scheme separator immediately followed by `//`, not a
+// key/value split. Mirrors the same `:(?!\/\/)` guard the live section reader's
+// KEYVALUE_HEADER_RE already applies (section_reader.ts).
+const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:(?!\/\/))/
 
 export function extractIni(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
