@@ -1354,6 +1354,56 @@ fun afterAll(): Int {
     expect(symbols.find((s) => s.name === 'inner')).toBeUndefined()
     expect(symbols.find((s) => s.name === 'LOCAL_THING')).toBeUndefined()
   })
+
+  it('does not drop members of a class whose supertype colon starts the next line', () => {
+    // Regression: the immediate-pop check popped the class frame as soon as its constructor
+    // parens balanced back to 0 with no body brace on that same line - but a header can
+    // legitimately continue onto the next line via a leading `:` (Allman/next-line-brace style),
+    // which this same-line-only check could never see coming.
+    const content = `class Foo(val x: Int)
+    : Bar(x) {
+    fun doWork() {}
+    val CONST_A = 1
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('doWork')
+    expect(names).toContain('CONST_A')
+    expect(symbols.find((s) => s.name === 'doWork')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'CONST_A')?.docstring).toBe('Foo')
+  })
+
+  it('does not drop members of a class with a wrapped, comma-separated supertype list', () => {
+    // Regression: same root cause as the leading-colon case above, but here the continuation
+    // signal is a trailing `,`/`:` on each wrapped line rather than a leading one - the official
+    // Kotlin coding-convention example for this exact style.
+    const content = `class MyFavouriteVeryLongClassHolder :
+    MyLongHolder<MyFavouriteVeryLongClass>(),
+    SomeOtherInterface,
+    AndAnotherOne {
+    fun doWork() {}
+    val CONST_X = 42
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('MyFavouriteVeryLongClassHolder')
+    expect(names).toContain('doWork')
+    expect(names).toContain('CONST_X')
+    expect(symbols.find((s) => s.name === 'doWork')?.docstring).toBe('MyFavouriteVeryLongClassHolder')
+  })
+
+  it('still pops a genuinely body-less class header before the next top-level declaration (guard)', () => {
+    const content = `data class Point(val x: Int, val y: Int)
+fun main() {}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const main = symbols.find((s) => s.name === 'main')
+    expect(main?.kind).toBe('function')
+    expect(main?.docstring).toBe('')
+  })
 })
 
 // ---------------------------------------------------------------------------
