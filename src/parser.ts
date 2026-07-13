@@ -1097,7 +1097,11 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
-    const match = /^([a-zA-Z_][\w-]*)\s*:/.exec(line)
+    // A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false
+    // `https` key - the colon there is a URL scheme separator immediately followed by `//`,
+    // not a key/value split. Mirrors the same guard the live section reader's
+    // KEYVALUE_HEADER_RE already applies (section_reader.ts).
+    const match = /^([a-zA-Z_][\w-]*)\s*:(?!\/\/)/.exec(line)
     if (match !== null && match[1] !== undefined) {
       out.push({
         filePath,

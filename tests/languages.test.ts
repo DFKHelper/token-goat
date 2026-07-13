@@ -2070,6 +2070,17 @@ KEY=value
     expect(symbols.map((s) => s.name)).not.toContain('This')
   })
 
+  it('does not read a bare URL on its own line as a phantom `https` key (regression: ENV_KEY_RE matched `:` unconditionally, so the scheme separator in a bare `https://example.com` value line was mistaken for a key/value split)', () => {
+    const content = `DATABASE_URL=postgres://localhost/db
+https://docs.example.com/setup
+API_KEY=secret
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['DATABASE_URL', 'API_KEY'])
+    expect(names).not.toContain('https')
+  })
+
   // Regression: extractEnv scanned every line independently for a column-0 `KEY=value`
   // assignment, with no notion of an open quote carried over from a previous line. A
   // multi-line double-quoted value whose embedded content happened to look like an
