@@ -25,6 +25,11 @@ interface ClassFrame {
   name: string
   braceDepth: number
   bodyEntered: boolean
+  // Running open-minus-close count of the primary constructor's (and any same-line supertype
+  // call's) parentheses, tracked only until bodyEntered flips true. A body-less class/interface/
+  // object header (e.g. `data class Point(val x: Int, val y: Int)`, no trailing `{`) balances
+  // this back to 0 with no body ever opening -- see the immediate-pop check below.
+  parenBalance: number
 }
 
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
@@ -162,12 +167,12 @@ export function extractKotlin(
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
-      classStack.push({ name: cname, braceDepth, bodyEntered: false })
+      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0 })
     } else if (cm) {
       const cname = cm[1] ?? ''
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
-      classStack.push({ name: cname, braceDepth, bodyEntered: false })
+      classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0 })
     }
 
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
@@ -219,7 +224,22 @@ export function extractKotlin(
         }
       } else if (ch === '}') {
         braceDepth--
+      } else if (frame !== null && !frame.bodyEntered && ch === '(') {
+        frame.parenBalance++
+      } else if (frame !== null && !frame.bodyEntered && ch === ')') {
+        frame.parenBalance--
       }
+    }
+    // A body-less class/interface/object header (`data class Point(val x: Int, val y: Int)`,
+    // no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave
+    // it on the stack forever, silently misattributing every later top-level declaration as one
+    // of its members. Once this frame's own constructor parens (if any) are back in balance and
+    // no body brace opened on this same line, its header is complete with nothing left to enter
+    // -- pop it immediately. A genuinely multi-line constructor header (`class Foo(\n  val x: Int\n)
+    // {`) is unaffected: parenBalance stays > 0 until its closing-paren line, and that same line's
+    // trailing `{` flips bodyEntered to true before this check runs.
+    if (frame !== null && !frame.bodyEntered && frame.parenBalance <= 0) {
+      classStack.pop()
     }
     // Pop finished class frames. A frame only pops once its own opening brace has actually been
     // entered (bodyEntered) - this guards a class whose primary-constructor header spans
