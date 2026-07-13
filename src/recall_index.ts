@@ -137,14 +137,19 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
   const matchExpr = toFtsMatchExpr(query)
   if (matchExpr === null) return []
   const db = getDb(globalDbPath())
+  // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH`
+  // (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in this
+  // project's SQLite build (confirmed against better-sqlite3's bundled 3.49.2) -- a MATCH
+  // clause against an FTS5 table must reference the table by its real name. Only the content
+  // table (cache_recall) is aliased.
   const rows = (
     type !== undefined
       ? db
           .prepare(
             `SELECT c.entry_id AS id, c.cache_type AS cacheType, c.label AS label, c.content AS content, c.stored_at AS storedAt
-             FROM cache_recall_fts f
-             JOIN cache_recall c ON c.row_id = f.rowid
-             WHERE f MATCH ? AND c.cache_type = ?
+             FROM cache_recall_fts
+             JOIN cache_recall c ON c.row_id = cache_recall_fts.rowid
+             WHERE cache_recall_fts MATCH ? AND c.cache_type = ?
              ORDER BY bm25(cache_recall_fts)
              LIMIT ?`,
           )
@@ -152,9 +157,9 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
       : db
           .prepare(
             `SELECT c.entry_id AS id, c.cache_type AS cacheType, c.label AS label, c.content AS content, c.stored_at AS storedAt
-             FROM cache_recall_fts f
-             JOIN cache_recall c ON c.row_id = f.rowid
-             WHERE f MATCH ?
+             FROM cache_recall_fts
+             JOIN cache_recall c ON c.row_id = cache_recall_fts.rowid
+             WHERE cache_recall_fts MATCH ?
              ORDER BY bm25(cache_recall_fts)
              LIMIT ?`,
           )
@@ -220,7 +225,9 @@ export function searchRecall(query: string, opts: RecallSearchOptions = {}): Rec
   const limit = opts.limit ?? 10
   if (query.trim() === '') return []
   try {
-    if (hasFtsTable()) return ftsSearch(query, opts.type, limit)
+    if (hasFtsTable()) {
+      return ftsSearch(query, opts.type, limit)
+    }
     return likeSearch(query, opts.type, limit)
   } catch {
     // A MATCH-syntax edge case toFtsMatchExpr's quoting didn't anticipate, or any other
