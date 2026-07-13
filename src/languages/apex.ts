@@ -14,8 +14,23 @@ const TRIGGER_RE = new RegExp(
   `^[ \\t]*trigger[ \\t]+(${IDENT})[ \\t]+on[ \\t]+([A-Za-z_][A-Za-z0-9_.]*)[ \\t]*\\([^\\n)]*\\)`,
   'gm',
 )
+// Apex allows a method/constructor to be declared with no access modifier at all (implicitly
+// private), and interface method signatures never carry a modifier at all - so the modifier
+// group alone cannot be mandatory (it used to be `+`, silently dropping every such method).
+// But this extractor runs matchAll over the whole file with no brace-depth tracking, unlike
+// the line-by-line C# extractor's METHOD_RE, so simply relaxing the modifier group to `*`
+// lets a plain no-modifier statement call inside a method body (`someHelper(input);`,
+// `return calculate(a, b);`) match as if it were its own method declaration. The fix requires
+// at least one of {a modifier, a return type} to be present - a bare call has neither - and
+// guards the modifier-less branch against a statement-leading keyword (`return`/`throw`/`new`/
+// etc.) being mistaken for the return type, which the modifier-mandatory branch never needs
+// since none of MODIFIER's keywords overlap with those statement keywords.
+const RETURN_TYPE = '(?:[A-Za-z_][A-Za-z0-9_.<>?,\\[\\] ]*[ \\t]+)'
+const STATEMENT_KEYWORD_GUARD = '(?!(?:return|throw|new|yield|else|do|try|finally|break|continue)\\b)'
 const METHOD_RE = new RegExp(
-  `^[ \\t]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)+(?:[A-Za-z_][A-Za-z0-9_.<>?,\\[\\] ]*[ \\t]+)?(${IDENT})[ \\t]*\\([\\s\\S]*?\\)[ \\t]*(?:\\{|;)`,
+  `^[ \\t]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\\([^\\n)]*\\))?[ \\t]+)*` +
+    `(?:(?:${MODIFIER}[ \\t]+)+${RETURN_TYPE}?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}${RETURN_TYPE})` +
+    `(${IDENT})[ \\t]*\\([\\s\\S]*?\\)[ \\t]*(?:\\{|;)`,
   'gm',
 )
 
