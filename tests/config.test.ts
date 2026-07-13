@@ -335,6 +335,20 @@ describe('loadConfig', () => {
     expect(cfg.hints.large_read_redirect_bytes).toBe(100000)
   })
 
+  it('treats a persisted cache_min_bytes of exactly 0 as the stale pre-687758ae default and falls through to the current default (512), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before 687758ae permanently persisted the then-in-memory-only 0 default, which 687758ae later wired up as the real cache minimum-size gate)', () => {
+    fs.writeFileSync(_testConfigPath, '[bash_compress]\ncache_min_bytes = 0\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.bash_compress.cache_min_bytes).toBe(512)
+  })
+
+  it('respects a persisted cache_min_bytes that is not the legacy 0 sentinel (proving the fix only clobbers the exact stale default, not real user values)', () => {
+    fs.writeFileSync(_testConfigPath, '[bash_compress]\ncache_min_bytes = 1024\n', 'utf8')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.bash_compress.cache_min_bytes).toBe(1024)
+  })
+
   it('round-trips warn_unbalanced_shell_quoting, cross_session_read_dedup, and cross_session_read_dedup_ttl_secs (fail-on-buggy: saveConfig previously omitted these three hints fields, silently resetting them to defaults on every save)', () => {
     const cfg = defaultConfig()
     cfg.hints.warn_unbalanced_shell_quoting = !cfg.hints.warn_unbalanced_shell_quoting
