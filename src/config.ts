@@ -862,7 +862,18 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.pre_skill_advisory = validatedBool(hi_raw['pre_skill_advisory'], hi.pre_skill_advisory)
   hi.context_threshold_advisory = validatedBool(hi_raw['context_threshold_advisory'], hi.context_threshold_advisory)
   hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, 0, 100_000)
-  hi.large_read_redirect_bytes = validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
+  // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
+  // round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated
+  // key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted,
+  // even though the field had zero consumers at the time and nobody could have deliberately chosen it.
+  // 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the
+  // in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the
+  // gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale
+  // default and fall through to the current default instead of trusting it; any other persisted
+  // value (including a deliberate 45_000 set after upgrading) is respected as-is.
+  hi.large_read_redirect_bytes = hi_raw['large_read_redirect_bytes'] === 45_000
+    ? hi.large_read_redirect_bytes
+    : validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
   // round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated
