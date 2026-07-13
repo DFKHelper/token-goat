@@ -239,16 +239,56 @@ function stripSqlStringLiterals(text: string): string {
   return out
 }
 
-function unquote(name: string): string {
+function unquoteSegment(segment: string): string {
   if (
-    name.length >= 2 &&
-    ((name[0] === '"' && name[name.length - 1] === '"') ||
-      (name[0] === '`' && name[name.length - 1] === '`') ||
-      (name[0] === '[' && name[name.length - 1] === ']'))
+    segment.length >= 2 &&
+    ((segment[0] === '"' && segment[segment.length - 1] === '"') ||
+      (segment[0] === '`' && segment[segment.length - 1] === '`') ||
+      (segment[0] === '[' && segment[segment.length - 1] === ']'))
   ) {
-    return name.slice(1, -1)
+    return segment.slice(1, -1)
   }
-  return name
+  return segment
+}
+
+// NAME_PAT captures a schema-qualified name (e.g. "public"."users") as a single token, so a
+// naive unquote() that only strips one outer quote pair off the whole string leaves a
+// schema-qualified quoted name corrupted: "public"."users" only has its outermost quotes
+// stripped, yielding the garbage literal public"."users. Splitting on the dot that separates the
+// two independently-quoted segments (while staying inside quote/bracket delimiters, since a
+// quoted segment could itself legally contain a literal dot) and unquoting each segment
+// separately avoids that.
+function splitQualifiedSegments(name: string): string[] {
+  const segments: string[] = []
+  let start = 0
+  let quote: string | null = null
+  for (let i = 0; i < name.length; i++) {
+    const ch = name[i]
+    if (quote) {
+      if (
+        (quote === '"' && ch === '"') ||
+        (quote === '`' && ch === '`') ||
+        (quote === '[' && ch === ']')
+      ) {
+        quote = null
+      }
+      continue
+    }
+    if (ch === '"' || ch === '`' || ch === '[') {
+      quote = ch
+      continue
+    }
+    if (ch === '.') {
+      segments.push(name.slice(start, i))
+      start = i + 1
+    }
+  }
+  segments.push(name.slice(start))
+  return segments
+}
+
+function unquote(name: string): string {
+  return splitQualifiedSegments(name).map(unquoteSegment).join('.')
 }
 
 export function extractSql(content: string, filePath: string): SymbolEntry[] {

@@ -1822,6 +1822,18 @@ CREATE TABLE real_table (id int);
     expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
   })
 
+  it('unquotes each segment of a schema-qualified quoted identifier separately (regression: unquote() only stripped the outermost quote pair off the whole schema-qualified token, so "public"."users" was corrupted into the literal public"."users instead of public.users)', () => {
+    const content = `
+CREATE TABLE "public"."users" (id int);
+CREATE TABLE public.orders (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('public.users')
+    expect(names).toContain('public.orders')
+    expect(names).not.toContain('public"."users')
+  })
+
   it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
     // Regression: a `--` inside a multi-line string literal used to be blanked out by a
     // line-scoped comment pre-pass that ran before string-literal stripping and had no
