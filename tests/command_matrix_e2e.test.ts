@@ -573,6 +573,44 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.repeatedUncompressedBash.some((c) => c.normalized === 'git status' && c.count === 2)).toBe(true)
   },
 
+  'mcp-audit': () => {
+    const proj = mkIsolated('tg-matrix-mcp-audit-')
+
+    // Test without .mcp.json
+    let r = run(['mcp-audit', '--project', proj])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('token-goat mcp-audit')
+    expect(r.stdout).toContain('Config found: no')
+
+    // Create .mcp.json
+    const configPath = path.join(proj, '.mcp.json')
+    const config = {
+      mcpServers: {
+        'example-server': {
+          command: 'node',
+          args: ['server.js'],
+        },
+      },
+    }
+    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8')
+
+    // Test with .mcp.json
+    r = run(['mcp-audit', '--project', proj])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('token-goat mcp-audit')
+    expect(r.stdout).toContain('Config found: yes')
+
+    // Test JSON output
+    const rj = run(['mcp-audit', '--project', proj, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as {
+      configFound: boolean
+      servers: Array<{ name: string; perCallTokens: number; callCount: number; totalTokens: number }>
+    }
+    expect(parsed.configFound).toBe(true)
+    expect(parsed.servers).toBeDefined()
+  },
+
   version: () => {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)
