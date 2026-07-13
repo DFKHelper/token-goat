@@ -38,7 +38,7 @@ import { extractLiquid } from './languages/liquid.js'
 import { extractKotlin } from './languages/kotlin.js'
 import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
-import { stripCstyleComments } from './languages/common.js'
+import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { extractIni, extractEnv } from './languages/ini_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
@@ -1248,7 +1248,15 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
     // `@media (...) {` is not itself a selector, though selectors nested inside its block
     // are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and
     // split a same-line comma-separated selector list into one symbol per selector.
-    const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/.exec(line)
+    // Match against a string-literal-stripped copy of the line so a `{` inside a quoted
+    // declaration value (e.g. `content: "{";`, a common pseudo-element glyph pattern) is never
+    // mistaken for a rule-opening brace. stripStringLiterals blanks string interiors to
+    // same-length spaces, so the match's character offsets line up with the original `line` -
+    // the actual (unblanked) selector text is then re-sliced from `line` at those offsets, so a
+    // real selector that legitimately contains a quoted value (e.g. `input[type="text"]`) is
+    // still captured verbatim rather than with its quoted portion blanked out.
+    const strippedLine = stripStringLiterals(line)
+    const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/d.exec(strippedLine)
     if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
       for (const p of pending) {
         out.push({
@@ -1262,7 +1270,10 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
         })
       }
       pending = []
-      for (const part of selectorLineMatch[1].split(',')) {
+      const captureRange = (selectorLineMatch as RegExpExecArray & { indices?: Array<[number, number] | undefined> })
+        .indices?.[1]
+      const rawCapture = captureRange ? line.slice(captureRange[0], captureRange[1]) : selectorLineMatch[1]
+      for (const part of rawCapture.split(',')) {
         const name = part.trim()
         if (name) {
           out.push({

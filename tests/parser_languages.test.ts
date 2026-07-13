@@ -611,6 +611,50 @@ input[type="text"] {
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not create a phantom selector from a `{` inside a quoted declaration value (regression: extractCssSymbols scanned raw lines for a rule-opening brace without stripping string literals first, so a pseudo-element content value like `content: "{";` was mistaken for a selector line)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'brace-in-string.css')
+
+      const content = `.icon::before {
+  content: "{";
+  color: red;
+}
+
+.box {
+  width: 10px;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('.icon::before')
+      expect(names).toContain('.box')
+      expect(names).not.toContain('content: "')
+      expect(names).toHaveLength(2)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('still captures a real selector whose attribute value legitimately contains a quoted string (guard: string-stripping the match must not blank a genuine selector)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const cssFile = path.join(tmpDir, 'attr-selector.css')
+
+      const content = `input[type="text"] {
+  color: blue;
+}
+`
+
+      fs.writeFileSync(cssFile, content)
+      const result = await parseFile(cssFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('input[type="text"]')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('dockerfile symbols', () => {
