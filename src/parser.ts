@@ -1233,6 +1233,31 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
+// Splits a CSS selector-list capture on top-level commas only, skipping commas nested inside
+// parentheses (`:is(.foo, .bar)`, `:not()`, `:nth-child(An+B of S)`) or, thanks to the caller
+// already passing a string-literal-stripped `strippedCapture`, commas inside a quoted attribute
+// value (`[data-x="a,b"]`). A plain `rawCapture.split(',')` treats every comma as a selector-list
+// separator, which shreds any selector containing one of those constructs into multiple bogus
+// selector fragments. Scanning happens over `strippedCapture` (so string interiors can't skew
+// paren-depth tracking), but each segment is sliced back out of `rawCapture` at the same offsets
+// so the indexed selector text stays verbatim.
+function splitTopLevelSelectors(rawCapture: string, strippedCapture: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < strippedCapture.length; i++) {
+    const ch = strippedCapture[i]
+    if (ch === '(') depth += 1
+    else if (ch === ')') depth = Math.max(0, depth - 1)
+    else if (ch === ',' && depth === 0) {
+      parts.push(rawCapture.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(rawCapture.slice(start))
+  return parts
+}
+
 function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   // Strip /* */ block comments (newlines preserved so line numbers stay correct) before
@@ -1298,7 +1323,10 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
       const captureRange = (selectorLineMatch as RegExpExecArray & { indices?: Array<[number, number] | undefined> })
         .indices?.[1]
       const rawCapture = captureRange ? line.slice(captureRange[0], captureRange[1]) : selectorLineMatch[1]
-      for (const part of rawCapture.split(',')) {
+      const strippedCapture = captureRange
+        ? strippedLine.slice(captureRange[0], captureRange[1])
+        : selectorLineMatch[1]
+      for (const part of splitTopLevelSelectors(rawCapture, strippedCapture)) {
         const name = part.trim()
         if (name) {
           out.push({
