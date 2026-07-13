@@ -213,6 +213,69 @@ real_key: value
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not drop every key after a plain scalar containing an apostrophe (regression: yamlOpenQuoteAfter scanned the whole value for any unbalanced quote, so an apostrophe in ordinary text like "It\'s working" was misread as opening a multi-line quoted string, silently swallowing every subsequent key)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'apostrophe.yaml')
+
+      const content = `title: It's working
+name: World
+port: 8080
+host: localhost
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('title')
+      expect(names).toContain('name')
+      expect(names).toContain('port')
+      expect(names).toContain('host')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('does not drop every key after a plain scalar whose trailing comment has an odd quote count', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'comment-quote.yaml')
+
+      const content = `port: 8080  # TODO: fix "this
+name: World
+debug: true
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('port')
+      expect(names).toContain('name')
+      expect(names).toContain('debug')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('still tracks a genuine multi-line quoted value that opens with a leading quote (guard: leading-char gating must not break the real wrapped-value case)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'leading-quote.yaml')
+
+      const content = `description: "This spans multiple lines and
+fake_key: this looks like a key but is really string content
+still wrapping"
+real_key: value
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('description')
+      expect(names).toContain('real_key')
+      expect(names).not.toContain('fake_key')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('toml symbols', () => {
