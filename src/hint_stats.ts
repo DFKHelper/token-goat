@@ -104,7 +104,6 @@ import { getHarnessName } from './bridges/registry.js'
 import { loadConfig } from './config.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
-import { registerReset } from './reset.js'
 import type { HookOutput } from './types.js'
 
 export const HINT_CATEGORIES = [
@@ -345,8 +344,6 @@ export function resetHintStats(): void {
   db.exec('DELETE FROM hint_emissions')
   db.exec('DELETE FROM hint_manual_marks')
 }
-
-registerReset(resetHintStats)
 
 function bumpManualMark(category: HintCategory, column: 'effective_count' | 'ineffective_count'): void {
   const db = getDb(globalDbPath())

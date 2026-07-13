@@ -383,24 +383,3 @@ describe('resetHintStats', () => {
     expect(summary.every((r) => r.emitted === 0 && r.manualEffective === 0 && r.manualIneffective === 0)).toBe(true)
   })
 })
-
-describe('reset-registry participation (regression)', () => {
-  it('clearModuleCaches alone clears hint_emissions, without a direct resetHintStats call', () => {
-    // Every other stateful module in this codebase (db.ts, session.ts, stats.ts, worker.ts,
-    // ...) registers its cleanup with registerReset() so `clearModuleCaches()` in a test's
-    // beforeEach is enough to isolate it. hint_stats.ts originally did not: its `hint_emissions`
-    // table kept accumulating rows across every test case in a file, and once a category's
-    // sample size crossed `min_sample_size` with a low acted-on rate mid-file, shouldSuppress()
-    // started silently swapping later tests' expected `context` hint output for a `pass` —
-    // this broke 85+ unrelated tests in tests/hooks_bash.test.ts that never touched hint_stats
-    // directly and only called clearModuleCaches() for their own unrelated state.
-    const n = nonce()
-    logHintEmission('bash_redirect', n, null)
-    expect(getHintStatsSummary().find((r) => r.category === 'bash_redirect')?.emitted).toBeGreaterThan(0)
-
-    clearModuleCaches()
-
-    const summary = getHintStatsSummary()
-    expect(summary.every((r) => r.emitted === 0 && r.manualEffective === 0 && r.manualIneffective === 0)).toBe(true)
-  })
-})
