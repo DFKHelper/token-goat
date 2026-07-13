@@ -227,13 +227,43 @@ export function getFileEntry(
   }
 }
 
-// Quote each whitespace-separated term as an FTS5 string literal so that characters FTS5 treats as query operators (`:` `(` `)` `*`, AND/OR/NOT) in a natural-language query are matched literally instead of throwing a syntax error that the catch below would swallow into an empty result.
-function sanitizeFtsQuery(query: string): string {
-  return query
+// Quote each whitespace-separated term as an FTS5 string literal so that characters FTS5 treats
+// as query operators (`:` `(` `)` `*`, AND/OR/NOT) in a natural-language query are matched
+// literally instead of throwing a syntax error that the catch below would swallow into an empty
+// result. `join` controls how the quoted terms combine: FTS5 treats bare whitespace between
+// terms as implicit AND, so 'AND' (the default) requires every term to co-occur in one symbol --
+// exact/narrow searches want this for precision. 'OR' relaxes that to "any term", used as a
+// widen-on-empty fallback by searchSymbolsFts below for realistic multi-word natural-language
+// queries where requiring every word to co-occur is unrealistically strict.
+function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): string {
+  const terms = query
     .split(/\s+/)
     .filter((t) => t.length > 0)
     .map((t) => '"' + t.replace(/"/g, '""') + '"')
-    .join(' ')
+  return terms.join(join === 'OR' ? ' OR ' : ' ')
+}
+
+/** Runs one FTS5 MATCH query and maps rows to {@link SymbolEntry}. Shared by both the strict
+ * AND-joined attempt and the OR-joined widen-on-empty retry in {@link searchSymbolsFts}. */
+function runFtsQuery(
+  db: ReturnType<typeof getDb>,
+  match: string,
+  limit: number,
+  scope: ReturnType<typeof projectScopeClause> | undefined,
+  rootDir: string | undefined,
+): SymbolEntry[] {
+  // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
+  const sql =
+    `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
+    `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
+    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
+  const params: (string | number)[] = [match]
+  if (scope !== undefined && rootDir !== undefined) {
+    params.push(scope.param(rootDir))
+  }
+  params.push(limit)
+  const rows = db.prepare(sql).all(...params) as SymbolRow[]
+  return rows.map(toSymbolEntry)
 }
 
 /**
@@ -242,6 +272,16 @@ function sanitizeFtsQuery(query: string): string {
  * Joins FTS hits back to `symbols` to return full {@link SymbolEntry} rows in
  * BM25 relevance order. Falls back to an empty result (rather than throwing) if
  * the FTS5 table is unavailable in this SQLite build or the query is malformed.
+ *
+ * Tries an AND-joined query first (every term must co-occur in one symbol — the more precise,
+ * higher-confidence match) and, only if that returns zero rows, retries with an OR-joined query
+ * (any term matches, ranked by bm25()). A realistic natural-language query like "add retry logic
+ * to the webfetch cache" rarely has every one of its words co-occurring verbatim in a single
+ * symbol's indexed text, so a bare AND join returned nothing for exactly the phrasings this
+ * search exists to handle; OR-joining unconditionally risked over-broad, low-relevance results
+ * for queries that WOULD have matched under AND. Widening only on a genuine zero-hit AND result
+ * keeps the precise path for anyone whose terms do co-occur, while still surfacing something
+ * for a phrase that doesn't.
  *
  * `rootDir`, when provided, scopes the search to files under that project root
  * (see {@link querySymbols} for why this matters against the machine-wide
@@ -254,24 +294,18 @@ export function searchSymbolsFts(
   dbPath: string = globalDbPath(),
   rootDir?: string,
 ): SymbolEntry[] {
-  const match = sanitizeFtsQuery(query)
-  if (match === '') return []
+  const andMatch = sanitizeFtsQuery(query, 'AND')
+  if (andMatch === '') return []
 
   const db = getDb(dbPath)
   const scope = rootDir !== undefined ? projectScopeClause('s.file_path') : undefined
-  // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
-  const sql =
-    `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
-    `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
-    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   try {
-    const params: (string | number)[] = [match]
-    if (scope !== undefined && rootDir !== undefined) {
-      params.push(scope.param(rootDir))
-    }
-    params.push(limit)
-    const rows = db.prepare(sql).all(...params) as SymbolRow[]
-    return rows.map(toSymbolEntry)
+    const andResults = runFtsQuery(db, andMatch, limit, scope, rootDir)
+    if (andResults.length > 0) return andResults
+
+    const orMatch = sanitizeFtsQuery(query, 'OR')
+    if (orMatch === andMatch) return andResults
+    return runFtsQuery(db, orMatch, limit, scope, rootDir)
   } catch {
     // FTS5 missing or a syntactically invalid MATCH query — degrade to empty.
     return []

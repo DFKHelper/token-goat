@@ -453,6 +453,85 @@ describe('cmdConfig set warns when an active env var shadows the write', () => {
   })
 })
 
+// ── config set against a corrupt config.toml (#249 regression) ──────────────
+
+describe('cmdConfig set backs up a corrupt config.toml instead of silently clobbering it', () => {
+  it('copies the unreadable original to config.toml.bak, warns on stderr, and still applies the requested set', () => {
+    const corruptContent = 'this is not [ valid toml ===\n'
+    fs.writeFileSync(_testConfigPath, corruptContent, 'utf8')
+    invalidateConfigCache()
+
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
+
+    expect(capturedErr()).toContain('config.toml.bak')
+    expect(capturedErr()).toMatch(/failed to parse|parse/i)
+
+    const backupPath = `${_testConfigPath}.bak`
+    expect(fs.existsSync(backupPath)).toBe(true)
+    expect(fs.readFileSync(backupPath, 'utf8')).toBe(corruptContent)
+
+    invalidateConfigCache()
+    expect(loadConfig().compact_assist.min_events).toBe(77)
+
+    try { fs.unlinkSync(backupPath) } catch { /* ok */ }
+  })
+
+  it('does not create a backup or warn when config.toml is simply absent (not corrupt)', () => {
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '33' })
+    expect(capturedErr()).toBe('')
+    expect(fs.existsSync(`${_testConfigPath}.bak`)).toBe(false)
+  })
+
+  it('does not create a backup or warn when config.toml is valid', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 5\n', 'utf8')
+    invalidateConfigCache()
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '9' })
+    expect(capturedErr()).toBe('')
+    expect(fs.existsSync(`${_testConfigPath}.bak`)).toBe(false)
+  })
+})
+
+// ── config validate exit code (#249 regression) ──────────────────────────────
+
+describe('cmdConfig validate sets a non-zero exit code on findings', () => {
+  afterEach(() => {
+    process.exitCode = undefined
+  })
+
+  it('leaves process.exitCode unset (success) when there are no findings', () => {
+    process.exitCode = undefined
+    cmdConfig({ action: 'validate' })
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true)
+  })
+
+  it('sets process.exitCode = 1 when an unknown section is found', () => {
+    fs.writeFileSync(_testConfigPath, '[unknown_xyz]\nfoo = true\n', 'utf8')
+    invalidateConfigCache()
+    process.exitCode = undefined
+    cmdConfig({ action: 'validate' })
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('sets process.exitCode = 1 when config.toml fails to parse, and reports a parse_error finding', () => {
+    fs.writeFileSync(_testConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    invalidateConfigCache()
+    process.exitCode = undefined
+    cmdConfig({ action: 'validate', json: true })
+    expect(process.exitCode).toBe(1)
+    const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string }>; ok: boolean }
+    expect(parsed.ok).toBe(false)
+    expect(parsed.findings.some((f) => f.kind === 'parse_error')).toBe(true)
+  })
+
+  it('sets process.exitCode = 1 with --json too, not just the human-readable path', () => {
+    fs.writeFileSync(_testConfigPath, '[bogus_section]\nfoo = 1\n', 'utf8')
+    invalidateConfigCache()
+    process.exitCode = undefined
+    cmdConfig({ action: 'validate', json: true })
+    expect(process.exitCode).toBe(1)
+  })
+})
+
 // ── mutate-then-save commands must not bake env overrides into disk (#M21) ───
 
 describe('config set / project exclude / prune do not persist transient env overrides (#M21)', () => {
