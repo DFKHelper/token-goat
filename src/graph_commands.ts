@@ -621,27 +621,120 @@ export { isTestFile }
 
 // ---- findCycles (exported pure helper) --------------------------------------
 
-/** Find all cycles in a directed graph using DFS. Returns each cycle as a string[] of node names. Each cycle path starts and ends at the same node. */
-export function findCycles(graph: Map<string, string[]>): string[][] {
-  const cycles: string[][] = []
-  const visited = new Set<string>()
-  const stack = new Set<string>()
+const MAX_CYCLES = 200
 
-  function dfs(node: string, pathSoFar: string[]): void {
-    if (stack.has(node)) {
-      const idx = pathSoFar.indexOf(node)
-      if (idx !== -1) cycles.push([...pathSoFar.slice(idx), node])
-      return
+/**
+ * Tarjan's strongly-connected-components algorithm. A node can only be part of a cycle if it
+ * lies in a component of size > 1, or has a self-loop - restricting the exhaustive per-path
+ * cycle search below to just these components keeps it safe on large, mostly-acyclic import
+ * graphs (real codebases) instead of exploring every DAG diamond in the whole graph.
+ */
+function tarjanSCCs(graph: Map<string, string[]>): string[][] {
+  let index = 0
+  const indices = new Map<string, number>()
+  const lowlink = new Map<string, number>()
+  const onStack = new Set<string>()
+  const stack: string[] = []
+  const result: string[][] = []
+
+  function strongconnect(v: string): void {
+    indices.set(v, index)
+    lowlink.set(v, index)
+    index++
+    stack.push(v)
+    onStack.add(v)
+
+    for (const w of graph.get(v) ?? []) {
+      if (!indices.has(w)) {
+        strongconnect(w)
+        lowlink.set(v, Math.min(lowlink.get(v)!, lowlink.get(w)!))
+      } else if (onStack.has(w)) {
+        lowlink.set(v, Math.min(lowlink.get(v)!, indices.get(w)!))
+      }
     }
-    if (visited.has(node)) return
-    visited.add(node)
-    stack.add(node)
-    const neighbours = graph.get(node) ?? []
-    for (const nb of neighbours) dfs(nb, [...pathSoFar, node])
-    stack.delete(node)
+
+    if (lowlink.get(v) === indices.get(v)) {
+      const component: string[] = []
+      let w: string
+      do {
+        w = stack.pop()!
+        onStack.delete(w)
+        component.push(w)
+      } while (w !== v)
+      result.push(component)
+    }
   }
 
-  for (const node of graph.keys()) dfs(node, [])
+  for (const node of graph.keys()) {
+    if (!indices.has(node)) strongconnect(node)
+  }
+  return result
+}
+
+// A cycle path is [n0, n1, ..., nk, n0] (closing node repeats the start). Rotate to start at the
+// lexicographically smallest node so the same cycle discovered from different start nodes
+// normalizes to one key, without conflating a cycle with its reverse-direction traversal.
+function canonicalCycleKey(cyclePath: string[]): string {
+  const nodes = cyclePath.slice(0, -1)
+  let minIdx = 0
+  for (let i = 1; i < nodes.length; i++) {
+    if (nodes[i]! < nodes[minIdx]!) minIdx = i
+  }
+  return [...nodes.slice(minIdx), ...nodes.slice(0, minIdx)].join(' ')
+}
+
+/**
+ * Find all simple cycles in a directed graph. Returns each cycle as a string[] of node names,
+ * each cycle path starting and ending at the same node.
+ *
+ * Restricts the exhaustive per-path search to one strongly-connected component at a time (via
+ * Tarjan's algorithm above), and within a component tracks only the current recursion path (not
+ * a global visited set) so that two distinct cycles sharing a node - e.g. A->B->C->A and
+ * A->D->C->A sharing C - are both found instead of the second being silently dropped because C
+ * was already marked visited while exploring the first. Capped at MAX_CYCLES as a safety bound
+ * against pathological densely-connected components (rare in real import graphs, but a complete
+ * subgraph has combinatorially many simple cycles).
+ */
+export function findCycles(graph: Map<string, string[]>): string[][] {
+  const cycles: string[][] = []
+  const seen = new Set<string>()
+  const sccs = tarjanSCCs(graph)
+
+  for (const component of sccs) {
+    if (component.length === 1) {
+      const [only] = component
+      if (only !== undefined && (graph.get(only) ?? []).includes(only)) cycles.push([only, only])
+      continue
+    }
+    const sccSet = new Set(component)
+    const stack = new Set<string>()
+
+    function dfs(start: string, node: string, pathSoFar: string[]): void {
+      if (cycles.length >= MAX_CYCLES) return
+      stack.add(node)
+      for (const nb of graph.get(node) ?? []) {
+        if (!sccSet.has(nb)) continue
+        if (cycles.length >= MAX_CYCLES) break
+        if (nb === start) {
+          const cyclePath = [...pathSoFar, node, start]
+          const key = canonicalCycleKey(cyclePath)
+          if (!seen.has(key)) {
+            seen.add(key)
+            cycles.push(cyclePath)
+          }
+        } else if (!stack.has(nb)) {
+          dfs(start, nb, [...pathSoFar, node])
+        }
+      }
+      stack.delete(node)
+    }
+
+    for (const start of component) {
+      if (cycles.length >= MAX_CYCLES) break
+      dfs(start, start, [])
+    }
+  }
+
   return cycles
 }
 

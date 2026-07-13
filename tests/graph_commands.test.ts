@@ -1193,6 +1193,36 @@ describe('findCycles', () => {
   it('does not crash on an empty graph', () => {
     expect(findCycles(new Map())).toHaveLength(0)
   })
+
+  it('finds two distinct cycles that share a node instead of dropping the second', () => {
+    // Regression: the old DFS pruned with a global `visited` set, so once C was marked visited
+    // while exploring A->B->C->A, the A->D->C->A branch returned as soon as it reached the
+    // already-visited C, without ever exploring C's edge back to A - silently dropping a
+    // genuinely distinct cycle that happens to share a node with an already-found one.
+    const g = new Map([
+      ['A', ['B', 'D']],
+      ['B', ['C']],
+      ['C', ['A']],
+      ['D', ['C']],
+    ])
+    const cycles = findCycles(g)
+    const nodeSets = cycles.map((c) => [...new Set(c)].sort().join(','))
+    expect(nodeSets).toContain(['A', 'B', 'C'].join(','))
+    expect(nodeSets).toContain(['A', 'C', 'D'].join(','))
+  })
+
+  it('does not report the same cycle twice when discovered from different start nodes', () => {
+    const g = new Map([['x', ['y']], ['y', ['z']], ['z', ['x']]])
+    const cycles = findCycles(g)
+    const keys = new Set(cycles.map((c) => [...new Set(c)].sort().join(',')))
+    expect(keys.size).toBe(cycles.length)
+  })
+
+  it('finds a self-loop as a one-node cycle', () => {
+    const g = new Map([['a', ['a']], ['b', []]])
+    const cycles = findCycles(g)
+    expect(cycles).toEqual([['a', 'a']])
+  })
 })
 
 // ---- runSimilar (integration) -----------------------------------------------
