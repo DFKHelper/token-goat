@@ -219,8 +219,15 @@ export function extractPowershell(
           symbols.push(makeSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
         }
         if (kind === 'class') {
-          const openCount = (line.match(/\{/g) ?? []).length
-          const closeCount = (line.match(/\}/g) ?? []).length
+          // Count on a string-stripped copy, not the raw line: a literal brace inside a
+          // string value (e.g. a default like `"}"`) would otherwise desync this one-liner
+          // check from the real braceDepth tracker below (which already strips strings) --
+          // the phantom brace makes openCount !== closeCount even though the real braces net
+          // to zero, so the class is wrongly treated as multi-line and currentClass is never
+          // cleared, stranding it and dropping every top-level declaration that follows.
+          const strippedLine = stripPowershellStringLiterals(line)
+          const openCount = (strippedLine.match(/\{/g) ?? []).length
+          const closeCount = (strippedLine.match(/\}/g) ?? []).length
           if (openCount > 0 && openCount === closeCount) {
             // The class header, body, and closing brace are all on this one
             // line, so there is no lingering class scope to track. Leaving
