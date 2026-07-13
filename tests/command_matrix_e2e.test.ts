@@ -611,6 +611,30 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.servers).toBeDefined()
   },
 
+  recall: () => {
+    // The recall index (cache_recall / cache_recall_fts) lives in dataBase's shared global.db,
+    // not the per-case-isolated TOKEN_GOAT_HOME blob store, so a random query with no other
+    // matrix case populating a matching entry is a reliable, pollution-proof "no hits" check
+    // regardless of what else this suite has indexed.
+    const nonce = `zzz-nonexistent-query-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const r = run(['recall', nonce])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain(`No cache entries match: ${nonce}`)
+
+    const rj = run(['recall', nonce, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    expect(JSON.parse(rj.stdout)).toEqual([])
+
+    // --type/--limit are accepted and don't crash the empty-index path.
+    const rFiltered = run(['recall', nonce, '--type', 'bash', '--limit', '3'])
+    expect(rFiltered.status, rFiltered.stderr).toBe(0)
+
+    // An invalid --type is rejected up front rather than silently ignored.
+    const rBadType = run(['recall', nonce, '--type', 'nope'])
+    expect(rBadType.status).not.toBe(0)
+    expect(rBadType.stdout + rBadType.stderr).toContain('--type must be one of')
+  },
+
   version: () => {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)

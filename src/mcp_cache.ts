@@ -15,6 +15,7 @@
 import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
+import { indexRecallEntry } from './recall_index.js'
 
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
@@ -124,15 +125,19 @@ export function storeMcpOutput(
   const sizeBytes = Buffer.byteLength(resultText, 'utf-8')
   if (sizeBytes > MCP_MAX_CACHE_BYTES) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
+  const label = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
   const entry: BashOutputEntry = {
     id,
-    command: `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim(),
+    command: label,
     output: resultText,
     exitCode: 0,
     storedAt: Date.now(),
     sizeBytes,
   }
-  return storeBlob(BASH_OUTPUT_SUBDIR, id, entry) ? id : null
+  if (!storeBlob(BASH_OUTPUT_SUBDIR, id, entry)) return null
+  // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
+  indexRecallEntry('mcp', id, label, `${label}\n${resultText}`, entry.storedAt)
+  return id
 }
 
 /**

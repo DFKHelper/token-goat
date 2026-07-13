@@ -140,6 +140,8 @@ import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
+import { runRecallCommand } from './cli_recall.js'
+import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -656,6 +658,21 @@ function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean;
 function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
   return runMcpAuditCommand({
     ...(opts.project !== undefined ? { project: opts.project } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+  })
+}
+
+function cmdRecall(query: string, opts: { type?: string; limit?: string; json?: boolean } = {}): void {
+  let type: RecallCacheType | undefined
+  if (opts.type !== undefined) {
+    if (!isRecallCacheType(opts.type)) {
+      throw new CliError(`--type must be one of: bash, web, mcp (got: ${opts.type})`)
+    }
+    type = opts.type
+  }
+  runRecallCommand(query, {
+    ...(type !== undefined ? { type } : {}),
+    ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
     ...(opts.json === true ? { json: true } : {}),
   })
 }
@@ -2149,6 +2166,14 @@ export function buildProgram(): Command {
     .option('--project <path>', 'project root to analyze')
     .option('--json', 'output JSON')
     .action(guard(cmdMcpAudit))
+
+  program
+    .command('recall <query>')
+    .description('search across every cached bash-output, web-output, and mcp-output entry (full-text)')
+    .option('--type <type>', 'filter to one cache type: bash, web, or mcp')
+    .option('--limit <n>', 'max results to return (default: 10)')
+    .option('--json', 'output JSON')
+    .action(guard(cmdRecall))
 
   program
     .command('bash-output [id]')

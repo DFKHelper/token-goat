@@ -410,6 +410,7 @@ To upgrade cleanly:
 | `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
 | `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
+| `token-goat recall "<query>" [--type bash\|web\|mcp] [--limit <n>] [--json]` | Full-text search across every cached bash-output, web-output, and mcp-output entry at once — one command instead of remembering which cache type holds a prior result. Ranked by relevance (BM25 via SQLite FTS5). `--type` narrows to one cache type; `--limit` caps results (default 10). Each hit shows its cache type, id, the exact recall command (`bash-output <id>` / `web-output <id>` / `mcp-output <id>`), and a content snippet. See [Cross-cache recall](#cross-cache-recall) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
 | `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--head N`/`--tail N` large enough to cover the full output, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
@@ -542,6 +543,24 @@ Total tokens: 18420
 ```
 
 `--top <n>` controls how many entries appear under "Top expensive tool calls" (default 10). `--json` prints the same report as machine-readable JSON instead.
+
+### Cross-cache recall
+
+`token-goat recall "<query>"` searches every cached bash-output, web-output, and mcp-output entry at once, so you don't need to remember which cache type holds the result you want — a single full-text query ranks hits across all three:
+
+```
+$ token-goat recall "eslint warnings"
+
+[bash] a1b2c3d4e5f6a7b8  (token-goat bash-output a1b2c3d4e5f6a7b8)
+  npx eslint src tests
+  npx eslint src tests\n[token-goat: delta] 2 of 5 prior issues resolved; remaining: 3
+
+[mcp ] mcp_9f8e7d6c5b4a3210  (token-goat mcp-output mcp_9f8e7d6c5b4a3210)
+  mcp:mcp__plugin_github_github__get_check_runs {"owner":"..."}
+  ... eslint warnings found in 2 files during CI ...
+```
+
+Results are ranked by relevance (BM25 via SQLite FTS5, falling back to a plain substring scan if FTS5 is unavailable), newest indexed entries win ties. `--type bash|web|mcp` narrows to one cache type; `--limit <n>` caps the result count (default 10); `--json` emits `{ id, cacheType, label, snippet, storedAt }[]` instead. The index is built incrementally as entries are cached — there is no separate rebuild step.
 
 ## MCP server
 
