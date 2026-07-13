@@ -1575,6 +1575,44 @@ CREATE TABLE "order" (id int);
     expect(names).toContain('order')
   })
 
+  it('does not drop symbols after a double-quoted identifier containing an apostrophe', () => {
+    // Regression: standard SQL permits any character, including `'`, inside a delimited
+    // identifier (e.g. a possessive/label-style column name). The scanner used to leave
+    // double-quoted spans' contents unconsumed as opaque, so a `'` inside one opened a phantom
+    // single-quoted string on the next iteration that never found a real closing `'`, blanking
+    // every DDL statement after it through EOF.
+    const content = `
+CREATE TABLE t ("user's_data" TEXT);
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('t')
+    expect(names).toContain('real_table')
+    expect(symbols.find((s) => s.name === 'real_table')?.kind).toBe('sql_table')
+  })
+
+  it('does not let `--` or `/*` inside a double-quoted identifier be misread as a comment opener', () => {
+    const content = `
+CREATE TABLE t ("my--tbl" TEXT, "a/*b" INT);
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('t')
+    expect(names).toContain('real_table')
+  })
+
+  it('honors `""` as the doubled-quote escape for a literal `"` inside a delimited identifier', () => {
+    const content = `
+CREATE TABLE "weird""name" (id int);
+CREATE TABLE real_table (id int);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('real_table')
+  })
+
   it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
     // Regression: a `--` inside a multi-line string literal used to be blanked out by a
     // line-scoped comment pre-pass that ran before string-literal stripping and had no
