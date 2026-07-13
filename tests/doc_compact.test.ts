@@ -221,6 +221,18 @@ describe('doc_compact', () => {
       expect(result).toContain('After text')
       expect(result).toContain('````\nouter code\n```\nstill inside\n````')
     })
+
+    // Regression: the closing branch checked only `ch === fence.ch && run.length >= fence.len`,
+    // omitting eachUnfencedLine's third condition that the remainder after the backtick/tilde
+    // run must be empty. A same-char in-fence line carrying an info string (e.g. "```json"
+    // inside an already-open ``` block) was wrongly read as the closer, reopening a phantom
+    // fence on the block's real closing ``` and silently dropping every heading/line after it.
+    it('does not let a same-char fence-looking line with a trailing info string close an open fence', () => {
+      const md = '## A\nText A.\n```\nexample markdown:\n```json\n{"x":1}\n```\n## B\nText B under a real heading.'
+      const result = buildExtractiveCompact(md)
+      expect(result).toContain('## B')
+      expect(result).toContain('Text B under a real heading.')
+    })
   })
 
   describe('extractDocCompact', () => {

@@ -201,7 +201,7 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
     const line = lines[i]!
     const stripped = line.trim()
 
-    const fm = /^\s*(`{3,}|~{3,})/.exec(line)
+    const fm = /^\s*(`{3,}|~{3,})(.*)$/.exec(line)
     if (fm !== null && fm[1] !== undefined) {
       const run = fm[1]
       const ch = run[0] ?? ''
@@ -215,7 +215,7 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
         }
         i++
         continue
-      } else if (ch === fence.ch && run.length >= fence.len) {
+      } else if (ch === fence.ch && run.length >= fence.len && (fm[2] ?? '').trim() === '') {
         fence = null
         inCodeBlock = false
         if (currentHeading && sentencesEmitted < max) {
