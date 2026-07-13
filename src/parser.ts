@@ -1188,6 +1188,25 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
 
   let openDelim: string | null = null
 
+  // TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of
+  // arrays, one row per line). A continuation row of such an array - especially a nested
+  // array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be
+  // misread by the section regex as a new table header. Track the net bracket depth opened
+  // by an unclosed array so continuation lines are skipped from key/section matching
+  // entirely until the array actually closes. Brackets inside string literals are ignored
+  // (a quoted value like "a[b]" must never affect array depth).
+  let arrayDepth = 0
+
+  function bracketDelta(line: string): number {
+    const stripped = stripStringLiterals(line)
+    let delta = 0
+    for (const ch of stripped) {
+      if (ch === '[') delta++
+      else if (ch === ']') delta--
+    }
+    return delta
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
@@ -1201,8 +1220,14 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
+    if (arrayDepth > 0) {
+      arrayDepth = Math.max(0, arrayDepth + bracketDelta(line))
+      continue
+    }
+
     matchLine(line, i)
     openDelim = lineOpenDelimiterAfter(line, 0)
+    if (openDelim === null) arrayDepth = Math.max(0, bracketDelta(line))
   }
 
   return out
