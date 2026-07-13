@@ -162,10 +162,14 @@ function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
  * looks like a `[section]` header (a description quoting example TOML, an array-of-arrays row
  * starting with `[`). Track the same open-delimiter/bracket-depth state the TOML indexer
  * (extractTomlSymbols in parser.ts) uses so a line inside one of those spans is never mistaken
- * for a real table header here while the indexer correctly skips it. Inert for INI, which has
- * neither construct, so it is safe to always apply.
+ * for a real table header here while the indexer correctly skips it. The triple-quote tracking
+ * is inert for INI, which has no such construct, but the bracket-array tracking is NOT inert
+ * for INI - an INI value routinely contains a bare, net-unbalanced `[` (a stray bracket, a log
+ * format string, a glob fragment) with no structural meaning, and applying TOML's array-depth
+ * state machine to it would suppress every real `[section]` header that follows. `isToml` gates
+ * that half of the state machine off for INI and the unknown-format sniff fallback.
  */
-function findTableHeaders(lines: readonly string[]): SectionHeader[] {
+function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHeader[] {
   const headers: SectionHeader[] = []
   let openDelim: string | null = null
   let arrayDepth = 0
@@ -184,7 +188,7 @@ function findTableHeaders(lines: readonly string[]): SectionHeader[] {
       continue
     }
 
-    if (arrayDepth > 0) {
+    if (isToml && arrayDepth > 0) {
       arrayDepth = Math.max(0, arrayDepth + tomlBracketDelta(line))
       continue
     }
@@ -192,7 +196,7 @@ function findTableHeaders(lines: readonly string[]): SectionHeader[] {
     const m = TABLE_HEADER_RE.exec(line)
     if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
     openDelim = lineOpenDelimiterAfter(line, 0)
-    if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
+    if (isToml && openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
   }
   return headers
 }
@@ -315,10 +319,10 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
 
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
   if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
-  if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
+  if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading.
-  if (language === 'ini') return { headers: findTableHeaders(lines), kind: 'table' }
+  if (language === 'ini') return { headers: findTableHeaders(lines, false), kind: 'table' }
   // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
   if (language === 'yaml' || language === 'env_file')
     return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
@@ -326,7 +330,7 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
-  const tbl = findTableHeaders(lines)
+  const tbl = findTableHeaders(lines, false)
   if (tbl.length > 0) return { headers: tbl, kind: 'table' }
   return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
 }

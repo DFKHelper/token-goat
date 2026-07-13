@@ -577,6 +577,13 @@ describe('readSection', () => {
     expect(result?.heading).toBe('database')
   })
 
+  it('does not let a stray, net-unbalanced `[` in an INI value suppress a later real section header (regression: findTableHeaders applied the TOML multi-line-array bracket-depth tracker unconditionally, but INI has no multi-line array construct - an ordinary value like `format = [%(asctime)s %(message)s` was misread as opening a TOML array, and every following line, including a genuine `[section]` header, was silently swallowed as still inside it)', () => {
+    const ini = ['[logging]', 'format = [%(asctime)s %(message)s', '[database]', 'host = localhost', ''].join('\n')
+    const file = tmpFile('config.ini', ini)
+    expect(listSections(file)).toEqual(['logging', 'database'])
+    expect(readSection(file, 'database')).not.toBeNull()
+  })
+
   it('finds a TOML/INI table header that has a trailing inline comment on the same line (regression: TABLE_HEADER_RE was anchored to end-of-line with nothing allowed after the closing bracket, so a table declared as `[section] # comment` or `[section] ; comment` - both legal, common syntax - was silently dropped by the live reader even though the real indexer correctly captures it)', () => {
     const toml = ['[server]', 'host = "a"', '', '[database] # production settings', 'host = "b"', ''].join('\n')
     const tomlFile = tmpFile('x.toml', toml)
