@@ -1720,6 +1720,14 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(symbols.find((s) => s.name === 'active_users')?.kind).toBe('sql_view')
   })
 
+  it('does not let a same-line, same-name symbol of a different kind suppress an earlier one (regression: the shared makeSymbolEmitter deduped by (name, line) with no kind component, so a table and a function sharing a name on one line had the second silently dropped as a false duplicate)', () => {
+    const content = 'CREATE TABLE foo (id int); CREATE FUNCTION foo() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;'
+    const symbols = extractSql(content, 'schema.sql')
+    const kinds = symbols.map((s) => `${s.kind}:${s.name}`)
+    expect(kinds).toContain('sql_table:foo')
+    expect(kinds).toContain('sql_function:foo')
+  })
+
   it('does not let a /*/ opener close its own comment against its trailing asterisk (comment overlap off-by-one)', () => {
     const content = `/*/ CREATE TABLE ghost (id int); */ CREATE TABLE real_table (id int);`
     const symbols = extractSql(content, 'schema.sql')
