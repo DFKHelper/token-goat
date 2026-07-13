@@ -496,6 +496,15 @@ describe('readSection', () => {
     expect(readSection(file, 'PRIVATE_KEY')).toBeNull()
   })
 
+  it('recognizes an `export `-prefixed .env key (regression: the live key-value header finder had no export-prefix handling, unlike the .env indexer\'s ENV_KEY_RE, so a shell-sourced `export FOO=bar` line was silently invisible to section listing/reading)', () => {
+    const env = ['export FOO=bar', 'export TOKEN="abc123"', 'PLAIN=value', ''].join('\n')
+    const file = tmpFile('.env', env)
+    expect(listSections(file)).toEqual(['FOO', 'TOKEN', 'PLAIN'])
+    const foo = readSection(file, 'FOO')
+    expect(foo?.heading).toBe('FOO')
+    expect(foo?.content).toBe('export FOO=bar')
+  })
+
   it('does not treat a `[section]`-looking line inside a triple-quoted TOML string as a phantom table header (regression: the live table header finder had no multi-line-string tracking, unlike the toml indexer, so text quoted inside a `"""..."""` description was misread as a real table and truncated the enclosing one)', () => {
     const toml = [
       '[project]',
