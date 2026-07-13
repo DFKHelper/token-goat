@@ -85,6 +85,11 @@ function parseDocSections(text: string): GdriveSection[] {
   let currentSection: GdriveSection | null = null
   let byteOffset = 0
   let i = 0
+  // Fence state mirrors eachUnfencedLine (markdown_lines.ts): a `#` line inside a fenced code
+  // block (Google Docs' markdown export renders code-formatted text as ```/~~~ fences, and a
+  // shell/Python comment starting with `#` is extremely common inside one) must never be
+  // mistaken for a real heading.
+  let fence: { ch: string; len: number } | null = null
 
   while (i < text.length) {
     const newlineMatch = text.slice(i).match(/\r?\n/)
@@ -92,7 +97,24 @@ function parseDocSections(text: string): GdriveSection[] {
     const line = text.slice(i, lineEndPos)
     const newlineLen = newlineMatch ? newlineMatch[0].length : 0
 
-    const match = line.match(/^(#{1,6})\s+(.+)$/)
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fenceMatch !== null && fenceMatch[1] !== undefined) {
+      const run = fenceMatch[1]
+      const ch = run[0] ?? ''
+      if (fence === null) {
+        fence = { ch, len: run.length }
+      } else if (ch === fence.ch && run.length >= fence.len && /^[ \t]*$/.test(line.slice(fenceMatch[0].length))) {
+        fence = null
+      }
+      if (currentSection !== null) {
+        currentSection.content += (currentSection.content ? '\n' : '') + line
+      }
+      byteOffset += Buffer.byteLength(line, 'utf8') + newlineLen
+      i = lineEndPos + newlineLen
+      continue
+    }
+
+    const match = fence === null ? line.match(/^(#{1,6})\s+(.+)$/) : null
     if (match) {
       if (currentSection !== null) {
         currentSection.content = currentSection.content.trim()
