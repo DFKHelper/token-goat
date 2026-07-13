@@ -447,6 +447,26 @@ public record Vector(int X, int Y);
     expect(methods).toContain('MethodOne')
     expect(methods).toContain('MethodTwo')
   })
+
+  it('does not leak a positional record scope whose signature spans multiple lines', () => {
+    // Regression: the self-contained-one-liner pop was gated on openedFrameThisLine, so it only
+    // fired on the exact line that pushed the frame. A brace-less positional record's signature
+    // can wrap onto later lines (`record Person(\n  string First,\n  string Last);`), and since
+    // it never opens a real `{` body, bodyEntered never flips true either - so neither pop path
+    // ever fired and the frame stayed stranded, mis-parenting every following top-level class.
+    const content = `public record Person(
+    string First,
+    string Last);
+
+public class Account
+{
+    public void Deposit() { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Test.cs')
+    expect(symbols.find((s) => s.name === 'Account')?.docstring).toBe('')
+    expect(symbols.find((s) => s.name === 'Deposit')?.docstring).toBe('Account')
+  })
 })
 
 // ---------------------------------------------------------------------------

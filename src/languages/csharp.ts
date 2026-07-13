@@ -113,7 +113,6 @@ export function extractCsharp(
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
-    let openedFrameThisLine = false
 
     // Mask multi-line C# string spans (verbatim `@"..."`, raw `"""..."""`) first, state
     // carried across lines, so braces inside one of those can never desync braceDepth. Skipped
@@ -171,7 +170,6 @@ export function extractCsharp(
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent))
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
-      openedFrameThisLine = true
     }
 
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
@@ -234,8 +232,11 @@ export function extractCsharp(
     const closeBraces = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openBraces - closeBraces
 
+    const bracelessTop = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     if (
-      openedFrameThisLine &&
+      bracelessTop !== null &&
+      !bracelessTop.bodyEntered &&
+      braceDepth === bracelessTop.startDepth &&
       ((openBraces > 0 && openBraces === closeBraces) ||
         (openBraces === 0 && closeBraces === 0 && stripped.endsWith(';')))
     ) {
@@ -243,7 +244,10 @@ export function extractCsharp(
       // class/struct/record body fully opened and closed on the declaration line itself
       // (`class Foo { }`). Neither ever raises braceDepth above the frame's own start depth, so
       // the bodyEntered-gated pop below would never fire and the frame would stay "stuck" for
-      // the rest of the file. Pop it immediately instead.
+      // the rest of the file. Pop it immediately instead. Checked against the top frame on
+      // EVERY line (not just the line that pushed it) - a positional record's signature can
+      // span multiple lines (`record Person(\n  string First,\n  string Last);`), so the
+      // terminating `;` frequently lands on a later line than the header that pushed the frame.
       classStack.pop()
     } else {
       const top = classStack.length > 0 ? classStack[classStack.length - 1]! : null
