@@ -1346,9 +1346,22 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
+  // Dockerfile instructions may span multiple physical lines via a trailing backslash
+  // continuation (e.g. `RUN apt-get update && \`), and every non-first physical line of that
+  // logical instruction is shell text, not a new directive. Without tracking this, a
+  // continuation line that happens to start with a shell token colliding with a Dockerfile
+  // keyword under the case-insensitive match below (most commonly the `env VAR=val cmd` shell
+  // idiom, but also run/copy/add/user/label/arg/from) is misread as a standalone directive.
+  let continuing = false
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+
+    if (continuing) {
+      continuing = line.trimEnd().endsWith('\\')
+      continue
+    }
 
     const match =
       /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
@@ -1368,6 +1381,8 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
         docstring: '',
       })
     }
+
+    continuing = line.trimEnd().endsWith('\\')
   }
 
   return out

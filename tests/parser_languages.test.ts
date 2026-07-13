@@ -713,6 +713,30 @@ MAINTAINER Old Style <old@example.com>
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not misread a backslash-continued shell line as a new directive (regression: env VAR=val cmd inside a RUN continuation was misread as a standalone ENV directive)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const dockerFile = path.join(tmpDir, 'Dockerfile')
+
+      const content = `FROM node:22
+RUN apt-get update && \\
+    env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 && \\
+    npm ci
+COPY . /app
+`
+
+      fs.writeFileSync(dockerFile, content)
+      const result = await parseFile(dockerFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names.some((n) => n.startsWith('FROM '))).toBe(true)
+      expect(names.some((n) => n.startsWith('RUN '))).toBe(true)
+      expect(names.some((n) => n.startsWith('COPY '))).toBe(true)
+      expect(names.some((n) => n.startsWith('ENV '))).toBe(false)
+      expect(result.symbols).toHaveLength(3)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('language detection', () => {
