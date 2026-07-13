@@ -84,6 +84,20 @@ export function resetRecallFtsCacheForTesting(): void {
   _ftsAvailable = null
 }
 
+/**
+ * Test-only: delete every row from `cache_recall` (the `cache_recall_ad` AFTER DELETE trigger
+ * keeps `cache_recall_fts` in sync automatically). Nonce-prefixed ids keep separate tests' rows
+ * from ever matching each other's queries, but SQLite FTS5's `bm25()` ranking is computed from
+ * corpus-wide statistics (average document length, total row count) regardless of which rows a
+ * query actually matches -- so a ranking-order assertion between two specific rows can flip
+ * simply because unrelated rows accumulated earlier in the same shared worker process shifted
+ * those corpus statistics. Call this to give a ranking test a clean, single-tenant corpus.
+ */
+export function clearRecallEntriesForTesting(): void {
+  const db = getDb(globalDbPath())
+  db.exec('DELETE FROM cache_recall')
+}
+
 /** Build a short, single-line excerpt of `content` centered on the first case-insensitive occurrence of any query token, falling back to a leading slice when no token is found verbatim (e.g. an FTS prefix/stem match). */
 function buildSnippet(content: string, query: string, maxLen = 160): string {
   const flat = content.replace(/\s+/g, ' ').trim()

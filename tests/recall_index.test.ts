@@ -1,12 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { indexRecallEntry, isRecallCacheType, searchRecall, resetRecallFtsCacheForTesting } from '../src/recall_index.js'
+import {
+  indexRecallEntry,
+  isRecallCacheType,
+  searchRecall,
+  resetRecallFtsCacheForTesting,
+  clearRecallEntriesForTesting,
+} from '../src/recall_index.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 // The recall index lives in the shared global.db (see tests/setup/isolate-home.ts: one
 // per-worker data dir, not reset between test files), so every seeded entry here uses a
 // randomized nonce prefix -- assertions search for that nonce, never for "the whole index",
 // so this file's results can never collide with another test file's synthetic entries.
+//
+// A nonce prefix is enough for MATCH filtering (which rows a query finds) but not for
+// bm25() ranking, which SQLite computes from corpus-wide statistics (avgdl, total row count)
+// regardless of the query's MATCH filter -- so clearRecallEntriesForTesting() gives every test
+// a clean, single-tenant corpus, preventing rows left by other test files sharing this worker
+// from shifting a ranking-order assertion's relative scores.
 function nonce(): string {
   return `rk${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
@@ -14,11 +26,13 @@ function nonce(): string {
 beforeEach(() => {
   clearModuleCaches()
   resetRecallFtsCacheForTesting()
+  clearRecallEntriesForTesting()
 })
 
 afterEach(() => {
   clearModuleCaches()
   resetRecallFtsCacheForTesting()
+  clearRecallEntriesForTesting()
 })
 
 describe('isRecallCacheType', () => {
