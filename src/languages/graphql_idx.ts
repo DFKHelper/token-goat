@@ -41,19 +41,25 @@ function findUnquotedHash(line: string): number {
 const GRAPHQL_IMPORT_RE =
   /^[ \t]*#[ \t]*import\b(?:[^"'\n]*)?['"]([^'"]+)['"]/gm
 
-// type / interface / input / enum / union / scalar (+ optional extend prefix)
+// type / interface / input / enum / union / scalar (+ optional extend prefix). The
+// keyword-to-name separator is restricted to same-line horizontal whitespace ([ \t]+, not the
+// generic \s+, which also matches a newline): GraphQL enum values are ordinary Name tokens, so an
+// enum can legally have a member whose text collides with a type-system keyword (e.g. an enum
+// value literally named `scalar` or `type`). With a newline-crossing \s+, a keyword-valued enum
+// member sitting alone on its line got misread as the keyword itself, greedily binding the next
+// physical line's enum value as the declaration name and emitting a phantom top-level symbol.
 const TYPE_RE =
-  /^[ \t]*(extend\s+)?(?<keyword>type|interface|input|enum|union|scalar)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
+  /^[ \t]*(extend[ \t]+)?(?<keyword>type|interface|input|enum|union|scalar)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
 
 // directive @name
-const DIRECTIVE_RE = /^[ \t]*directive\s+@([A-Za-z_][A-Za-z0-9_]*)/gm
+const DIRECTIVE_RE = /^[ \t]*directive[ \t]+@([A-Za-z_][A-Za-z0-9_]*)/gm
 
 // fragment FragmentName on …
-const FRAGMENT_RE = /^[ \t]*fragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+/gm
+const FRAGMENT_RE = /^[ \t]*fragment[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+on[ \t]+/gm
 
 // query/mutation/subscription Name
 const OPERATION_RE =
-  /^[ \t]*(?<op>query|mutation|subscription)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
+  /^[ \t]*(?<op>query|mutation|subscription)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
 
 // schema { }
 const SCHEMA_RE = /^[ \t]*schema\s*\{/gm

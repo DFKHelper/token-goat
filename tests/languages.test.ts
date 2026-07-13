@@ -1496,6 +1496,25 @@ fragment UserFields on User {
     expect(symbols.find((s) => s.name === 'Role')?.kind).toBe('graphql_enum')
   })
 
+  it('does not misread an enum value that collides with a type-system keyword as a phantom top-level symbol (regression: \\s+ separator crossed a newline)', () => {
+    const content = `
+enum NodeType {
+  scalar
+  active
+}
+
+type RealType {
+  id: ID
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('NodeType')
+    expect(names).toContain('RealType')
+    expect(names).not.toContain('active')
+    expect(symbols.find((s) => s.name === 'NodeType')?.kind).toBe('graphql_enum')
+  })
+
   it('extracts #import pragmas as imports', () => {
     const content = `# import UserFields from "user.graphql"
 type Query { users: [User] }
