@@ -1034,35 +1034,33 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
+// Mirrors ini_idx.ts's _detectOpenQuote: a value only opens a (possibly multi-line) quoted
+// scalar when its leading non-whitespace char is a quote. A quote appearing later in the value
+// - an apostrophe in a plain scalar (`title: It's working`), or a stray quote inside a trailing
+// `#` comment - is never a delimiter and must not be scanned for parity, or a plain scalar with
+// an interior apostrophe silently swallows every key after it until a matching quote happens to
+// appear somewhere downstream.
 function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
-  let i = startIdx
-  while (i < line.length) {
-    const ch = line[i]
-    if (ch === '"') {
-      let j = i + 1
-      while (j < line.length) {
-        if (line[j] === '\\') { j += 2; continue }
-        if (line[j] === '"') break
-        j++
-      }
-      if (j >= line.length) return '"'
-      i = j + 1
-      continue
+  const value = line.slice(startIdx)
+  const trimmed = value.replace(/^\s+/, '')
+  const q = trimmed[0]
+  if (q !== '"' && q !== "'") return null
+  if (q === '"') {
+    let j = 1
+    while (j < trimmed.length) {
+      if (trimmed[j] === '\\') { j += 2; continue }
+      if (trimmed[j] === '"') return null
+      j++
     }
-    if (ch === "'") {
-      let j = i + 1
-      while (j < line.length) {
-        if (line[j] === "'" && line[j + 1] === "'") { j += 2; continue }
-        if (line[j] === "'") break
-        j++
-      }
-      if (j >= line.length) return "'"
-      i = j + 1
-      continue
-    }
-    i++
+    return '"'
   }
-  return null
+  let j = 1
+  while (j < trimmed.length) {
+    if (trimmed[j] === "'" && trimmed[j + 1] === "'") { j += 2; continue }
+    if (trimmed[j] === "'") return null
+    j++
+  }
+  return "'"
 }
 
 function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
