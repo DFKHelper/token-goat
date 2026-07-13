@@ -411,6 +411,7 @@ To upgrade cleanly:
 | `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
 | `token-goat recall "<query>" [--type bash\|web\|mcp] [--limit <n>] [--json]` | Full-text search across every cached bash-output, web-output, and mcp-output entry at once — one command instead of remembering which cache type holds a prior result. Ranked by relevance (BM25 via SQLite FTS5). `--type` narrows to one cache type; `--limit` caps results (default 10). Each hit shows its cache type, id, the exact recall command (`bash-output <id>` / `web-output <id>` / `mcp-output <id>`), and a content snippet. See [Cross-cache recall](#cross-cache-recall) below. |
+| `token-goat hint-stats [--json] [--reset] [--mark-effective <cat>] [--mark-ineffective <cat>]` | Per-category efficacy report for token-goat's discretionary hint hooks: how often each hint category was emitted, how often the agent actually followed its specific suggestion within the next few tool calls, and whether the category is currently auto-suppressed. `--reset` clears all tracked data; `--mark-effective`/`--mark-ineffective <category>` record a manual vote as a supplement to the automatic signal. See [Hint efficacy tracking](#hint-efficacy-tracking) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
 | `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--head N`/`--tail N` large enough to cover the full output, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
@@ -561,6 +562,44 @@ $ token-goat recall "eslint warnings"
 ```
 
 Results are ranked by relevance (BM25 via SQLite FTS5, falling back to a plain substring scan if FTS5 is unavailable), newest indexed entries win ties. `--type bash|web|mcp` narrows to one cache type; `--limit <n>` caps the result count (default 10); `--json` emits `{ id, cacheType, label, snippet, storedAt }[]` instead. The index is built incrementally as entries are cached — there is no separate rebuild step.
+
+### Hint efficacy tracking
+
+Every hint hook (the re-read/dedup/surgical-read nudges in the Bash, Read, and Edit hooks) is
+worth its keep only if it's actually followed. `token-goat hint-stats` reports, per hint
+category: how many times it fired, how many times a later Bash command in the same session
+actually invoked the specific `token-goat` command (or referenced the specific cached-output id)
+the hint pointed at, the resulting efficacy percentage, and whether the category is currently
+auto-suppressed:
+
+```
+$ token-goat hint-stats
+category              emitted  acted-on  efficacy  suppressed  manual+  manual-
+bash_redirect          42       9         21.4%     no          0        0
+bash_recall            18       15        83.3%     no          0        0
+read_reread_dedup      11       2         18.2%     no          0        0
+read_structural_nav    7        1         14.3%     yes         0        1
+edit_reread_suggest    3        0         0%        no          0        0
+```
+
+A category is auto-suppressed for its harness once it has at least `hint_stats.min_sample_size`
+emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default
+15%) — the sample-size floor exists so a category is never suppressed off a single unlucky
+emission. Once suppressed, that hook stops emitting that category until `token-goat hint-stats
+--reset` clears the tracked data. Configure both knobs with `token-goat config set hint_stats.min_sample_size <n>` / `token-goat config set hint_stats.suppress_threshold_pct <pct>`.
+
+"Acted on" is a real, session-scoped signal (the exact file path or cached-output id the hint's
+own text pointed at is checked against the next few tool calls in that session) — not a guess —
+but it is a proxy for correlation, not proof of causation: a match means the agent ran the
+suggested command shortly after the hint, not that the hint necessarily caused it. A hint whose
+text has no extractable path/id (a small minority of branches) is counted as emitted with no
+automatic "acted on" credit. `--mark-effective <category>` / `--mark-ineffective <category>`
+record a separate manual vote as a human override/supplement for exactly that gap — manual votes
+are shown alongside the automatic percentage but never blended into it. `--json` emits
+`{ category, emitted, actedOn, efficacyPct, suppressed, manualEffective, manualIneffective }[]`.
+Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is not the same as
+"which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
+harness is the closest real signal available.
 
 ## MCP server
 

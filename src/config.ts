@@ -182,6 +182,18 @@ export interface InjectionConfig {
   enabled: boolean
 }
 
+/**
+ * Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting
+ * a hint category for the rest of a session once its measured efficacy (acted-on / emitted)
+ * falls below `suppress_threshold_pct`, but only once at least `min_sample_size` emissions have
+ * been observed -- guards against suppressing a category on a single unlucky (or un-actable,
+ * e.g. no correlator extracted) data point.
+ */
+export interface HintStatsConfig {
+  suppress_threshold_pct: number
+  min_sample_size: number
+}
+
 export interface Config {
   compact_assist: CompactAssistConfig
   bash_compress: BashCompressConfig
@@ -203,6 +215,7 @@ export interface Config {
   compression: CompressionConfig
   context: ContextConfig
   injection: InjectionConfig
+  hint_stats: HintStatsConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +364,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   injection: {
     enabled: true,
   },
+  hint_stats: {
+    suppress_threshold_pct: 15,
+    min_sample_size: 5,
+  },
 }
 
 export function getDefaultConfig(section: string): object {
@@ -379,6 +396,7 @@ export function defaultConfig(): Config {
     compression: getDefaultConfig('compression') as CompressionConfig,
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
+    hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
   }
 }
 
@@ -483,6 +501,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'indexing.large_file_symbol_only_kb': {min: 1, max: 1048576, clampTo: 'indexing.large_file_skip_kb'},
   'indexing.large_file_skip_kb': {min: 1, max: 1048576},
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
+  'hint_stats.suppress_threshold_pct': {min: 0, max: 100},
+  'hint_stats.min_sample_size': {min: 1, max: 10000},
 }
 
 /**
@@ -979,6 +999,11 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   inj.enabled = validatedBool(inj_raw['enabled'], inj.enabled)
   inj.enabled = envBool('TOKEN_GOAT_INJECTION_ENABLED', inj.enabled)
 
+  const hs_raw = section(raw, 'hint_stats')
+  const hs = getDefaultConfig('hint_stats') as HintStatsConfig
+  hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, 0, 100)
+  hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, 1, 10000)
+
   return {
     compact_assist: ca,
     bash_compress: bc,
@@ -1000,6 +1025,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
     compression: cpr,
     context: ctx,
     injection: inj,
+    hint_stats: hs,
   }
 }
 
@@ -1187,6 +1213,10 @@ export function saveConfig(config: Config): void {
     },
     injection: {
       enabled: config.injection.enabled,
+    },
+    hint_stats: {
+      suppress_threshold_pct: config.hint_stats.suppress_threshold_pct,
+      min_sample_size: config.hint_stats.min_sample_size,
     },
   }
 

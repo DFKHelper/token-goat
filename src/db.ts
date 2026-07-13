@@ -130,6 +130,39 @@ CREATE TABLE IF NOT EXISTS cache_recall (
   UNIQUE(cache_type, entry_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cache_recall_type ON cache_recall(cache_type);
+
+-- Per-emission ledger for 'token-goat hint-stats' (hint_stats.ts). One row per hint
+-- emission event (a hook returning a 'context' HookOutput classified as a discretionary
+-- efficiency nudge, as opposed to a mandatory informational injection -- see hint_stats.ts's
+-- doc comment for the exact category list and what is deliberately excluded). correlator is a
+-- best-effort file-path/output-id substring extracted from the hint's own text, used to check
+-- whether a later Bash tool call in the same session actually followed the hint's specific
+-- pointer (see resolvePendingHintsForEvent) -- NULL when no such pointer could be extracted,
+-- in which case the row is inserted already resolved with acted_on=0 (counted as emitted, never
+-- eligible for auto-detected credit). calls_remaining is the countdown of subsequent tool-use
+-- events still eligible to resolve this row before it is considered timed out.
+CREATE TABLE IF NOT EXISTS hint_emissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  harness TEXT NOT NULL,
+  correlator TEXT,
+  emitted_at REAL NOT NULL,
+  resolved INTEGER NOT NULL DEFAULT 0,
+  acted_on INTEGER NOT NULL DEFAULT 0,
+  calls_remaining INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_hint_emissions_category ON hint_emissions(category);
+CREATE INDEX IF NOT EXISTS idx_hint_emissions_session_pending ON hint_emissions(session_id, resolved);
+
+-- Manual efficacy votes for a hint category (token-goat hint-stats --mark-effective/--mark-ineffective),
+-- kept separate from hint_emissions' automatic acted_on signal so the two are never silently
+-- blended -- see hint_stats.ts's doc comment on why some categories only support this manual signal.
+CREATE TABLE IF NOT EXISTS hint_manual_marks (
+  category TEXT PRIMARY KEY,
+  effective_count INTEGER NOT NULL DEFAULT 0,
+  ineffective_count INTEGER NOT NULL DEFAULT 0
+);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
@@ -190,7 +223,10 @@ END;
 // `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a
 // pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment
 // on MIGRATIONS below for a bump with no registered step).
-export const SCHEMA_VERSION = 4 as const
+// v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive
+// -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so
+// no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above).
+export const SCHEMA_VERSION = 5 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 

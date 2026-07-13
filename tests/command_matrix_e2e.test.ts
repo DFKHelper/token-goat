@@ -635,6 +635,53 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rBadType.stdout + rBadType.stderr).toContain('--type must be one of')
   },
 
+  'hint-stats': () => {
+    // hint_emissions/hint_manual_marks live in dataBase's shared global.db (same DB recall
+    // uses) -- reset first so this case's assertions are independent of whatever other cases
+    // in this suite ran before it.
+    const r0 = run(['hint-stats', '--reset'])
+    expect(r0.status, r0.stderr).toBe(0)
+    expect(r0.stdout).toContain('cleared')
+
+    const rj = run(['hint-stats', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const rows = JSON.parse(rj.stdout) as Array<{
+      category: string
+      emitted: number
+      actedOn: number
+      efficacyPct: number | null
+      suppressed: boolean
+      manualEffective: number
+      manualIneffective: number
+    }>
+    expect(rows.length).toBe(5)
+    expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
+    expect(rows.map((row) => row.category).sort()).toEqual([
+      'bash_recall',
+      'bash_redirect',
+      'edit_reread_suggest',
+      'read_reread_dedup',
+      'read_structural_nav',
+    ])
+
+    const r = run(['hint-stats'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('category')
+    expect(r.stdout).toContain('bash_redirect')
+
+    const rMark = run(['hint-stats', '--mark-effective', 'bash_redirect'])
+    expect(rMark.status, rMark.stderr).toBe(0)
+    expect(rMark.stdout).toContain('effective')
+
+    const rjAfterMark = run(['hint-stats', '--json'])
+    const rowsAfterMark = JSON.parse(rjAfterMark.stdout) as Array<{ category: string; manualEffective: number }>
+    expect(rowsAfterMark.find((row) => row.category === 'bash_redirect')?.manualEffective).toBe(1)
+
+    const rBadCategory = run(['hint-stats', '--mark-ineffective', 'nope'])
+    expect(rBadCategory.status).not.toBe(0)
+    expect(rBadCategory.stdout + rBadCategory.stderr).toContain('--mark-ineffective must be one of')
+  },
+
   version: () => {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)

@@ -9,6 +9,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
+import { applyHintTracking, classifyBashHint } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath } from './paths.js'
@@ -1199,7 +1200,7 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
   return null
 }
 
-export function preBashHandler(event: HookEvent): HookOutput {
+function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCdPrefix(rawCmd)
@@ -1645,6 +1646,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   // First run of a recognized command → transparently wrap it in the compressor so its output is structurally compressed before it reaches the model.
   return maybeCompressRewrite(event, rawCmd, cmd) ?? passOutput()
+}
+
+/** Public wrapper: intercepts every `context` (hint) output from {@link preBashHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment for the category list and honesty design. */
+export function preBashHandler(event: HookEvent): HookOutput {
+  return applyHintTracking(event, preBashHandlerInner(event), classifyBashHint)
 }
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
