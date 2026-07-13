@@ -19,6 +19,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { appendDirtyPath } from './hooks_index.js'
+import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
 import { recordFileEdit } from './session.js'
 import { recordStat } from './stats.js'
@@ -59,6 +60,15 @@ export function postEditHandler(event: HookEvent): HookOutput {
     ensureWorkerAlive()
   } catch (e) {
     recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
+
+  // Record this file's project root as known-alive so the worker's periodic sweep
+  // (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from --
+  // see recordKnownRootThrottled's docstring. Also rate-limited internally.
+  try {
+    recordKnownRootThrottled(normalized)
+  } catch (e) {
+    recordStat('known_root_record_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
   }
 
   // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid

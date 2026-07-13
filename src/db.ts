@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_chunks_file_folded ON chunks(TG_LOWER(file_path));
+
+-- Tracks every project root a hook has ever seen an edit for, so the worker's periodic sweep
+-- (sweepKnownRoots in index_prune.ts) knows which roots to auto-prune without scanning the
+-- entire shared files table for distinct top-level directories on every cycle. Purely additive
+-- (no SCHEMA_VERSION bump needed): last_seen_ms is refreshed on every observed edit,
+-- first_missing_ms is set the first sweep that finds the root unreachable and cleared the
+-- moment it's seen reachable again -- see sweepKnownRoots' grace-period logic.
+CREATE TABLE IF NOT EXISTS known_roots (
+  root TEXT PRIMARY KEY,
+  last_seen_ms REAL NOT NULL,
+  first_missing_ms REAL
+);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
