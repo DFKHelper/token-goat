@@ -146,6 +146,55 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
+    if (ch === '`') {
+      // MySQL backtick-delimited identifier - same opaque-span rationale and phantom-string risk
+      // as the `"..."` branch above (an apostrophe inside `` `user's_data` `` would otherwise open
+      // an unterminated single-quoted string and blank the rest of the file). `` `` `` is the
+      // doubled-backtick escape for a literal backtick inside the identifier.
+      out += ch
+      i++
+      while (i < text.length) {
+        const c = text[i]
+        if (c === '`') {
+          if (text[i + 1] === '`') {
+            out += '``'
+            i += 2
+            continue
+          }
+          out += c
+          i++
+          break
+        }
+        out += c
+        i++
+      }
+      continue
+    }
+    if (ch === '[') {
+      // SQL Server bracket-delimited identifier - same rationale as the `"..."` and `` `...` ``
+      // branches above (an apostrophe inside `[user's_data]` would otherwise open an unterminated
+      // single-quoted string). `]]` is the doubled-bracket escape for a literal `]` inside the
+      // identifier. Unlike the other two forms the open/close delimiters differ, so there is no
+      // risk of misreading a bare `[` elsewhere in the file as a closer.
+      out += ch
+      i++
+      while (i < text.length) {
+        const c = text[i]
+        if (c === ']') {
+          if (text[i + 1] === ']') {
+            out += ']]'
+            i += 2
+            continue
+          }
+          out += c
+          i++
+          break
+        }
+        out += c
+        i++
+      }
+      continue
+    }
     if (ch === '-' && text[i + 1] === '-') {
       // `--` line comment: only recognized outside a string literal (guaranteed here, since the
       // branch above consumes any open `'...'` span in full before returning to this point).
