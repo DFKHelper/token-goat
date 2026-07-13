@@ -23,8 +23,10 @@ function stripComments(text: string): string {
 // Recognize `define`/`endef` lines, tolerating GNU make's legal leading spaces before `endef`
 // (and `define`, for symmetry) - but never a leading tab, since a tab-indented line is always a
 // recipe (arbitrary shell text handed to the shell), never a make directive, even if its first
-// word happens to be "define" or "endef".
-const DEFINE_LINE_RE = /^ *define\s+/
+// word happens to be "define" or "endef". A `define` opener may also carry one or more legal
+// modifier prefixes (`override`, `export`, `private`, in any combination GNU make accepts, e.g.
+// `override define FOO` or `override export define FOO`) before the `define` keyword itself.
+const DEFINE_LINE_RE = /^ *(?:(?:override|export|private)\s+)*define\s+/
 const ENDEF_LINE_RE = /^ *endef\b/
 
 // Mask define...endef block bodies (replacing with spaces, preserving newlines/offsets) so
@@ -59,9 +61,10 @@ function maskDefineBlocks(text: string): string {
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
 const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
-// define VARNAME, tolerating GNU make's legal leading spaces (matching DEFINE_LINE_RE's
-// tolerance in maskDefineBlocks - a leading tab is never legal here since that's a recipe line).
-const DEFINE_RE = /^ *define\s+([\w./%$()-]+)/gm
+// define VARNAME, tolerating GNU make's legal leading spaces and modifier prefixes (matching
+// DEFINE_LINE_RE's tolerance in maskDefineBlocks - a leading tab is never legal here since
+// that's a recipe line).
+const DEFINE_RE = /^ *(?:(?:override|export|private)\s+)*define\s+([\w./%$()-]+)/gm
 
 // Internal GNU make special targets — never emitted as symbols.
 const SPECIAL_TARGETS = new Set([

@@ -2239,6 +2239,38 @@ build:
     expect(symbols.find((s) => s.name === 'GREETING')?.kind).toBe('makefile_define')
   })
 
+  it('recognizes a modifier-prefixed define block (override/export) instead of scanning its body for phantom targets', () => {
+    // Regression: DEFINE_LINE_RE/DEFINE_RE only recognized a bare `define`, not GNU make's legal
+    // `override define`/`export define`/`private define` modifier prefixes. maskDefineBlocks
+    // never entered the block for a modifier-prefixed opener, so its body (often help/usage text
+    // with colons) was left unmasked and scanned by TARGET_RE for phantom makefile_target
+    // symbols, while the real variable name was dropped entirely since DEFINE_RE never matched.
+    const content = `override define HELP_TEXT
+usage: make foo
+run this: to build
+endef
+
+export define SCRIPT
+step one: do it
+endef
+
+real:
+\techo hi
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('HELP_TEXT')
+    expect(names).toContain('SCRIPT')
+    expect(names).toContain('real')
+    expect(symbols.find((s) => s.name === 'HELP_TEXT')?.kind).toBe('makefile_define')
+    expect(symbols.find((s) => s.name === 'SCRIPT')?.kind).toBe('makefile_define')
+    expect(names).not.toContain('usage')
+    expect(names).not.toContain('run')
+    expect(names).not.toContain('this')
+    expect(names).not.toContain('step')
+    expect(names).not.toContain('one')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
