@@ -969,7 +969,7 @@ export function makeSpanSymbol(
 
 /**
  * Factory that returns a closure for emitting one (symbol + section) pair.
- * Deduplicates by (name, line). Caps at maxSymbols (default 500).
+ * Deduplicates by (name, kind, line). Caps at maxSymbols (default 500).
  */
 /**
  * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`
@@ -1006,7 +1006,12 @@ export function makeSymbolEmitter(
   return function emit(name: string, kind: string, line: number): void {
     if (!name || name.length > maxHeadingLen) return
     if (symbols.length >= maxSymbols) return
-    const key = `${name}\0${line}`
+    // kind must be part of the key: several adapters (sql_idx, graphql_idx, proto_idx,
+    // makefile_idx) funnel multiple distinct symbol kinds through this one shared emitter, and
+    // a name can legitimately repeat across kinds on the same line (e.g. a same-line
+    // `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`). Keying on (name, line) alone let the
+    // first kind's emission silently suppress a later kind's emission of the same name.
+    const key = `${name}\0${kind}\0${line}`
     if (seen.has(key)) return
     seen.add(key)
     symbols.push({
