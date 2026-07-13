@@ -2076,6 +2076,27 @@ test:
     expect(symbols.find((s) => s.name === 'outer')?.kind).toBe('makefile_define')
   })
 
+  it('does not mistake a tab-indented recipe line starting with "define" for a define block opener', () => {
+    // Regression: DEFINE_LINE_RE/ENDEF_LINE_RE used `^\s*`, which matches a leading tab too -
+    // but a tab-indented line in a Makefile is always a shell recipe line (arbitrary text
+    // handed to the shell), never a make directive. A recipe command that happened to start
+    // with the word "define" (e.g. `\tdefine X = 1`) was misread as opening a define...endef
+    // block; since a real column-0 endef never appears inside a recipe, no closer was found
+    // and everything from that line to EOF was masked, silently dropping every later target.
+    const content = `first:
+\tdefine X = 1
+second:
+\techo hi
+third:
+\techo bye
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('first')
+    expect(names).toContain('second')
+    expect(names).toContain('third')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
 
     const content = `
