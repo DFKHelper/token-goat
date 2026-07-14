@@ -961,6 +961,10 @@ I built this because long Claude Code and Codex sessions on my machine kept burn
 
 This is a solo project. I use it daily on Windows 11. Tests run on Node.js 20 and 22.
 
+## Sister project
+
+[Token-Goat Mem](https://github.com/DFKHelper/token-goat-mem) is a companion project: durable, local-first memory for AI coding agents, with trust levels and anchor-based staleness detection, so a decision like "we use pnpm, not npm" survives a compaction instead of getting re-explained every session. Token-Goat controls what gets read into context; Mem controls what gets remembered across sessions. The two are independent — neither requires the other — but Mem has an optional one-way seam that feeds its facts into Token-Goat's compaction manifest.
+
 ## Requests and issues
 
 Want token-goat to support something it doesn't yet? Open a GitHub issue. Feature requests: a new agent CLI integration (Cline, Copilot Workspace, or any tool not yet covered), a new language adapter, or an image or document format the shrink path doesn't compress yet. Issues are public and searchable. That's where I work out what to build next. A short repro plus what you'd want the command to do is enough.
