@@ -52,6 +52,30 @@ public class UserService {
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
 
+  it('indexes a readonly struct and its members, plus ref struct and file class (regression: CLASS_HEADER_RE\'s modifier alternation only recognized public/protected/private/internal/abstract/sealed/static/partial, so readonly, ref, unsafe, and file -- all legal C# type-declaration modifiers -- caused the whole header line to fail to match, silently dropping the type and misattributing every member inside it)', () => {
+    const content = `namespace Demo {
+    public readonly struct Point
+    {
+        public int X { get; }
+        public int Y { get; }
+        public Point(int x, int y) { X = x; Y = y; }
+        public int Sum() => X + Y;
+    }
+
+    public ref struct Span { }
+
+    file class Helper { }
+}
+`
+    const { symbols } = extractCsharp(content, 'Point.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Point')
+    expect(names).toContain('Sum')
+    expect(symbols.find((s) => s.name === 'Sum')?.docstring).toBe('Point')
+    expect(names).toContain('Span')
+    expect(names).toContain('Helper')
+  })
+
   it('emits a namespace declaration with kind namespace, not const', () => {
     const content = `namespace Acme.Core;
 
