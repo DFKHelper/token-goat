@@ -217,6 +217,14 @@ export function profileCsv(content: string, opts: { delimiter?: string; noHeader
         const nums = nonEmpty.map(Number)
         profile.min = String(nums.reduce((a, b) => Math.min(a, b)))
         profile.max = String(nums.reduce((a, b) => Math.max(a, b)))
+      } else if (isDate) {
+        // A plain lexicographic sort on the raw date strings (the string-column path below)
+        // silently swaps min/max whenever lexicographic and chronological order diverge, e.g.
+        // non-zero-padded "10/1/2026" sorts before "9/1/2026" as a string. Sort by parsed
+        // timestamp instead, keeping the original string as the reported value.
+        const sorted = [...nonEmpty].sort((a, b) => Date.parse(a) - Date.parse(b))
+        profile.min = sorted[0] as string
+        profile.max = sorted[sorted.length - 1] as string
       } else {
         const sorted = [...nonEmpty].sort()
         profile.min = sorted[0] as string
