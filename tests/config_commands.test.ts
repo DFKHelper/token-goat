@@ -194,6 +194,18 @@ describe('cmdConfig set', () => {
     expect(cfg.compact_assist.max_manifest_tokens).toBe(777)
   })
 
+  it('rejects an empty or whitespace-only value for a numeric field instead of silently coercing it to 0 (regression: Number(\'\') === 0 is finite, so a blank --value slipped past the Number.isFinite guard)', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '' })).toThrow(/expected a number/)
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '   ' })).toThrow(/expected a number/)
+  })
+
+  it('still accepts an explicit "0" for a numeric field', () => {
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '0' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(0)
+  })
+
   it('persists the change to disk (verifying nested-set actually writes)', () => {
     cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '42' })
     const raw = fs.readFileSync(_testConfigPath, 'utf8')

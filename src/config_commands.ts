@@ -107,6 +107,10 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     throw new Error(`expected a boolean ('true', 'false', '1', or '0'), got: ${raw}`)
   }
   if (typeof existing === 'number') {
+    // Number('') === 0, which is finite, so a blank value would otherwise silently coerce to
+    // 0 instead of surfacing the typo -- reject it explicitly before the finite check, same
+    // guard already applied to the analogous case in csv_query.ts::parseWhereSpecs.
+    if (raw.trim() === '') throw new Error(`expected a number, got: ${raw}`)
     const n = Number(raw)
     if (!Number.isFinite(n)) throw new Error(`expected a number, got: ${raw}`)
     return n
