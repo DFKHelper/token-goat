@@ -145,6 +145,13 @@ describe('queryCsv', () => {
     // comparison "a" < "b=x" against both rows' "a" values ("foo" and "bar"), matching neither.
     expect(result.rows).toEqual([['foo', 'x']]);
   });
+
+  it('resolves a --where spec against a column whose name contains a bare ! (regression: WHERE_SPEC_RE excluded ! outright from the column capture, so a spec targeting a column like wow!thing could never match at all, throwing invalid --where spec instead of querying it)', () => {
+    const csv = 'name,wow!thing\nalice,5\nbob,7\n';
+    const wheres = parseWhereSpecs(['wow!thing=5']);
+    const result = queryCsv(csv, { wheres });
+    expect(result.rows).toEqual([['alice', '5']]);
+  });
 });
 
 describe('parseWhereSpecs', () => {
@@ -168,6 +175,14 @@ describe('parseWhereSpecs', () => {
 
   it('throws on a spec with no recognized operator', () => {
     expect(() => parseWhereSpecs(['nospec'])).toThrow(/invalid --where spec/);
+  });
+
+  it('parses a column containing a bare ! without misreading it as the start of != (regression)', () => {
+    expect(parseWhereSpecs(['wow!thing=5'])).toEqual([{ column: 'wow!thing', op: '=', value: '5' }]);
+  });
+
+  it('still parses a genuine != operator on a column with no ! in its own name', () => {
+    expect(parseWhereSpecs(['age!=5'])).toEqual([{ column: 'age', op: '!=', value: '5' }]);
   });
 });
 
