@@ -441,6 +441,20 @@ describe('lockdeps command', () => {
     expect(names).not.toContain('git')
   })
 
+  it('does not fabricate a dependency from a "#egg=" fragment mentioned inside a comment line (regression: the #104 VCS-fragment recovery ran unconditionally on every raw line, so a doc comment giving a VCS-install example was parsed as a real dependency)', () => {
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(
+      req,
+      'requests==2.31.0\n# example: pip install git+https://github.com/psf/requests.git@main#egg=requests-old\n',
+      'utf8',
+    )
+    const r = run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string }> }
+    const names = parsed.deps.map((d) => d.name)
+    expect(names).toEqual(['requests'])
+  })
+
   it('parses an npm v1 lockfile (nested dependencies tree, no packages map) (regression: v1 lockfiles reported "Total: 0 packages" because only the v2/v3 packages map was read)', () => {
     const v1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v1-lock-'))
     const lockPath = path.join(v1Dir, 'package-lock.json')
