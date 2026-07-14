@@ -212,6 +212,17 @@ describe('cmdConfig set', () => {
     expect(raw).toContain('min_events')
   })
 
+  it('rejects a JSON array of non-string elements for a string-list field instead of silently persisting it, only for it to validate to empty on next load (regression: coerce() only type-checked JSON-array elements when the field was a number list, so a string-list key set to a JSON array of numbers reported success here but validatedStrList later silently filtered it down to [])', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'indexing.skip_dirs', value: '[1,2,3]' })).toThrow(/expected a JSON array of strings/)
+  })
+
+  it('still accepts a JSON array of strings for a string-list field', () => {
+    cmdConfig({ action: 'set', key: 'indexing.skip_dirs', value: '["node_modules","dist"]' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.indexing.skip_dirs).toEqual(['node_modules', 'dist'])
+  })
+
   it('throws with a key-not-found message for an unknown key, without also writing directly to stderr (regression: double-print via emitErr + throw)', () => {
     expect(() => cmdConfig({ action: 'set', key: 'no_such.key', value: 'x' })).toThrow('key not found')
     expect(capturedErr()).toBe('')

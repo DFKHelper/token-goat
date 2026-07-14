@@ -133,6 +133,9 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
       if (isNumberList && !parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) {
         throw new Error(`expected a JSON array of numbers, got: ${raw}`)
       }
+      if (!isNumberList && !parsed.every((x) => typeof x === 'string')) {
+        throw new Error(`expected a JSON array of strings, got: ${raw}`)
+      }
       return parsed
     }
     const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
