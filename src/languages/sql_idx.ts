@@ -291,6 +291,55 @@ function unquote(name: string): string {
   return splitQualifiedSegments(name).map(unquoteSegment).join('.')
 }
 
+/**
+ * Find the next top-level `;` in `noStrings` starting at `fromIndex`, skipping over any
+ * "..."/`...`/[...] delimited-identifier span so a `;` embedded in a quoted identifier's name
+ * (e.g. `CREATE TABLE "a;b" (...)`) is never mistaken for the statement's real terminator.
+ * stripSqlStringLiterals preserves those spans verbatim (needed so NAME_PAT can still extract
+ * the identifier text) while single-quoted string literals are already blanked to spaces, so
+ * only these three delimiter forms need to be skipped here.
+ */
+function findStatementTerminator(noStrings: string, fromIndex: number): number {
+  let i = fromIndex
+  while (i < noStrings.length) {
+    const c = noStrings[i]
+    if (c === ';') return i
+    if (c === '"' || c === '`') {
+      const close = c
+      i++
+      while (i < noStrings.length) {
+        if (noStrings[i] === close) {
+          if (noStrings[i + 1] === close) {
+            i += 2
+            continue
+          }
+          i++
+          break
+        }
+        i++
+      }
+      continue
+    }
+    if (c === '[') {
+      i++
+      while (i < noStrings.length) {
+        if (noStrings[i] === ']') {
+          if (noStrings[i + 1] === ']') {
+            i += 2
+            continue
+          }
+          i++
+          break
+        }
+        i++
+      }
+      continue
+    }
+    i++
+  }
+  return -1
+}
+
 export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const sections: MiniSection[] = []
@@ -331,7 +380,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
         const name = unquote(rawName).trim()
         if (name) {
           const line = offsetToLine(lineIndex, m.index ?? 0)
-          const semiIdx = noStrings.indexOf(';', m.index ?? 0)
+          const semiIdx = findStatementTerminator(noStrings, m.index ?? 0)
           if (semiIdx !== -1 && offsetToLine(lineIndex, semiIdx) === line) {
             // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
             // key: a name can legitimately repeat across kinds on the same line (e.g. a
