@@ -226,7 +226,11 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
         // real sentences" this budget tracks -- counting it against sentencesEmitted silently
         // ate one legitimate trailing prose sentence per code block. Gate on codeBlockLines
         // (mirroring the opening-fence branch) so it doesn't touch the sentence budget at all.
-        if (currentHeading && codeBlockLines < 10) {
+        // codeBlockLines > 0 also requires the opener to have actually been emitted -- when the
+        // sentence budget was already exhausted before this fence opened, codeBlockLines stayed
+        // 0 and the opener/content were suppressed, so the closer must stay suppressed too or it
+        // becomes an orphaned, unpaired ``` with no matching opener in the compact output.
+        if (currentHeading && codeBlockLines > 0 && codeBlockLines < 10) {
           out.push(line)
           codeBlockLines++
         }

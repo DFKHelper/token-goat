@@ -220,6 +220,14 @@ describe('doc_compact', () => {
       expect(result).not.toContain('Third real sentence excluded.')
     })
 
+    it('does not emit an orphaned, unpaired closing fence when the sentence budget is already exhausted before the code block opens (regression: the closing-fence branch gated only on codeBlockLines < 10, so when the opener/content were suppressed by an exhausted sentence budget, codeBlockLines stayed 0 and the closer still passed its own gate)', () => {
+      const md = '# Heading\nSentence one.\nSentence two.\nSentence three.\n```js\nconst x = 1;\nconsole.log(x);\n```\nTrailing sentence.\n'
+      const result = buildExtractiveCompact(md, 2)
+      const fenceCount = (result.match(/```/g) ?? []).length
+      expect(fenceCount % 2).toBe(0)
+      expect(result).not.toContain('```')
+    })
+
     it('skips YAML front-matter', () => {
       const md = '---\ntitle: test\n---\n# Heading\nText'
       const result = buildExtractiveCompact(md)
