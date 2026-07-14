@@ -1657,6 +1657,29 @@ fragment UserFields on User {
     expect(symbols.find((s) => s.name === 'Role')?.kind).toBe('graphql_enum')
   })
 
+  it('extracts a schema block annotated with a directive (regression: SCHEMA_RE required schema to be immediately followed by {, so a legal `schema @auth { ... }` directive list silently dropped the whole schema block from the index)', () => {
+    const content = `schema @auth {
+  query: Query
+}
+
+type Query {
+  hello: String
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    expect(symbols.find((s) => s.name === 'schema')?.kind).toBe('graphql_schema')
+    expect(symbols.find((s) => s.name === 'Query')?.kind).toBe('graphql_type')
+  })
+
+  it('does not misread schemaVersion as a phantom schema block (regression guard for the directive-list fix above)', () => {
+    const content = `input Config {
+  schemaVersion: Int
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    expect(symbols.find((s) => s.kind === 'graphql_schema')).toBeUndefined()
+  })
+
   it('does not misread an enum value that collides with a type-system keyword as a phantom top-level symbol (regression: \\s+ separator crossed a newline)', () => {
     const content = `
 enum NodeType {
