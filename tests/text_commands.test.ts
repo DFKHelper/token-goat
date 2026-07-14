@@ -276,6 +276,19 @@ describe('trace command', () => {
     expect(frames[1]?.context).toBe('do_something()')
   })
 
+  it('does not print a fabricated blank context line for a frame that had no source context in the original traceback (regression: cmdTrace\'s plain-text renderer checked f.context !== undefined, but parseTracebacks always assigns a string ("" for the no-context case), so the check was always true and printed a spurious blank indented line)', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      '  File "<frozen importlib._bootstrap>", line 219, in _call_with_frames_removed',
+      '  File "app.py", line 5, in <module>',
+      '    main()',
+      'ValueError: bad',
+    ].join('\n')
+    const r = run(['trace'], { input: multi, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toContain('_call_with_frames_removed\n    \n')
+  })
+
   it.skipIf(process.platform !== 'win32')(
     'recognizes a WSL-style /mnt/<drive>/... frame path as a project frame when cwd is the native Windows path to the same directory (regression: isProjectFrame did a raw path.resolve + lowercase compare with no WSL/MSYS drive-letter rewrite, so an in-project WSL-mount-path frame was dropped)',
     () => {
