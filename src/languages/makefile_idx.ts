@@ -90,8 +90,8 @@ function maskContinuationAndDefines(text: string): MaskResult {
   return { noContinuation: contLines.join('\n'), forTargets: targetLines.join('\n') }
 }
 
-// Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
-const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
+// Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules. A colon immediately followed by `/` or `\` (e.g. the drive-letter colon in a Windows absolute path like `C:/foo/bar.o`) is treated as part of the target name rather than the rule separator, so a Windows-path target no longer mis-splits at its drive colon.
+const TARGET_RE = /^((?:[^\t\n#:=]|:(?=[\\/]))(?:[^:\n#=]|:(?=[\\/]))*):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
 // define VARNAME, tolerating GNU make's legal leading spaces and modifier prefixes (matching
 // DEFINE_LINE_RE's tolerance in maskContinuationAndDefines - a leading tab is never legal here
