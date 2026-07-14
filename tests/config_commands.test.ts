@@ -686,6 +686,23 @@ describe('cmdProject exclude', () => {
     expect(count).toBe(1)
   })
 
+  it('is idempotent on a case-insensitive filesystem even when the re-excluded path differs only in casing (regression: the dedup check was a bare string-equality .includes(), not folded through foldPath/normalizePath like every other blocked_roots consumer, e.g. isUnderBlockedRoot)', () => {
+    const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+    try {
+      cmdProject({ action: 'exclude', pathArg: '/tmp/Fold-Case-Proj' })
+      invalidateConfigCache()
+      cmdProject({ action: 'exclude', pathArg: '/tmp/fold-case-proj' })
+      invalidateConfigCache()
+      const cfg = loadConfig()
+      const count = cfg.worker.blocked_roots.filter((r) => r.toLowerCase().includes('fold-case-proj')).length
+      expect(count).toBe(1)
+    } finally {
+      if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+    }
+  })
+
   it('throws when path is missing', () => {
     expect(() => cmdProject({ action: 'exclude' })).toThrow()
   })

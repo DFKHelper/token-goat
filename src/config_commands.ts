@@ -21,7 +21,8 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath } from './util.js'
+import { normalizePath } from './paths.js'
 import { stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
@@ -419,7 +420,13 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     }
     const target = path.resolve(opts.pathArg)
     const cfg = loadPersistedConfig()
-    if (cfg.worker.blocked_roots.includes(target)) {
+    // Fold both sides through the same normalizePath+foldPath pipeline isUnderBlockedRoot uses,
+    // or a differently-cased re-exclude of the same physical directory on a case-insensitive
+    // filesystem (Windows/macOS) silently adds a duplicate blocked_roots entry instead of
+    // hitting the "Already excluded" short-circuit -- blocking itself still worked (isUnderBlockedRoot
+    // already folds), but the persisted list was meant to be deduplicated and wasn't.
+    const targetFolded = foldPath(normalizePath(target))
+    if (cfg.worker.blocked_roots.some((r) => foldPath(normalizePath(r)) === targetFolded)) {
       emit(`Already excluded: ${target}`)
       return
     }
