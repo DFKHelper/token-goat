@@ -2070,6 +2070,16 @@ KEY=value
     expect(symbols.map((s) => s.name)).not.toContain('This')
   })
 
+  it('extracts keys containing dots and hyphens (regression: ENV_KEY_RE lacked `.`/`-` in its identifier character class, so keys like NODE-ENV or DB.HOST were silently dropped by the indexer even though the live section reader already found them)', () => {
+    const content = `NODE-ENV=production
+DB.HOST=localhost
+PLAIN_KEY=ok
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['NODE-ENV', 'DB.HOST', 'PLAIN_KEY'])
+  })
+
   it('does not read a bare URL on its own line as a phantom `https` key (regression: ENV_KEY_RE matched `:` unconditionally, so the scheme separator in a bare `https://example.com` value line was mistaken for a key/value split)', () => {
     const content = `DATABASE_URL=postgres://localhost/db
 https://docs.example.com/setup

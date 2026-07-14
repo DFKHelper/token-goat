@@ -23,7 +23,9 @@ const HEADER_RE = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/
 // key - the colon there is a URL scheme separator immediately followed by `//`, not a
 // key/value split. Mirrors the same `:(?!\/\/)` guard the live section reader's
 // KEYVALUE_HEADER_RE already applies (section_reader.ts).
-const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:(?!\/\/))/
+// Matches ENV_KEYVALUE_HEADER_RE in section_reader.ts - includes '.'/'-' so keys like
+// NODE-ENV or DB.HOST are indexed the same as the live section reader finds them.
+const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 
 export function extractIni(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
