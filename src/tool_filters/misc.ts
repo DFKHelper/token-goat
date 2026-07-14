@@ -241,6 +241,13 @@ export class PsqlFilter extends ToolFilter {
     let headerLines: string[] = []
     let dataRows: string[] = []
     let afterHeader = false
+    // True only when the line most recently pushed into `kept` is a genuine header-text
+    // candidate immediately adjacent to this iteration -- i.e. it fell through the generic
+    // fallback branch at the bottom of this loop, not a NOTICE/ERROR/rows/border line. Gates
+    // the border-1 pop-from-`kept` branch below: `kept.length` alone is not adjacency -- it
+    // also stays truthy after any earlier NOTICE/blank line, which used to make a leading
+    // \pset border 2 top border wrongly pop that unrelated earlier line as the header.
+    let lastLineWasPlainCandidate = false
 
     const flushTable = (): void => {
       if (!headerLines.length) { inTable = false; return }
@@ -261,6 +268,7 @@ export class PsqlFilter extends ToolFilter {
           PSQL_CMD_TAG_RE.test(line) || PSQL_NOTICE_RE.test(line)) {
         if (inTable) flushTable()
         kept.push(line)
+        lastLineWasPlainCandidate = false
         continue
       }
       const stripped = line.trim()
@@ -269,25 +277,27 @@ export class PsqlFilter extends ToolFilter {
       if (rowsM) {
         if (inTable) flushTable()
         kept.push(line)
+        lastLineWasPlainCandidate = false
         continue
       }
       if (isBorder) {
         if (!inTable) {
-          if (kept.length) {
-            // Default (border-1) style: the header text line was already buffered in `kept`
-            // and this border is the separator right after it.
+          if (lastLineWasPlainCandidate && kept.length) {
+            // Default (border-1) style: the header text line was pushed into `kept` in the
+            // immediately preceding iteration and this border is the separator right after it.
             headerLines.push(kept.pop()!)
           } else {
-            // \pset border 2 style: this is a leading top border with no header text buffered
-            // yet. Peek at the next line -- if it isn't itself a border, it's the header row.
-            // Consume it explicitly here so it can't fall through to the generic dataRows
-            // bucket below and be misclassified as a data row.
+            // \pset border 2 style: this is a leading top border with no adjacent header text
+            // buffered yet. Peek at the next line -- if it isn't itself a border, it's the
+            // header row. Consume it explicitly here so it can't fall through to the generic
+            // dataRows bucket below and be misclassified as a data row.
             const next = lines[idx + 1]
             if (next !== undefined && !/^[-+]+$/.test(next.trim())) {
               headerLines.push(line)
               headerLines.push(next)
               idx++
               inTable = true; afterHeader = true
+              lastLineWasPlainCandidate = false
               continue
             }
           }
@@ -297,10 +307,15 @@ export class PsqlFilter extends ToolFilter {
           if (afterHeader) { headerLines.push(line); afterHeader = false }
           else { flushTable(); kept.push(line) }
         }
+        lastLineWasPlainCandidate = false
         continue
       }
-      if (inTable) dataRows.push(line)
-      else kept.push(line)
+      if (inTable) {
+        dataRows.push(line)
+      } else {
+        kept.push(line)
+        lastLineWasPlainCandidate = stripped !== ''
+      }
     }
     if (inTable) flushTable()
     return this.finalize(kept)

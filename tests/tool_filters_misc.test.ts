@@ -310,6 +310,55 @@ describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
     expect(out).toContain('[token-goat: 30 rows')
     expect(out).not.toContain('[token-goat: 31 rows')
   })
+
+  // Regression: the border-1-vs-border-2 branch gated on `kept.length` alone -- truthy
+  // whenever ANYTHING earlier in the whole output was kept (a NOTICE line, a blank line,
+  // a prior query's result), not just an immediately-preceding header line. A leading
+  // NOTICE before a border-2 table wrongly triggered the border-1 pop-from-`kept` branch,
+  // popping the unrelated NOTICE line as the "header" and desyncing inTable/afterHeader
+  // state -- duplicating the top border and dropping the header/data separator entirely.
+  it('does not corrupt a border-2 table preceded by a NOTICE line', () => {
+    const text =
+      'NOTICE:  some notice text\n' +
+      '+----+------+\n' +
+      '| id | name |\n' +
+      '+----+------+\n' +
+      '|  1 | a    |\n' +
+      '|  2 | b    |\n' +
+      '+----+------+\n' +
+      '(2 rows)\n'
+    const out = apply(psqlFilter, text, ['psql'])
+
+    expect(out).toBe(text.trimEnd())
+  })
+
+  // Same corruption reproduced with nothing but a leading blank line before the table --
+  // realistic whenever this table isn't the very first output (e.g. a blank separator
+  // line between two query results).
+  it('does not corrupt a border-2 table preceded by a blank line', () => {
+    const text =
+      '\n' +
+      '+----+------+\n' +
+      '| id | name |\n' +
+      '+----+------+\n' +
+      '|  1 | a    |\n' +
+      '|  2 | b    |\n' +
+      '+----+------+\n' +
+      '(2 rows)\n'
+    const out = apply(psqlFilter, text, ['psql'])
+
+    expect(out).toBe(text.trimEnd())
+  })
+
+  // Genuine default (border-1) style must still work: header text with no top border,
+  // immediately followed by the separator border -- the one case the pop-from-`kept`
+  // branch is meant to handle.
+  it('still parses genuine border-1 style output (header text, then separator, no top border)', () => {
+    const text = ' id | name \n----+------\n  1 | a\n  2 | b\n(2 rows)\n'
+    const out = apply(psqlFilter, text, ['psql'])
+
+    expect(out).toBe(text.trimEnd())
+  })
 })
 
 describe('PsqlFilter keeps errors', () => {
