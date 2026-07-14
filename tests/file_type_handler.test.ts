@@ -142,6 +142,17 @@ describe('handleTxt', () => {
     expect(result.message).toContain('--tail')
   })
 
+  // Regression: isLog's directory-based fallback only matched a forward-slash '/logs/'
+  // substring, so a Windows-native backslash-separated path (e.g. C:\...\logs\service.txt)
+  // with a non-log extension silently fell back to the generic offset/limit hint instead
+  // of the log-specific --tail/--grep recall.
+  it('log file message contains --tail hint for a Windows-style backslash path under a logs directory', () => {
+    const content = makeStr(FILE_TYPE_THRESHOLDS.txt + 1)
+    const result = handleTxt('C:\\Projects\\myapp\\logs\\service.txt', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('--tail')
+  })
+
   it('non-log txt file message contains offset/limit hint', () => {
     const content = makeStr(FILE_TYPE_THRESHOLDS.txt + 1)
     const result = handleTxt('/path/to/notes.txt', content)

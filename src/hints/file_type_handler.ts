@@ -100,7 +100,9 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     if (htmlResult.shouldBlock) return htmlResult
   }
   const lines = content.split('\n')
-  const isLog = /\.(log|out|err|trace)$/i.test(filePath) || filePath.includes('/logs/')
+  // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this
+  // tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
+  const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
   const preview = [
     '--- first 5 lines ---',
     ...lines.slice(0, 5),
