@@ -297,10 +297,20 @@ export function extractSalesforceMetadata(
         if (objectName === null) continue
         const objectOffset = block.offset + block.text.indexOf(objectName)
         emitRef(refs, seenRefs, makeRef(content, filePath, objectName, objectOffset))
+        // A running cursor into block.text, not a fresh indexOf(field.text) each time: two
+        // <filters>/<inputAssignments> entries referencing the same field name inside one
+        // recordLookups/recordCreates/recordUpdates/recordDeletes block is a normal Flow
+        // pattern (e.g. "Status = Open OR Status != Closed"). A plain indexOf always resolves
+        // to the FIRST occurrence, so every subsequent same-named <field> collided with the
+        // first one's offset -- and since emitRef dedupes on filePath/name/line/col, the
+        // second (real, distinct) reference was silently dropped as a duplicate.
+        let fieldSearchFrom = 0
         for (const field of elementBlocks(block.inner, 'field')) {
           const fieldName = decodeXml(field.inner.trim())
           if (fieldName === '') continue
-          const offset = block.offset + block.text.indexOf(field.text)
+          const idx = block.text.indexOf(field.text, fieldSearchFrom)
+          const offset = block.offset + (idx >= 0 ? idx : 0)
+          if (idx >= 0) fieldSearchFrom = idx + field.text.length
           emitRef(refs, seenRefs, makeRef(content, filePath, `${objectName}.${fieldName}`, offset))
         }
       }

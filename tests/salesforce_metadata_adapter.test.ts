@@ -79,6 +79,24 @@ describe('Salesforce metadata XML adapter', () => {
     expect(result.refs.every((ref) => ref.line > 0 && ref.col >= 0 && ref.context !== '')).toBe(true)
   })
 
+  it('does not drop a repeated same-named field reference inside one record-operation block (regression: block.text.indexOf(field.text) always resolved to the FIRST occurrence, so a second <field> with the same name collided with the first ref\'s line/col and was silently dropped by emitRef\'s dedup)', () => {
+    const result = extractSalesforceMetadata(
+      `<Flow xmlns="urn:test">
+  <recordLookups>
+    <name>Get_Open_Cases</name>
+    <filters><field>Status</field><operator>EqualTo</operator></filters>
+    <filters><field>Status</field><operator>NotEqualTo</operator></filters>
+    <object>Case</object>
+  </recordLookups>
+</Flow>`,
+      'force-app/main/default/flows/Test.flow-meta.xml',
+    )
+
+    const statusRefs = result.refs.filter((ref) => ref.name === 'Case.Status')
+    expect(statusRefs).toHaveLength(2)
+    expect(statusRefs[0]?.line).not.toBe(statusRefs[1]?.line)
+  })
+
   it('indexes deduplicated LWC targets and target-config properties with surgical spans', () => {
     const result = extractSalesforceMetadata(
       `<LightningComponentBundle xmlns="urn:test">
