@@ -264,18 +264,21 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
   const refs: RefEntry[] = []
   const isAura = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens'].includes(extension)
 
+  // Blank `<!-- ... -->` spans before matching anything below, not just the action bindings, so
+  // a commented-out attribute/handler/controller/extension/c:Component reference isn't indexed
+  // as live (matches extractLwcTemplate's equivalent fix above).
+  const markupNoComments = stripXmlComments(content)
+
   if (isAura) {
-    addAttributeSymbols(symbols, content, filePath, 'aura:attribute', 'aura_attribute')
-    addAttributeSymbols(symbols, content, filePath, 'aura:handler', 'aura_handler')
-    addAttributeSymbols(symbols, content, filePath, 'aura:registerEvent', 'aura_event')
-    addAttributeSymbols(symbols, content, filePath, 'design:attribute', 'aura_design_attribute')
+    addAttributeSymbols(symbols, markupNoComments, filePath, 'aura:attribute', 'aura_attribute')
+    addAttributeSymbols(symbols, markupNoComments, filePath, 'aura:handler', 'aura_handler')
+    addAttributeSymbols(symbols, markupNoComments, filePath, 'aura:registerEvent', 'aura_event')
+    addAttributeSymbols(symbols, markupNoComments, filePath, 'design:attribute', 'aura_design_attribute')
   }
 
-  attributeRefs(refs, content, filePath, 'controller')
-  attributeRefs(refs, content, filePath, 'extensions', true)
+  attributeRefs(refs, markupNoComments, filePath, 'controller')
+  attributeRefs(refs, markupNoComments, filePath, 'extensions', true)
 
-  // Blank `<!-- ... -->` spans before matching `{!c.action}` / `action="{!...}"` bindings so a commented-out element isn't indexed as a live controller-action ref.
-  const markupNoComments = stripXmlComments(content)
   const actionRe = isAura
     ? /\{!\s*c\.([A-Za-z_$][\w$]*)[^}]*\}/gi
     : /\baction\s*=\s*["']\{!\s*(?:c\.)?([A-Za-z_$][\w$]*)[^}]*\}["']/gi
@@ -284,8 +287,8 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
     refs.push(ref(filePath, match[1] ?? '', line, 0, lineContext(content, line)))
   }
 
-  for (const match of content.matchAll(/\bc:[A-Za-z_$][\w$]*/g)) {
-    const line = matchLine(content, match.index ?? 0)
+  for (const match of markupNoComments.matchAll(/\bc:[A-Za-z_$][\w$]*/g)) {
+    const line = matchLine(markupNoComments, match.index ?? 0)
     refs.push(ref(filePath, match[0], line, 0, lineContext(content, line)))
   }
 
