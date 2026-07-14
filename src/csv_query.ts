@@ -153,9 +153,11 @@ export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult
 }
 
 export function quoteCsvCell(cell: string): string {
-  // RFC 4180: quote cells containing comma, double quote, or newline.
+  // RFC 4180: quote cells containing comma, double quote, or a line break -- CR, LF, or
+  // CRLF, not just LF. A bare \r left unquoted corrupts terminal rendering (it overwrites
+  // the start of the line) and is unsafe to round-trip through strict RFC 4180 parsers.
   // Escape embedded quotes by doubling them.
-  if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {
+  if (cell.includes(',') || cell.includes('"') || cell.includes('\n') || cell.includes('\r')) {
     return `"${cell.replace(/"/g, '""')}"`
   }
   return cell

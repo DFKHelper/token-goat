@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from '../src/csv_query.js';
+import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile, quoteCsvCell } from '../src/csv_query.js';
 
 const CSV = `id,name,status
 1,Alice,active
@@ -279,5 +279,14 @@ Line 2"`;
     expect(reparsed.rows[1][1]).toBe('Bob');
     expect(reparsed.rows[1][2]).toContain('Line 1');
     expect(reparsed.rows[1][2]).toContain('Line 2');
+  });
+
+  // Regression: quoteCsvCell's RFC 4180 guard only checked for '\n', so a cell containing
+  // a bare '\r' (no accompanying '\n' -- old Mac-style line breaks, terminal capture paste)
+  // was emitted unquoted, embedding a raw carriage return in the output that overwrites
+  // the start of the terminal line when printed and is unsafe to round-trip through strict
+  // RFC 4180 parsers (CR alone is a valid line break under the spec).
+  it('quotes a cell containing a bare carriage return with no accompanying newline', () => {
+    expect(quoteCsvCell('line1\rline2')).toBe('"line1\rline2"');
   });
 });
