@@ -7,6 +7,7 @@
  */
 
 import { parse } from 'csv-parse/sync'
+import { findHtmlHeadingMatches } from '../languages/common.js'
 
 export interface FileTypeResult {
   shouldBlock: boolean
@@ -57,13 +58,15 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
 
   const title = content.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim()
-  const headings = [...content.matchAll(/<h([1-6])[^>]*>([^<]+)<\/h\1>/gi)]
+  // Route through the shared findHtmlHeadingMatches helper (same one html.ts/liquid.ts/
+  // section_reader.ts use) rather than a hand-rolled regex, so a heading-shaped tag sitting
+  // inside a <!-- comment -->, <script> body, or CDATA section is masked out first instead of
+  // being reported as a live heading.
+  const headings = findHtmlHeadingMatches(content)
     .slice(0, 20)
-    .map(m => {
-      const level = m[1]
-      const text = m[2]
-      if (!level || !text) return ''
-      return `${'  '.repeat(Number(level) - 1)}h${level}: ${text.trim()}`
+    .map(({ level, heading }) => {
+      if (!heading) return ''
+      return `${'  '.repeat(level - 1)}h${level}: ${heading}`
     })
     .filter(Boolean)
 
