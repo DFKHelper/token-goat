@@ -3111,6 +3111,24 @@ function MyFunction {
     expect(render?.docstring).toBe('Widget')
   })
 
+  it('indexes a method whose return type is a nested generic (regression: the return-type bracket group only matched a single, non-nested `[...]` pair, so `[List[string]]` consumed only up to the inner `]`, left the outer `]` dangling, and silently dropped the whole method)', () => {
+    const content = `class Repository {
+    [System.Collections.Generic.List[string]] GetItems() {
+        return $this.Items
+    }
+
+    [void] AddItem([string]$item) {
+        $this.Items.Add($item)
+    }
+}
+`
+    const { symbols } = extractPowershell(content, 'repository.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('GetItems')
+    expect(symbols.find((s) => s.name === 'GetItems')?.kind).toBe('method')
+    expect(names).toContain('AddItem')
+  })
+
   it('detects .ps1 and .psm1 languages via parseFile', async () => {
     const ps1File = tmp('script.ps1', 'function Get-Test { }')
     const result1 = await parseFile(ps1File)
