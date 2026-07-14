@@ -372,6 +372,27 @@ public class Foo {
     expect(bar?.docstring).toBe('Foo')
   })
 
+  it('detects an Allman-style property with an explicit (non-shorthand) accessor body', () => {
+    const content = `public class Foo
+{
+    public int Count => count;
+    public int Bar
+    {
+        get { return 1; }
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: ALLMAN_ACCESSOR_RE only matched the auto-property shorthand ('get;'/'set;'),
+    // so an Allman-style property with a real accessor body ('get { return 1; }') matched none
+    // of PROPERTY_RE (needs a same-line '{'), the Allman header check (accessor line must be
+    // exactly 'get;'/'set;'), PROPERTY_ARROW_RE (needs '=>'), or METHOD_RE (needs '(' after the
+    // name) - the property was silently dropped from the index entirely.
+    const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
+    expect(bar).toBeDefined()
+    expect(bar?.docstring).toBe('Foo')
+  })
+
   it('does not phantom-capture a nested generic type argument as the method name', () => {
     // Regression: METHOD_RE's name-suffix pattern was `[<(]` (matches any `<` or `(`), so a
     // generic return type followed by another generic type argument let the lazy name-capture

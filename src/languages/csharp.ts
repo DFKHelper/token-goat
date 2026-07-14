@@ -43,6 +43,11 @@ const PROPERTY_HEADER_RE = new RegExp(
   '([A-Z][A-Za-z0-9_]*)\\s*$',
 )
 const ALLMAN_ACCESSOR_RE = /^(?:get\s*;\s*set\s*;|set\s*;\s*get\s*;|get\s*;|set\s*;)$/
+// A real (non-shorthand) accessor body opener, e.g. `get { return 1; }` or `set {`. Safe to OR
+// into the shorthand check below: PROPERTY_HEADER_RE already restricts the header line to a bare
+// `Type Name` with no `(`, so in legal C# a following `{` plus a `get`/`set`-led line can only be
+// a property/indexer/event accessor block, never a method body.
+const ALLMAN_ACCESSOR_BODY_RE = /^(?:get|set)\b/
 // Expression-bodied property (`public string Name => "value";` / `int Count => count;`) - the
 // character classes used for the leading type/modifier filler exclude `(`/`)`, so this can never
 // accidentally match an expression-bodied METHOD (`Add(int a, int b) => a + b;`), where the
@@ -174,7 +179,7 @@ export function extractCsharp(
           if (headerM) {
             const braceLineNext = (lines[i + 1] ?? '').trim()
             const accessorLine = (lines[i + 2] ?? '').trim()
-            if (braceLineNext === '{' && ALLMAN_ACCESSOR_RE.test(accessorLine)) {
+            if (braceLineNext === '{' && (ALLMAN_ACCESSOR_RE.test(accessorLine) || ALLMAN_ACCESSOR_BODY_RE.test(accessorLine))) {
               isPropertyLine = true
               symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
             }
