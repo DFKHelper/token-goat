@@ -78,6 +78,43 @@ registerReset(() => {
   _pipelineFnOverride = null
 })
 
+// pipelineFn('feature-extraction', modelName) downloads the model over the network on a cold
+// cache (@xenova/transformers has no retry of its own), so a single transient CDN blip fails
+// pipeline construction outright. Retrying with backoff absorbs that; PIPELINE_RETRY_DELAY_MS
+// is overridable so tests exercising the retry/failure path don't pay real wall-clock delay.
+const PIPELINE_RETRY_ATTEMPTS = 3
+let PIPELINE_RETRY_DELAY_MS = 250
+
+const DEFAULT_PIPELINE_RETRY_DELAY_MS = PIPELINE_RETRY_DELAY_MS
+
+export function setPipelineRetryDelayForTesting(ms: number): void {
+  PIPELINE_RETRY_DELAY_MS = ms
+}
+
+registerReset(() => {
+  PIPELINE_RETRY_DELAY_MS = DEFAULT_PIPELINE_RETRY_DELAY_MS
+})
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function buildExtractorWithRetry(
+  pipelineFn: PipelineFn,
+  modelName: string,
+): Promise<FeatureExtractor> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= PIPELINE_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await pipelineFn('feature-extraction', modelName)
+    } catch (e) {
+      lastError = e
+      if (attempt < PIPELINE_RETRY_ATTEMPTS) await sleep(PIPELINE_RETRY_DELAY_MS * attempt)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
 // Chunk size constraints (chars). MIN_CHUNK_CHARS filters trivial symbols. MAX_CHUNK_CHARS caps before embedding: bge-small has ~512-token context window.
 export const MIN_CHUNK_CHARS = 50
 export const MAX_CHUNK_CHARS = 8000
@@ -299,8 +336,20 @@ export async function embedTexts(
     const pipelineFn: PipelineFn =
       _pipelineFnOverride ??
       (transformerObj['pipeline'] as PipelineFn)
-    extractorPromise = pipelineFn('feature-extraction', modelName)
+    // @xenova/transformers' pipeline() downloads the model over the network on a cold cache
+    // with no retry of its own, so a single transient CDN blip (a dropped connection, a brief
+    // rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be
+    // populated with a promise that only resolves on eventual success, never with the raw
+    // pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry
+    // is deleted rather than left holding a rejected promise, because this cache is keyed by
+    // model name and lives for the process lifetime: a rejected promise cached here would
+    // permanently poison every future embedTexts call for that model, even long after a
+    // transient outage clears, since a Promise's settled state never changes once observed.
+    extractorPromise = buildExtractorWithRetry(pipelineFn, modelName)
     _extractorCache.set(modelName, extractorPromise)
+    extractorPromise.catch(() => {
+      if (_extractorCache.get(modelName) === extractorPromise) _extractorCache.delete(modelName)
+    })
   }
   const extractor = await extractorPromise
 

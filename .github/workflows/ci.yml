@@ -33,8 +33,20 @@ jobs:
         with:
           path: node_modules/@xenova/transformers/.cache
           key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Retries absorb two known non-code causes of an otherwise-green run failing here: a
+      # transient Hugging Face CDN block/rate-limit on the embedding model download (the app
+      # itself now retries+backs off internally too, but a sustained outage outlasts that), and
+      # a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero
+      # assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers
+      # per-test instances of this). A real regression fails deterministically and still fails
+      # after 3 attempts.
       - name: Test
-        run: npm test
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npm test
 
   test-windows:
     runs-on: windows-latest
@@ -51,4 +63,9 @@ jobs:
           path: node_modules/@xenova/transformers/.cache
           key: xenova-model-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Test
-        run: npm test
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npm test
