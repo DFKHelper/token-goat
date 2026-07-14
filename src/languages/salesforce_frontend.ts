@@ -170,24 +170,28 @@ export function extractLwcTemplate(content: string, filePath: string): Salesforc
   const symbols: SymbolEntry[] = []
   const refs: RefEntry[] = []
 
-  for (const match of content.matchAll(/\blwc:ref\s*=\s*["']([^"']+)["']/gi)) {
-    const line = matchLine(content, match.index ?? 0)
+  // Blank `<!-- ... -->` spans before matching anything below, not just the event-handler
+  // bindings, so a commented-out element (e.g. `<!-- <div lwc:ref="oldRef"> -->` or `<!-- <c-old-widget> -->`)
+  // isn't indexed as a live symbol/ref. Length-preserving, so line offsets computed against it
+  // still line up with the original content.
+  const markupNoComments = stripXmlComments(content)
+
+  for (const match of markupNoComments.matchAll(/\blwc:ref\s*=\s*["']([^"']+)["']/gi)) {
+    const line = matchLine(markupNoComments, match.index ?? 0)
     symbols.push(symbol(filePath, match[1] ?? '', 'lwc_ref', line))
   }
-  for (const match of content.matchAll(/\bid\s*=\s*["']([^"'{}:]+)["']/gi)) {
-    const line = matchLine(content, match.index ?? 0)
+  for (const match of markupNoComments.matchAll(/\bid\s*=\s*["']([^"'{}:]+)["']/gi)) {
+    const line = matchLine(markupNoComments, match.index ?? 0)
     symbols.push(symbol(filePath, match[1] ?? '', 'lwc_id', line))
   }
-  // Blank `<!-- ... -->` spans before matching event-handler bindings so a commented-out element (e.g. `<!-- <button onclick={oldHandler}> -->`) isn't indexed as a live ref.
-  const markupNoComments = stripXmlComments(content)
   for (const match of markupNoComments.matchAll(/\bon[a-z][\w-]*\s*=\s*\{\s*([A-Za-z_$][\w$]*)\s*\}/gi)) {
     const offset = match.index ?? 0
     const line = matchLine(markupNoComments, offset)
     refs.push(ref(filePath, match[1] ?? '', line, 0, lineContext(content, line)))
   }
-  for (const match of content.matchAll(/<\s*(c-[a-z][\w-]*)\b/gi)) {
+  for (const match of markupNoComments.matchAll(/<\s*(c-[a-z][\w-]*)\b/gi)) {
     const offset = match.index ?? 0
-    const line = matchLine(content, offset)
+    const line = matchLine(markupNoComments, offset)
     refs.push(ref(filePath, (match[1] ?? '').toLowerCase(), line, 0, lineContext(content, line)))
   }
 

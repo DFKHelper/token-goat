@@ -140,6 +140,25 @@ export default class Foo extends LightningElement {
     ])
   })
 
+  // Regression: lwc:ref, id, and c-* component refs used to run against the raw content while
+  // event-handler bindings alone ran against markupNoComments (stripXmlComments'd), so a
+  // commented-out lwc:ref/id/component (e.g. dead markup left during development) was indexed
+  // as a live symbol/ref, letting a symbol lookup point a developer at non-functional markup.
+  it('ignores lwc:ref, id, and c-* component refs inside HTML comments', () => {
+    const source = `<template>
+  <!-- <div lwc:ref="deadRef"></div> -->
+  <!-- <span id="deadId"></span> -->
+  <!-- <c-old-widget></c-old-widget> -->
+  <div lwc:ref="realRef"></div>
+  <c-live-widget></c-live-widget>
+</template>`
+
+    const result = extractLwcTemplate(source, 'force-app/main/default/lwc/checkoutPanel/checkoutPanel.html')
+
+    expect(result.symbols.map(({ name }) => name)).toEqual(['realRef'])
+    expect(result.refs.map(({ name }) => name)).toEqual(['c-live-widget'])
+  })
+
   it('ignores {!c.action} bindings inside HTML comments', () => {
     const source = `<aura:component controller="OrderController">
   <!-- <c:OrderRow onselect="{!c.disabledAction}"/> -->
