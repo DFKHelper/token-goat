@@ -215,6 +215,14 @@ describe('profileCsv', () => {
     expect(name?.inferredType).toBe('string');
   });
 
+  it('reports chronological min/max for a date column instead of lexicographic (regression: a plain string sort put "10/1/2026" before "9/1/2026" because \'1\' < \'9\', swapping min/max for non-zero-padded dates)', () => {
+    const profiles = profileCsv('when\n9/1/2026\n10/1/2026\n');
+    const when = profiles.find((p) => p.name === 'when');
+    expect(when?.inferredType).toBe('date');
+    expect(when?.min).toBe('9/1/2026');
+    expect(when?.max).toBe('10/1/2026');
+  });
+
   it('counts nulls for empty cells', () => {
     const profiles = profileCsv('id,name\n1,Alice\n2,\n');
     const name = profiles.find((p) => p.name === 'name');
