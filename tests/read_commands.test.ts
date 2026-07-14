@@ -1574,6 +1574,13 @@ describe('read_commands', () => {
       expect(stdout.trim()).toBe('2.0.0')
     })
 
+    it('reads a key from a section whose name contains a "#" or ";" character (regression: the section-header scan did trimmed.split(/[#;]/)[0] before checking startsWith("[")/endsWith("]"), so a section name legitimately containing "#" or ";" -- both legal in INI/TOML section names -- got truncated before the closing "]" was seen, silently dropping the header and making every key nested under it unreachable)', () => {
+      const f = path.join(tempDir, 'hash-section.ini')
+      fs.writeFileSync(f, '[server#1]\nhost = example.com\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'server#1.host' }) })
+      expect(stdout.trim()).toBe('example.com')
+    })
+
     it('reads a TOML/INI key with aligned multi-space formatting before the equals sign', () => {
       // Regression: startsWith(`${leafKey} =`) / startsWith(`${leafKey}=`) only recognized
       // exactly zero or one space before '=', so aligned-key files (tox.ini/setup.cfg style)

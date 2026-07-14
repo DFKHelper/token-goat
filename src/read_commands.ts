@@ -1759,12 +1759,15 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    // Check for section header like [tool.ruff] or [tool]. Strip a trailing inline
-    // comment (# or ;) before the endsWith(']') check so a header like
-    // "[tool.ruff] # comment" is still recognized as a section header.
-    const headerLine = (trimmed.split(/[#;]/)[0] ?? '').trim()
-    if (headerLine.startsWith('[') && headerLine.endsWith(']')) {
-      currentSection = headerLine.slice(1, -1)
+    // Check for section header like [tool.ruff] or [tool.ruff] # comment. A naive
+    // trimmed.split(/[#;]/)[0] truncation would also cut a section name that legitimately
+    // contains '#' or ';' (both are legal in INI/TOML section names -- see ini_idx.ts's own
+    // HEADER_RE), silently dropping the header and making every key nested under it
+    // unreachable. Matching this same header regex directly against the untouched line only
+    // treats a trailing '#'/';' as a comment when it follows the closing ']'.
+    const headerMatch = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/.exec(trimmed)
+    if (headerMatch) {
+      currentSection = (headerMatch[1] ?? '').trim()
       continue
     }
 
