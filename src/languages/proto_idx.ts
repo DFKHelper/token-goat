@@ -97,6 +97,37 @@ function findBlockEndLine(
   return totalLines
 }
 
+// An rpc statement's real terminator is either a bare `;` (the common case) or a trailing
+// method-options block (`rpc Foo(A) returns (B) { option ...; }`). Scans forward from the
+// start of the rpc match -- so the request/response type parens the regex already consumed
+// are counted too -- tracking paren depth (so a `;` or `{` inside the parameter list's types
+// is never mistaken for the statement's own terminator) and quoted strings, same approach as
+// findBlockEndLine above.
+function findRpcEndLine(
+  content: string,
+  matchStartIndex: number,
+  totalLines: number,
+  lineIndex: readonly number[],
+): number {
+  let parenDepth = 0
+  let quote: string | null = null
+  for (let i = matchStartIndex; i < content.length; i++) {
+    const ch = content[i]
+    if (quote !== null) {
+      if (ch === '\\') { i++; continue }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '(') { parenDepth++; continue }
+    if (ch === ')') { parenDepth--; continue }
+    if (parenDepth > 0) continue
+    if (ch === ';') return offsetToLine(lineIndex, i)
+    if (ch === '{') return findBlockEndLine(content, i, totalLines, lineIndex)
+  }
+  return totalLines
+}
+
 export function extractProto(
   content: string,
   filePath: string,
@@ -154,6 +185,7 @@ export function extractProto(
     const name = m[1]?.trim() ?? ''
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
+      blockEndLines.set(`${name}\0${line}`, findRpcEndLine(stripped, m.index ?? 0, totalLines, lineIndex))
       emit(name, 'proto_rpc', line)
     }
   }

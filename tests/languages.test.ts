@@ -2691,6 +2691,44 @@ message Bar {
     expect(bar?.lineEnd).toBe(8)
   })
 
+  it('gives the last rpc in a service its own lineEnd, not the rest of the file', () => {
+    // Regression: rpc symbols never got a blockEndLines entry, unlike message/enum/service/
+    // extend/oneof, so the last rpc in a service fell back to the flat "next section start -
+    // 1 / totalLines" model -- swallowing the service's closing brace and any unrelated
+    // trailing content (comments, a sibling top-level declaration) into the rpc's own range.
+    const content = `message Foo {
+  string bar = 1;
+}
+
+service MyService {
+  rpc DoThing(Request) returns (Response);
+  rpc StreamThing(stream Request) returns (stream Response);
+}
+
+// trailing comment after the service closes
+// more trailing lines
+// even more trailing lines
+`
+    const { symbols } = extractProto(content, 'rpc_end.proto')
+    const streamThing = symbols.find((s) => s.name === 'StreamThing')
+    expect(streamThing?.lineStart).toBe(7)
+    expect(streamThing?.lineEnd).toBe(7)
+  })
+
+  it('bounds a trailing-options-block rpc by its own closing brace, not the service\'s', () => {
+    const content = `service Greeter {
+rpc SayHello(HelloRequest) returns (HelloResponse) {}
+rpc SayBye(ByeRequest) returns (ByeResponse) {
+  option (foo) = true;
+}
+}
+`
+    const { symbols } = extractProto(content, 'rpc_option_block.proto')
+    const sayBye = symbols.find((s) => s.name === 'SayBye')
+    expect(sayBye?.lineStart).toBe(3)
+    expect(sayBye?.lineEnd).toBe(5)
+  })
+
   it('reports the rpc/oneof keyword line, not a preceding blank line', () => {
     const content = `service S {
 
