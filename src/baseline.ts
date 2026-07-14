@@ -290,11 +290,18 @@ export function findMemSuggestionCandidates(projectRoot: string): MemSuggestion[
 
     let count = 0
     let skipSection = false
+    let skipLevel = 0
     for (const rawLine of text.split(String.fromCharCode(10))) {
       const line = rawLine.trim()
       if (line.startsWith('#')) {
+        const level = /^#+/.exec(line)?.[0].length ?? 0
+        // A deeper subheading with no CRITICAL/structural keyword of its own is still nested
+        // inside the enclosing skip section -- only a heading at the same or shallower level
+        // can end it.
+        if (skipSection && level > skipLevel) continue
         const heading = line.replace(/^#+\s*/, '')
         skipSection = STRUCTURAL_HEADING_RE.test(heading) || CRITICAL_HEADING_RE.test(heading)
+        skipLevel = level
         continue
       }
       if (skipSection) continue
