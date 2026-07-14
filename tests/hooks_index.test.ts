@@ -12,7 +12,16 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-idx-'))
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
-  return { ...actual, dataDir: () => DATA_DIR }
+  // globalDbPath()/configPath() close over dataDir() as a same-module self-reference, which
+  // this factory's dataDir override can never redirect (a vi.mock export-spread only affects
+  // what OTHER modules see when they import this one, not calls constants.ts makes to its own
+  // exports internally). Every other test file isolating global.db/config.toml overrides these
+  // two paths directly for the same reason -- see e.g. hooks_edit.test.ts, recall_index.test.ts.
+  return {
+    ...actual,
+    dataDir: () => DATA_DIR,
+    globalDbPath: () => path.join(DATA_DIR, 'global.db'),
+  }
 })
 
 vi.mock('../src/util.js', async (importOriginal) => {

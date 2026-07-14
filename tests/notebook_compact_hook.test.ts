@@ -22,7 +22,16 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nbcompacthook-'))
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
-  return { ...actual, dataDir: () => DATA_DIR }
+  // configPath() closes over dataDir() as a same-module self-reference, which this factory's
+  // dataDir override can never redirect (a vi.mock export-spread only affects what OTHER
+  // modules see when they import this one, not calls constants.ts makes to its own exports
+  // internally). preReadHandler reads loadConfig() -> configPath(), so without this override
+  // it silently falls through to the real shared worker config.toml instead of DATA_DIR.
+  return {
+    ...actual,
+    dataDir: () => DATA_DIR,
+    configPath: () => path.join(DATA_DIR, 'config.toml'),
+  }
 })
 
 const { preReadHandler } = await import('../src/hooks_read.js')
