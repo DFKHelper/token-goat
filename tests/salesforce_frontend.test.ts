@@ -171,6 +171,29 @@ export default class Foo extends LightningElement {
     expect(result.refs.map(({ name }) => name)).toContain('select')
   })
 
+  // Regression: aura:attribute/aura:handler/aura:registerEvent/design:attribute symbols, the
+  // controller/extensions refs, and the bare c:TagName ref loop all used to scan raw content
+  // while only the {!c.action} binding loop used markupNoComments (stripXmlComments'd) -- the
+  // same inconsistent-masking shape already fixed in this file's own extractLwcTemplate above.
+  // Commented-out attributes/handlers/controllers/extensions/component refs got indexed as live.
+  it('ignores attribute/handler/controller/extension/component refs inside HTML comments', () => {
+    const source = `<aura:component>
+  <!-- <aura:attribute name="oldSecretAttr" type="String"/> -->
+  <aura:attribute name="realAttr" type="String"/>
+  <!-- controller="OldController" -->
+  <!-- extensions="OldExt1,OldExt2" -->
+  <apex:page controller="RealController" extensions="RealExt">
+    <!-- <c:OldWidget/> -->
+    <c:RealWidget/>
+  </apex:page>
+</aura:component>`
+
+    const result = extractSalesforceMarkup(source, 'force-app/main/default/aura/Foo/Foo.cmp')
+
+    expect(result.symbols.map(({ name }) => name)).toEqual(['Foo', 'realAttr'])
+    expect(result.refs.map(({ name }) => name)).toEqual(['RealController', 'RealExt', 'c:RealWidget'])
+  })
+
   it('indexes Aura bundles, members, controller actions, and component references', () => {
     const source = `<aura:component controller="OrderController">
   <aura:attribute name="recordId" type="Id"/>
