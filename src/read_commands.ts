@@ -1594,6 +1594,15 @@ function stripInlineComment(s: string): string {
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
     if (inQuote !== null) {
+      // A backslash escapes the next character while inside a quoted region, same as
+      // ini_idx.ts's _isEscapedQuote and common.ts's isInsideStringLiteral -- without this,
+      // an escaped quote (e.g. `"a\"b"`) is misread as the real closing quote, and the
+      // following literal quote reopens a new (unterminated) region, so any '#'/';' later
+      // on the line is wrongly treated as still inside quotes and never stripped.
+      if (ch === '\\' && i + 1 < s.length) {
+        i++
+        continue
+      }
       if (ch === inQuote) inQuote = null
       continue
     }

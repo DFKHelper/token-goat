@@ -1584,6 +1584,13 @@ describe('read_commands', () => {
       expect(stdout.trim()).toBe('pytest')
     })
 
+    it('strips a trailing inline comment from a TOML value containing an escaped quote (regression: stripInlineComment had no backslash-escape awareness, so an escaped quote inside a double-quoted value was misread as the real closing quote -- the following literal quote then reopened a new unterminated quoted region, and any trailing #/; comment on the same line was wrongly treated as still inside quotes and never stripped)', () => {
+      const f = path.join(tempDir, 'escaped-quote.toml')
+      fs.writeFileSync(f, '[tool]\nname = "a\\"b" # real comment should be stripped\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'tool.name' }) })
+      expect(stdout.trim()).not.toContain('comment')
+    })
+
     it('reads a TOML/INI key with a tab before the equals sign', () => {
       const f = path.join(tempDir, 'tabbed.toml')
       fs.writeFileSync(f, '[testenv]\ndeps\t= pytest\n')
