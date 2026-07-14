@@ -17,7 +17,7 @@ import {
 } from './common.js'
 
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/
-const CLASS_RE = /^(?:(?:abstract|final)\s+)?(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
+const CLASS_RE = /^(?:(?:abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/
 const METHOD_RE = new RegExp(
   '^(?:(?:public|protected|private|static|abstract|final)\\s+)*' +
   'function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(',

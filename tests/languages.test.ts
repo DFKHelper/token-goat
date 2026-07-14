@@ -516,6 +516,26 @@ function helperFn() {}
     expect(imports.some((i) => i.target.includes('User'))).toBe(true)
   })
 
+  it('indexes a readonly class, alone or stacked with final/abstract (regression: CLASS_RE\'s modifier group only recognized abstract/final and was capped at a single optional modifier, so a PHP 8.2 readonly class -- alone or combined with final/abstract -- never matched at all, silently dropping the class and misattributing every member inside it as top-level)', () => {
+    const content = `<?php
+namespace App;
+
+readonly class Point {
+    public function __construct(public int $x, public int $y) {}
+}
+
+final readonly class Point2 {
+    public int $x;
+}
+`
+    const { symbols } = extractPhp(content, 'Point.php')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Point')
+    expect(names).toContain('Point2')
+    expect(symbols.find((s) => s.name === '__construct')?.kind).toBe('method')
+    expect(symbols.find((s) => s.name === '__construct')?.docstring).toBe('Point')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractPhp('', 'empty.php')
     expect(symbols).toHaveLength(0)
