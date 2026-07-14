@@ -17,6 +17,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { normalizePath } from '../src/paths.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 interface RunResult {
@@ -632,13 +633,15 @@ describe('hot command', () => {
         fs.mkdirSync(path.join(projRoot, '.git'))
         const sessDir = path.join(hotData, 'sessions')
         fs.mkdirSync(sessDir, { recursive: true })
-        // Recorded session paths are stored pre-normalized (forward slashes, lowercase drive
-        // letter) by the real hook path (normalizePath in paths.ts), matching the format
-        // findProject's own canonicalize()/foldPath() output uses -- construct the fixture the
-        // same way rather than raw Windows path.join backslash paths.
-        const toNormalized = (p: string): string =>
-          p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_m, d: string) => `${d.toLowerCase()}:`)
-        const projRootNorm = toNormalized(projRoot)
+        // Recorded session paths are stored pre-normalized by the real hook path
+        // (normalizePath in paths.ts), matching the format findProject's own
+        // canonicalize()/foldPath() output uses -- reuse normalizePath itself for the fixture
+        // rather than hand-rolling a slash-flip + drive-lowercase (that reimplementation
+        // already caused a Windows-CI-only failure once before, see commit 442f42d3: a runner
+        // whose %TEMP% is pinned to its 8.3 short form, e.g. GitHub's windows-latest
+        // RUNNER~1, needs the same short-name expansion normalizePath performs, which a
+        // hand-rolled version silently skips).
+        const projRootNorm = normalizePath(projRoot)
         const realFile = `${projRootNorm}/real.ts`
         // Same path as projRoot but with its basename's case flipped -- a distinct directory on
         // a case-sensitive filesystem, and must NOT match under --project there.
