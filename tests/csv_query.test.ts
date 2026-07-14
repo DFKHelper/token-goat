@@ -184,6 +184,19 @@ describe('parseWhereSpecs', () => {
     expect(() => parseWhereSpecs(['nospec'])).toThrow(/invalid --where spec/);
   });
 
+  it('throws on a numeric comparison with a missing right-hand value instead of silently treating it as a comparison against 0 (regression: Number(\'\') === 0, so a typo like "price>" with nothing after the operator was silently accepted as "price > 0" instead of erroring)', () => {
+    expect(() => parseWhereSpecs(['price>'])).toThrow(/invalid --where spec/);
+    expect(() => parseWhereSpecs(['price<'])).toThrow(/invalid --where spec/);
+    expect(() => parseWhereSpecs(['price>='])).toThrow(/invalid --where spec/);
+    expect(() => parseWhereSpecs(['price<='])).toThrow(/invalid --where spec/);
+  });
+
+  it('still allows an empty right-hand value for non-numeric operators (= != ~=), where it is a legitimate query, not a typo', () => {
+    expect(parseWhereSpecs(['name='])).toEqual([{ column: 'name', op: '=', value: '' }]);
+    expect(parseWhereSpecs(['name!='])).toEqual([{ column: 'name', op: '!=', value: '' }]);
+    expect(parseWhereSpecs(['name~='])).toEqual([{ column: 'name', op: '~=', value: '' }]);
+  });
+
   it('parses a column containing a bare ! without misreading it as the start of != (regression)', () => {
     expect(parseWhereSpecs(['wow!thing=5'])).toEqual([{ column: 'wow!thing', op: '=', value: '5' }]);
   });
