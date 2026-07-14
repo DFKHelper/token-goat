@@ -472,7 +472,13 @@ function parsePackageLockJson(content: string): DepEntry[] {
     if (key === '') continue
     const name = key.split('node_modules/').pop() ?? key
     const version = (val as { version?: string }).version ?? ''
-    deps.push({ name, version, kind: allDirect.has(name) ? 'direct' : 'transitive' })
+    // A package is genuinely direct only when its own key IS the top-level `node_modules/<name>`
+    // entry, not merely when its bare name happens to match a direct dependency's name. Checking
+    // allDirect.has(name) alone mislabels a nested transitive dependency as direct whenever a
+    // deeper package (e.g. node_modules/some-lib/node_modules/semver) pulls in a different
+    // version of a package that also happens to be a top-level direct dependency (semver).
+    const isTopLevel = key === `node_modules/${name}`
+    deps.push({ name, version, kind: isTopLevel && allDirect.has(name) ? 'direct' : 'transitive' })
   }
   return deps
 }
