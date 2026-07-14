@@ -49,6 +49,29 @@ describe('apex adapter', () => {
     expect(find('InnerDto', 'apex_class')).toBeDefined()
   })
 
+  it('extracts a constructor with no access modifier at all (regression: METHOD_RE requires either a modifier or a return-type token, but a constructor - legal Apex, modifier omission defaults to private - has neither, so it was silently dropped from the index while a sibling explicit-modifier constructor in the same class was found)', () => {
+    const content = `public class Foo {
+  Integer x;
+
+  Foo() {
+    this.x = 1;
+  }
+
+  public Foo(Integer x) {
+    this.x = x;
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'Foo.cls')
+    const find = (name: string, kind: string) =>
+      symbols.find((s) => s.name === name && s.kind === kind)
+
+    const ctors = symbols.filter((s) => s.kind === 'apex_constructor')
+    expect(ctors).toHaveLength(2)
+    expect(find('Foo', 'apex_constructor')?.lineStart).toBe(4)
+  })
+
   it('extracts a method with no access modifier at all (regression: METHOD_RE required at least one modifier, so an implicitly-private helper method - legal Apex, modifier omission defaults to private - was silently dropped from the index)', () => {
     const content = `public class MyClass {
   void helperMethod(String input) {

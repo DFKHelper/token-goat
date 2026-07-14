@@ -1,5 +1,6 @@
 import type { SymbolEntry } from '../parser_types.js'
 import { buildLineIndex, offsetToLine, stripCstyleComments, stripStringLiterals, type AdapterSpan, makeSpanSymbol } from './common.js'
+import { escapeRegExp } from '../util.js'
 
 const MAX_SYMBOLS = 500
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*'
@@ -168,6 +169,28 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line, match[0]))
+  }
+
+  // A constructor may legally omit an access modifier entirely (implicitly private), same as any
+  // other method - but unlike a method, a constructor also has no return type, so METHOD_RE's
+  // modifier-less branch (which mandates a return-type token) can never match a bare
+  // `Foo() { ... }` line. That shape is unambiguous once the type names are known: a bare
+  // identifier immediately followed by parens and a `{`, matching a declared type name, cannot be
+  // anything but that type's constructor - a call statement ends in `;`, never `{`. Pick it up with
+  // a second, name-anchored pass now that typeNames has been collected. `[^;{}]*` (not `[\s\S]*?`)
+  // keeps the parameter-list match on one line so it can't lazily span into an unrelated brace on a
+  // later line.
+  if (typeNames.size > 0) {
+    const namesAlt = [...typeNames].map(escapeRegExp).join('|')
+    const ctorNoModifierRe = new RegExp(`^[ \\t]*(${namesAlt})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, 'gm')
+    for (const match of code.matchAll(ctorNoModifierRe)) {
+      const name = match[1] ?? ''
+      const startOffset = match.index ?? 0
+      const line = offsetToLine(lineIndex, startOffset)
+      if (overlapsExisting(symbols, line)) continue
+      const bodyStartLine = annotationStartLine(rawLines, line)
+      emit(name, 'apex_constructor', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
+    }
   }
 
   for (const match of code.matchAll(METHOD_RE)) {
