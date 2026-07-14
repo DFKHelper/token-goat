@@ -182,6 +182,14 @@ describe('doc_compact', () => {
       expect(result).toContain('```')
     })
 
+    it('does not let a code block\'s closing fence eat a slot from the section\'s sentence budget (regression: the closing fence branch incremented sentencesEmitted instead of codeBlockLines, so a code block silently consumed one real trailing sentence per section from maxSentences)', () => {
+      const md = '# Heading\n```js\nconsole.log("code")\n```\nFirst real sentence.\nSecond real sentence.\nThird real sentence excluded.\n'
+      const result = buildExtractiveCompact(md, 2)
+      expect(result).toContain('First real sentence.')
+      expect(result).toContain('Second real sentence.')
+      expect(result).not.toContain('Third real sentence excluded.')
+    })
+
     it('skips YAML front-matter', () => {
       const md = '---\ntitle: test\n---\n# Heading\nText'
       const result = buildExtractiveCompact(md)
