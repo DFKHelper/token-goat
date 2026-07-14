@@ -76,6 +76,20 @@ public class UserService {
     expect(names).toContain('Helper')
   })
 
+  it('names a record struct / record class by its actual type name, not the trailing "struct"/"class" keyword (regression: CLASS_HEADER_RE required exactly one whitespace-separated word between the record/class/struct/... keyword and the name, so a two-token type keyword like "record struct" or "record class" phantom-captured the second keyword token ("struct"/"class") as the name instead of the real identifier)', () => {
+    const content = `namespace Demo {
+    public readonly record struct Point(int X, int Y);
+    public record class Wrapper(string Value);
+}
+`
+    const { symbols } = extractCsharp(content, 'Point.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Point')
+    expect(names).not.toContain('struct')
+    expect(names).toContain('Wrapper')
+    expect(names).not.toContain('class')
+  })
+
   it('emits a namespace declaration with kind namespace, not const', () => {
     const content = `namespace Acme.Core;
 
