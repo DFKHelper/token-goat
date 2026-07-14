@@ -382,6 +382,36 @@ describe('doc_compact', () => {
       expect(compactPath.endsWith('.md')).toBe(true)
     })
 
+    // Regression (#49): _compactSlug hashed the absolute source path with an unconditional
+    // .toLowerCase(), not gated to case-insensitive filesystems. On a case-sensitive FS (Linux,
+    // most CI runners), two genuinely distinct files whose directory names differ only in case
+    // hashed to the same sidecar, so one file's compactDoc silently served the other's summary.
+    it('does not collide for paths differing only in case on a case-sensitive filesystem', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+      try {
+        const a = path.join(tempDir, 'Project', 'foo.md')
+        const b = path.join(tempDir, 'project', 'foo.md')
+        expect(compactPathFor(a)).not.toBe(compactPathFor(b))
+      } finally {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      }
+    })
+
+    it('control: case-insensitive filesystem still folds differently-cased paths to the same sidecar', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      try {
+        const a = path.join(tempDir, 'Project', 'foo.md')
+        const b = path.join(tempDir, 'project', 'foo.md')
+        expect(compactPathFor(a)).toBe(compactPathFor(b))
+      } finally {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      }
+    })
+
     it('round-trips through writeCompact/isCompactFresh using its own resolved path', () => {
       const docPath = path.join(tempDir, 'doc.md')
       fs.writeFileSync(docPath, '# Title\nBody text here.\n')

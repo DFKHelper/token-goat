@@ -11,7 +11,7 @@ import * as crypto from 'crypto'
 import * as path from 'path'
 
 import { dataDir } from './constants.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, foldPath } from './util.js'
 import { resolveIndexPath } from './paths.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 
@@ -38,7 +38,7 @@ function sourceHash(filePath: string): string {
 function _compactSlug(absPathStr: string): string {
   const h = crypto
     .createHash('sha256')
-    .update(absPathStr.toLowerCase())
+    .update(foldPath(absPathStr))
     .digest('hex')
     .slice(0, 12)
 
