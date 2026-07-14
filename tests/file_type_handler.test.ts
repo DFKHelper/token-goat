@@ -315,6 +315,19 @@ describe('handleCsv', () => {
     expect(result.shouldBlock).toBe(true)
   })
 
+  // Regression: dispatchFileTypeHandler routes .csv/.tsv by a lowercased extension
+  // but passes the original-case filePath through — handleCsv used to re-derive the
+  // separator via a case-sensitive endsWith('.tsv'), so an uppercase .TSV file was
+  // routed correctly but then split its tab-delimited header on commas instead.
+  it('uses the tab separator for an uppercase .TSV extension, not the comma fallback', () => {
+    const header = 'name\tage\tcity'
+    const dataRows = Array.from({ length: 500 }, (_, i) => `Person${i}\t${i + 20}\tCity${i}`)
+    const content = [header, ...dataRows].join('\n') + makeStr(FILE_TYPE_THRESHOLDS.tsv)
+    const result = handleCsv('/path/to/data.TSV', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('3 columns')
+  })
+
   it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
     const header = 'name,age,city'
     const dataRows = Array.from({ length: 500 }, (_, i) => `Person${i},${i + 20},City${i}`)

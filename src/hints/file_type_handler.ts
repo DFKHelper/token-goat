@@ -178,7 +178,10 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   const lines = content.split('\n').filter(l => l.trim())
   const headers = lines[0] ?? ''
   const sampleRows = lines.slice(1, 4)
-  const sep = filePath.endsWith('.tsv') ? '\t' : ','
+  // Case-insensitive: dispatchFileTypeHandler routes .csv/.tsv by a lowercased
+  // extension but passes the original-case filePath through, so an uppercase
+  // .TSV must still be recognized here or it silently gets the wrong separator.
+  const sep = filePath.toLowerCase().endsWith('.tsv') ? '\t' : ','
   const colCount = headers.split(sep).length
 
   return {
