@@ -2903,6 +2903,28 @@ function Bar {
     expect(names).toContain('Bar')
   })
 
+  // Regression: findUnquoted (used by the # and <# comment-marker search) toggled its
+  // double-quote state on every literal `"`, with no backtick-escape awareness -- unlike
+  // stripPowershellStringLiterals, which correctly treats a backtick immediately before a `"`
+  // inside a double-quoted string as PowerShell's real escape sequence. A backtick-escaped quote
+  // was misread as the string's real closing quote, so a `#` appearing later on the same (still
+  // logically-open) string got treated as a real comment marker and truncated the rest of the
+  // line -- including a closing brace -- desyncing braceDepth and silently dropping every
+  // top-level declaration for the rest of the file.
+  it('does not lose a closing brace after a backtick-escaped quote followed by a literal # on the same string', () => {
+    const content = `function Foo {
+    $x = "abc\`"def#ghi" }
+
+function Bar {
+    return 2
+}
+`
+    const { symbols } = extractPowershell(content, 'backtick_escaped_quote.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('Bar')
+  })
+
   it('does not treat <# inside a string literal as a real block comment opener', () => {
     const content = `$x = "the <# marker"
 function AfterString {
