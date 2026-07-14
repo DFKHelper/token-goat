@@ -153,6 +153,16 @@ function splitTopLevelAnd(command: string): string[] {
   while (i < command.length) {
     const ch = command[i] ?? ''
     if (quote !== null) {
+      // Inside a double-quoted span (never single-quoted -- POSIX single quotes have no
+      // escapes at all, matching maskQuotedSpans/shlexSplit's own double-vs-single asymmetry),
+      // a backslash escapes the following character, so \" doesn't close the quote early. Not
+      // handling this let an escaped quote flip `quote` to null one character too soon,
+      // silently reabsorbing the real && boundary that followed into the same segment.
+      if (quote === '"' && ch === '\\' && i + 1 < command.length) {
+        current += ch + command[i + 1]
+        i += 2
+        continue
+      }
       current += ch
       if (ch === quote) quote = null
       i++

@@ -362,6 +362,16 @@ describe('dispatch: detection + compound handling', () => {
     const out = tryWrapCompoundSegments('mytool -m "a&&b" && echo done', (name, seg) => `wrap[${name}](${seg})`)
     expect(out).toBe('wrap[echo-test](mytool -m "a&&b") && echo done')
   })
+
+  // Regression: the char-by-char quote tracker had no backslash-escape handling, so an
+  // escaped quote (\") inside a double-quoted argument closed the quote state one character
+  // early -- causing a real, top-level && immediately after to be silently absorbed into the
+  // same segment as its neighbor instead of being treated as a segment boundary.
+  it('tryWrapCompoundSegments still splits at a real && boundary even when a preceding segment contains an escaped quote', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const out = tryWrapCompoundSegments('mytool "\\"" && mytool "\\"" && echo done', (name, seg) => `wrap[${name}](${seg})`)
+    expect(out).toBe('wrap[echo-test](mytool "\\"") && wrap[echo-test](mytool "\\"") && echo done')
+  })
 })
 
 describe('dispatch: filterByName + profiles', () => {
