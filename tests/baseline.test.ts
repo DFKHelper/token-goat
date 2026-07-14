@@ -224,6 +224,24 @@ describe('findMemSuggestionCandidates', () => {
     expect(result.find((r) => r.path === claudeMd)).toBeUndefined()
   })
 
+  // Regression: skipSection was recomputed on every heading line regardless of nesting depth,
+  // so a keyword-less subheading nested inside a CRITICAL section flipped skipSection back to
+  // false even though the subsection is still textually inside the critical block.
+  it('excludes bullets under a keyword-less subheading nested inside a CRITICAL section', () => {
+    const claudeMd = path.join(TMP, 'CLAUDE.md')
+    write('CLAUDE.md', [
+      '## CRITICAL: Rules',
+      '- never delete the database',
+      '### Sub note',
+      '- some bullet that should still be skipped',
+    ].join('\n'))
+    vi.mocked(findClaudeMdFiles).mockReturnValue([claudeMd])
+
+    const result = findMemSuggestionCandidates(TMP)
+
+    expect(result.find((r) => r.path === claudeMd)).toBeUndefined()
+  })
+
   it('returns no entry for a file with zero qualifying bullets', () => {
     const claudeMd = path.join(TMP, 'CLAUDE.md')
     write('CLAUDE.md', '# CLAUDE.md\n\nJust prose, no bullets.\n')
