@@ -118,15 +118,22 @@ describe('headSheet', () => {
     await expect(headSheet(file, 'Nope', 10)).rejects.toThrow(/unknown sheet/)
   })
 
-  it('preserves data cells beyond the header column count', async () => {
+  // Regression: header and each data row were padded independently to Math.max(header.length,
+  // row.length) -- a per-row floor derived only from the header's own width -- instead of the
+  // sheet-wide widest-row column count. A row wider than the header kept its extra trailing
+  // columns with no corresponding header column, and different data rows ended up with
+  // different line widths from each other and from the header, desyncing which value belongs
+  // to which column. Header and every row must now pad to the sheet's actual used-column-count
+  // (WideData's widest row is 4 columns), same fix sheetToCsv already applies.
+  it('pads the header and every data row to the sheet-wide widest-row column count, not just the header width', async () => {
     const text = await headSheet(file, 'WideData', 10)
     const lines = text.split('\n')
-    // Header has 2 columns
-    expect(lines[0]).toBe('col1,col2')
-    // First data row has 4 columns: should not truncate to 2
+    // Header padded from 2 columns to the sheet-wide max of 4
+    expect(lines[0]).toBe('col1,col2,,')
+    // First data row already has 4 columns
     expect(lines[1]).toBe('a,b,c,d')
-    // Second data row has 3 columns: should preserve all 3
-    expect(lines[2]).toBe('x,y,z')
+    // Second data row has 3 columns: padded to 4, not left ragged against the header
+    expect(lines[2]).toBe('x,y,z,')
   })
 
   // Regression: cellText fell through to `String(cell.value)` for any non-rich/non-formula

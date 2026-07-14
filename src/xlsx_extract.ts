@@ -230,11 +230,15 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
     }
     aoa.push(rowVals)
   }
-  const header = (aoa[0] ?? []).map((c) => String(c ?? ''))
-  const dataRows = aoa.slice(1, 1 + rows).map((r) => {
-    const cellCount = Math.max(header.length, r.length)
-    return Array.from({ length: cellCount }, (_, i) => String(r[i] ?? ''))
-  })
+  // Pad the header AND every data row to the sheet's actual used-column-count (same fix
+  // sheetToCsv already applies below) rather than to the header's own width - a data row
+  // wider than the header (e.g. trailing notes columns) must still line up under a header
+  // cell, or the CSV output desyncs which value belongs to which column.
+  const { cols: sheetCols } = usedRange(ws)
+  const header = Array.from({ length: sheetCols }, (_, i) => String(aoa[0]?.[i] ?? ''))
+  const dataRows = aoa.slice(1, 1 + rows).map((r) =>
+    Array.from({ length: sheetCols }, (_, i) => String(r[i] ?? '')),
+  )
   const lines = [header.map(quoteCsvCell).join(',')]
   for (const r of dataRows) lines.push(r.map(quoteCsvCell).join(','))
   if (aoa.length - 1 > dataRows.length) {
@@ -283,7 +287,7 @@ async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
   // throws "Invalid Record Length" on any row that happens to have empty trailing cells
   // (row.eachCell({includeEmpty:false}) stops at that row's own last populated column, which
   // is not necessarily the sheet's widest column). Pad every row out to the sheet's actual
-  // used-column-count, same as headSheet already does per-row against the header width.
+  // used-column-count, same as headSheet does.
   const { cols: sheetCols } = usedRange(ws)
   const lines: string[] = []
   for (let r = 1; r <= rowCount; r++) {
