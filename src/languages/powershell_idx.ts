@@ -57,11 +57,23 @@ function stripPowershellStringLiterals(line: string): string {
 // tracking single- and double-quoted string state as it scans left to right.
 // Used so that comment markers (`<#`, `#`) that merely appear inside a string
 // literal aren't mistaken for real comment syntax.
+// Regression: this used to toggle inDouble on every literal `"`, with no backtick-escape
+// awareness -- unlike stripPowershellStringLiterals below, which correctly treats a backtick
+// immediately before a `"` inside a double-quoted string as PowerShell's real escape sequence.
+// A backtick-escaped quote (`` `" ``) was misread as the string's real closing quote, so a `#`
+// appearing later on the same (still logically-open) string got treated as a real comment
+// marker and truncated the line -- silently dropping any code, including a closing brace, past
+// that point. Skipping the escaped character here keeps this function's quote tracking in sync
+// with stripPowershellStringLiterals's.
 function findUnquoted(text: string, needle: string): number {
   let inSingle = false
   let inDouble = false
   for (let idx = 0; idx < text.length; idx++) {
     const ch = text[idx]
+    if (inDouble && ch === '`' && idx + 1 < text.length) {
+      idx++
+      continue
+    }
     if (!inDouble && ch === "'") {
       inSingle = !inSingle
       continue
