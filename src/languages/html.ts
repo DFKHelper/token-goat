@@ -26,12 +26,18 @@ export interface HtmlSection {
 // id and class attributes. The negative lookbehind requires a proper left boundary (not
 // preceded by a word char or hyphen) so this only matches a bare `id=`/`class=` attribute,
 // not the tail of a longer attribute name like `data-id=`, `data-testid=`, `data-class=`, etc.
-const ID_RE = /(?<![\w-])id=["']([^"']+)["']/gi
-const CLASS_RE = /(?<![\w-])class=["']([^"']+)["']/gi
+// The closing quote must match the SAME character that opened it (captured in group 1) --
+// a static ["'] charclass on both ends lets a literal apostrophe inside a double-quoted
+// value (or vice versa) prematurely truncate the match, since [^"']+ excludes both quote
+// characters unconditionally regardless of which one is actually delimiting this value. A
+// per-character negative lookahead against the captured opener (rather than a static
+// exclusion charclass) is required so the body can legally contain the non-delimiting quote.
+const ID_RE = /(?<![\w-])id=(["'])((?:(?!\1).)+)\1/gi
+const CLASS_RE = /(?<![\w-])class=(["'])((?:(?!\1).)+)\1/gi
 
 // Link and script imports
-const LINK_RE = /<link[^>]*href=["']([^"']+)["']/gi
-const SCRIPT_RE = /<script[^>]*src=["']([^"']+)["']/gi
+const LINK_RE = /<link[^>]*href=(["'])((?:(?!\1).)+)\1/gi
+const SCRIPT_RE = /<script[^>]*src=(["'])((?:(?!\1).)+)\1/gi
 
 // Common/noisy ids and classes to suppress
 const NOISE_IDS_CLASSES = new Set([
@@ -72,9 +78,9 @@ export function extractHtml(
       sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })
     }
     // Check for id anchor inside the tag
-    const idM = /(?<![\w-])id=["']([^"']+)["']/i.exec(hm.tag)
+    const idM = /(?<![\w-])id=(["'])((?:(?!\1).)+)\1/i.exec(hm.tag)
     if (idM) {
-      const anchorId = idM[1] ?? ''
+      const anchorId = idM[2] ?? ''
       if (anchorId && !isNoise(anchorId)) {
         const line = offsetToLine(lineIndex, hm.offset)
         sections.push({ heading: anchorId, level: hm.level, line, endLine: line })
@@ -100,7 +106,7 @@ export function extractHtml(
   // id attributes
   for (const m of code.matchAll(ID_RE)) {
     if (symbols.length >= MAX_SYMBOLS) break
-    const idVal = m[1] ?? ''
+    const idVal = m[2] ?? ''
     if (idVal && !isNoise(idVal)) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       const key = `${idVal}\0${line}`
@@ -114,7 +120,7 @@ export function extractHtml(
   // class attributes
   for (const m of code.matchAll(CLASS_RE)) {
     if (symbols.length >= MAX_SYMBOLS) break
-    const classVal = m[1] ?? ''
+    const classVal = m[2] ?? ''
     if (classVal) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       for (const cls of classVal.split(/\s+/)) {
@@ -132,7 +138,7 @@ export function extractHtml(
 
   // link href
   for (const m of code.matchAll(LINK_RE)) {
-    const href = m[1] ?? ''
+    const href = m[2] ?? ''
     if (href) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       imports.push({ kind: 'html_link', target: href, line })
@@ -141,7 +147,7 @@ export function extractHtml(
 
   // script src
   for (const m of code.matchAll(SCRIPT_RE)) {
-    const src = m[1] ?? ''
+    const src = m[2] ?? ''
     if (src) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       imports.push({ kind: 'html_script', target: src, line })

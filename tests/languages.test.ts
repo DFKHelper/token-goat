@@ -1001,6 +1001,14 @@ describe('html adapter', () => {
     expect(kinds).toContain('html_class:pricing')
   })
 
+  it('does not truncate an attribute value containing the other quote character (regression: ID_RE/CLASS_RE/LINK_RE/SCRIPT_RE closed a quoted value on a bare ["\'] charclass with no backreference to the actual opener, and the body charclass [^"\']+ excluded BOTH quote characters unconditionally, so a literal apostrophe inside a double-quoted value -- e.g. id="user\'s-name" -- truncated the match at the apostrophe instead of the real closing quote)', () => {
+    const content = `<div id="user's-name">hi</div><link href="a's-link.css"><script src='b"s.js'></script>`
+    const { symbols, imports } = extractHtml(content, 'quotes.html')
+    expect(symbols.some((s) => s.kind === 'html_id' && s.name === "user's-name")).toBe(true)
+    expect(imports.some((i) => i.kind === 'html_link' && i.target === "a's-link.css")).toBe(true)
+    expect(imports.some((i) => i.kind === 'html_script' && i.target === 'b"s.js')).toBe(true)
+  })
+
   it('does not index commented-out markup and preserves the real section line range', () => {
     // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
     // script regexes ran, so dead/commented-out markup was indexed identically to live markup -
