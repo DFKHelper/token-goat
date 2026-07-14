@@ -300,7 +300,13 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     process.stdout.write('Traceback (most recent call last):\n')
     for (const f of block.frames) {
       process.stdout.write(`  File "${f.file}", line ${f.lineNo}, in ${f.func}\n`)
-      if (f.context !== undefined) process.stdout.write(`    ${f.context}\n`)
+      // parseTracebacks always assigns context a string ('' for "no context line"), never
+      // leaves it undefined, so an undefined check here was always true -- printing a
+      // fabricated blank indented line for every context-less frame (e.g. a stdlib frame
+      // immediately followed by the next "File ..." header) that didn't have one in the
+      // original traceback. Match the truthiness check already used for `block.exception`
+      // below.
+      if (f.context) process.stdout.write(`    ${f.context}\n`)
     }
     if (block.exception) process.stdout.write(`${block.exception}\n`)
     process.stdout.write('\n')
