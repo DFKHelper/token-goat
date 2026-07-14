@@ -865,8 +865,14 @@ export function runTestFor(opts: TestForOptions): number {
 
   for (const [tf, referencingFns] of testFileMap) {
     const testSyms = querySymbols({ filePath: tf, limit: 10000 })
+    // A bare prefix match with no boundary after the alternation would also match any ordinary
+    // identifier that happens to start with the same letters as a test-framework keyword --
+    // 'it' alone matches 'itemsToJson'/'iterateOverTargetHelper'/'italicize', and 'test' alone
+    // matches 'testament'. Require the prefix to be either the whole name or immediately
+    // followed by an uppercase letter, digit, or underscore (camelCase/snake_case continuation
+    // boundary), so real test names like 'itWorksCorrectly'/'testFoo'/'test_foo' still match.
     const testFns = testSyms
-      .filter((s) => /^(test|Test|spec|describe|it)/.test(s.name) && referencingFns.has(s.name))
+      .filter((s) => /^(test|Test|spec|describe|it)(?:[A-Z_0-9]|$)/.test(s.name) && referencingFns.has(s.name))
       .map((s) => s.name)
     results.push({ testFile: tf, testFunctions: testFns })
   }
