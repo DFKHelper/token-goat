@@ -717,9 +717,14 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   if (opts.project === true) {
     const project = findProject(process.cwd())
     if (project !== null) {
-      const root = project.root.toLowerCase()
+      // foldPath (not a bare .toLowerCase()) so the case-fold is gated on isCaseInsensitiveFs()
+      // and respects the TOKEN_GOAT_CASE_INSENSITIVE_FS test override, matching isProjectFrame's
+      // own case handling above -- a raw .toLowerCase() always folds regardless of platform,
+      // wrongly treating two differently-cased directories as the same path on a case-sensitive
+      // filesystem (e.g. this project's own Linux CI runner).
+      const root = foldPath(project.root)
       entries = entries.filter((e) => {
-        const normalPath = e.path.toLowerCase()
+        const normalPath = foldPath(e.path)
         // Ensure it's a real directory boundary: the path is either exactly root,
         // or the next character after root is a path separator. This prevents false matches
         // like /tmp/abc-fork matching /tmp/abc (bug: path-prefix without boundary check).
