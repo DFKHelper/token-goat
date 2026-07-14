@@ -597,6 +597,16 @@ describe('readSection', () => {
     expect(readSection(iniFile, 'database')?.heading).toBe('database')
   })
 
+  it('does not absorb a later INI section into an earlier one just because its name starts with "<earlier>." (regression: findHeaders tagged every table-style header - TOML and INI alike - with the same kind, so INI sections were dispatched through tableSectionEndIndex, which applies TOML\'s dotted-name nesting rule; a `.` in an INI section name is just a name, never a nesting operator, so [server.pool] was silently swallowed into [server]\'s body instead of ending it)', () => {
+    const ini = ['[server]', 'host = localhost', 'port = 8080', '', '[server.pool]', 'size = 10', '', '[client]', 'timeout = 30', ''].join('\n')
+    const file = tmpFile('nested.ini', ini)
+    const server = readSection(file, 'server')
+    expect(server).not.toBeNull()
+    expect(server?.lineEnd).toBe(3)
+    expect(server?.content).not.toContain('[server.pool]')
+    expect(listSections(file)).toEqual(['server', 'server.pool', 'client'])
+  })
+
   it('finds an <h2> heading in an HTML file', () => {
     // Regression: html/liquid fell through findHeaders' unknown-language sniff, which never
     // recognizes <hN> tags, so every html/liquid file routed to the key-value finder and

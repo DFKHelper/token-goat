@@ -40,7 +40,13 @@ interface SectionHeader {
 }
 
 /** Kind of header finder that produced the headers. */
-type HeaderKind = 'markdown' | 'table' | 'keyvalue' | 'python'
+// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the
+// current section if it is NOT a strict dotted descendant, matching TOML's real nesting
+// convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and
+// the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or
+// [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end
+// strictly at the next header line regardless of dotted-prefix overlap.
+type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python'
 
 /**
  * Split a heading spec into its base text and optional 1-based ordinal.
@@ -319,10 +325,12 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
 
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
   if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
-  if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table' }
+  if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table-toml' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
-  // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading.
-  if (language === 'ini') return { headers: findTableHeaders(lines, false), kind: 'table' }
+  // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI
+  // section name is never a nesting operator (see the HeaderKind doc comment above), so this is
+  // 'table-flat', not 'table-toml'.
+  if (language === 'ini') return { headers: findTableHeaders(lines, false), kind: 'table-flat' }
   // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
   if (language === 'yaml' || language === 'env_file')
     return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
@@ -330,8 +338,12 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
+  // The sniffer cannot tell TOML from INI syntactically (both use bare `[header]` lines) when
+  // there is no file extension to consult, so it keeps the pre-existing dotted-nesting behavior
+  // here for the ambiguous case - only the language==='ini' branch above, where the file
+  // extension makes the language unambiguous, uses the flat (non-nesting) kind.
   const tbl = findTableHeaders(lines, false)
-  if (tbl.length > 0) return { headers: tbl, kind: 'table' }
+  if (tbl.length > 0) return { headers: tbl, kind: 'table-toml' }
   return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
 }
 
@@ -458,7 +470,7 @@ function buildSectionResult(
   const header = headers[headerPos]
   if (header === undefined) return null
   const endIndex =
-    kind === 'table'
+    kind === 'table-toml'
       ? tableSectionEndIndex(headers, headerPos, lines.length)
       : sectionEndIndex(headers, headerPos, lines.length)
   // Trim a single trailing blank line so adjacent sections don't accrue the separator line into the earlier section's body.
@@ -564,7 +576,7 @@ export function findContainingSection(
     const header = headers[i]
     if (header === undefined) continue
     const endIndex =
-      kind === 'table' ? tableSectionEndIndex(headers, i, lines.length) : sectionEndIndex(headers, i, lines.length)
+      kind === 'table-toml' ? tableSectionEndIndex(headers, i, lines.length) : sectionEndIndex(headers, i, lines.length)
     const sectionLineStart = header.index + 1
     if (sectionLineStart <= lineStart && lineEnd <= endIndex) {
       if (header.index > bestHeaderLine) {
