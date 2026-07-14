@@ -15,7 +15,12 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { embedTexts, setPipelineFnForTesting, isAvailable } from '../src/embeddings.js'
+import {
+  embedTexts,
+  setPipelineFnForTesting,
+  setPipelineRetryDelayForTesting,
+  isAvailable,
+} from '../src/embeddings.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 afterEach(() => {
@@ -53,6 +58,54 @@ describe('embedTexts pipeline memoization (regression)', () => {
       await embedTexts(['text c'], 'model-b')
 
       expect(pipelineFactory).toHaveBeenCalledTimes(2)
+    },
+  )
+})
+
+describe('embedTexts pipeline construction retry (regression)', () => {
+  it.skipIf(!isAvailable())(
+    'retries a transient pipeline construction failure and succeeds once the factory recovers (regression: pipelineFn had no retry of its own, so a single transient network error during model download failed embedTexts outright)',
+    async () => {
+      setPipelineRetryDelayForTesting(1)
+      const fakeVec = new Float32Array(384).fill(0.01)
+      const fakeExtractor = vi.fn(async () => ({ data: fakeVec }))
+      let calls = 0
+      const pipelineFactory = vi.fn(async () => {
+        calls += 1
+        if (calls < 3) throw new Error('transient network error')
+        return fakeExtractor
+      })
+      setPipelineFnForTesting(pipelineFactory)
+
+      const vecs = await embedTexts(['some text'])
+
+      expect(vecs).toHaveLength(1)
+      expect(pipelineFactory).toHaveBeenCalledTimes(3)
+    },
+  )
+
+  it.skipIf(!isAvailable())(
+    'does not permanently cache a rejected pipeline construction, so a later call can retry fresh after the failure clears (regression: the extractor cache was keyed by model name and stored the raw construction promise for the process lifetime, so once one embedTexts call observed a rejection, every subsequent call for that model name replayed the exact same cached rejection forever, even long after the underlying outage cleared)',
+    async () => {
+      setPipelineRetryDelayForTesting(1)
+      const fakeVec = new Float32Array(384).fill(0.01)
+      const fakeExtractor = vi.fn(async () => ({ data: fakeVec }))
+      const failingFactory = vi.fn(async () => {
+        throw new Error('sustained outage')
+      })
+      setPipelineFnForTesting(failingFactory)
+
+      await expect(embedTexts(['first text'], 'retry-eviction-model')).rejects.toThrow(
+        'sustained outage',
+      )
+
+      const recoveredFactory = vi.fn(async () => fakeExtractor)
+      setPipelineFnForTesting(recoveredFactory)
+
+      const vecs = await embedTexts(['second text'], 'retry-eviction-model')
+
+      expect(vecs).toHaveLength(1)
+      expect(recoveredFactory).toHaveBeenCalledTimes(1)
     },
   )
 })
