@@ -50,7 +50,7 @@ function stripLeadingAnnotations(s: string): string {
 
 const FUN_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
-  'suspend|inline|infix|operator|external|actual|expect|final|sealed)\\s+)*' +
+  'suspend|inline|infix|operator|external|actual|expect|final|sealed|tailrec)\\s+)*' +
   'fun\\s+(?:<[^>]*>\\s*)?([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
 )
 
@@ -80,7 +80,7 @@ const COMPANION_RE = new RegExp(
 
 const TOP_FUN_RE = new RegExp(
   '^(?:(?:public|internal|private|suspend|inline|infix|operator|' +
-  'external|actual|expect)\\s+)*' +
+  'external|actual|expect|tailrec)\\s+)*' +
   'fun\\s+(?:<[^>]*>\\s*)?([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
 )
 
