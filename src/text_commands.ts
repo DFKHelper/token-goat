@@ -226,6 +226,14 @@ function parseTracebacks(text: string): TraceBlock[] {
         frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: hasContext ? (peek ?? '') : '' })
         continue
       }
+      // A "Traceback (most recent call last):" line reached while scanning for this block's
+      // exception text marks the start of the NEXT traceback, not this block's exception --
+      // hand control back to the outer loop (without consuming the line) instead of swallowing
+      // it as exception text, or a zero-frame block adjacent to a real traceback silently
+      // discards the real one.
+      if (/^Traceback \(most recent call last\):/.test(fl)) {
+        break
+      }
       if (!/^\s/.test(fl) && fl.trim() !== '') {
         blocks.push({ frames, exception: fl.trim() })
         blockPushed = true

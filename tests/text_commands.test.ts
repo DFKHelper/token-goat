@@ -221,6 +221,22 @@ describe('trace command', () => {
     expect(r.stderr).toContain('--keep')
   })
 
+  it('does not swallow the real traceback that follows a zero-frame traceback header (regression: an adjacent "Traceback (...)" header was consumed as the empty block\'s exception text instead of starting a new block)', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      'Traceback (most recent call last):',
+      '  File "a.py", line 1, in fa',
+      '    foo()',
+      'ValueError: bad',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: multi, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }>; exception: string }> }
+    const real = parsed.tracebacks.find((t) => t.exception.includes('ValueError'))
+    expect(real).toBeDefined()
+    expect(real?.frames[0]?.file).toBe('a.py')
+  })
+
   it('does not drop a second traceback whose frames run to EOF with no exception line (fail-on-buggy: trailing-frames flush is gated on the global blocks array, not scoped per block)', () => {
     const multi = [
       'Traceback (most recent call last):',
