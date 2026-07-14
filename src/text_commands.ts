@@ -560,6 +560,16 @@ function parsePipfileLock(content: string): DepEntry[] {
 function parseRequirementsTxt(content: string): DepEntry[] {
   const deps: DepEntry[] = []
   for (const raw of splitLines(content)) {
+    // A VCS direct reference (git+https://..., hg+..., etc.) legally uses '#' as a URL-fragment
+    // delimiter for '#egg=<name>', not a comment marker -- stripping at the first '#' truncates
+    // the URL and leaves the name-capture regex below matching the URL scheme ("git") instead of
+    // the real package name. Recover the name from the fragment before the generic comment-strip
+    // would otherwise discard it.
+    const eggMatch = /#egg=([A-Za-z0-9_.-]+)/.exec(raw)
+    if (eggMatch !== null) {
+      deps.push({ name: eggMatch[1] ?? '', version: '', kind: 'unknown' })
+      continue
+    }
     const line = raw.split('#')[0]?.trim() ?? ''
     if (!line || line.startsWith('-')) continue
     const m = /^([A-Za-z0-9_.-]+)\s*(?:[>=!<]+\s*([^\s,;]+))?/.exec(line)

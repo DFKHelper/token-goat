@@ -426,6 +426,21 @@ describe('lockdeps command', () => {
     expect(r.stdout).toContain('numpy')
   })
 
+  it('recovers the package name from a VCS #egg= fragment in requirements.txt instead of treating it as a comment (regression: stripping at the first "#" truncated "git+https://...#egg=name" URLs, silently dropping the real dependency and emitting a bogus "git" entry)', () => {
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(
+      req,
+      'requests==2.31.0\ngit+https://github.com/psf/requests-oauthlib.git@v1.3.0#egg=requests-oauthlib\nnumpy>=1.24.0\n',
+      'utf8',
+    )
+    const r = run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string }> }
+    const names = parsed.deps.map((d) => d.name)
+    expect(names).toContain('requests-oauthlib')
+    expect(names).not.toContain('git')
+  })
+
   it('parses an npm v1 lockfile (nested dependencies tree, no packages map) (regression: v1 lockfiles reported "Total: 0 packages" because only the v2/v3 packages map was read)', () => {
     const v1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v1-lock-'))
     const lockPath = path.join(v1Dir, 'package-lock.json')
