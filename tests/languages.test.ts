@@ -1982,6 +1982,18 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(kinds).toContain('sql_function:foo')
   })
 
+  it('does not truncate a multi-line CREATE statement to lineEnd 1 when a quoted identifier contains a literal semicolon (regression: the single-line-terminator pin scanned noStrings with a bare indexOf(\';\', ...), and stripSqlStringLiterals deliberately leaves "..."/`...`/[...] delimited-identifier contents unblanked for NAME_PAT to read, so a `;` embedded in a quoted name -- e.g. CREATE TABLE "a;b" -- was mistaken for the real statement terminator and wrongly pinned the whole multi-line definition to just its first line)', () => {
+    const content = `CREATE TABLE "a;b" (
+  id INT,
+  name TEXT
+);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const sym = symbols.find((s) => s.name === 'a;b')
+    expect(sym).toBeDefined()
+    expect(sym?.lineEnd).toBeGreaterThan(1)
+  })
+
   it('does not let a /*/ opener close its own comment against its trailing asterisk (comment overlap off-by-one)', () => {
     const content = `/*/ CREATE TABLE ghost (id int); */ CREATE TABLE real_table (id int);`
     const symbols = extractSql(content, 'schema.sql')
