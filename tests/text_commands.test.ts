@@ -625,6 +625,51 @@ describe('hot command', () => {
     }
   })
 
+  it('--project does not fold case on a case-sensitive filesystem (regression: cmdHot used a bare .toLowerCase() on both the project root and every candidate path instead of foldPath(), which is gated on isCaseInsensitiveFs()/TOKEN_GOAT_CASE_INSENSITIVE_FS -- so on a case-sensitive filesystem, a differently-cased sibling directory was wrongly treated as inside the project)', () => {
+      const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-case-'))
+      const projRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-caseproj-'))
+      try {
+        fs.mkdirSync(path.join(projRoot, '.git'))
+        const sessDir = path.join(hotData, 'sessions')
+        fs.mkdirSync(sessDir, { recursive: true })
+        // Recorded session paths are stored pre-normalized (forward slashes, lowercase drive
+        // letter) by the real hook path (normalizePath in paths.ts), matching the format
+        // findProject's own canonicalize()/foldPath() output uses -- construct the fixture the
+        // same way rather than raw Windows path.join backslash paths.
+        const toNormalized = (p: string): string =>
+          p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_m, d: string) => `${d.toLowerCase()}:`)
+        const projRootNorm = toNormalized(projRoot)
+        const realFile = `${projRootNorm}/real.ts`
+        // Same path as projRoot but with its basename's case flipped -- a distinct directory on
+        // a case-sensitive filesystem, and must NOT match under --project there.
+        const upperRootNorm = `${projRootNorm.slice(0, projRootNorm.lastIndexOf('/'))}/${path.basename(projRootNorm).toUpperCase()}`
+        const otherFile = `${upperRootNorm}/other-unrelated.ts`
+        fs.writeFileSync(
+          path.join(sessDir, 'sess1.json'),
+          JSON.stringify({
+            files: [
+              { path: realFile, readCount: 3, lastReadAt: 1, wasEdited: false, sizeBytes: 100 },
+              { path: otherFile, readCount: 9, lastReadAt: 1, wasEdited: false, sizeBytes: 100 },
+            ],
+            hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [],
+          }),
+          'utf8',
+        )
+        const r = run(['hot', '--project', '--json'], {
+          cwd: projRoot,
+          env: { ...isolatedEnv(hotData), TOKEN_GOAT_CASE_INSENSITIVE_FS: '0' },
+        })
+        expect(r.status, r.stderr).toBe(0)
+        const parsed = JSON.parse(r.stdout) as { entries: Array<{ path: string; readCount: number }> }
+        const paths = parsed.entries.map((e) => e.path)
+        expect(paths).toContain(realFile)
+        expect(paths).not.toContain(otherFile)
+      } finally {
+        fs.rmSync(hotData, { recursive: true, force: true })
+        fs.rmSync(projRoot, { recursive: true, force: true })
+      }
+    })
+
   it('aggregates readCount across multiple session files (fail-on-buggy: breaks when += is replaced with last-wins)', () => {
     const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-multi-'))
     try {
