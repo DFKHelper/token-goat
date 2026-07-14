@@ -109,11 +109,16 @@ export function extractPhp(
       continue
     }
 
-    // use import
-    const useM = USE_RE.exec(stripped)
-    if (useM) {
-      imports.push({ kind: 'import', target: useM[1] ?? '', line: lineNum })
-      continue
+    // use import -- only at top level. Inside a class/interface/trait body, `use Trait;`
+    // is a trait-use declaration (mixing a trait's methods into the class), not a namespace
+    // import; every other classifier below already gates on contextStack for this same
+    // top-level-vs-class-body distinction.
+    if (contextStack.length === 0) {
+      const useM = USE_RE.exec(stripped)
+      if (useM) {
+        imports.push({ kind: 'import', target: useM[1] ?? '', line: lineNum })
+        continue
+      }
     }
 
     // require/include

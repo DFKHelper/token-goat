@@ -501,6 +501,28 @@ function helperFn() {}
     expect(imports).toHaveLength(0)
   })
 
+  // Regression: `use Trait;` inside a class body is a trait-use declaration (mixing a
+  // trait's methods into the class), not a namespace import -- USE_RE had no brace-depth
+  // gate, unlike every other classifier in this file, so a trait use was misrecorded as
+  // an `imports` entry even though it has no relation to any real namespace dependency.
+  it('does not record a trait-use declaration inside a class body as a namespace import', () => {
+    const content = `<?php
+namespace App;
+
+class Foo
+{
+    use LoggableTrait;
+
+    public function bar(): void
+    {
+    }
+}
+`
+    const { symbols, imports } = extractPhp(content, 'Foo.php')
+    expect(symbols.map((s) => s.name)).toContain('Foo')
+    expect(imports.some((i) => i.target === 'LoggableTrait')).toBe(false)
+  })
+
   it('indexes a final class constant, including a final combined with a visibility modifier', () => {
     // PHP 8.1+ allows `final const`. Regression: the modifier group allowed at most one modifier
     // and did not include `final` at all, so `final const FOO = 1;` and
