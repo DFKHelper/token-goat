@@ -1134,6 +1134,17 @@ describe('liquid adapter', () => {
     expect(symbols.some((s) => s.kind === 'liquid_schema' && s.name === 'WSC Schema')).toBe(true)
   })
 
+  it('does not truncate a quoted target containing the other quote character (regression: INCLUDE_RE/SECTION_RE/RENDER_RE closed on a bare [\'"] charclass with no backreference to the actual opener, and the body charclass [^\'"]+ excluded BOTH quote characters unconditionally, so a literal apostrophe inside a double-quoted target -- e.g. "translator\'s-notes" -- truncated the match at the apostrophe instead of the real closing quote)', () => {
+    const content = `{% include "translator's-notes" %}
+{% section 'product-card' %}
+{% render "product-card", product: product %}
+`
+    const { imports } = extractLiquid(content, 'quotes.liquid', 'quotes.liquid')
+    expect(imports.some((i) => i.kind === 'liquid_include' && i.target === "translator's-notes")).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_section' && i.target === 'product-card')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'product-card')).toBe(true)
+  })
+
   it('detects .liquid language via parseFile', async () => {
     const file = tmp('test.liquid', '{% include "foo" %}')
     const result = await parseFile(file)

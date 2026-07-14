@@ -25,9 +25,15 @@ export interface LiquidSection {
   readonly endLine: number
 }
 
-const INCLUDE_RE = /{%-?\s*include\s+['"]([^'"]+)['"]/gi
-const SECTION_RE = /{%-?\s*section\s+['"]([^'"]+)['"]/gi
-const RENDER_RE = /{%-?\s*render\s+['"]([^'"]+)['"]/gi
+// The closing quote must match the SAME character that opened it (captured in group 1) --
+// a static `['"]` charclass on both ends lets a literal apostrophe inside a double-quoted
+// target (or vice versa) prematurely truncate the match, since [^'"]+ excludes both quote
+// characters unconditionally regardless of which one is actually delimiting this string. A
+// per-character negative lookahead against the captured opener (rather than a static
+// exclusion charclass) is required so the body can legally contain the non-delimiting quote.
+const INCLUDE_RE = /{%-?\s*include\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
+const SECTION_RE = /{%-?\s*section\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
+const RENDER_RE = /{%-?\s*render\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
 const SCHEMA_RE = /{%-?\s*schema\s*-?%}([\s\S]*?){%-?\s*endschema\s*-?%}/gi
 const LIQUID_TAG_IMPORTS: ReadonlyArray<[RegExp, string]> = [
   [INCLUDE_RE, 'liquid_include'],
@@ -52,7 +58,7 @@ export function extractLiquid(
   // include / section / render imports
   for (const [pattern, kind] of LIQUID_TAG_IMPORTS) {
     for (const m of maskedForTags.matchAll(pattern)) {
-      const target = m[1] ?? ''
+      const target = m[2] ?? ''
       if (target) {
         const line = offsetToLine(lineIndex, m.index ?? 0)
         imports.push({ kind, target, line })
