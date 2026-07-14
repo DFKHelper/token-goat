@@ -61,8 +61,10 @@ const FRAGMENT_RE = /^[ \t]*fragment[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+on[ \t]+
 const OPERATION_RE =
   /^[ \t]*(?<op>query|mutation|subscription)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
 
-// schema { }
-const SCHEMA_RE = /^[ \t]*schema\s*\{/gm
+// schema { } — a schema block may carry a Directives[Const] list between the keyword and the
+// brace (e.g. `schema @auth { ... }`), which the plain `\s*` gap can't absorb; `[^{\n]*` covers
+// that without crossing a line boundary, and `\b` keeps `schemaVersion: 1` from false-matching.
+const SCHEMA_RE = /^[ \t]*schema\b[^{\n]*\{/gm
 
 const KIND_MAP: ReadonlyMap<string, string> = new Map([
   ['type', 'graphql_type'],
