@@ -55,7 +55,14 @@ export class GrepFilter extends ToolFilter {
         fileCounts.set(fname, (fileCounts.get(fname) ?? 0) + 1)
         continue
       }
-      const colonIdx = line.indexOf(':')
+      // A Windows absolute path (C:\foo\bar.py:12:text) has its own colon right after the
+      // single-letter drive, which line.indexOf(':') would otherwise pick up as the field
+      // separator -- leaving candidate as just "C" (no '.', '/', or '\\') and silently
+      // dumping every match on such a path into the unattributed bucket. Skip past a
+      // leading drive-letter colon before looking for the real path/lineno separator.
+      const driveColonMatch = /^[A-Za-z]:[\\/]/.exec(line)
+      const searchFrom = driveColonMatch ? 2 : 0
+      const colonIdx = line.indexOf(':', searchFrom)
       if (colonIdx > 0) {
         const candidate = line.slice(0, colonIdx)
         if (candidate.includes('.') || candidate.includes('/') || candidate.includes('\\')) {
