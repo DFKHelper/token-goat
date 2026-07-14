@@ -307,6 +307,21 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   // `*/`-shaped sequence sitting inside a multi-line string.
   const noStrings = stripSqlStringLiterals(content)
 
+  // name+line -> true lineEnd for a statement confirmed to terminate with `;` on its own start
+  // line. assignFlatEndLines/propagateEndLinesToSymbols only do flat "ends where the next
+  // section starts" propagation: when several complete statements share one physical line (e.g.
+  // `CREATE TABLE a (id INT); CREATE FUNCTION b() ...;`), the shared model has no way to tell
+  // which of them is genuinely the "last" one on that line, and its next-section-start heuristic
+  // extends whichever statement happens to sort last into that position all the way to the next
+  // *distinct* line (or EOF) -- silently absorbing unrelated statements that merely follow on
+  // later lines. A statement whose own terminating `;` is found on the same line as its `CREATE`
+  // keyword is unambiguous regardless of sort order, so it can be pinned to a single-line span
+  // directly instead of trusting the flat model's guess. Left untouched (flat-model behavior
+  // unchanged) whenever the terminator isn't on the start line -- e.g. a real multi-line
+  // function/procedure body -- since this file has no brace/END-matching scan to compute those
+  // real end lines precisely.
+  const singleLineEndLines = new Map<string, number>()
+
   for (const [pattern, kind] of PATTERNS) {
     // Reset lastIndex since these are global regexes
     pattern.lastIndex = 0
@@ -316,6 +331,15 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
         const name = unquote(rawName).trim()
         if (name) {
           const line = offsetToLine(lineIndex, m.index ?? 0)
+          const semiIdx = noStrings.indexOf(';', m.index ?? 0)
+          if (semiIdx !== -1 && offsetToLine(lineIndex, semiIdx) === line) {
+            // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
+            // key: a name can legitimately repeat across kinds on the same line (e.g. a
+            // same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`), and a name+line-
+            // only key would let one kind's single-line pin leak onto a different kind sharing
+            // that same name and line.
+            singleLineEndLines.set(`${name}\0${kind}\0${line}`, line)
+          }
           emit(name, kind, line)
         }
       }
@@ -325,5 +349,10 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   sections.sort((a, b) => a.line - b.line)
   symbols.sort((a, b) => a.lineStart - b.lineStart)
   assignFlatEndLines(sections, totalLines)
-  return propagateEndLinesToSymbols(symbols, sections)
+  return propagateEndLinesToSymbols(symbols, sections).map((sym) => {
+    const pinnedEndLine = singleLineEndLines.get(`${sym.name}\0${sym.kind}\0${sym.lineStart}`)
+    return pinnedEndLine !== undefined && pinnedEndLine !== sym.lineEnd
+      ? { ...sym, lineEnd: pinnedEndLine }
+      : sym
+  })
 }
