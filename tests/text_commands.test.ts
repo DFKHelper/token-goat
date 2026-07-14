@@ -475,6 +475,34 @@ describe('lockdeps command', () => {
     fs.rmSync(v2Dir, { recursive: true, force: true })
   })
 
+  it('does not mislabel a nested transitive dependency as direct when it shares a name with a real top-level direct dependency (regression: kind was decided by allDirect.has(name) alone -- a bare name match -- so a deeper package.json entry like node_modules/some-lib/node_modules/semver, which is genuinely transitive, was labeled "direct" purely because the project also directly depends on a top-level semver at a different version)', () => {
+    const nameCollisionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-name-collision-lock-'))
+    const lockPath = path.join(nameCollisionDir, 'package-lock.json')
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        name: 'collision-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { dependencies: { semver: '^7.5.0' } },
+          'node_modules/semver': { version: '7.5.0' },
+          'node_modules/some-lib': { version: '1.0.0' },
+          'node_modules/some-lib/node_modules/semver': { version: '5.7.1' },
+        },
+      }),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.deps).toContainEqual({ name: 'semver', version: '7.5.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: 'semver', version: '5.7.1', kind: 'transitive' })
+    fs.rmSync(nameCollisionDir, { recursive: true, force: true })
+  })
+
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))
     const r = run(['lockdeps', emptyDir])
