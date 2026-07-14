@@ -229,8 +229,11 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
         // codeBlockLines > 0 also requires the opener to have actually been emitted -- when the
         // sentence budget was already exhausted before this fence opened, codeBlockLines stayed
         // 0 and the opener/content were suppressed, so the closer must stay suppressed too or it
-        // becomes an orphaned, unpaired ``` with no matching opener in the compact output.
-        if (currentHeading && codeBlockLines > 0 && codeBlockLines < 10) {
+        // becomes an orphaned, unpaired ``` with no matching opener in the compact output. Unlike
+        // the opener/content branches, there is no `< 10` cap here: once the opener was emitted
+        // the closer must always be emitted too, even when the 10-line content cap was hit,
+        // otherwise a long code block leaves an unterminated fence in the compact output.
+        if (currentHeading && codeBlockLines > 0) {
           out.push(line)
           codeBlockLines++
         }

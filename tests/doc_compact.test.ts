@@ -228,6 +228,15 @@ describe('doc_compact', () => {
       expect(result).not.toContain('```')
     })
 
+    it('does not drop the closing fence when a code block\'s content hits the 10-line cap (regression: the closing-fence branch reused the same `codeBlockLines < 10` guard as the opener-suppressed case, so once the cap was reached after the opener/content were already emitted, the closer\'s own gate fell false too, leaving an unterminated fence in the compact output)', () => {
+      const codeLines = Array.from({ length: 12 }, (_, i) => `line${i + 1}`)
+      const md = ['# Heading', '```', ...codeLines, '```', 'Trailing sentence.'].join('\n') + '\n'
+      const result = buildExtractiveCompact(md)
+      const fenceCount = (result.match(/^```/gm) ?? []).length
+      expect(fenceCount % 2).toBe(0)
+      expect(fenceCount).toBe(2)
+    })
+
     it('skips YAML front-matter', () => {
       const md = '---\ntitle: test\n---\n# Heading\nText'
       const result = buildExtractiveCompact(md)
