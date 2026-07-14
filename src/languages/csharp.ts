@@ -24,6 +24,22 @@ interface ClassFrame {
 
 const USING_RE = /^using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*;/
 const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
+
+// C# idiomatically places attributes on the same line as the declaration they decorate
+// (`[Obsolete] public class Foo`, `[Test] public Foo()`, `[JsonProperty("name")] public string
+// Name { get; set; }`), but CLASS_HEADER_RE/CONSTRUCTOR_RE/PROPERTY_RE/PROPERTY_HEADER_RE/
+// PROPERTY_ARROW_RE/METHOD_RE are all anchored against the modifier alternation or return type
+// directly, with no room for a leading `[Attr]` list. Stripping it before matching only (never
+// before slicing the signature/docstring, which still use the original line) fixes the whole
+// family at once - same pattern as kotlin.ts's stripLeadingAnnotations(). Leading whitespace is
+// preserved so METHOD_RE/CONSTRUCTOR_RE/PROPERTY_RE's own `^\s+` class-member indentation gate
+// still functions correctly.
+const LEADING_ATTRIBUTE_RE = /^(\s*)((?:\[[^[\]]*\]\s*)+)/
+function stripLeadingAttributes(s: string): string {
+  const m = LEADING_ATTRIBUTE_RE.exec(s)
+  if (!m) return s
+  return (m[1] ?? '') + s.slice(m[0].length)
+}
 const DELEGATE_RE = new RegExp(
   '^\\s*(?:public|protected|private|internal)?\\s*delegate\\s+' +
   '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+' +
@@ -138,7 +154,7 @@ export function extractCsharp(
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
     // inside another class's body, so a nested class (and its own members) get tracked against
     // their own start depth instead of being silently folded into the enclosing class.
-    const cm = CLASS_HEADER_RE.exec(stripped)
+    const cm = CLASS_HEADER_RE.exec(stripLeadingAttributes(stripped))
     if (cm) {
       const keyword = cm[1] ?? 'class'
       const cname = cm[2] ?? ''
@@ -158,8 +174,9 @@ export function extractCsharp(
     if (frame !== null) {
       const depthInClass = braceDepth - frame.startDepth
       if (depthInClass === 1) {
+        const lineNoAttr = stripLeadingAttributes(line)
         // constructor
-        const ctorM = CONSTRUCTOR_RE.exec(line)
+        const ctorM = CONSTRUCTOR_RE.exec(lineNoAttr)
         if (ctorM && ctorM[1] === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
@@ -167,7 +184,7 @@ export function extractCsharp(
         }
         // property
         let isPropertyLine = false
-        const propM = PROPERTY_RE.exec(line)
+        const propM = PROPERTY_RE.exec(lineNoAttr)
         if (propM) {
           isPropertyLine = true
           symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
@@ -175,7 +192,7 @@ export function extractCsharp(
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
           // following lines rather than trailing the header line, so PROPERTY_RE (which
           // requires a same-line `{`) never matches. Peek the next two lines for that shape.
-          const headerM = PROPERTY_HEADER_RE.exec(line)
+          const headerM = PROPERTY_HEADER_RE.exec(lineNoAttr)
           if (headerM) {
             const braceLineNext = (lines[i + 1] ?? '').trim()
             const accessorLine = (lines[i + 2] ?? '').trim()
@@ -186,7 +203,7 @@ export function extractCsharp(
           } else {
             // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
             // Allman header match, since there is no `{` on this line or the next.
-            const arrowM = PROPERTY_ARROW_RE.exec(line)
+            const arrowM = PROPERTY_ARROW_RE.exec(lineNoAttr)
             if (arrowM) {
               isPropertyLine = true
               symbols.push(makeLineSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
@@ -195,7 +212,7 @@ export function extractCsharp(
         }
         // method - skipped when the property detection above already matched this line, so a
         // property/auto-property declaration is never double-processed as a phantom method too.
-        const methM = isPropertyLine ? null : METHOD_RE.exec(line)
+        const methM = isPropertyLine ? null : METHOD_RE.exec(lineNoAttr)
         if (methM) {
           const mname = methM[1] ?? ''
           if (mname && mname !== frame.name) {
