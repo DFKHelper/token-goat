@@ -576,6 +576,21 @@ function helperFn() {}
     expect(imports.some((i) => i.target.includes('User'))).toBe(true)
   })
 
+  it('indexes a legacy var-declared property (regression: PROP_RE\'s modifier alternation only recognized public/protected/private/static/readonly, so `var $foo;` -- still valid PHP syntax, a full synonym for public -- silently dropped the property from the index entirely)', () => {
+    const content = `<?php
+class Legacy {
+    var $foo;
+    var $bar = 1;
+    public $baz;
+}
+`
+    const { symbols } = extractPhp(content, 'Legacy.php')
+    const props = symbols.filter((s) => s.kind === 'var').map((s) => s.name)
+    expect(props).toContain('foo')
+    expect(props).toContain('bar')
+    expect(props).toContain('baz')
+  })
+
   it('indexes a readonly class, alone or stacked with final/abstract (regression: CLASS_RE\'s modifier group only recognized abstract/final and was capped at a single optional modifier, so a PHP 8.2 readonly class -- alone or combined with final/abstract -- never matched at all, silently dropping the class and misattributing every member inside it as top-level)', () => {
     const content = `<?php
 namespace App;

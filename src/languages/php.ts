@@ -25,8 +25,11 @@ const METHOD_RE = new RegExp(
 const ANON_FN_RE = /^\s*function\s*\(/
 const CONST_RE = /^(?:(?:public|protected|private|static|final)\s+)*const\s+([A-Za-z_][A-Za-z0-9_]*)/
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/
+// `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid
+// syntax in every current PHP version - without it in the alternation, a `var $foo;` property is
+// silently dropped from the index entirely, unlike every other property-declaration style.
 const PROP_RE = new RegExp(
-  '^(?:(?:public|protected|private|static|readonly)\\s+)+' +
+  '^(?:(?:public|protected|private|static|readonly|var)\\s+)+' +
   '(?:\\??[A-Za-z_][A-Za-z0-9_|\\\\]*\\s+)?' +
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
 )
