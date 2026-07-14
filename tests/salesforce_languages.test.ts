@@ -90,6 +90,32 @@ describe('apex adapter', () => {
     expect(names).toContain('publicMethod')
   })
 
+  it('extracts a class annotated with a same-line annotation, without swallowing the class header into the following method\'s span (regression: TYPE_DECL_RE had no leading-annotation allowance unlike METHOD_RE, so `@IsTest private class MyTestClass { ... }` silently dropped the class from the index; separately, annotationStartLine treated any line starting with @ as a foldable annotation line, so once the class itself indexed, an un-annotated method right after an annotated class header incorrectly walked its span back into the class\'s own header line)', () => {
+    const content = `@IsTest private class MyTestClass {
+  static void testMethod1() {
+    System.assert(true);
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyTestClass.cls')
+    expect(symbols.find((s) => s.name === 'MyTestClass')?.kind).toBe('apex_class')
+    const method = symbols.find((s) => s.name === 'testMethod1')
+    expect(method?.lineStart).toBe(2)
+    expect(method?.body).not.toContain('@IsTest')
+  })
+
+  it('extracts an interface annotated with a same-line annotation (regression: same TYPE_DECL_RE gap as the class case above)', () => {
+    const content = `@SuppressWarnings('PMD') public interface MyIntf {
+  void doThing();
+}
+`
+
+    const { symbols } = extractApex(content, 'MyIntf.cls')
+    expect(symbols.find((s) => s.name === 'MyIntf')?.kind).toBe('apex_interface')
+    expect(symbols.find((s) => s.name === 'doThing')).toBeDefined()
+  })
+
   it('extracts every method signature in an interface, which never carries an access modifier (regression: same METHOD_RE gap, but total - every Apex interface method is modifier-less by language rule, so this dropped 100% of interface methods)', () => {
     const content = `public interface MyInterface {
   void doSomething(String input);
