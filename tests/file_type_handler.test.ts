@@ -64,6 +64,21 @@ describe('handleHtml', () => {
     expect(result.message).toContain('Main Title')
   })
 
+  it('does not report a heading that is inside an HTML comment (regression: the hand-rolled heading regex scanned raw unmasked content instead of going through the shared findHtmlHeadingMatches/maskHtmlNoise helper, so a commented-out <h1> was reported as a live heading)', () => {
+    const lines = [
+      '<html><head><title>My Page</title></head><body>',
+      '<!-- <h1>Commented Out Secret Heading</h1> -->',
+      '<h2>Real Heading</h2>',
+      ...Array.from({ length: 100 }, (_, i) => `<p>Paragraph ${i}</p>`),
+      '</body></html>',
+    ]
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.html)
+    const result = handleHtml('/path/to/page.html', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).not.toContain('Commented Out Secret Heading')
+    expect(result.message).toContain('Real Heading')
+  })
+
   it('blocks minified HTML with minified notice', () => {
     // Minified: very long single line
     const content = makeStr(FILE_TYPE_THRESHOLDS.html + 1, 'a')
