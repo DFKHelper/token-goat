@@ -57,6 +57,22 @@ describe('language adapters never emit inverted symbol ranges', () => {
     expect(fn?.lineEnd).toBe(6)
   })
 
+  it('SQL: a fully single-line function statement does not absorb unrelated trailing statements (regression: the flat model extended whichever same-line statement happened to sort last -- by PATTERNS processing order, not textual position -- all the way to the next distinct line/EOF, even when that statement had already terminated with its own `;` on its own start line)', () => {
+    const content = [
+      'CREATE FUNCTION foo() RETURNS INT AS $$ SELECT 1; $$ LANGUAGE sql; CREATE TABLE bar (id INT);',
+      'SELECT 1;',
+      'SELECT 2;',
+      'SELECT 3;',
+      '',
+    ].join('\n')
+    const symbols = extractSql(content, 'x.sql')
+
+    const bar = symbols.find((s) => s.name === 'bar')
+    const foo = symbols.find((s) => s.name === 'foo')
+    expect(bar?.lineEnd).toBe(1)
+    expect(foo?.lineEnd).toBe(1)
+  })
+
   it('HTML: a heading with an inline id anchor keeps endLine >= line', () => {
     const content = [
       '<html>',
