@@ -560,6 +560,12 @@ function parsePipfileLock(content: string): DepEntry[] {
 function parseRequirementsTxt(content: string): DepEntry[] {
   const deps: DepEntry[] = []
   for (const raw of splitLines(content)) {
+    // A whole-line comment (line starts with '#', ignoring leading whitespace) is never a
+    // requirement spec, even when its text happens to mention "#egg=" -- e.g. a doc comment
+    // giving a VCS-install example. Skip it before the egg-fragment recovery below gets a
+    // chance to treat that mention as a real dependency (regression from the #104 fix, which
+    // applied the recovery unconditionally to every raw line).
+    if (/^\s*#/.test(raw)) continue
     // A VCS direct reference (git+https://..., hg+..., etc.) legally uses '#' as a URL-fragment
     // delimiter for '#egg=<name>', not a comment marker -- stripping at the first '#' truncates
     // the URL and leaves the name-capture regex below matching the URL scheme ("git") instead of
