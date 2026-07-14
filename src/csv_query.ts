@@ -38,7 +38,12 @@ export interface CsvQueryResult {
   totalRows: number
 }
 
-const WHERE_SPEC_RE = /^([^=<>~!]+)(!=|~=|>=|<=|=|>|<)(.*)$/
+// The column-capture excludes = < > ~ outright (they can each start a real single-char
+// operator, so a naive split must stop there and defer to resolveWhereColumn below). A bare
+// '!' is different: it is never a valid standalone operator on its own, only '!=' is, so it
+// is only excluded when immediately followed by '=' -- this lets a column literally named
+// e.g. 'wow!thing' parse directly instead of hard-failing with no operator match at all.
+const WHERE_SPEC_RE = /^((?:[^=<>~!]|!(?!=))+)(!=|~=|>=|<=|=|>|<)(.*)$/
 
 /** Parses `col=value`/`col!=value`/`col>value`/`col<value`/`col>=value`/`col<=value`/`col~=regex`
  * specs from repeatable `--where` flags into structured filters, ANDed together by queryCsv. */
