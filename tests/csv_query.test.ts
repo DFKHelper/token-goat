@@ -152,6 +152,13 @@ describe('queryCsv', () => {
     const result = queryCsv(csv, { wheres });
     expect(result.rows).toEqual([['alice', '5']]);
   });
+
+  it('resolves a --where spec against a column whose name contains a bare ~ (regression: WHERE_SPEC_RE excluded ~ outright from the column capture with no !-style exemption, so a spec targeting a column like temp~F hit no valid operator match at the ~ and threw invalid --where spec instead of querying it)', () => {
+    const csv = 'name,temp~F\nalice,98\nbob,70\n';
+    const wheres = parseWhereSpecs(['temp~F=98']);
+    const result = queryCsv(csv, { wheres });
+    expect(result.rows).toEqual([['alice', '98']]);
+  });
 });
 
 describe('parseWhereSpecs', () => {
