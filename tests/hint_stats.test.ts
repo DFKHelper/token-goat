@@ -1,3 +1,6 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
@@ -17,8 +20,8 @@ import {
   HINT_CATEGORIES,
 } from '../src/hint_stats.js'
 import { getDb } from '../src/db.js'
-import { globalDbPath } from '../src/constants.js'
-import { defaultConfig, saveConfig } from '../src/config.js'
+import { globalDbPath, configPath } from '../src/constants.js'
+import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -48,6 +51,10 @@ function readEvent(sessionId: string, filePath: string): HookEvent {
   }
 }
 
+// saveConfig does not create configPath()'s parent directory itself; make sure it
+// exists before writing (same pattern as bash_runner.test.ts / tool_filters_*.test.ts).
+fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
 beforeEach(() => {
   clearModuleCaches()
   resetHintStats()
@@ -56,6 +63,24 @@ beforeEach(() => {
 afterEach(() => {
   resetHintStats()
   clearModuleCaches()
+  // Regression (#50): several tests in this file call saveConfig() against the real,
+  // unmocked configPath() -- which resolves to the DATA_DIR shared by every test file
+  // running in this vitest worker (isolate-home.ts pins DATA_DIR per worker PID, not per
+  // file). saveConfig() always serializes the FULL config object, so even a test that
+  // only means to set hint_stats.min_sample_size also persists an explicit
+  // compact_assist.auto_trigger_multiplier at its default value. Left uncleaned, that
+  // flips isAutoTriggerMultiplierExplicit() to true for the rest of this worker's test
+  // run, corrupting getContextPressure()'s tier/fillFraction for any sibling test file
+  // that relies on the harness-default multiplier (observed in
+  // cache_session_commands.test.ts's tier assertion). Restore the shared config.toml to
+  // its absent/default state after every test, the same way tool_filters_git.test.ts,
+  // tool_filters_misc.test.ts, and tool_filters_shell_file.test.ts already do.
+  invalidateConfigCache()
+  try {
+    fs.unlinkSync(configPath())
+  } catch {
+    // ok — may not exist
+  }
 })
 
 describe('isHintCategory', () => {
@@ -458,5 +483,22 @@ describe('resetHintStats', () => {
 
     const summary = getHintStatsSummary()
     expect(summary.every((r) => r.emitted === 0 && r.manualEffective === 0 && r.manualIneffective === 0)).toBe(true)
+  })
+})
+
+// Regression (#50): a saveConfig() call in this file used to leave the real, shared
+// per-worker config.toml behind, silently persisting an explicit
+// compact_assist.auto_trigger_multiplier (at its default value) that corrupted
+// getContextPressure() for any sibling test file sharing this worker.
+describe('config isolation (regression #50)', () => {
+  it('restores the shared config.toml to absent after a test that calls saveConfig', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 5
+    saveConfig(cfg)
+    expect(fs.existsSync(configPath())).toBe(true)
+  })
+
+  it('confirms the prior test\'s afterEach already deleted the shared config.toml', () => {
+    expect(fs.existsSync(configPath())).toBe(false)
   })
 })
