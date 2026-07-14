@@ -1544,6 +1544,22 @@ fun main() {}
     expect(names).toContain('add')
     expect(symbols.find((s) => s.name === 'add')?.docstring).toBe('Container')
   })
+
+  it('indexes a fun interface (SAM/functional interface) and its members (regression: CLASS_HEADER_RE\'s modifier alternation did not include "fun", so a fun interface header never matched at all -- no frame was pushed for it, and every member declared inside was silently dropped rather than misattributed)', () => {
+    const content = `fun interface Calculator {
+    fun apply(x: Int): Int
+}
+
+class Ordinary {
+    fun ok(): Int = 1
+}
+`
+    const { symbols } = extractKotlin(content, 'Repro.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Calculator')
+    expect(names).toContain('apply')
+    expect(symbols.find((s) => s.name === 'apply')?.docstring).toBe('Calculator')
+  })
 })
 
 // ---------------------------------------------------------------------------

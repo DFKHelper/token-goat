@@ -50,7 +50,7 @@ const CONST_RE = new RegExp(
 
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|internal|protected|private|open|abstract|sealed|data|' +
-  'inner|expect|actual|value|annotation)\\s+)*' +
+  'inner|expect|actual|value|annotation|fun)\\s+)*' +
   '(?:class|interface|object|enum\\s+class)\\s+([A-Za-z_][A-Za-z0-9_]*)',
 )
 
