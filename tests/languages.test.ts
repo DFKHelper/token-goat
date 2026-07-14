@@ -2246,6 +2246,15 @@ clean::
     expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
   })
 
+  it('does not mis-split a Windows drive-letter path target at its drive colon (regression: TARGET_RE stopped its non-greedy name capture at the FIRST colon, so \'C:/foo/bar.o: C:/foo/bar.c\' emitted a bogus target named \'C\' instead of the real \'C:/foo/bar.o\')', () => {
+    const content = 'C:/foo/bar.o: C:/foo/bar.c\n\techo hi\n'
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('C:/foo/bar.o')
+    expect(names).not.toContain('C')
+    expect(symbols.find((s) => s.name === 'C:/foo/bar.o')?.kind).toBe('makefile_target')
+  })
+
   it('splits a multi-target rule into separate symbols instead of fusing the names', () => {
     // Regression: `all clean:` used to capture the whole "all clean" run as a single symbol
     // name, so `token-goat symbol clean` returned nothing for a target visibly in the source.
