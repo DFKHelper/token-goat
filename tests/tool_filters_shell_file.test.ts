@@ -84,6 +84,13 @@ describe('GrepFilter compression', () => {
     expect(out.split('\n').length).toBeLessThan(lines.length)
   })
 
+  it('attributes matches on a Windows absolute path to its file instead of "unattributed" (regression: line.indexOf(\':\') picked up the drive-letter colon in "C:\\foo\\bar.py:12:text", leaving candidate as just "C")', () => {
+    const lines = Array.from({ length: 35 }, (_, i) => `C:\\Users\\foo\\bar.py:${i + 1}: match`)
+    const out = compress(f, lines.join('\n'), argv)
+    expect(out).toContain('C:\\Users\\foo\\bar.py: 35 match(es)')
+    expect(out).not.toContain('unattributed')
+  })
+
   it('handles empty stdout without throwing', () => {
     expect(() => compress(f, '', argv)).not.toThrow()
   })
