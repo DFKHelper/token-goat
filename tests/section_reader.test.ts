@@ -584,6 +584,13 @@ describe('readSection', () => {
     expect(readSection(file, 'database')).not.toBeNull()
   })
 
+  it('does not let a stray, unmatched `"""` in an INI value suppress a later real section header (regression: findTableHeaders ran the TOML triple-quote span tracker unconditionally, but INI has no multi-line string construct - an ordinary value containing an unmatched triple-quote-length run was misread as opening a TOML multi-line string, and every following line, including a genuine `[section]` header, was silently swallowed as still inside it)', () => {
+    const ini = ['[a]', 'note = """this is a stray triple quote, not a multiline string in INI', 'key = 1', '[b]', 'key = 2', ''].join('\n')
+    const file = tmpFile('quotes.ini', ini)
+    expect(listSections(file)).toEqual(['a', 'b'])
+    expect(readSection(file, 'b')).not.toBeNull()
+  })
+
   it('finds a TOML/INI table header that has a trailing inline comment on the same line (regression: TABLE_HEADER_RE was anchored to end-of-line with nothing allowed after the closing bracket, so a table declared as `[section] # comment` or `[section] ; comment` - both legal, common syntax - was silently dropped by the live reader even though the real indexer correctly captures it)', () => {
     const toml = ['[server]', 'host = "a"', '', '[database] # production settings', 'host = "b"', ''].join('\n')
     const tomlFile = tmpFile('x.toml', toml)

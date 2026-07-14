@@ -201,8 +201,10 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
 
     const m = TABLE_HEADER_RE.exec(line)
     if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
-    openDelim = lineOpenDelimiterAfter(line, 0)
-    if (isToml && openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
+    if (isToml) {
+      openDelim = lineOpenDelimiterAfter(line, 0)
+      if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(line))
+    }
   }
   return headers
 }
