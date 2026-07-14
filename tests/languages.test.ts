@@ -52,6 +52,28 @@ public class UserService {
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
 
+  it('extracts a class, method, property, and constructor that carry a same-line attribute (regression: CLASS_HEADER_RE/CONSTRUCTOR_RE/PROPERTY_RE/PROPERTY_HEADER_RE/PROPERTY_ARROW_RE/METHOD_RE are all anchored against the modifier alternation or return type directly, with no room for a leading [Attr] list, so [Obsolete] public class Foo / [Test] public Foo() / [JsonProperty("name")] public string Name { get; set; } -- all idiomatic C# -- silently dropped the whole declaration, and for a class, every member inside it)', () => {
+    const content = `namespace App {
+[Obsolete] public class Foo
+{
+    [Obsolete("x")] public void OldMethod()
+    { }
+
+    [JsonProperty("name")] public string Name { get; set; }
+
+    [Test] public Foo()
+    { }
+}
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('OldMethod')
+    expect(names).toContain('Name')
+    expect(symbols.filter((s) => s.name === 'Foo' && s.kind === 'method')).toHaveLength(1)
+  })
+
   it('indexes a readonly struct and its members, plus ref struct and file class (regression: CLASS_HEADER_RE\'s modifier alternation only recognized public/protected/private/internal/abstract/sealed/static/partial, so readonly, ref, unsafe, and file -- all legal C# type-declaration modifiers -- caused the whole header line to fail to match, silently dropping the type and misattributing every member inside it)', () => {
     const content = `namespace Demo {
     public readonly struct Point
