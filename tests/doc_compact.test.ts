@@ -88,6 +88,20 @@ describe('doc_compact', () => {
       const fresh = isCompactFresh(compactPath, sourcePath)
       expect(fresh).toBe(false)
     })
+
+    it('still recognizes the header after an external process normalizes the sidecar to CRLF line endings (regression: headerRegex had no \\r tolerance before its $ anchor, so a CRLF-terminated sidecar silently failed to match even though its content was unchanged)', () => {
+      const sourcePath = path.join(tempDir, 'source.md')
+      const compactPath = path.join(tempDir, 'compact.md')
+      fs.writeFileSync(sourcePath, '# Title\nContent')
+
+      writeCompact(compactPath, sourcePath, 'Compact body')
+      expect(isCompactFresh(compactPath, sourcePath)).toBe(true)
+
+      const crlf = fs.readFileSync(compactPath, 'utf-8').replace(/\n/g, '\r\n')
+      fs.writeFileSync(compactPath, crlf)
+
+      expect(isCompactFresh(compactPath, sourcePath)).toBe(true)
+    })
   })
 
   describe('markCompactStale', () => {
@@ -107,6 +121,22 @@ describe('doc_compact', () => {
     it('returns false for missing compact', () => {
       const result = markCompactStale(path.join(tempDir, 'missing.md'))
       expect(result).toBe(false)
+    })
+
+    it('still recognizes and marks a CRLF-normalized sidecar as stale (regression: same headerRegex \\r-tolerance bug as isCompactFresh)', () => {
+      const sourcePath = path.join(tempDir, 'source.md')
+      const compactPath = path.join(tempDir, 'compact.md')
+      fs.writeFileSync(sourcePath, 'content')
+      writeCompact(compactPath, sourcePath, 'Body')
+
+      const crlf = fs.readFileSync(compactPath, 'utf-8').replace(/\n/g, '\r\n')
+      fs.writeFileSync(compactPath, crlf)
+
+      const result = markCompactStale(compactPath)
+      expect(result).toBe(true)
+
+      const content = fs.readFileSync(compactPath, 'utf-8')
+      expect(content).toContain('source-hash:STALE')
     })
 
     it('subsequent isCompactFresh returns false after stale', () => {

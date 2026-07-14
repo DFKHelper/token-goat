@@ -17,7 +17,11 @@ import { eachUnfencedLine } from './markdown_lines.js'
 
 const defaultSentencesPerSection = 2
 const headerPrefix = '<!-- token-goat doc-compact source-hash:'
-const headerRegex = /^<!-- token-goat doc-compact source-hash:(\S+) source:(.+?) -->$/
+// \r? tolerates a CRLF-terminated sidecar (external editors, git core.autocrlf, diff
+// tools) even though writeCompact always writes LF -- without it, readCompactHeader and
+// markCompactStale's own header re-match both silently stop recognizing an otherwise
+// valid, current header once the line ending is CRLF instead of LF.
+const headerRegex = /^<!-- token-goat doc-compact source-hash:(\S+) source:(.+?) -->\r?$/
 const compactSubdir = 'doc_compacts'
 
 /**
