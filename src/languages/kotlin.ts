@@ -36,6 +36,18 @@ interface ClassFrame {
 
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
 
+// Kotlin idiomatically places annotations on the same line as the declaration they annotate
+// (`@Composable fun Foo() {}`, `@Test fun bar() {}`, `@Serializable data class Foo(...)`),
+// but FUN_RE/CONST_RE/CLASS_HEADER_RE/COMPANION_RE/TOP_FUN_RE are all `^`-anchored against
+// their modifier alternation or declaration keyword directly, with no room for a leading
+// annotation token. Stripping it before matching (never before slicing the signature/docstring,
+// which still use the original line) fixes the whole family at once.
+const LEADING_ANNOTATION_RE =
+  /^\s*(?:@[A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_]*)?(?:\([^()]*\))?\s+)+/
+function stripLeadingAnnotations(s: string): string {
+  return s.replace(LEADING_ANNOTATION_RE, '')
+}
+
 const FUN_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
   'suspend|inline|infix|operator|external|actual|expect|final|sealed)\\s+)*' +
@@ -168,8 +180,9 @@ export function extractKotlin(
     const outerFrame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     const outerDepthInClass = outerFrame !== null ? braceDepth - outerFrame.braceDepth : 0
     const classDetectionGateOk = classStack.length === 0 || outerDepthInClass === 1
-    const companionM = classStack.length > 0 && classDetectionGateOk ? COMPANION_RE.exec(stripped) : null
-    const cm = companionM === null && classDetectionGateOk && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(stripped) : null
+    const strippedNoAnn = stripLeadingAnnotations(stripped)
+    const companionM = classStack.length > 0 && classDetectionGateOk ? COMPANION_RE.exec(strippedNoAnn) : null
+    const cm = companionM === null && classDetectionGateOk && (!isIndented || classStack.length > 0) ? CLASS_HEADER_RE.exec(strippedNoAnn) : null
     if (companionM) {
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
@@ -190,20 +203,22 @@ export function extractKotlin(
       // an ungated >= 1 check indexed local functions and local SCREAMING_SNAKE vals declared
       // inside a method as if they were members of the enclosing class.
       if (depthInClass === 1) {
-        const fm = FUN_RE.exec(line)
+        const lineNoAnn = stripLeadingAnnotations(line)
+        const fm = FUN_RE.exec(lineNoAnn)
         if (fm) {
           const fname = fm[1] ?? ''
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
           symbols.push(makeLineSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name))
         }
-        const constM = CONST_RE.exec(line)
+        const constM = CONST_RE.exec(lineNoAnn)
         if (constM) {
           symbols.push(makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name))
         }
       }
     } else if (!isIndented) {
-      const tfm = TOP_FUN_RE.exec(line)
+      const lineNoAnn = stripLeadingAnnotations(line)
+      const tfm = TOP_FUN_RE.exec(lineNoAnn)
       if (tfm) {
         const fname = tfm[1] ?? ''
         const sigEnd = line.indexOf('{')
@@ -211,7 +226,7 @@ export function extractKotlin(
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200)))
       }
       // Top-level SCREAMING_SNAKE const/val declarations (no parent class).
-      const topConstM = CONST_RE.exec(line)
+      const topConstM = CONST_RE.exec(lineNoAnn)
       if (topConstM) {
         symbols.push(makeLineSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
       }

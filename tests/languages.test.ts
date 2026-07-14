@@ -1174,7 +1174,29 @@ fun topLevel() {}
     expect(imports.some((i) => i.target.includes('List'))).toBe(true)
   })
 
+  it('extracts a class, method, and top-level function that carry a same-line annotation (regression: FUN_RE/CLASS_HEADER_RE/TOP_FUN_RE are all ^-anchored against the modifier alternation or declaration keyword directly, with no room for a leading @Annotation token, so @Composable fun Foo() / @Test fun bar() / @Serializable data class Foo(...) - all extremely common real-world Kotlin - silently dropped the whole declaration and, for a class, every member inside it)', () => {
+    const content = `@Serializable data class Foo(val x: Int)
+
+class Bar {
+    @Test fun testFoo() {
+        println("hi")
+    }
+}
+
+@Composable fun MyComposable() {
+    println("hi")
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Foo')
+    expect(names).toContain('testFoo')
+    expect(names).toContain('MyComposable')
+    expect(symbols.find((s) => s.name === 'testFoo')?.docstring).toBe('Bar')
+  })
+
   it('indexes top-level SCREAMING_SNAKE const/val declarations', () => {
+
     const content = `const val MAX_SIZE = 100
 val GREETING = "hi"
 private const val SECRET = "x"
