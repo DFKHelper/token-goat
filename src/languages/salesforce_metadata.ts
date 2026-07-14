@@ -293,9 +293,15 @@ export function extractSalesforceMetadata(
     addTagRefs(refs, seenRefs, content, filePath, ['actionName', 'flowName'])
     for (const tag of ['recordLookups', 'recordCreates', 'recordUpdates', 'recordDeletes']) {
       for (const block of elementBlocks(content, tag)) {
-        const objectName = xmlText(block.inner, 'object')
-        if (objectName === null) continue
-        const objectOffset = block.offset + block.text.indexOf(objectName)
+        const objectBlock = elementBlocks(block.text, 'object')[0]
+        if (objectBlock === undefined) continue
+        const objectName = decodeXml(objectBlock.inner.trim())
+        if (objectName === '') continue
+        // Locate the actual <object> element via elementBlocks rather than a bare indexOf(objectName):
+        // Flow elements are conventionally named Verb_ObjectName (e.g. Get_Account), so objectName is
+        // almost always a substring of the enclosing <name> tag, which serializes before <object> --
+        // a plain indexOf locks onto that earlier, unrelated occurrence instead of the real <object> tag.
+        const objectOffset = block.offset + objectBlock.offset
         emitRef(refs, seenRefs, makeRef(content, filePath, objectName, objectOffset))
         // A running cursor into block.text, not a fresh indexOf(field.text) each time: two
         // <filters>/<inputAssignments> entries referencing the same field name inside one

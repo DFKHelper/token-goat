@@ -97,6 +97,22 @@ describe('Salesforce metadata XML adapter', () => {
     expect(statusRefs[0]?.line).not.toBe(statusRefs[1]?.line)
   })
 
+  it('points an object reference at the <object> tag, not an earlier <name> tag that happens to contain the object name as a substring (regression: block.text.indexOf(objectName) resolved to the FIRST occurrence of the string, and Flow elements are conventionally named Verb_ObjectName -- e.g. Get_Account -- so the <name> tag, which serializes before <object>, collided and won the search)', () => {
+    const result = extractSalesforceMetadata(
+      `<Flow xmlns="urn:test">
+  <recordLookups>
+    <name>Get_Account</name>
+    <filters><field>Name</field></filters>
+    <object>Account</object>
+  </recordLookups>
+</Flow>`,
+      'force-app/main/default/flows/Test.flow-meta.xml',
+    )
+
+    const objectRef = result.refs.find((ref) => ref.name === 'Account')
+    expect(objectRef?.context).toBe('<object>Account</object>')
+  })
+
   it('indexes deduplicated LWC targets and target-config properties with surgical spans', () => {
     const result = extractSalesforceMetadata(
       `<LightningComponentBundle xmlns="urn:test">
