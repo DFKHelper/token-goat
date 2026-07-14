@@ -1442,10 +1442,15 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
       continue
     }
 
-    const match =
-      /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
-        line,
-      )
+    // A whole-line `#` comment never starts or continues a directive: Docker does not extend
+    // comments across lines via continuation, so a trailing backslash on a comment is just part
+    // of the comment text, not a real line-continuation marker.
+    const isComment = line.trim().startsWith('#')
+    const match = isComment
+      ? null
+      : /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
+          line,
+        )
     if (match !== null && match[1] !== undefined) {
       const cmd = match[1]
       const arg = (match[2] ?? '').substring(0, 40)
@@ -1461,7 +1466,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
       })
     }
 
-    continuing = line.trimEnd().endsWith('\\')
+    continuing = !isComment && line.trimEnd().endsWith('\\')
   }
 
   return out

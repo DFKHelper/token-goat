@@ -857,6 +857,27 @@ COPY . /app
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not swallow a real directive following a comment line that ends in a backslash (regression: a whole-line # comment ending in \\ set the continuation flag from any trailing-backslash line with no comment special-case, so the next real directive was misread as leftover continuation text and silently dropped)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const dockerFile = path.join(tmpDir, 'Dockerfile')
+
+      const content = `FROM node:20
+# build steps below \\
+RUN echo hello
+COPY . .
+`
+
+      fs.writeFileSync(dockerFile, content)
+      const result = await parseFile(dockerFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names.some((n) => n.startsWith('RUN '))).toBe(true)
+      expect(names.some((n) => n.startsWith('COPY '))).toBe(true)
+      expect(result.symbols).toHaveLength(3)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('language detection', () => {
