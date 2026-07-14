@@ -188,6 +188,14 @@ describe('webfetch', () => {
       expect(isPrivateIPv6('::ffff:0:8.8.8.8')).toBe(false);
     });
 
+    it('should unwrap deprecated IPv4-compatible addresses (::a.b.c.d, no ffff marker) and check the embedded IPv4 (regression: only the ::ffff:-marked mapped/translated forms were checked, so ::127.0.0.1, ::169.254.169.254, ::10.0.0.5, and ::192.168.1.1 fell through every branch and were wrongly classified as public even though net.isIPv6 accepts them as valid literals)', () => {
+      expect(isPrivateIPv6('::127.0.0.1')).toBe(true);
+      expect(isPrivateIPv6('::169.254.169.254')).toBe(true);
+      expect(isPrivateIPv6('::10.0.0.5')).toBe(true);
+      expect(isPrivateIPv6('::192.168.1.1')).toBe(true);
+      expect(isPrivateIPv6('::8.8.8.8')).toBe(false);
+    });
+
     it('should match the full fc00::/7 CIDR range, not just the literal "fc00:" prefix', () => {
       expect(isPrivateIPv6('fc00::1')).toBe(true);
       expect(isPrivateIPv6('fd00::1')).toBe(true);

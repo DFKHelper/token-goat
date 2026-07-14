@@ -316,8 +316,9 @@ const FE80_PREFIX = [0xfe80, 0, 0, 0, 0, 0, 0, 0]; // fe80::/10 (link-local addr
 
 /**
  * True when `ip` is an IPv6 loopback/unique-local/link-local address, or an
- * IPv4-mapped (`::ffff:a.b.c.d`) or IPv4-translated (`::ffff:0:a.b.c.d`)
- * address whose embedded IPv4 address is private — a private IPv4 address
+ * IPv4-mapped (`::ffff:a.b.c.d`), IPv4-translated (`::ffff:0:a.b.c.d`), or the
+ * deprecated IPv4-compatible (`::a.b.c.d`) address whose embedded IPv4
+ * address is private — a private IPv4 address
  * wrapped in IPv6 notation must not slip past this check just because the
  * string "looks like" IPv6. fc00::/7 and fe80::/10 are matched as true CIDR
  * ranges (not literal string prefixes), so e.g. fd12:3456:: — which is
@@ -335,7 +336,12 @@ export function isPrivateIPv6(ip: string): boolean {
     groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff;
   const isIPv4Translated =
     groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0xffff && groups[5] === 0;
-  if (isIPv4Mapped || isIPv4Translated) {
+  // Deprecated IPv4-compatible form (::a.b.c.d): all-zero prefix with no 0xffff marker at all,
+  // still a syntactically valid IPv6 literal that net.isIPv6 accepts, so it must not silently
+  // fall through as "not private" just because it lacks the modern ::ffff: marker.
+  const isIPv4Compatible =
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0;
+  if (isIPv4Mapped || isIPv4Translated || isIPv4Compatible) {
     const hi = groups[6] ?? 0;
     const lo = groups[7] ?? 0;
     const embedded = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
