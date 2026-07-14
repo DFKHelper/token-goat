@@ -2129,6 +2129,15 @@ CREATE TABLE t2 (id int); # CREATE TABLE also_fake (x int)
     expect(names).not.toContain('also_fake')
   })
 
+  it('does not treat a PostgreSQL "#>" jsonb path-extraction operator as a MySQL "#" comment opener (regression: the # comment branch was dialect-agnostic and blanked the rest of the line, dropping a same-line CREATE TABLE that followed a bare "#" used as a postgres operator)', () => {
+    const content = "CREATE VIEW v1 AS SELECT data #> '{a,b}' AS x FROM t; CREATE TABLE t2 (id int);\nCREATE TABLE t3 (id int);\n"
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('v1')
+    expect(names).toContain('t2')
+    expect(names).toContain('t3')
+  })
+
   it('does not drop symbols after a bracket-delimited (SQL Server) identifier containing an apostrophe', () => {
     const content = `
 CREATE TABLE [user's_data] (id int);

@@ -205,11 +205,17 @@ function stripSqlStringLiterals(text: string): string {
       }
       continue
     }
-    if (ch === '#') {
+    if (ch === '#' && text[i + 1] !== '>' && text[i + 1] !== '-') {
       // `#` line comment: MySQL/MariaDB's third comment form, alongside `--` and `/* */`. Same
       // string-literal guarantee as `--` above. Without this branch, a `CREATE TABLE ...`
       // sitting inside a `#` comment (leading or trailing) survives masking and gets matched by
       // the DDL patterns below as a live symbol.
+      //
+      // Excluded when immediately followed by '>' or '-': PostgreSQL's own `#>`, `#>>`, and `#-`
+      // jsonb path-extraction operators start with a bare '#' too, and this masking pass is
+      // dialect-agnostic (this file's own doc comment claims Postgres support) -- treating those
+      // as a MySQL comment opener silently blanked the rest of the physical line, dropping any
+      // further DDL statement on that same line with no error.
       while (i < text.length && text[i] !== '\n') {
         out += ' '
         i++
