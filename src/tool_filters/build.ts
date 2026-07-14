@@ -1280,6 +1280,13 @@ export class CargoFilter extends ToolFilter {
         continue
       }
       if (CARGO_TEST_FAIL_RE.test(line) || CARGO_TEST_RESULT_RE.test(line)) {
+        // Flush accumulated passes before a FAIL/result line so the summary reflects passes
+        // that happened before it, not after -- otherwise a trailing "[N tests passed]" reads
+        // as more tests passing after the run already concluded and reported FAILED.
+        if (passCount > 0) {
+          kept.push(`[${passCount} tests passed]`)
+          passCount = 0
+        }
         kept.push(line)
         continue
       }

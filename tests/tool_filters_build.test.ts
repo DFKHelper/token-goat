@@ -542,6 +542,26 @@ describe('CargoFilter', () => {
     expect(result).not.toContain('test bar::test1 ... ok')
   })
 
+  // Regression: the [N tests passed] summary was only flushed on a new "running N tests"
+  // header or at the very end of the loop, never before a FAILED/test-result line -- so passes
+  // that happened chronologically before a failure were reported AFTER it in the compressed
+  // output, misleadingly reading as if more tests passed after the run already reported FAILED.
+  it('cargo test: flushes the pass-count summary before a FAILED line, not after', () => {
+    const stdout = [
+      'running 4 tests',
+      'test foo ... ok',
+      'test bar ... ok',
+      'test baz ... FAILED',
+      'test qux ... ok',
+      'test result: FAILED. 3 passed; 1 failed',
+    ].join('\n')
+    const result = apply(f, stdout, '', 1, ['cargo', 'test'])
+    const passIdx = result.indexOf('[2 tests passed]')
+    const failIdx = result.indexOf('test baz ... FAILED')
+    expect(passIdx).toBeGreaterThan(-1)
+    expect(passIdx).toBeLessThan(failIdx)
+  })
+
   it('significant compression on large cargo build', () => {
     const stderrLines = [
       ...Array.from({ length: 30 }, (_, i) => `   Downloaded crate-${i} v1.0.0`),
