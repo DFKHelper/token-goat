@@ -13,11 +13,26 @@ import { assignFlatEndLines, buildLineIndex, makeSymbolEmitter, offsetToLine, pr
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 120
 
-// Strip # comments but preserve newlines so line numbers stay correct.
-const COMMENT_RE = /#[^\n]*/g
-
+// Strip # comments but preserve newlines so line numbers stay correct. GNU Make treats `\#` as
+// an escaped, literal hash - it does not start a comment - so a `#` only opens a comment when
+// preceded by an even number (including zero) of contiguous backslashes.
 function stripComments(text: string): string {
-  return text.replace(COMMENT_RE, (m) => ' '.repeat(m.length))
+  let result = ''
+  let backslashRun = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '#' && backslashRun % 2 === 0) {
+      let j = i
+      while (j < text.length && text[j] !== '\n') j++
+      result += ' '.repeat(j - i)
+      i = j - 1
+      backslashRun = 0
+      continue
+    }
+    result += ch
+    backslashRun = ch === '\\' ? backslashRun + 1 : 0
+  }
+  return result
 }
 
 // Recognize `define`/`endef` lines, tolerating GNU make's legal leading spaces before `endef`
@@ -91,7 +106,10 @@ function maskContinuationAndDefines(text: string): MaskResult {
 }
 
 // Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules. A colon immediately followed by `/` or `\` (e.g. the drive-letter colon in a Windows absolute path like `C:/foo/bar.o`) is treated as part of the target name rather than the rule separator, so a Windows-path target no longer mis-splits at its drive colon.
-const TARGET_RE = /^((?:[^\t\n#:=]|:(?=[\\/]))(?:[^:\n#=]|:(?=[\\/]))*):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
+// `\#` is a legally-escaped literal hash in a target name (GNU Make) - excluded by the bare `#`
+// exclusion below unless allowed back in explicitly, same treatment as the `:(?=[\\/])` exemption
+// already given to a Windows drive-letter colon.
+const TARGET_RE = /^((?:[^\t\n#:=]|:(?=[\\/])|\\#)(?:[^:\n#=]|:(?=[\\/])|\\#)*):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
 // define VARNAME, tolerating GNU make's legal leading spaces and modifier prefixes (matching
 // DEFINE_LINE_RE's tolerance in maskContinuationAndDefines - a leading tab is never legal here

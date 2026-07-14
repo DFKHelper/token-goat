@@ -2430,6 +2430,14 @@ endef
     expect(symbols.find((s) => s.name === 'GREETING')?.kind).toBe('makefile_define')
   })
 
+  it('indexes a target whose name contains a legally-escaped hash, without misreading it as a comment start (regression: COMMENT_RE blanked from any # to end-of-line with no escape awareness, and TARGET_RE unconditionally excluded # from the name class even when not stripped, so a target like `foo\\#bar:` -- a legal GNU Make escaped-hash target name -- was silently dropped entirely, while a genuine trailing `#` comment on the same line as a target must still be stripped)', () => {
+    const escaped = extractMakefile('foo\\#bar: baz\n\techo hi\n', 'Makefile')
+    expect(escaped.map((s) => s.name)).toContain('foo\\#bar')
+
+    const withComment = extractMakefile('foo: baz # this is a comment\n\techo hi\n', 'Makefile')
+    expect(withComment.map((s) => s.name)).toEqual(['foo'])
+  })
+
   it('excludes ::= and :::= assignments but keeps real targets including double-colon rules', () => {
     const content = `build:
 \tgo build ./...
