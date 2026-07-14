@@ -1381,6 +1381,57 @@ describe('runTestFor', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('does not misclassify an ordinary helper whose name merely starts with "it" or "test" as a test function (regression: the test-prefix regex had no boundary after the alternation, so a bare prefix match let "it" match "itemsToJson"/"iterateOverTargetHelper" and "test" match "testament")', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-itword-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-itword-fixture"}\n')
+
+      const srcFile = normalizePath(join(dir, 'itWordTarget.ts'))
+      const testFile = normalizePath(join(dir, 'itWordTarget.test.ts'))
+
+      writeFileSync(srcFile, 'export function __itWordBugTargetFn_7c3d2e() {\n  return 1\n}\n', 'utf-8')
+      writeFileSync(
+        testFile,
+        [
+          "import { __itWordBugTargetFn_7c3d2e } from './itWordTarget'",
+          '',
+          '// A plain helper whose name coincidentally starts with "it" -- not a real test.',
+          'function iterateOverTargetHelper() {',
+          '  __itWordBugTargetFn_7c3d2e()',
+          '}',
+          '',
+          'it(\'works correctly\', () => {',
+          '  iterateOverTargetHelper()',
+          '})',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      indexFileSync(srcFile)
+      indexFileSync(testFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runTestFor({ file: srcFile, json: true })
+      } finally {
+        process.stdout.write = origWrite
+        cwdSpy.mockRestore()
+      }
+      expect(code).toBe(0)
+
+      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const entry = results.find((r) => r.testFile === testFile)
+      expect(entry).toBeDefined()
+      expect(entry!.testFunctions).not.toContain('iterateOverTargetHelper')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- runTestFor cross-project scoping (regression) --------------------------
