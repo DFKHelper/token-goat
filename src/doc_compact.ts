@@ -218,9 +218,13 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
       } else if (ch === fence.ch && run.length >= fence.len && (fm[2] ?? '').trim() === '') {
         fence = null
         inCodeBlock = false
-        if (currentHeading && sentencesEmitted < max) {
+        // The closing fence delimiter is structural code-block syntax, not one of the "first N
+        // real sentences" this budget tracks -- counting it against sentencesEmitted silently
+        // ate one legitimate trailing prose sentence per code block. Gate on codeBlockLines
+        // (mirroring the opening-fence branch) so it doesn't touch the sentence budget at all.
+        if (currentHeading && codeBlockLines < 10) {
           out.push(line)
-          sentencesEmitted++
+          codeBlockLines++
         }
         i++
         continue
