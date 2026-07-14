@@ -1567,6 +1567,24 @@ type Query { users: [User] }
     expect(imports.some((i) => i.target === 'user.graphql')).toBe(true)
   })
 
+  // Regression: the import extraction pass used to scan the raw, unmasked content, while every
+  // other pass (types, directives, fragments, operations, schema) ran against content with
+  // """..."""` block descriptions already blanked. A description whose prose merely mentions or
+  // gives an example of the #import pragma syntax got matched as a real import, writing a
+  // phantom, non-existent dependency edge into the index.
+  it('does not extract a phantom import from #import-pragma-shaped prose inside a """..."""` block description', () => {
+    const content = `"""
+desc mentions:
+# import Fake from "fake.graphql"
+"""
+type User {
+  id: ID!
+}
+`
+    const { imports } = extractGraphql(content, 'schema.graphql')
+    expect(imports.some((i) => i.target === 'fake.graphql')).toBe(false)
+  })
+
   it('stripHashComments preserves a `#` inside a quoted string (used before parsing GraphQL SDL)', () => {
     // A description string containing a literal `#` must not have its content past the `#`
     // treated as a comment and truncated - `type Foo {` on the same line must survive intact.

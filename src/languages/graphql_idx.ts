@@ -131,8 +131,19 @@ export function extractGraphql(
 
   const contentLineIndex = buildLineIndex(content)
 
+  // Mask """..."""/"..." descriptions BEFORE extracting imports or stripping `#` comments.
+  // GRAPHQL_IMPORT_RE matches any line that merely starts with `# import ... "..."`, with no
+  // way to tell a real import pragma apart from prose inside a """..."""` description that
+  // happens to describe or quote the import syntax (e.g. doc text reading `# import Foo from
+  // "bar.graphql"` as an example). Running descriptionsStripped first blanks that prose to
+  // spaces before the import regex ever sees it, while leaving genuine `#import` comment lines
+  // outside any description untouched -- the same reasoning stripGraphqlDescriptions already
+  // documents for why declaration extraction runs against blanked descriptions instead of raw
+  // content. Reused below instead of calling stripGraphqlDescriptions a second time.
+  const descriptionsStripped = stripGraphqlDescriptions(content)
+
   // Extract imports BEFORE stripping comments — #import pragmas live in comment lines
-  for (const m of content.matchAll(GRAPHQL_IMPORT_RE)) {
+  for (const m of descriptionsStripped.matchAll(GRAPHQL_IMPORT_RE)) {
     const target = m[1]?.trim() ?? ''
     if (target) {
       const line = offsetToLine(contentLineIndex, m.index ?? 0)
@@ -151,7 +162,7 @@ export function extractGraphql(
   // content, silently dropping all of them. Running stripGraphqlDescriptions first means the
   // whole description span - `#` characters included - is already blanked to spaces before
   // stripHashComments ever sees it, so there is no comment marker left inside it to misread.
-  const stripped = stripHashComments(stripGraphqlDescriptions(content))
+  const stripped = stripHashComments(descriptionsStripped)
   const totalLines = content.split('\n').length
   const lineIndex = buildLineIndex(stripped)
 
