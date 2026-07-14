@@ -1677,6 +1677,24 @@ class Ordinary {
     expect(names).toContain('apply')
     expect(symbols.find((s) => s.name === 'apply')?.docstring).toBe('Calculator')
   })
+
+  it('indexes a tailrec function at top level and as a class member (regression: FUN_RE/TOP_FUN_RE\'s modifier alternations did not include the real, still-valid Kotlin function modifier "tailrec", so a tailrec fun header never matched at all and the whole function was silently dropped from the index)', () => {
+    const content = `tailrec fun factorial(n: Int, acc: Int = 1): Int {
+    return if (n <= 1) acc else factorial(n - 1, n * acc)
+}
+
+class Calc {
+    private tailrec fun gcd(a: Int, b: Int): Int {
+        return if (b == 0) a else gcd(b, a % b)
+    }
+}
+`
+    const { symbols } = extractKotlin(content, 'Tailrec.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('factorial')
+    expect(names).toContain('gcd')
+    expect(symbols.find((s) => s.name === 'gcd')?.docstring).toBe('Calc')
+  })
 })
 
 // ---------------------------------------------------------------------------
