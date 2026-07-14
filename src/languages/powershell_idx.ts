@@ -243,7 +243,11 @@ export function extractPowershell(
       const depthInClass = braceDepth - classBraceDepth
       if (depthInClass === 1) {
         // Match constructor or method: [returntype] methodName([params]) or static [type] Name(); negative-lookahead rejects PS control keywords as defense in depth
-        const methodMatch = /^\s*(?!(?:if|elseif|else|while|for|foreach|do|switch|return|throw|try|catch|finally|param|begin|process|end)\b)(?:(?:static|hidden)\s+)*(?:\[[^\]]*\]\s*)?([A-Za-z_]\w*)\s*\(/i.exec(line)
+        // The return-type bracket group allows one level of nesting (`[^[\]]|\[[^[\]]*\]`) because
+        // PowerShell class methods legally return generic types like `[List[string]]` - a plain
+        // `[^\]]*` stops at the first `]` (the inner one), leaving the outer `]` dangling and
+        // silently dropping the whole method declaration since the name-capture group can't match `]`.
+        const methodMatch = /^\s*(?!(?:if|elseif|else|while|for|foreach|do|switch|return|throw|try|catch|finally|param|begin|process|end)\b)(?:(?:static|hidden)\s+)*(?:\[(?:[^[\]]|\[[^[\]]*\])*\]\s*)?([A-Za-z_]\w*)\s*\(/i.exec(line)
         if (methodMatch) {
           const mname = methodMatch[1] ?? ''
           if (mname && symbols.length < MAX_SYMBOLS) {
