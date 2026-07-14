@@ -6,6 +6,8 @@
  * and a generic catch-all for unrecognized large files.
  */
 
+import { parse } from 'csv-parse/sync'
+
 export interface FileTypeResult {
   shouldBlock: boolean
   message: string
@@ -184,7 +186,16 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   // extension but passes the original-case filePath through, so an uppercase
   // .TSV must still be recognized here or it silently gets the wrong separator.
   const sep = filePath.toLowerCase().endsWith('.tsv') ? '\t' : ','
-  const colCount = headers.split(sep).length
+  // A naive headers.split(sep) miscounts whenever a quoted field legitimately contains the
+  // delimiter (e.g. "Full Name, Preferred") - reuse the project's RFC-4180-aware csv-parse
+  // (already a dependency via csv_query.ts) to parse just the header line correctly, falling
+  // back to the naive split only if the header itself is malformed enough to throw.
+  let colCount: number
+  try {
+    colCount = (parse(headers, { delimiter: sep }) as string[][])[0]?.length ?? headers.split(sep).length
+  } catch {
+    colCount = headers.split(sep).length
+  }
 
   return {
     shouldBlock: true,

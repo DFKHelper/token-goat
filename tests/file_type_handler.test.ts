@@ -339,6 +339,17 @@ describe('handleCsv', () => {
     expect(result.message).toContain('3 columns')
   })
 
+  // Regression: colCount was computed via a naive headers.split(sep), which miscounts whenever
+  // a quoted field legitimately contains the delimiter (e.g. "Full Name, Preferred") — every
+  // embedded comma was wrongly counted as a field boundary, inflating the reported column count.
+  it('reports the correct column count when a quoted header field contains the delimiter', () => {
+    const header = '"Full Name, Preferred","Email Address","Notes, Extra"'
+    const content = header + '\n' + makeStr(FILE_TYPE_THRESHOLDS.csv)
+    const result = handleCsv('/path/to/data.csv', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('3 columns')
+  })
+
   it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
     const header = 'name,age,city'
     const dataRows = Array.from({ length: 500 }, (_, i) => `Person${i},${i + 20},City${i}`)
