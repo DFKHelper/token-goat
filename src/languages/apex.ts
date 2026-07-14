@@ -7,8 +7,11 @@ const IDENT = '[A-Za-z_][A-Za-z0-9_]*'
 const MODIFIER =
   '(?:public|private|protected|global|static|final|override|virtual|abstract|webservice|testMethod|transient|with|without|inherited|sharing)'
 
+// Same leading-annotation allowance as METHOD_RE below (`@IsTest private class MyTestClass { ... }`
+// is a common, legal Apex idiom) - without it, an annotated type declaration line fails to match
+// at all, silently dropping the type and misattributing every member inside it.
 const TYPE_DECL_RE = new RegExp(
-  `^[ \\t]*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
+  `^[ \\t]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
   'gm',
 )
 const TRIGGER_RE = new RegExp(
@@ -54,11 +57,18 @@ function lineEndOffset(content: string, lineIndex: readonly number[], line: numb
   return line < lineIndex.length ? (lineIndex[line] ?? content.length) : content.length
 }
 
+// A line "starts with @" is not sufficient to be a standalone annotation line to fold into the
+// span above: a type declaration itself can carry a leading same-line annotation
+// (`@IsTest private class MyTestClass {`), and that line must never be mistaken for one of the
+// preceding pure-annotation lines a method/constructor's own span walks back through - doing so
+// swallows the class's own header line into the member's span instead of the class's.
+const PURE_ANNOTATION_LINE_RE = /^(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?[ \t]*)+$/
+
 function annotationStartLine(lines: readonly string[], line: number): number {
   let start = line
   for (let i = line - 2; i >= 0; i--) {
     const trimmed = lines[i]?.trim() ?? ''
-    if (trimmed.startsWith('@')) {
+    if (PURE_ANNOTATION_LINE_RE.test(trimmed)) {
       start = i + 1
       continue
     }
