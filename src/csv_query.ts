@@ -53,7 +53,16 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
   return specs.map((spec) => {
     const m = WHERE_SPEC_RE.exec(spec)
     if (!m) throw new Error(`invalid --where spec: ${spec} (expected col=value, col!=value, col>value, col<value, col>=value, or col<=value, or col~=regex)`)
-    return { column: (m[1] as string).trim(), op: m[2] as CsvWhereOp, value: m[3] as string }
+    const op = m[2] as CsvWhereOp
+    const value = m[3] as string
+    // A numeric comparison with an empty right-hand side (e.g. a spec typo like "price>" with
+    // nothing after the operator) would otherwise reach matchesWhere as { op: '>', value: '' },
+    // where Number('') === 0 silently turns it into "price > 0" instead of surfacing the typo --
+    // the same blank-value trap matchesWhere already guards against for a blank cell.
+    if ((op === '>' || op === '<' || op === '>=' || op === '<=') && value.trim() === '') {
+      throw new Error(`invalid --where spec: ${spec} (missing comparison value after '${op}')`)
+    }
+    return { column: (m[1] as string).trim(), op, value }
   })
 }
 
