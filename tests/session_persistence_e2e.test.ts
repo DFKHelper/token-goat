@@ -21,12 +21,13 @@ import { BUNDLE } from './helpers/bundle.js'
 
 let tgHome: string
 let repo: string
+let dataBase: string
 
 /** Run the built bundle in a fresh process with the shared isolated home. */
 function runHook(event: string, payload: unknown): { stdout: string; stderr: string; status: number | null } {
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
     cwd: repo,
-    env: { ...process.env, TOKEN_GOAT_HOME: tgHome },
+    env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase },
     input: JSON.stringify(payload),
     encoding: 'utf8',
   })
@@ -36,7 +37,7 @@ function runHook(event: string, payload: unknown): { stdout: string; stderr: str
 function runCli(args: string[]): { stdout: string; stderr: string; status: number | null } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: repo,
-    env: { ...process.env, TOKEN_GOAT_HOME: tgHome },
+    env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase },
     encoding: 'utf8',
   })
   return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', status: res.status }
@@ -46,10 +47,27 @@ beforeAll(() => {
   tgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-home-'))
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-repo-'))
   fs.writeFileSync(path.join(repo, 'tsconfig.json'), '{\n  "compilerOptions": { "strict": true }\n}\n')
+
+  // TOKEN_GOAT_HOME isolates cross-process session state (disk_cache.ts's
+  // tokenGoatHome()), but config.toml lives under a separate path resolved by
+  // src/constants.ts's dataDir(), which on Windows honors LOCALAPPDATA instead
+  // -- without also isolating that, these spawned processes would read (and
+  // this suite would depend on) whatever the real machine's config.toml
+  // happens to contain. Pin LOCALAPPDATA/XDG_DATA_HOME to an isolated dir too,
+  // and seed protect_recent_reads = 0 there: these tests assert an immediate
+  // re-read still hard-denies, the exact scenario hints.protect_recent_reads's
+  // default (4) is designed to exempt (see tests/hooks_read.test.ts for that
+  // field's own dedicated coverage).
+  dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-data-'))
+  const configDir = process.platform === 'win32'
+    ? path.join(dataBase, 'dfk-helper', 'token-goat')
+    : path.join(dataBase, 'token-goat')
+  fs.mkdirSync(configDir, { recursive: true })
+  fs.writeFileSync(path.join(configDir, 'config.toml'), '[hints]\nprotect_recent_reads = 0\n', 'utf8')
 }, 120_000)
 
 afterAll(() => {
-  for (const d of [tgHome, repo]) {
+  for (const d of [tgHome, repo, dataBase]) {
     try {
       fs.rmSync(d, { recursive: true, force: true })
     } catch {

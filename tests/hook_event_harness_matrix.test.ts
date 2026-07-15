@@ -299,6 +299,18 @@ function runShim(
 beforeAll(() => {
   dataBase = mkIsolated('tg-hookmatrix-data-')
   homeBase = mkIsolated('tg-hookmatrix-home-')
+
+  // This file exercises the deny/context wire-shape reshaping across harnesses,
+  // not hints.protect_recent_reads (that field has its own dedicated coverage in
+  // tests/hooks_read.test.ts). Its default (4) would otherwise exempt each of
+  // this file's single-immediate-re-read fixtures from the re-read deny they're
+  // asserting on, so pin it to 0 in the isolated config this bundle process
+  // reads (dataDir() resolution mirrors src/constants.ts's defaultDataDir()).
+  const configDir = process.platform === 'win32'
+    ? path.join(dataBase, 'dfk-helper', 'token-goat')
+    : path.join(dataBase, 'token-goat')
+  fs.mkdirSync(configDir, { recursive: true })
+  fs.writeFileSync(path.join(configDir, 'config.toml'), '[hints]\nprotect_recent_reads = 0\n', 'utf8')
 }, 30000)
 
 afterAll(() => {
