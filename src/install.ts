@@ -18,7 +18,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -70,7 +70,7 @@ const LEGACY_COMMAND_MARKERS = ['tokenwise', 'token_goat', 'tg-hook', 'token-goa
  * identifier (e.g. a user hook literally named `my-token-goat-hook-config`).
  */
 export function anchoredMarkerPattern(marker: string): RegExp {
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escaped = escapeRegExp(marker)
   return new RegExp(`(?<![a-zA-Z0-9_-])${escaped}(?![a-zA-Z0-9_-])`)
 }
 
