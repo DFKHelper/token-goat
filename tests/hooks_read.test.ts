@@ -22,7 +22,8 @@ import { preReadHandler, postReadHandler, buildLineDiff } from '../src/hooks_rea
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState } from '../src/session.js'
-import { saveSessionState } from '../src/session_store.js'
+import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
+import { tokenGoatHome } from '../src/disk_cache.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
 import { compactPathFor, writeCompact } from '../src/doc_compact.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
@@ -660,6 +661,20 @@ describe('preReadHandler', () => {
   // the same 150KB read that gets only a soft context hint at 'cool' pressure (see the sibling
   // 100KB-500KB test above) must hard-deny once the session is under 'critical' context pressure,
   // since that tier scales the 512KB base threshold down to ~92KB.
+  // saveSessionState merges with whatever is already on disk under the same session id
+  // (session_store.ts's mergeSessionState unions bashOutputs rather than replacing them --
+  // deliberate, to survive concurrent same-session hook processes). Tests that seed synthetic
+  // bashOutputs to hit a specific pressure tier must delete the on-disk file afterward, or the
+  // entries silently accumulate across every other test in this file/worker that also resolves
+  // to the same getSessionId() value, corrupting their pressure math.
+  function clearSessionStateFile(sessionId: string): void {
+    try {
+      fs.unlinkSync(path.join(tokenGoatHome(), SESSIONS_SUBDIR, sessionId + '.json'))
+    } catch {
+      // ok -- may not exist
+    }
+  }
+
   it('tightens the deny threshold to a hard deny under critical context pressure', () => {
     // Pin harness detection so this doesn't depend on the ambient environment the test
     // runner happens to execute in (getContextPressure's effective window is
@@ -691,9 +706,97 @@ describe('preReadHandler', () => {
         expect(result.message).toContain('is very large')
       }
     } finally {
+      clearSessionStateFile(getSessionId())
       if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
       else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
     }
+  })
+
+  // Regression: hints.context_threshold_advisory was defined, validated, persisted, and
+  // displayed in config.ts but had zero consumers -- the large-file structural-nav hint never
+  // surfaced context-pressure state regardless of how full the session window was.
+  describe('hints.context_threshold_advisory wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+      clearSessionStateFile(getSessionId())
+    })
+
+    function fillContextToHotTier(): void {
+      const sessionId = getSessionId()
+      // pressureRawTotal (src/compact.ts) = CATALOG_TOKENS (10,800) + bashCount * 500 when no
+      // observedToolTokens are set. 1000 entries -> 510,800 tokens -> 0.774 fill fraction under
+      // the 'generic' harness's 1.0 multiplier (660,000 * 1.0 window) -- squarely in the 'hot'
+      // band (>= 0.70, < 0.85) without crossing into 'critical'.
+      const bashOutputs: Array<[string, string]> = Array.from({ length: 1000 }, (_, i) => [
+        `cmd${i}`,
+        `output${i}`,
+      ])
+      importSessionState({
+        files: [],
+        hintsShown: [],
+        webFetches: [],
+        bashOutputs,
+        curlDownloads: [],
+      })
+      saveSessionState(sessionId)
+    }
+
+    it('appends a context-pressure advisory to the large-file hint under hot pressure', () => {
+      const savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
+      try {
+        fillContextToHotTier()
+
+        const p = makeTmpFile('x'.repeat(150 * 1024))
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('context')
+        if (result.hookType === 'context') {
+          expect(result.context).toContain('is large')
+          expect(result.context).toContain('Context pressure: hot')
+        }
+      } finally {
+        if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+        else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
+      }
+    })
+
+    it('context_threshold_advisory=false suppresses the advisory suffix even under hot pressure', () => {
+      const cfg = defaultConfig()
+      cfg.hints.context_threshold_advisory = false
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const savedHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
+      try {
+        fillContextToHotTier()
+
+        const p = makeTmpFile('x'.repeat(150 * 1024))
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('context')
+        if (result.hookType === 'context') {
+          expect(result.context).toContain('is large')
+          expect(result.context).not.toContain('Context pressure')
+        }
+      } finally {
+        if (savedHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+        else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
+      }
+    })
+
+    it('cool pressure never gets the advisory suffix (default config, no session fill)', () => {
+      const p = makeTmpFile('x'.repeat(150 * 1024))
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('Context pressure')
+      }
+    })
   })
 
   // Regression coverage for the false "retry with offset/limit" advice bug: the deny message
