@@ -18,6 +18,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { estimateTokens } from './compact.js'
+import { loadConfig } from './config.js'
+import * as embeddings from './embeddings.js'
 import { atomicWriteText, foldPath } from './util.js'
 
 // Entry regex: matches markdown link entries in MEMORY.md.
@@ -258,6 +260,78 @@ export interface DupCluster {
   tokens: number
 }
 
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0
+  let na = 0
+  let nb = 0
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!
+    na += a[i]! * a[i]!
+    nb += b[i]! * b[i]!
+  }
+  if (na === 0 || nb === 0) return 0
+  return dot / (Math.sqrt(na) * Math.sqrt(nb))
+}
+
+/**
+ * Attempt embedding-based clustering. Returns null (never []) when embeddings are disabled,
+ * unavailable, or fail, so the caller falls through to the Jaccard path -- an empty embedding
+ * result (no clusters found) is a legitimate `[]`, distinct from "couldn't try".
+ */
+async function tryEmbeddingClusters(
+  siblings: string[],
+  snippets: string[],
+  threshold: number,
+): Promise<DupCluster[] | null> {
+  if (!(loadConfig().indexing?.embeddings_enabled ?? true) || !embeddings.isAvailable()) {
+    return null
+  }
+
+  let vecs: number[][]
+  try {
+    vecs = await embeddings.embedTexts(snippets)
+  } catch {
+    return null
+  }
+
+  const clusters: DupCluster[] = []
+  const used = new Set<number>()
+
+  for (let i = 0; i < siblings.length; i++) {
+    if (used.has(i)) continue
+
+    const group: number[] = [i]
+    for (let j = i + 1; j < siblings.length; j++) {
+      if (used.has(j)) continue
+      if (cosineSimilarity(vecs[i]!, vecs[j]!) >= threshold) {
+        group.push(j)
+      }
+    }
+
+    if (group.length > 1) {
+      const members = group.map((k) => siblings[k]!)
+      const tok = group.reduce((sum, k) => sum + estimateTokens(snippets[k]!), 0)
+
+      let maxSim = 0
+      for (let a = 0; a < group.length; a++) {
+        for (let b = a + 1; b < group.length; b++) {
+          maxSim = Math.max(maxSim, cosineSimilarity(vecs[group[a]!]!, vecs[group[b]!]!))
+        }
+      }
+
+      clusters.push({
+        members,
+        similarity: Math.round(maxSim * 1000) / 1000,
+        method: 'embedding',
+        tokens: tok,
+      })
+      for (const idx of group) used.add(idx)
+    }
+  }
+
+  return clusters
+}
+
 /**
  * Return clusters of sibling memory files with similar content.
  *
@@ -268,7 +342,10 @@ export async function findContentDuplicates(
   memoryDir: string,
   _opts?: { threshold?: number },
 ): Promise<DupCluster[]> {
-  // threshold is intentionally unused; kept for API compatibility const threshold = _opts?.threshold ?? 0.92
+  // threshold only governs the embedding/cosine path below -- the Jaccard fallback always
+  // uses its own fixed JACCARD_THRESHOLD, matching the pre-port Python behavior where a
+  // caller-supplied threshold never affected the no-embeddings case.
+  const threshold = _opts?.threshold ?? 0.92
 
   const siblings = fs
     .readdirSync(memoryDir)
@@ -282,7 +359,12 @@ export async function findContentDuplicates(
 
   const snippets = siblings.map((p) => siblingSnippet(p))
 
-  // Try embedding path (not implemented in this port; skip gracefully). Jaccard fallback.
+  const embeddingClusters = await tryEmbeddingClusters(siblings, snippets, threshold)
+  if (embeddingClusters !== null) {
+    return embeddingClusters
+  }
+
+  // Jaccard fallback (embeddings disabled/unavailable, or the embedding path errored).
   const JACCARD_THRESHOLD = 0.60
   const clusters: DupCluster[] = []
   const used = new Set<number>()
