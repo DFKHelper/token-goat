@@ -8,6 +8,7 @@ import { recordWebFetch } from './session.js';
 import { shortFingerprint } from './fingerprint.js';
 import { loadConfig } from './config.js';
 import { looksLikeHtml, extractCleanText } from './web_extract.js';
+import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   const toolResponse = raw['tool_response'];
@@ -96,7 +97,24 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     recordStat('web_fetch');
 
     const body = extractToolResponse(event.raw);
+
+    // Prompt-injection scan: README's documented contract ("every fetched page is
+    // scanned for attack patterns") is unconditional, so this runs ahead of the
+    // caching-size gate below rather than being folded into it. A match anywhere
+    // in the response wraps the whole response in an untrusted-content fence
+    // before it reaches the model; the matched pattern names are written to the
+    // stats ledger's `detail` column (README's "matched pattern name written to
+    // the log"). `injection.enabled` is the documented one-line opt-out.
+    const injCfg = loadConfig().injection;
+    const injectionMatches = injCfg.enabled && body ? scanForInjectionPatterns(body) : [];
+    if (injectionMatches.length > 0) {
+      recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','));
+    }
+
     if (!body || body.length < 1024) {
+      if (injectionMatches.length > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+      }
       return passOutput();
     }
 
@@ -123,6 +141,10 @@ export function postFetchHandler(event: HookEvent): HookOutput {
 
     const cacheId = storeWebOutput(url, storedBody, `${url}\x00${prompt}`);
     recordWebFetch(url, prompt, cacheId);
+
+    if (injectionMatches.length > 0) {
+      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+    }
 
     return passOutput();
   } catch {

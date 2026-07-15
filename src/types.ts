@@ -23,8 +23,9 @@
  *   `updatedToolOutput`). Confirmed against https://code.claude.com/docs/en/hooks
  *   (verified 2026-07-12): MCP-tool support has existed since before v2.1.121;
  *   support for built-in tools (Bash, Read, Edit, ...) was added in v2.1.121.
- *   As of this writing token-goat only emits this for MCP tools (see
- *   `hooks_mcp.ts`'s spike handler, gated by `TOKEN_GOAT_MCP_REWRITE_SPIKE`).
+ *   token-goat emits this for MCP tools (`hooks_mcp.ts`'s `postMcpHandler`,
+ *   unconditional aside from the `TOKEN_GOAT_MCP_COMPRESS=0` opt-out) and for
+ *   WebFetch (`hooks_fetch.ts`'s `postFetchHandler`, the injection-scan fence).
  * - `pass`    — no-op; let the call proceed unchanged.
  */
 export type HookOutput =

@@ -92,6 +92,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   outline: SOURCE_READ,
   exports: SOURCE_READ,
   web_fetch: SOURCE_WEB,
+  injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
   skill_oversized_first_load: SOURCE_SKILL,
 }
