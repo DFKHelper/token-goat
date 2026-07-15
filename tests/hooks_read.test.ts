@@ -303,6 +303,138 @@ describe('preReadHandler', () => {
     })
   })
 
+  // Regression: hints.min_file_lines_for_hint was defined, validated, persisted, and
+  // displayed in config.ts but had zero consumers -- surgicalHint() always appended its
+  // suggestion regardless of file size.
+  describe('hints.min_file_lines_for_hint wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    function makeUnchangedMdFile(): string {
+      const content = '# Title\n\nSome content.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+      )
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+      return p
+    }
+
+    it('hints.min_file_lines_for_hint=0 includes the surgical-read suggestion for a small file', () => {
+      const cfg = defaultConfig()
+      cfg.hints.min_file_lines_for_hint = 0
+      saveConfig(cfg)
+
+      const p = makeUnchangedMdFile()
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        expect(result.message).toContain('token-goat section')
+      }
+    })
+
+    it('hints.min_file_lines_for_hint above the file line count suppresses the suggestion', () => {
+      const cfg = defaultConfig()
+      cfg.hints.min_file_lines_for_hint = 1000
+      saveConfig(cfg)
+
+      const p = makeUnchangedMdFile()
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        expect(result.message).not.toContain('token-goat section')
+        // No trailing whitespace left behind by the suppressed suggestion.
+        expect(result.message.endsWith(' ')).toBe(false)
+      }
+    })
+  })
+
+  // Regression: hints.truncated_read_min_lines was defined, validated, persisted, and
+  // displayed in config.ts but had zero consumers -- the truncated-read deny in the
+  // doc/source diff-on-reread branch fired unconditionally whenever
+  // wasFileTruncatedThisSession() was true, regardless of the file's line count.
+  describe('hints.truncated_read_min_lines wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    function makeTruncatedMdFile(): string {
+      const content = '# Title\n\nSome content.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+      )
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content + ' [Truncated: file too large, showing first 33K tokens]' },
+      }
+      postReadHandler(postEvent)
+      return p
+    }
+
+    it('hints.truncated_read_min_lines=0 denies with the truncated-read message for a small file', () => {
+      const cfg = defaultConfig()
+      cfg.hints.truncated_read_min_lines = 0
+      saveConfig(cfg)
+
+      const p = makeTruncatedMdFile()
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('truncated on last read (>33K tokens)')
+        expect(result.message).toContain('token-goat skeleton')
+      }
+    })
+
+    it('hints.truncated_read_min_lines above the file line count falls through to the next branch', () => {
+      const cfg = defaultConfig()
+      cfg.hints.truncated_read_min_lines = 1000
+      saveConfig(cfg)
+
+      const p = makeTruncatedMdFile()
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        // The truncation-specific deny is suppressed by the line-count gate; control falls
+        // through to the next applicable branch (here, the unchanged-since-last-read deny,
+        // since postReadHandler's snapshot logic still ran and the file content is
+        // unchanged), never straight through to passOutput().
+        expect(result.message).not.toContain('truncated on last read (>33K tokens)')
+        expect(result.message).toContain('unchanged since last read')
+      }
+    })
+  })
+
   it('returns a large-file context hint for files between 100KB and 500KB', () => {
     const p = makeTmpFile('x'.repeat(150 * 1024))
 

@@ -305,8 +305,12 @@ function isDispatchedFileType(basename: string): boolean {
   return DISPATCHED_FILE_TYPE_EXTS.has(path.extname(basename).slice(1).toLowerCase())
 }
 
-/** Generate extension-aware surgical-read hint for a file. */
-function surgicalHint(filePath: string, basename: string): string {
+/** Generate extension-aware surgical-read hint for a file, gated on
+ *  hints.min_file_lines_for_hint — files below the threshold return '' since a surgical-read
+ *  suggestion isn't worth the noise for a file that's already small enough to read whole. */
+function surgicalHint(filePath: string, basename: string, lineCount: number): string {
+  if (lineCount < loadConfig().hints.min_file_lines_for_hint) return ''
+
   const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
 
@@ -789,14 +793,27 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
   if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
-    // Truncation takes priority: redirect to skeleton/surgical reads.
+    // Truncation takes priority: redirect to skeleton/surgical reads, gated on
+    // hints.truncated_read_min_lines so a small file that happened to trip the token-based
+    // truncation marker doesn't get denied for a redirect that wouldn't help it.
     if (wasFileTruncatedThisSession(normalized)) {
-      recordActualRead(event, normalized)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(
-        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-      )
+      let truncatedLineCount = Infinity
+      try {
+        const sz = statSize(normalized)
+        if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+          truncatedLineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
+        }
+      } catch {
+        // best-effort — treat as eligible for the deny below on read/stat failure
+      }
+      if (truncatedLineCount >= loadConfig().hints.truncated_read_min_lines) {
+        recordActualRead(event, normalized)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        )
+      }
     }
 
     const sessionId = getSessionId()
@@ -816,8 +833,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             recordActualRead(event, normalized)
             recordStat('session_hint', 0, 0)
             return denyOutput(
-              basename + ' is unchanged since last read. ' +
-              surgicalHint(normalized, basename),
+              (basename + ' is unchanged since last read. ' +
+              surgicalHint(normalized, basename, countTextLines(currentContent))).trimEnd(),
             )
           }
 
@@ -832,9 +849,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
               recordActualRead(event, normalized)
               recordStat('diff_hint', savedBytes, Math.round(savedBytes / 4))
               return denyOutput(
-                'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+                ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
                 '```diff\n' + diff + '\n```\n\n' +
-                surgicalHint(normalized, basename),
+                surgicalHint(normalized, basename, countTextLines(currentContent))).trimEnd(),
               )
             }
           }
