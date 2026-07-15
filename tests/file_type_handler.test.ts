@@ -157,6 +157,19 @@ describe('handleTxt', () => {
     expect(result.message).toContain('--tail')
   })
 
+  // Regression: the log-file recall hint suggested `bash-output <id>` with a literal,
+  // unsubstituted `<id>` placeholder. A file read directly off disk never went through the
+  // bash-output cache, so there is no id -- `bash-output <id>` errors ("no cached bash output
+  // for id: <id>"). The working form (mirroring hooks_read.ts's sessionArtifactRecall for the
+  // same on-disk-but-uncached situation) is `bash-output --file "<path>"`.
+  it('log file recall hint uses --file with the real path, not a literal unsubstituted <id>', () => {
+    const content = makeStr(FILE_TYPE_THRESHOLDS.txt + 1)
+    const result = handleTxt('/var/log/app.log', content)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('bash-output --file "/var/log/app.log"')
+    expect(result.message).not.toContain('bash-output <id>')
+  })
+
   // Regression: isLog's directory-based fallback only matched a forward-slash '/logs/'
   // substring, so a Windows-native backslash-separated path (e.g. C:\...\logs\service.txt)
   // with a non-log extension silently fell back to the generic offset/limit hint instead
