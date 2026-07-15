@@ -134,6 +134,11 @@ export function buildTranscriptOutline(cues: TranscriptCue[], bucketCount = 10):
       const preview = cue.text.slice(0, 60) + (cue.text.length > 60 ? '...' : '')
       markers.push({ timestamp: formatTimestamp(cue.startSeconds), preview })
       nextBucketStart += bucketSize
+      // When every cue shares the same end time (e.g. zero-duration keyframe/scene-marker
+      // cues), durationSeconds and therefore bucketSize are both 0, so nextBucketStart never
+      // advances and every cue would otherwise satisfy the >= check -- bound the marker
+      // count directly so the outline stays an outline instead of a full cue dump.
+      if (markers.length >= Math.min(bucketCount, cues.length)) break
     }
   }
   return { speakers, durationSeconds, markers }

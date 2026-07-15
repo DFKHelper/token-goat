@@ -144,6 +144,23 @@ Line one appended last
     expect(outline.markers.length).toBeGreaterThan(1)
     expect(outline.markers.map((m) => m.timestamp)).toContain('00:00:00')
   })
+
+  // Regression: when every cue's endSeconds is 0 (zero-duration keyframe/scene-marker cues,
+  // e.g. `00:00:00.000 --> 00:00:00.000`), durationSeconds and therefore bucketSize both
+  // evaluate to 0, so nextBucketStart never advances past 0 and every cue satisfied the
+  // `startSeconds >= nextBucketStart` check -- turning the bounded "outline" into a full dump
+  // of every cue.
+  it('caps the marker count even when all cues have zero duration (bucketSize would be 0)', () => {
+    const cues = Array.from({ length: 50 }, (_, i) => ({
+      index: i + 1,
+      startSeconds: 0,
+      endSeconds: 0,
+      speaker: null,
+      text: `cue ${i}`,
+    }))
+    const outline = buildTranscriptOutline(cues, 10)
+    expect(outline.markers.length).toBeLessThanOrEqual(10)
+  })
 })
 
 describe('sliceTranscript', () => {
