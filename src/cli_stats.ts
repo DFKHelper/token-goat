@@ -14,13 +14,13 @@ import { summarize, renderStats, renderShortStats } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { ensureNewline } from './util.js'
-import { stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsi } from './render/ansi.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 /** Write ``text`` directly to stdout (no colorama buffering layer needed in TS). */
 export function writeRaw(text: string): void {
-  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
 }
 

@@ -22,13 +22,13 @@ import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath } from './util.js'
-import { stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 function emit(text: string): void {
-  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
 }
 

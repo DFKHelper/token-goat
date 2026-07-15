@@ -119,7 +119,7 @@ import {
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
-import { stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsi } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
@@ -149,7 +149,7 @@ import { isHintCategory } from './hint_stats.js'
 class CliError extends Error {}
 
 function out(text: string): void {
-  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
 }
 
