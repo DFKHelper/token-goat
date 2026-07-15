@@ -1771,6 +1771,22 @@ function expandGlobs(root: string, patterns: string[]): string[] {
   return out
 }
 
+/** Reads .tokengoatignore from the project root and returns its non-blank, non-comment lines as glob patterns. Returns undefined if the file doesn't exist. */
+function readIgnoreFile(root: string): string[] | undefined {
+  const ignorePath = path.join(root, '.tokengoatignore')
+  let raw: string
+  try {
+    raw = fs.readFileSync(ignorePath, 'utf8')
+  } catch {
+    return undefined
+  }
+  const patterns = raw
+    .split('\n')
+    .map((ln) => ln.trim())
+    .filter((ln) => ln.length > 0 && !ln.startsWith('#'))
+  return patterns.length > 0 ? patterns : undefined
+}
+
 function cmdPack(
   patterns: string[] | undefined,
   opts: {
@@ -1787,8 +1803,10 @@ function cmdPack(
   try {
     const root = process.cwd()
     const style = opts.format === 'xml' ? 'xml' : opts.format === 'text' ? 'plain' : 'markdown'
+    const ignorePatterns = opts.ignore !== false ? readIgnoreFile(root) : undefined
     const collectOpts = {
       ...(opts.stripComments === true ? { do_strip_comments: true as const } : {}),
+      ...(ignorePatterns !== undefined ? { ignore_patterns: ignorePatterns } : {}),
     }
     const patternList = patterns ?? []
     const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
