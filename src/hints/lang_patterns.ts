@@ -152,6 +152,15 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^\s*(?:gradle|\.\/gradlew|gradlew)\b/i,
   // Python / pip
   /^\s*pip\s+(install|freeze)\b/i,
+  // npm audit / npm outdated — read-only reporting commands with no side
+  // effects, safe to cache/recall. Each resolves a `lockfile`-scoped
+  // fingerprint via bash_output_cache.ts's isNpmAuditCommand/
+  // isNpmOutdatedCommand, but that fingerprinting never actually ran outside
+  // their own unit tests until this entry, since neither subcommand was
+  // recognized by isBuildCommand (the generic cache-reachability gate in
+  // hooks_bash.ts). `npm install`/`npm ci`/`npm list`/`npm ls` are
+  // deliberately left out — see the negative-case test in lang_patterns.test.ts.
+  /^\s*npm\s+(audit|outdated)\b/i,
   // Poetry
   /^\s*poetry\s+(install|update)\b/i,
   // uv

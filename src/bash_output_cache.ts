@@ -297,7 +297,11 @@ export async function commandHash(command: string, cwd: string | null = null): P
     if (fp) key = `${key}\x00lockfile:${fp}`
   }
 
-  if (cwd && isNpmInstallCommand(command)) {
+  // npm audit/outdated output depends on the resolved lockfile exactly like npm install does
+  // (both isNpmAuditCommand and isNpmOutdatedCommand's patterns existed with zero call sites
+  // until this wiring), so a cached result must key-scope on it too -- otherwise `npm install`
+  // adding a vulnerable package would never invalidate a previously cached `npm audit` result.
+  if (cwd && (isNpmInstallCommand(command) || isNpmAuditCommand(command) || isNpmOutdatedCommand(command))) {
     const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) key = `${key}\x00npm-install:${fp}`
   }
@@ -318,8 +322,8 @@ export async function commandHash(command: string, cwd: string | null = null): P
  *   `npm run <script>` -- since {@link gitStateFingerprintSync} already
  *   captures staged/unstaged/untracked changes anywhere in the tree.
  * - `dir`: directory-listing commands, scoped to the listed directory's mtime.
- * - `lockfile`: dependency-list/install commands, scoped to the resolved
- *   lockfile's content.
+ * - `lockfile`: dependency-list/install/audit/outdated commands, scoped to
+ *   the resolved lockfile's content.
  * - `file`: `cat <file>`, scoped to that one file's mtime + size.
  */
 export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
@@ -346,7 +350,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
     }
   }
 
-  if (isDepListCommand(command) || (cwd && isNpmInstallCommand(command))) {
+  if (isDepListCommand(command) || (cwd && (isNpmInstallCommand(command) || isNpmAuditCommand(command) || isNpmOutdatedCommand(command)))) {
     const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) fingerprints.lockfile = fp
   }
