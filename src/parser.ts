@@ -1995,7 +1995,8 @@ export async function indexFileEmbeddings(
   sha?: string,
   onError?: (err: unknown) => void,
 ): Promise<void> {
-  if (!loadConfig().indexing.embeddings_enabled) {
+  const ixCfg = loadConfig().indexing
+  if (!ixCfg.embeddings_enabled) {
     // Stamp a disabled-marker embed_sha even though no embedding actually ran, so
     // makeIndexer's embedUnchanged gate (worker.ts) can hold for this content the next time
     // it's touched while STILL disabled -- otherwise every re-touch of an unchanged file
@@ -2020,6 +2021,17 @@ export async function indexFileEmbeddings(
   try {
     content = await fs.promises.readFile(filePath, 'utf8')
   } catch {
+    return
+  }
+  if (content.length > ixCfg.large_file_symbol_only_kb * 1024) {
+    // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already
+    // indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a
+    // moderately-large file is comparatively expensive for comparatively little retrieval
+    // value -- deliberately never embed it, mirroring the profile-meta.xml /
+    // salesforce_metadata terminal-skip pattern below.
+    const db = getDb(dbPath)
+    deleteFileEmbeddings(db, filePath)
+    stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
   if (detectLanguage(filePath) === 'salesforce_metadata' && content.length > 512 * 1024) {

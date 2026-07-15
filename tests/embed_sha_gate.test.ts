@@ -5,8 +5,9 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
+import { loadConfig, saveConfig } from '../src/config.js'
 import { fingerprintFile } from '../src/fingerprint.js'
-import { getFileEntry } from '../src/index_reader.js'
+import { getFileEntry, querySymbols } from '../src/index_reader.js'
 import {
   disabledEmbedSha,
   indexFileEmbeddings,
@@ -76,6 +77,55 @@ describe('policy-skipped files stamp embed_sha so they are not re-embedded every
     const entry = getFileEntry(file, dbPath)
     expect(entry?.embedSha).toBe(sha)
     expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(true)
+  })
+})
+
+// Bug: indexing.large_file_symbol_only_kb was a fully write-path-wired config knob (declared,
+// range-validated, clamped to large_file_skip_kb, persisted) with zero read-side consumers --
+// a file between the symbol-only and full-skip thresholds was embedded exactly as if the field
+// did not exist. indexFileEmbeddings must skip embedding (but indexFileSync must still index
+// symbols normally) once content exceeds large_file_symbol_only_kb. Asserts on the chunks table
+// (not just the terminal embed_sha marker, which a REAL successful embed would also stamp) so
+// this test actually discriminates "embedding ran" from "embedding was skipped" in an
+// environment where the optional embedding deps are installed.
+describe('large_file_symbol_only_kb gates embedding independently of symbol indexing', () => {
+  it('indexes symbols but skips embedding for a file between the symbol-only and skip thresholds', async () => {
+    const dbPath = path.join(TMP, 'index.db')
+    const originalCfg = loadConfig()
+    const originalSymbolOnly = originalCfg.indexing.large_file_symbol_only_kb
+    const originalSkip = originalCfg.indexing.large_file_skip_kb
+    try {
+      const cfg = structuredClone(loadConfig())
+      cfg.indexing.large_file_symbol_only_kb = 1
+      cfg.indexing.large_file_skip_kb = 1024
+      saveConfig(cfg)
+
+      const file = path.join(TMP, 'big.ts')
+      const body = Array.from({ length: 200 }, (_, i) => `export function fn${i}(): number { return ${i} }`).join('\n')
+      fs.writeFileSync(file, body, 'utf8')
+      expect(fs.readFileSync(file, 'utf8').length).toBeGreaterThan(1024)
+
+      indexFileSync(file, dbPath)
+      const symbols = querySymbols({ filePath: file }, dbPath)
+      expect(symbols.length).toBeGreaterThan(0)
+      expect(symbols.some((s) => s.name === 'fn0')).toBe(true)
+
+      const sha = fingerprintFile(file)
+      await indexFileEmbeddings(file, dbPath, sha ?? undefined)
+
+      const entry = getFileEntry(file, dbPath)
+      expect(entry?.embedSha).toBe(sha)
+      expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true)).toBe(true)
+
+      const db = getDb(dbPath)
+      const chunkRows = db.prepare('SELECT COUNT(*) as n FROM chunks WHERE file_path = ?').get(file) as { n: number }
+      expect(chunkRows.n).toBe(0)
+    } finally {
+      const restoreCfg = structuredClone(loadConfig())
+      restoreCfg.indexing.large_file_symbol_only_kb = originalSymbolOnly
+      restoreCfg.indexing.large_file_skip_kb = originalSkip
+      saveConfig(restoreCfg)
+    }
   })
 })
 
