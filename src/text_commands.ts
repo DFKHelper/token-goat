@@ -99,7 +99,10 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   // regex-special characters (e.g. an unbalanced paren) is matched literally instead of either
   // throwing "Invalid regular expression" or being interpreted as regex syntax.
   const kindPattern = [...kindSet].map(escapeRegExp).join('|')
-  const re = new RegExp(`\\b(${kindPattern})\\s*:?\\s*(.*)`, 'i')
+  // Trailing \b after the kind name prevents a marker from matching as a prefix of a longer
+  // identifier/word (e.g. "NOTEBOOK", "TODOLIST", "HACKATHON") -- without it, \s*:?\s* all
+  // matches zero-width and the rest of the word gets swallowed into the captured text.
+  const re = new RegExp(`\\b(${kindPattern})\\b\\s*:?\\s*(.*)`, 'i')
   const items: TodoItem[] = []
   const lines = splitLines(text)
   for (let i = 0; i < lines.length; i++) {
