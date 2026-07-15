@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint } from './hint_stats.js'
 import { normalizePath } from './paths.js'
-import { foldPath } from './util.js'
+import { foldPath, isWithinQuietHours } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -451,6 +451,19 @@ function recordActualRead(event: HookEvent, filePath: string): void {
   recordFileRead(filePath)
 }
 
+/**
+ * contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/
+ * informational hint paths (contextOutput -- lets the call proceed, injects a suggestion)
+ * are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file,
+ * reread-deny) are never suppressed by quiet hours.
+ */
+function quietContextOutput(context: string): HookOutput {
+  if (isWithinQuietHours(loadConfig().hints.quiet_hours)) {
+    return passOutput()
+  }
+  return contextOutput(context)
+}
+
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -494,13 +507,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (manifestHint) {
       recordActualRead(event, normalized)
       markHintShown('manifest-hint:' + normalized)
-      return contextOutput(manifestHint.text)
+      return quietContextOutput(manifestHint.text)
     }
   }
 
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
-    return contextOutput(
+    return quietContextOutput(
       'Already read ' + basename + '. Use `token-goat section "' + normalized + '::compilerOptions"` ' +
       'to extract compiler options, or `token-goat config-get ' + normalized + ' compilerOptions.target` for a single value.',
     )
@@ -508,7 +521,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
-    return contextOutput(
+    return quietContextOutput(
       'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
       'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
     )
@@ -524,7 +537,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const stale = isCompactStale(compact, skillName, bodySha)
       if (stale === true) {
         recordActualRead(event, normalized)
-        return contextOutput(
+        return quietContextOutput(
           'This skill\'s cached compact is stale. Run `token-goat skill-compact ' + skillName + '` to regenerate it.',
         )
       }
@@ -664,7 +677,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           return denyOutput(message)
         }
         recordActualRead(event, normalized)
-        return contextOutput(message)
+        return quietContextOutput(message)
       }
     }
   }
@@ -767,7 +780,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'Session transcript is large (' + Math.round(outputSize / 1024) + 'KB). ' + sessionArtifactRecall(normalized),
         )
       }
-      return contextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
+      return quietContextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
     }
     // First read of tool-results/*.txt — fall through to normal handling
   }
@@ -849,7 +862,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordActualRead(event, normalized)
-          return contextOutput(
+          return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
             'or use `token-goat read ' + normalized + '::SymbolName` for a narrower slice instead of a full re-read.',
@@ -920,7 +933,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
-    return contextOutput(
+    return quietContextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
         hint,
     )
@@ -964,7 +977,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (config.hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalized, size)
     }
-    return contextOutput(
+    return quietContextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
         hint,
     )
@@ -1108,7 +1121,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
         const minLines = loadConfig().post_read_code_compress.min_lines
         if (lineCount >= minLines) {
           recordStat('session_hint', sz, Math.round(sz / 4))
-          return contextOutput(
+          return quietContextOutput(
             normalized + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + normalized + '"` or `token-goat outline "' + normalized + '"` for structural navigation instead of a future full re-read.',
           )
         }

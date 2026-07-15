@@ -169,6 +169,66 @@ describe('preReadHandler', () => {
     }
   })
 
+  describe('hints.quiet_hours wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      vi.useRealTimers()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it('suppresses the "already read" context hint during the configured window (regression: field had zero consumers)', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
+      const cfg = defaultConfig()
+      cfg.hints.quiet_hours = '22:00-06:00'
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const p = makeTmpFile()
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('pass')
+    })
+
+    it('does not suppress the hint outside the configured window', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0))
+      const cfg = defaultConfig()
+      cfg.hints.quiet_hours = '22:00-06:00'
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const p = makeTmpFile()
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+    })
+
+    it('never suppresses a correctness-relevant deny (large re-read), even during the window', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
+      const cfg = defaultConfig()
+      cfg.hints.quiet_hours = '22:00-06:00'
+      saveConfig(cfg)
+      invalidateConfigCache()
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+      }
+    })
+  })
+
   it('denies re-read of a large file (>50KB) that was already read this session', () => {
     const p = makeTmpFile('x'.repeat(60 * 1024))
     recordFileRead(normalizePath(p))
