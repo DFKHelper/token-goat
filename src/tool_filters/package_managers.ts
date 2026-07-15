@@ -390,7 +390,11 @@ class YarnFilter extends ToolFilter {
     }
     let dupWarnings = 0
     if (warningLines.length) {
-      const [deduped, dropped] = dedupLines(warningLines, 1, (ln) => ln.slice(0, 60))
+      // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a
+      // long leading substring (e.g. the same package name in two different peer-dependency
+      // warnings) collide, silently dropping one as a false "repeat".
+      const [deduped, dropped] = dedupLines(warningLines, 1)
+
       dupWarnings = dropped
       kept.push(...deduped)
     }

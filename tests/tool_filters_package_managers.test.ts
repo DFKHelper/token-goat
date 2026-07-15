@@ -308,7 +308,7 @@ describe('YarnFilter classic (v1)', () => {
     expect(result.text).toContain('Done in 12.34s')
   })
 
-  it('deduplicates warning lines (first 60 chars as key)', () => {
+  it('deduplicates exact-repeat warning lines', () => {
     const out = [
       'yarn install v1.22.19',
       'warning lodash@4.17.21: This package is deprecated',
@@ -320,6 +320,22 @@ describe('YarnFilter classic (v1)', () => {
     expect(result.text).toContain('warning lodash')
     expect(result.text.split('warning lodash').length - 1).toBe(1)
     expect(result.text).toMatch(/deduplicated/i)
+  })
+
+  // Regression: the dedup key truncated each warning line to its first 60 characters, so two
+  // distinct warnings sharing a long common leading substring (e.g. the same package name in
+  // two different peer-dependency warnings) collided and one was silently dropped as a false
+  // "repeat".
+  it('does not drop a distinct warning that shares a long common prefix with another', () => {
+    const out = [
+      'yarn install v1.22.19',
+      'warning "@some-very-long-scope/really-long-package-name-x > child@1.0.0" has unmet peer dependency "react@^16.0.0".',
+      'warning "@some-very-long-scope/really-long-package-name-x > child@1.0.0" has unmet peer dependency "react-dom@^16.0.0".',
+      'Done in 1s.',
+    ].join('\n')
+    const result = yarnFilter.apply(out, '', 0, ['yarn', 'install'])
+    expect(result.text).toContain('react@^16.0.0')
+    expect(result.text).toContain('react-dom@^16.0.0')
   })
 
   it('keeps error lines', () => {
