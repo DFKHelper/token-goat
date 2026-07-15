@@ -128,6 +128,22 @@ Line one appended last
     const outline = buildTranscriptOutline(parseTranscript(outOfOrderVtt))
     expect(outline.durationSeconds).toBe(32)
   })
+
+  // Sibling regression to the durationSeconds fix: the marker-sampling loop also assumed
+  // cues arrive in non-decreasing startSeconds order to advance nextBucketStart, so an
+  // out-of-order array left every cue after the first permanently unreachable once a later
+  // cue happened to appear first.
+  it('samples markers across the full duration even when cues are not in chronological array order', () => {
+    const cues = [
+      { index: 1, startSeconds: 100, endSeconds: 100, speaker: null, text: 'late cue appears first in array' },
+      { index: 2, startSeconds: 0, endSeconds: 0, speaker: null, text: 'earliest cue appears second' },
+      { index: 3, startSeconds: 10, endSeconds: 10, speaker: null, text: 'x' },
+      { index: 4, startSeconds: 20, endSeconds: 20, speaker: null, text: 'x' },
+    ]
+    const outline = buildTranscriptOutline(cues, 10)
+    expect(outline.markers.length).toBeGreaterThan(1)
+    expect(outline.markers.map((m) => m.timestamp)).toContain('00:00:00')
+  })
 })
 
 describe('sliceTranscript', () => {

@@ -125,7 +125,11 @@ export function buildTranscriptOutline(cues: TranscriptCue[], bucketCount = 10):
   const bucketSize = durationSeconds / Math.min(bucketCount, cues.length)
   const markers: TranscriptOutlineEntry[] = []
   let nextBucketStart = 0
-  for (const cue of cues) {
+  // Same non-chronological-array-order concern as durationSeconds above: this loop relies
+  // on startSeconds being non-decreasing as it walks the array to advance nextBucketStart,
+  // so sort a local copy first rather than trusting cue order.
+  const sortedCues = [...cues].sort((a, b) => a.startSeconds - b.startSeconds)
+  for (const cue of sortedCues) {
     if (cue.startSeconds >= nextBucketStart) {
       const preview = cue.text.slice(0, 60) + (cue.text.length > 60 ? '...' : '')
       markers.push({ timestamp: formatTimestamp(cue.startSeconds), preview })
