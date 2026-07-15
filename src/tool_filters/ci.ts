@@ -926,6 +926,13 @@ export class SnykFilter extends ToolFilter {
 
       // License issue lines always kept
       if (_SNYK_LICENSE_RE.test(line) && !_SNYK_TREE_LINE_RE.test(line)) {
+        if (inMoreAbout) {
+          if (moreAboutDropped) {
+            kept.push(`[token-goat: collapsed ${moreAboutDropped} 'More about' URL line(s)]`)
+            moreAboutDropped = 0
+          }
+          inMoreAbout = false
+        }
         kept.push(line)
         continue
       }
