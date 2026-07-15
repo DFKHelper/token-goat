@@ -32,6 +32,7 @@ import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from '../src/web_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
 import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from '../src/cache_session_commands.js'
+import { dataDir } from '../src/constants.js'
 import { buildResumePacket, MAX_RESUME_CHARS } from '../src/resume.js'
 import { loadConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 
@@ -279,6 +280,24 @@ describe('cmdCleanCache', () => {
     cmdCleanCache({})
     const out = capturedOutput()
     expect(out).toContain(`${BASH_OUTPUT_SUBDIR}: removed 1`)
+  })
+
+  // Regression: cleanupStaleDownloads (webfetch.ts) -- which removes orphaned .tmp files left in
+  // webCacheDir() by a process killed mid-download -- was fully implemented and unit-tested but
+  // had zero production callers. clean-cache is the established "sweep every cache subdir"
+  // entrypoint; it never touched webCacheDir() at all before this wiring.
+  it('also sweeps orphaned .tmp download files from the web fetch cache dir', () => {
+    const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
+    fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
+    fs.writeFileSync(staleTmp, 'partial')
+    try {
+      cmdCleanCache({ json: true })
+      const parsed = JSON.parse(capturedOutput()) as { removed: Record<string, number> }
+      expect(parsed.removed['web_cache_tmp']).toBeGreaterThanOrEqual(1)
+      expect(fs.existsSync(staleTmp)).toBe(false)
+    } finally {
+      try { fs.unlinkSync(staleTmp) } catch { /* already removed by the assertion above */ }
+    }
   })
 })
 
