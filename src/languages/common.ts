@@ -153,28 +153,6 @@ export function stripXmlComments(text: string): string {
 }
 
 /**
- * Strip `//` line comments, quote-aware (like `stripSqlLineComments`'s `--` handling below) so a
- * `//` inside an open string literal (e.g. a URL like `'https://example.com'`) is not mistaken for
- * a real comment starter. Blank-fills (rather than deletes) the comment span so line/column offsets
- * are preserved for downstream line-based symbol extraction. Unlike `stripCstyleComments`'s
- * `lineCommentRe` parameter, this is quote-aware on its own and does not require callers to blank
- * string literals first — needed by callers (like the Salesforce LWC JS adapter) that still need
- * string-literal content intact after stripping comments, e.g. to read an import path.
- */
-export function stripSlashLineComments(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => {
-      let idx = line.indexOf('//')
-      while (idx !== -1 && isInsideStringLiteral(line, idx)) {
-        idx = line.indexOf('//', idx + 1)
-      }
-      return idx === -1 ? line : line.slice(0, idx) + ' '.repeat(line.length - idx)
-    })
-    .join('\n')
-}
-
-/**
  * Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an
  * open single- or double-quoted string literal on the same line is not treated as a comment
  * starter, so e.g. a GraphQL description string containing a literal `#` is preserved.
