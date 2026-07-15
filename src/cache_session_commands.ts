@@ -14,6 +14,7 @@ import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestS
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { ensureNewline, requireNonNegativeStrictInt } from './util.js'
+import { loadConfig } from './config.js'
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
@@ -34,6 +35,8 @@ const CACHE_ENV_GATES: Array<{ key: string; what: string }> = [
   { key: 'TOKEN_GOAT_COMPACT_ASSIST', what: 'compact-assist manifest injection' },
   { key: 'TOKEN_GOAT_INJECTION_ENABLED', what: 'context injection in hooks' },
 ]
+
+const INDEXING_SKIP_KB_SANITY_FLOOR = 5
 
 function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
@@ -282,6 +285,20 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
       detail: disabled ? `${key}=${val} — disables ${what}` : `${key} unset (feature enabled by default)`,
     })
   }
+  // A large_file_skip_kb this small silently guts indexing project-wide (nearly every real
+  // source file exceeds a few KB, so `token-goat index` would skip almost everything with no
+  // error -- exactly what happened when this session's own config.toml was accidentally
+  // corrupted to large_file_skip_kb=1, and no existing check surfaced it). 5 KB is well below
+  // any file size a legitimate skip-most-large-files config would plausibly choose.
+  const skipKb = loadConfig().indexing.large_file_skip_kb
+  const skipKbOk = skipKb >= INDEXING_SKIP_KB_SANITY_FLOOR
+  findings.push({
+    check: 'indexing:large_file_skip_kb',
+    ok: skipKbOk,
+    detail: skipKbOk
+      ? `large_file_skip_kb=${skipKb} (indexing not crippled by an unreasonably small skip threshold)`
+      : `large_file_skip_kb=${skipKb} is suspiciously small — most real source files will be skipped from indexing. Reset with: token-goat config set indexing.large_file_skip_kb 2048`,
+  })
   const issueCount = findings.filter((f) => !f.ok).length
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ findings, issueCount }, null, 2) + '\n')
