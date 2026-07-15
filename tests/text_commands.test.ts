@@ -468,6 +468,19 @@ describe('lockdeps command', () => {
     expect(names).toEqual(['requests'])
   })
 
+  it('does not fabricate a dependency from a "#egg=" fragment mentioned inside a trailing inline comment on an ordinary pinned dependency (regression: the egg-fragment recovery matched "#egg=" anywhere in the raw line, not just when the line itself is a VCS spec, so a normal pin with a trailing comment mentioning "#egg=" had its real dependency silently dropped and replaced by a fabricated one parsed from the comment)', () => {
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(
+      req,
+      'requests==2.31.0  # see git+https://github.com/example/fork.git#egg=requests-fork for internal patch\n',
+      'utf8',
+    )
+    const r = run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed2 = JSON.parse(r.stdout) as { deps: Array<{ name: string; version: string }> }
+    expect(parsed2.deps).toEqual([{ name: 'requests', version: '2.31.0', kind: 'unknown' }])
+  })
+
   it('parses an npm v1 lockfile (nested dependencies tree, no packages map) (regression: v1 lockfiles reported "Total: 0 packages" because only the v2/v3 packages map was read)', () => {
     const v1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v1-lock-'))
     const lockPath = path.join(v1Dir, 'package-lock.json')
