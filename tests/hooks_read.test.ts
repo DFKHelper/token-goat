@@ -435,6 +435,44 @@ describe('preReadHandler', () => {
     })
   })
 
+  // Regression: the generic re-read-dedup fallback (non-doc/non-source-diffable files, e.g.
+  // .bin) has its own, textually-identical truncation deny ("Item 1" inside
+  // `if (config.hints.reread_deny)`), a separate call site from the doc/source diff-on-reread
+  // branch above. It must be gated by the same hints.truncated_read_min_lines threshold, not
+  // left unconditional.
+  describe('hints.truncated_read_min_lines wiring (generic re-read-dedup fallback)', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it('above the file line count suppresses the truncation deny and falls through to the context hint', () => {
+      const cfg = defaultConfig()
+      cfg.hints.truncated_read_min_lines = 1000
+      saveConfig(cfg)
+
+      const p = makeTmpFile('some content')
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
+      }
+      postReadHandler(postEvent)
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).not.toBe('deny')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('truncated on last read (>33K tokens)')
+      }
+    })
+  })
+
   it('returns a large-file context hint for files between 100KB and 500KB', () => {
     const p = makeTmpFile('x'.repeat(150 * 1024))
 
@@ -1509,6 +1547,13 @@ Some content that makes the file large enough`
 
   // Item 1: post-read truncation detection
   it('postReadHandler marks a file as truncated when response contains [Truncated:', () => {
+    // hints.truncated_read_min_lines gates this deny (default 200); this fixture is a
+    // 1-line file, so lower the threshold to 0 to keep exercising the deny path itself.
+    const cfg = defaultConfig()
+    cfg.hints.truncated_read_min_lines = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+
     const p = makeTmpFile('some content')
     const postEvent: HookEvent = {
       eventName: 'post_tool_use',
@@ -1521,6 +1566,12 @@ Some content that makes the file large enough`
 
     // Next pre-read should be denied with skeleton hint
     const result = preReadHandler(readEvent(p))
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('truncated on last read')
@@ -1530,6 +1581,11 @@ Some content that makes the file large enough`
   })
 
   it('postReadHandler marks file truncated on PARTIAL view marker', () => {
+    const cfg = defaultConfig()
+    cfg.hints.truncated_read_min_lines = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+
     const p = makeTmpFile('content')
     const postEvent: HookEvent = {
       eventName: 'post_tool_use',
@@ -1540,6 +1596,12 @@ Some content that makes the file large enough`
     }
     postReadHandler(postEvent)
     const result = preReadHandler(readEvent(p))
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('truncated on last read')
