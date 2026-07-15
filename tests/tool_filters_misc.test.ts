@@ -630,6 +630,19 @@ describe('SassFilter compression', () => {
     expect(out).toMatch(/collapsed 3 duplicate deprecation/)
   })
 
+  // Regression: the dedup key was truncated to the first 60 characters of each
+  // deprecation line, so distinct warnings from different files sharing a long
+  // common prefix collided and one was silently dropped as a false "repeat".
+  it('does not drop a distinct deprecation warning that shares its first 60 characters with another', () => {
+    const w1 = 'Deprecation Warning: some-mixin is deprecated, use other-mixin instead in file-a.scss'
+    const w2 = 'Deprecation Warning: some-mixin is deprecated, use other-mixin instead in file-b.scss'
+    const w3 = 'Deprecation Warning: some-mixin is deprecated, use other-mixin instead in file-c.scss'
+    const out = apply(sassFilter, [w1, w2, w3].join('\n'), ['sass'])
+    expect(out).toContain('file-a.scss')
+    expect(out).toContain('file-b.scss')
+    expect(out).toContain('file-c.scss')
+  })
+
   it('keeps error lines', () => {
     const out = apply(sassFilter, 'Error: Expected expression.\n  on line 5 of src/main.scss\n', ['sass'])
     expect(out).toContain('Error: Expected expression.')

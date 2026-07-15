@@ -747,7 +747,10 @@ export class SassFilter extends ToolFilter {
       if (SASS_SUMMARY_RE.test(line) || SASS_RENDERING_RE.test(line)) { kept.push(line); continue }
       if (SASS_MAP_WRITE_RE.test(line)) { droppedMap++; continue }
       if (SASS_DEPRECATION_RE.test(line)) {
-        const key = line.trim().slice(0, 60)
+        // Do not truncate the key: a fixed-length cap makes two DISTINCT deprecation
+        // warnings that share a long common prefix collide, silently dropping one as
+        // a false "repeat".
+        const key = line.trim()
         const cnt = (dedupDeprecations.get(key) ?? 0) + 1
         dedupDeprecations.set(key, cnt)
         if (cnt <= SassFilter.KEEP_PER_DEPRECATION) kept.push(line)
