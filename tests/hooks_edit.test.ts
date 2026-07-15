@@ -76,6 +76,22 @@ describe('postEditHandler', () => {
     expect(getDirtyPaths()).toEqual([])
   })
 
+  it('does not enqueue an edit under the OS system temp dir to the dirty-reindex queue (scratch checkouts must never become permanent index citizens)', () => {
+    const scratchFile = path.join(os.tmpdir(), 'tg-scratch-checkout', 'src', 'index.ts')
+    const result = postEditHandler(editEvent(scratchFile))
+    expect(result.hookType).toBe('pass')
+    expect(getDirtyPaths()).toEqual([])
+  })
+
+  it('still records session read-tracking for an edit under system temp, even though it is not enqueued for indexing', () => {
+    const scratchFile = path.join(os.tmpdir(), 'tg-scratch-checkout', 'src', 'index.ts')
+    postEditHandler(editEvent(scratchFile))
+    const normalized = normalizePath(scratchFile)
+    const entry = session.getSessionFiles().get(normalized)
+    expect(entry).toBeDefined()
+    expect(entry?.wasEdited).toBe(true)
+  })
+
   it('fires for both Write and Edit tool names', () => {
     postEditHandler(editEvent('/a/w.ts', 'Write'))
     postEditHandler(editEvent('/a/e.ts', 'Edit'))

@@ -276,6 +276,39 @@ export function findProject(cwd: string): Project | null {
 }
 
 /**
+ * True when `filePath` lives inside the OS system temp directory (`os.tmpdir()`), including any
+ * subdirectory of it -- scratch checkouts, ad hoc debugging copies, per-test fixture dirs, etc.
+ *
+ * Nothing under system temp should ever become a permanent index citizen: it is ephemeral by
+ * definition, often a byte-identical duplicate of a real project checked out elsewhere for
+ * throwaway work. Without this guard, editing a file inside such a copy (e.g. via an AI coding
+ * agent's own scratchpad) silently and permanently indexes it as a distinct "project" -- observed
+ * in practice on this repo's own global index, where half a dozen old scratch-dir copies of
+ * token-goat's own source produced 8+ duplicate results for every single `symbol`/`dead`/`refs`
+ * lookup, with no existing cleanup path. Used to gate future auto-indexing (hooks_edit.ts) and to
+ * retroactively purge already-polluted rows (`project prune`, cli_project_commands.ts).
+ */
+export function isUnderSystemTemp(filePath: string): boolean {
+  let sysTemp: string;
+  try {
+    sysTemp = canonicalize(os.tmpdir());
+  } catch {
+    return false;
+  }
+  let target: string;
+  try {
+    target = canonicalize(filePath);
+  } catch {
+    return false;
+  }
+  const foldedTemp = normalizeDarwinSystemAlias(foldPath(sysTemp));
+  const foldedTarget = normalizeDarwinSystemAlias(foldPath(target));
+  // canonicalize() always normalizes to forward slashes (both win32 and posix) -- comparing
+  // against path.sep (backslash on Windows) here would silently never match a real prefix.
+  return foldedTarget === foldedTemp || foldedTarget.startsWith(`${foldedTemp}/`);
+}
+
+/**
  * Resolve "the current project root" using one shared precedence, replacing three
  * previously-divergent conventions that had drifted apart across the codebase:
  *   - read_commands.ts's `runChanged` used `opts.projectRoot ?? process.cwd()`, then
