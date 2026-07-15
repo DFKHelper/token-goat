@@ -18,6 +18,7 @@ import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, def
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
+import { findSystemTempFiles, pruneSystemTempFiles } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
@@ -449,10 +450,15 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     })
     const removed = before.length - after.length
     const stale = before.filter((r) => !after.includes(r))
+    // System-temp-dir indexed files (scratch checkouts, ad hoc debugging copies -- see
+    // isUnderSystemTemp's docstring) are a second, independent kind of staleness from the
+    // blocked_roots existence check above: pruned by content of the `files` table itself, not by
+    // whether a config-listed root still exists on disk.
+    const staleTempFiles = findSystemTempFiles()
 
     if (opts.dryRun === true) {
       if (opts.json === true) {
-        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, blocked_roots: before }, null, 2))
+        emit(JSON.stringify({ dryRun: true, wouldPrune: removed, stale, wouldPruneTempFiles: staleTempFiles.length, staleTempFiles, blocked_roots: before }, null, 2))
         return
       }
       if (removed === 0) {
@@ -461,17 +467,25 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
         emit(`Would prune ${removed} stale root(s):`)
         for (const r of stale) emit(`  ${r}`)
       }
+      if (staleTempFiles.length === 0) {
+        emit('Would prune 0 stale indexed temp-dir file(s). Nothing to do.')
+      } else {
+        emit(`Would prune ${staleTempFiles.length} stale indexed temp-dir file(s):`)
+        for (const p of staleTempFiles) emit(`  ${p}`)
+      }
       return
     }
 
     cfg.worker.blocked_roots = after
     saveConfigSafe(cfg)
     invalidateConfigCache()
+    const prunedTempFiles = pruneSystemTempFiles()
     if (opts.json === true) {
-      emit(JSON.stringify({ pruned: removed, blocked_roots: after }, null, 2))
+      emit(JSON.stringify({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length }, null, 2))
       return
     }
     emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
+    emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
     return
   }
 
