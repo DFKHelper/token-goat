@@ -181,6 +181,15 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
+  // dest's parent directory is normally created as a side effect of an earlier operation
+  // (getDb() mkdir's DATA_DIR before opening global.db), but a genuinely first write into a
+  // fresh data dir -- a brand-new machine's very first `token-goat config set`, or a freshly
+  // isolated test DATA_DIR with no prior DB/session activity -- has no such earlier creator and
+  // openSync below throws ENOENT. ensureDirSync is the existing race-safe mkdir helper used
+  // elsewhere in this file; ENOENT here was reproduced for real via saveConfig() as the first
+  // write into a fresh isolated test data dir.
+  ensureDirSync(path.dirname(dest))
+
   try {
     // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
     const fd = openSync(tmp, 'w', 0o600)
