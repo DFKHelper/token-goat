@@ -9,6 +9,7 @@ import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { SESSIONS_SUBDIR, AGENT_SALT_MARKER } from './session_store.js'
 import { pruneSkillOutputs, SKILLS_OUTPUT_SUBDIR } from './skill_cache.js'
 import { isInstalled } from './install.js'
+import { cleanupStaleDownloads } from './webfetch.js'
 import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
@@ -199,6 +200,12 @@ export function cmdCleanCache(opts: { json?: boolean }): void {
     removed[sub] = n
     total += n
   }
+  // web_cache (webfetch's own download cache, distinct from the WEB_OUTPUT_SUBDIR entries
+  // pruned above) can accumulate orphaned .tmp files left behind by a process killed mid-download
+  // -- cleanupStaleDownloads existed, fully tested, with zero production callers until this wiring.
+  const staleDownloads = cleanupStaleDownloads()
+  removed['web_cache_tmp'] = staleDownloads
+  total += staleDownloads
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ removed, total }, null, 2) + '\n')
     return
