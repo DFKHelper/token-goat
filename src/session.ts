@@ -70,6 +70,10 @@ let _webFetches = new Map<string, string>()
 
 // commandHash -> outputId index for bash-output dedup.
 let _bashOutputs = new Map<string, string>()
+
+// `${pattern}::${path}::${outputMode}::${glob}` signature -> match count, for Grep dedup-hint
+// recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
+let _grepQueries = new Map<string, number>()
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command
 // hash used by recordBashOutput/getBashOutputId) for which a store call
 // overwrote an already-present entry this session -- i.e. an older cached
@@ -366,6 +370,16 @@ export function getBashOutputId(commandHash: string): string | null {
   return _bashOutputs.get(commandHash) ?? null
 }
 
+/** Record a Grep query's match count: `signature` -> matchCount, for dedup-hint recall. */
+export function recordGrepQuery(signature: string, matchCount: number): void {
+  _grepQueries.set(signature, matchCount)
+}
+
+/** Return the previously recorded match count for `signature`, or null if never seen this session. */
+export function getGrepMatchCount(signature: string): number | null {
+  return _grepQueries.get(signature) ?? null
+}
+
 /** Record that a curl -o download saved `url` to `savedPath` this session. */
 export function recordCurlDownload(url: string, savedPath: string): void {
   _curlDownloads.set(url, savedPath)
@@ -474,6 +488,7 @@ export interface SerializedSession {
   fileLineRanges?: Array<[string, Array<[number, number]>]>
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
+  grepQueries?: Array<[string, number]>
   /**
    * Unix time in *seconds* at which this session's on-disk cache was first
    * written. Set exactly once by `session_store.ts::saveSessionState` and
@@ -495,6 +510,7 @@ export function exportSessionState(): SerializedSession {
     fileLineRanges: Array.from(_fileLineRanges.entries()),
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
+    grepQueries: Array.from(_grepQueries.entries()),
   }
 }
 
@@ -521,6 +537,7 @@ export function importSessionState(s: SerializedSession): void {
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
+  _grepQueries = new Map(s.grepQueries ?? [])
 }
 
 registerReset(() => {
@@ -535,5 +552,6 @@ registerReset(() => {
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()
+  _grepQueries = new Map()
   _sessionId = null
 })

@@ -191,6 +191,12 @@ function coerce(raw: unknown): SerializedSession {
           Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
       )
     : []
+  const grepQueries: Array<[string, number]> = Array.isArray(o['grepQueries'])
+    ? (o['grepQueries'] as unknown[]).filter(
+        (p): p is [string, number] =>
+          Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
+      )
+    : []
   return {
     files,
     hintsShown,
@@ -200,6 +206,7 @@ function coerce(raw: unknown): SerializedSession {
     fileLineRanges: asLineRanges(o['fileLineRanges']),
     cliReads,
     pendingLargeFileHints,
+    grepQueries,
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
 }
@@ -235,6 +242,11 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
 
 function mergePairs(disk: Array<[string, string]>, mem: Array<[string, string]>): Array<[string, string]> {
   // mem overlays disk: the current process's view is at least as fresh.
+  return Array.from(new Map([...disk, ...mem]).entries())
+}
+
+/** Same "mem overlays disk" merge as {@link mergePairs}, for number-valued pairs (grepQueries). */
+function mergeNumberPairs(disk: Array<[string, number]>, mem: Array<[string, number]>): Array<[string, number]> {
   return Array.from(new Map([...disk, ...mem]).entries())
 }
 
@@ -302,6 +314,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
+    grepQueries: mergeNumberPairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     // Prefer the value already on disk: it marks the original creation time, and
     // must never be bumped forward to the merge's "now". `mem` never carries one
     // (it is not tracked in memory), so this is really "keep whatever disk has".

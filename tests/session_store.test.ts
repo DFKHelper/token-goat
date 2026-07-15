@@ -56,6 +56,7 @@ describe('save/load round-trip', () => {
       webFetches: [['http://x', 'idx']],
       bashOutputs: [['cmdhash', 'outid']],
       curlDownloads: [['http://dl', '/tmp/f']],
+      grepQueries: [['["useEffect","/src","content",""]', 12]],
     })
     saveSessionState('sid-1')
 
@@ -69,7 +70,26 @@ describe('save/load round-trip', () => {
     expect(got.webFetches).toEqual([['http://x', 'idx']])
     expect(got.bashOutputs).toEqual([['cmdhash', 'outid']])
     expect(got.curlDownloads).toEqual([['http://dl', '/tmp/f']])
+    expect(got.grepQueries).toEqual([['["useEffect","/src","content",""]', 12]])
     expect(got.files.find((f) => f.path === '/b.ts')?.wasTruncated).toBe(true)
+  })
+})
+
+describe('grepQueries merge-on-save (concurrent writer not clobbered)', () => {
+  it('unions grepQueries from two saves under the same session id, mem overlays disk on key collision', () => {
+    importSessionState({ ...empty(), grepQueries: [['sig-a', 3]] })
+    saveSessionState('sid-grep-1')
+
+    importSessionState({ ...empty(), grepQueries: [['sig-b', 7], ['sig-a', 9]] })
+    saveSessionState('sid-grep-1')
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-grep-1'), 'utf8')) as SerializedSession
+    expect(new Map(disk.grepQueries ?? [])).toEqual(
+      new Map([
+        ['sig-a', 9],
+        ['sig-b', 7],
+      ]),
+    )
   })
 })
 
