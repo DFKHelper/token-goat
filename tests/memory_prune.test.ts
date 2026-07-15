@@ -10,6 +10,8 @@ import {
   auditClaudeMd,
 } from '../src/memory_prune.js'
 import { estimateTokens } from '../src/compact.js'
+import { isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
+import { clearModuleCaches } from '../src/reset.js'
 
 describe('parseIndex', () => {
   it('parses valid index entries', () => {
@@ -379,6 +381,74 @@ the quick brown fox`
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
     expect(result.length).toBeGreaterThan(0)
+  })
+})
+
+// Regression: `_opts.threshold` was dead text accidentally merged into a `//` comment on the
+// same physical line, so no caller-supplied threshold ever reached any comparison -- the
+// Jaccard fallback used its own hardcoded constant (correct, matches pre-port Python), but the
+// embedding/cosine path that threshold is actually meant to govern was never ported at all
+// ("not implemented in this port; skip gracefully"), even though this repo already ships a
+// working embeddings module used elsewhere for semantic search. These tests exercise the
+// now-wired embedding path directly (bypassing the real @xenova pipeline via
+// setPipelineFnForTesting) and prove `threshold` actually changes clustering output --
+// the pre-fix hardcoded-Jaccard-only behavior would fail both assertions below.
+describe('findContentDuplicates embedding path (regression)', () => {
+  let tempDir: string
+  let prevEmbeddingsEnv: string | undefined
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dups-embed-test-'))
+    prevEmbeddingsEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+  })
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+    clearModuleCaches()
+    if (prevEmbeddingsEnv === undefined) {
+      delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+    } else {
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbeddingsEnv
+    }
+  })
+
+  // file1/file2 embed to near-identical vectors (cosine ~0.999); file3 embeds orthogonal.
+  function fakeVecFor(text: string): Float32Array {
+    const near = text.includes('file1') || text.includes('file2')
+    const vec = new Float32Array(384).fill(0)
+    if (near) {
+      vec[0] = 1
+      vec[1] = text.includes('file2') ? 0.02 : 0
+    } else {
+      vec[1] = 1
+    }
+    return vec
+  }
+
+  it.skipIf(!isAvailable())('uses the embedding path and clusters above threshold', async () => {
+    setPipelineFnForTesting(async () => async (text: string) => ({ data: fakeVecFor(text) }))
+    fs.writeFileSync(path.join(tempDir, 'file1.md'), 'file1 content')
+    fs.writeFileSync(path.join(tempDir, 'file2.md'), 'file2 content')
+    fs.writeFileSync(path.join(tempDir, 'file3.md'), 'file3 content')
+
+    const result = await findContentDuplicates(tempDir, { threshold: 0.9 })
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.method).toBe('embedding')
+    expect(result[0]?.members.sort()).toEqual(
+      [path.join(tempDir, 'file1.md'), path.join(tempDir, 'file2.md')].sort(),
+    )
+  })
+
+  it.skipIf(!isAvailable())('respects a stricter threshold that excludes the same near-duplicate pair', async () => {
+    setPipelineFnForTesting(async () => async (text: string) => ({ data: fakeVecFor(text) }))
+    fs.writeFileSync(path.join(tempDir, 'file1.md'), 'file1 content')
+    fs.writeFileSync(path.join(tempDir, 'file2.md'), 'file2 content')
+
+    const result = await findContentDuplicates(tempDir, { threshold: 0.9999 })
+
+    expect(result).toHaveLength(0)
   })
 })
 
