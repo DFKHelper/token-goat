@@ -358,6 +358,28 @@ describe('go-test filter', () => {
     expect(result.text).toContain('goroutine frames omitted')
   })
 
+  // Regression: a stray `==========`-style fence with no WARNING/blank-line/second-fence
+  // within a bounded lookahead used to buffer every remaining line of the file
+  // indefinitely, silently disabling PASS/SKIP/RUN compression for the rest of the stream.
+  it('gives up waiting on a stray race fence that never confirms, and resumes normal compression', () => {
+    const text =
+      '==========\n' +
+      '--- PASS: TestA (0.00s)\n' +
+      '--- PASS: TestB (0.00s)\n' +
+      '--- PASS: TestC (0.00s)\n' +
+      '--- PASS: TestD (0.00s)\n' +
+      '--- PASS: TestE (0.00s)\n' +
+      '--- PASS: TestF (0.00s)\n' +
+      '--- PASS: TestG (0.00s)\n' +
+      'ok  \tgithub.com/org/repo\t0.010s\n'
+    const result = goTestFilter.apply(text, '', 0, ['go', 'test'])
+    expect(result.text).toContain('--- PASS: TestA')
+    expect(result.text).not.toContain('--- PASS: TestF')
+    expect(result.text).not.toContain('--- PASS: TestG')
+    expect(result.text).toContain('collapsed 2 PASS testcases')
+    expect(result.text).toContain('ok')
+  })
+
   it('collapses stack frames under the primary "Write at"/"Read at" headers, not just under "Goroutine N ... created at:" trailers', () => {
     // Real `go test -race` output's *first* conflicting access is reported as a bare
     // "Write at ADDR by goroutine N:" / "Read at ADDR by goroutine N:" line (no "Previous"

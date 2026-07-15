@@ -10,6 +10,7 @@ import { maybeNote, positionalArgs } from './helpers.js'
 const TEST_RUN_RE = /^=== (RUN|PAUSE|CONT|NAME)\s/
 const RACE_FENCE_RE = /^={10,}\s*$/
 const RACE_WARNING_RE = /^WARNING: DATA RACE/
+const RACE_PENDING_FENCE_MAX_LINES = 5
 const TEST_PASS_RE = /^\s*--- PASS:\s/
 const TEST_FAIL_RE = /^\s*--- FAIL:\s/
 const TEST_RPC_RE = /^=== (RUN|PAUSE|CONT)\s/
@@ -128,6 +129,14 @@ export class GoTestFilter extends ToolFilter {
           racePendingFence = false
         } else if (!line.trim()) {
           // Blank line right after the fence = not a race block.
+          kept.push(...raceBlockLines)
+          raceBlockLines = []
+          racePendingFence = false
+        } else if (raceBlockLines.length > RACE_PENDING_FENCE_MAX_LINES) {
+          // No WARNING/blank/second-fence within a bounded lookahead — this was
+          // never a race block (a stray `====...` line elsewhere in the output).
+          // Give up waiting so the rest of the stream isn't silently buffered
+          // out of every other compression rule for the remainder of the file.
           kept.push(...raceBlockLines)
           raceBlockLines = []
           racePendingFence = false
