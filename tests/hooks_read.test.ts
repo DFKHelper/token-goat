@@ -125,12 +125,33 @@ function grepPathEvent(searchPath: string | undefined): HookEvent {
   })
 }
 
+// Pins hints.protect_recent_reads=0 for tests that assert an unconditional re-read deny but
+// don't otherwise mock config -- hints.protect_recent_reads defaults to 4 in production, which
+// would trivially exempt any of these small (one/two-file) test sessions (rank < 4 is nearly
+// always true). Writes a minimal raw TOML file directly rather than saveConfig(defaultConfig()),
+// so it doesn't also serialize unrelated defaults (e.g. compact_assist.auto_trigger_multiplier)
+// that a sibling test relies on being absent from the file entirely.
+function pinProtectRecentReadsToZero(): void {
+  fs.writeFileSync(_testConfigPath, '[hints]\nprotect_recent_reads = 0\n', 'utf8')
+  invalidateConfigCache()
+}
+
+function unpinProtectRecentReadsToZero(): void {
+  invalidateConfigCache()
+  try {
+    fs.unlinkSync(_testConfigPath)
+  } catch {
+    // ok -- may not exist
+  }
+}
+
 beforeEach(() => {
   clearModuleCaches()
 })
 
 afterEach(() => {
   clearModuleCaches()
+  unpinProtectRecentReadsToZero()
   while (tmpFiles.length > 0) {
     const p = tmpFiles.pop()
     if (p === undefined) continue
@@ -184,6 +205,7 @@ describe('preReadHandler', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.quiet_hours = '22:00-06:00'
       saveConfig(cfg)
       invalidateConfigCache()
@@ -199,6 +221,7 @@ describe('preReadHandler', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(2026, 0, 1, 12, 0))
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.quiet_hours = '22:00-06:00'
       saveConfig(cfg)
       invalidateConfigCache()
@@ -214,6 +237,7 @@ describe('preReadHandler', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.quiet_hours = '22:00-06:00'
       saveConfig(cfg)
       invalidateConfigCache()
@@ -230,6 +254,7 @@ describe('preReadHandler', () => {
   })
 
   it('denies re-read of a large file (>50KB) that was already read this session', () => {
+    pinProtectRecentReadsToZero()
     const p = makeTmpFile('x'.repeat(60 * 1024))
     recordFileRead(normalizePath(p))
 
@@ -258,6 +283,7 @@ describe('preReadHandler', () => {
 
     it('hints.reread_deny=false suppresses the deny for a file that would otherwise be denied', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.reread_deny = false
       saveConfig(cfg)
 
@@ -277,6 +303,7 @@ describe('preReadHandler', () => {
 
     it('hints.reread_deny_min_bytes raises the size threshold a re-read must clear to be denied', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       // Well above this file's size, so the size-based deny at the default 50KB threshold would
       // no longer fire once the configured threshold is honored.
       cfg.hints.reread_deny_min_bytes = 200 * 1024
@@ -291,6 +318,7 @@ describe('preReadHandler', () => {
 
     it('hints.reread_deny_min_bytes lowers the size threshold so a smaller re-read is denied', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.reread_deny_min_bytes = 1024
       saveConfig(cfg)
 
@@ -300,6 +328,132 @@ describe('preReadHandler', () => {
 
       const result = preReadHandler(readEvent(p))
       expect(result.hookType).toBe('deny')
+    })
+  })
+
+  // Regression: hints.protect_recent_reads was defined, validated, persisted, and displayed
+  // in config.ts but had zero consumers -- neither reread-deny call site (the doc/source
+  // diff-on-reread branch, nor the generic re-read-dedup fallback) exempted recently-read
+  // files, so the deny fired on the very first re-read regardless of how recently the file
+  // had been touched.
+  describe('hints.protect_recent_reads wiring', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      vi.useRealTimers()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it('protect_recent_reads=0 still denies a re-read exactly as today (generic fallback, non-diffable file)', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+      }
+    })
+
+    it('protect_recent_reads=0 still denies the doc-diffable unchanged-since-last-read re-read exactly as today', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const content = '# Title\n\nSome content.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+      )
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+      }
+    })
+
+    it('exempts a just-read file within the protected window from the generic re-read deny (non-diffable file)', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 5
+      saveConfig(cfg)
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).not.toBe('deny')
+    })
+
+    it('exempts a just-read file within the protected window from the doc-diffable unchanged-since-last-read deny', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 5
+      saveConfig(cfg)
+
+      const content = '# Title\n\nSome content.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+      )
+      fs.writeFileSync(p, content)
+      tmpFiles.push(p)
+
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).not.toBe('deny')
+    })
+
+    it('still denies a re-read once other more-recently-read files push the file past the protected rank window', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 2
+      saveConfig(cfg)
+
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
+
+      const target = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(target))
+
+      // Three other files read strictly after the target, each with an advancing timestamp,
+      // push the target's recency rank to 3 -- past the configured window of 2.
+      for (let i = 0; i < 3; i++) {
+        vi.setSystemTime(new Date(2026, 0, 1, 12, 0, i + 1))
+        recordFileRead(normalizePath(makeTmpFile(`other-${i}`)))
+      }
+
+      const result = preReadHandler(readEvent(target))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+      }
     })
   })
 
@@ -339,6 +493,7 @@ describe('preReadHandler', () => {
 
     it('hints.min_file_lines_for_hint=0 includes the surgical-read suggestion for a small file', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.min_file_lines_for_hint = 0
       saveConfig(cfg)
 
@@ -353,6 +508,7 @@ describe('preReadHandler', () => {
 
     it('hints.min_file_lines_for_hint above the file line count suppresses the suggestion', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.min_file_lines_for_hint = 1000
       saveConfig(cfg)
 
@@ -404,6 +560,7 @@ describe('preReadHandler', () => {
 
     it('hints.truncated_read_min_lines=0 denies with the truncated-read message for a small file', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.truncated_read_min_lines = 0
       saveConfig(cfg)
 
@@ -418,6 +575,7 @@ describe('preReadHandler', () => {
 
     it('hints.truncated_read_min_lines above the file line count falls through to the next branch', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.truncated_read_min_lines = 1000
       saveConfig(cfg)
 
@@ -452,6 +610,7 @@ describe('preReadHandler', () => {
 
     it('above the file line count suppresses the truncation deny and falls through to the context hint', () => {
       const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
       cfg.hints.truncated_read_min_lines = 1000
       saveConfig(cfg)
 
@@ -901,6 +1060,7 @@ describe('preReadHandler', () => {
   })
 
   it('still hard-denies the 3rd+ Read call on the same path — the Grep exemption does not leak to Read', () => {
+    pinProtectRecentReadsToZero()
     const dir = '/project/src/components'
     const r1 = preReadHandler(readEvent(dir))
     expect(r1.hookType).not.toBe('deny')
@@ -966,6 +1126,7 @@ Examples here`
   })
 
   it('denies 2nd read of any .md file regardless of size', () => {
+    pinProtectRecentReadsToZero()
     const p = _makeTmpMdFile()
     recordFileRead(normalizePath(p))
 
@@ -1252,6 +1413,7 @@ Some content that makes the file large enough`
   })
 
   it('gives context hint on 2nd read of a small file, deny on 3rd+', () => {
+    pinProtectRecentReadsToZero()
     const p = makeTmpFile('x'.repeat(5 * 1024))
 
     // First read: pass (never read before)
@@ -1344,6 +1506,7 @@ Some content that makes the file large enough`
   })
 
   it('recognizes .cs as a source extension for the count-based re-read deny (regression: SOURCE_EXT_RE used to hand-maintain a duplicate of parser_types.ts\'s extension list and omitted .cs, .mjs/.cjs/.mts/.cts, .cc/.cxx/.hpp/.hxx, .kts, and .pyi despite each having a real tree-sitter adapter)', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(
       os.tmpdir(),
       `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.cs`,
@@ -1367,6 +1530,7 @@ Some content that makes the file large enough`
   })
 
   it('recognizes .ps1/.psm1 (PowerShell) and .cls/.trigger (Apex) as source extensions for the count-based re-read deny (regression: SOURCE_EXT_RE/DIFFABLE_SOURCE_RE drifted from EXTENSION_LANGUAGE and omitted these despite real language adapters existing)', () => {
+    pinProtectRecentReadsToZero()
     for (const suffix of ['.ps1', '.psm1', '.trigger']) {
       const p = path.join(
         os.tmpdir(),
@@ -1386,6 +1550,7 @@ Some content that makes the file large enough`
   })
 
   it('recognizes Salesforce source and metadata files for symbol-aware re-read guidance', () => {
+    pinProtectRecentReadsToZero()
     for (const suffix of ['.cls', '.cmp', '.flow-meta.xml']) {
       const p = path.join(
         os.tmpdir(),
@@ -1405,6 +1570,7 @@ Some content that makes the file large enough`
   })
 
   it('does not recognize .swift as a source extension for the count-based re-read deny (regression: .swift was hardcoded into SOURCE_EXT_RE despite parser_types.ts having no adapter for it, so a 3rd read produced the skeleton/outline-pointing deny message even though those commands would return nothing for a .swift file)', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(
       os.tmpdir(),
       `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.swift`,
@@ -1445,6 +1611,7 @@ Some content that makes the file large enough`
   })
 
   it('hard-denies 3rd read of a small .ts source file with count-based message', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
     fs.writeFileSync(p, 'export function foo() {}')
     tmpFiles.push(p)
@@ -1464,6 +1631,7 @@ Some content that makes the file large enough`
   })
 
   it('hard-denies 4th read of a .tsx source file', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.tsx`)
     fs.writeFileSync(p, 'export const App = () => <div/>')
     tmpFiles.push(p)
@@ -1550,6 +1718,7 @@ Some content that makes the file large enough`
     // hints.truncated_read_min_lines gates this deny (default 200); this fixture is a
     // 1-line file, so lower the threshold to 0 to keep exercising the deny path itself.
     const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
     cfg.hints.truncated_read_min_lines = 0
     saveConfig(cfg)
     invalidateConfigCache()
@@ -1582,6 +1751,7 @@ Some content that makes the file large enough`
 
   it('postReadHandler marks file truncated on PARTIAL view marker', () => {
     const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
     cfg.hints.truncated_read_min_lines = 0
     saveConfig(cfg)
     invalidateConfigCache()
@@ -1625,6 +1795,7 @@ Some content that makes the file large enough`
 
   // Item 2: all .md/.mdx files denied on 2nd+ read regardless of size
   it('denies 2nd read of a large .md file', () => {
+    pinProtectRecentReadsToZero()
     const p = _makeTmpMdFile('# Title\n\ncontent\n'.padEnd(15 * 1024, 'x'))
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
@@ -1636,6 +1807,7 @@ Some content that makes the file large enough`
   })
 
   it('denies 2nd read of a small .md file', () => {
+    pinProtectRecentReadsToZero()
     const p = _makeTmpMdFile('# Small\ncontent')
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
@@ -1647,6 +1819,7 @@ Some content that makes the file large enough`
   })
 
   it('denies 2nd read of a .mdx file', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.mdx`)
     fs.writeFileSync(p, '# Component\n\ncontent\n'.padEnd(15 * 1024, 'x'))
     tmpFiles.push(p)
@@ -1659,6 +1832,7 @@ Some content that makes the file large enough`
   })
 
   it('denies 2nd read of a .markdown file (M16: re-read-denial regex previously only matched .md/.mdx)', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`)
     fs.writeFileSync(p, '# Small\ncontent')
     tmpFiles.push(p)
@@ -1671,6 +1845,7 @@ Some content that makes the file large enough`
   })
 
   it('denies 2nd read of a .rst file with no snapshot (falls through to the markdown re-read denial)', () => {
+    pinProtectRecentReadsToZero()
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`)
     fs.writeFileSync(p, 'Title\n=====\n\nSmall.\n')
     tmpFiles.push(p)
@@ -1834,6 +2009,7 @@ Some content that makes the file large enough`
   })
 
   it('returns unchanged deny when .md file content is same as at last read', () => {
+    pinProtectRecentReadsToZero()
     const content = '# Title\n\nSome content.\n'
     const p = path.join(
       os.tmpdir(),
@@ -1962,6 +2138,7 @@ Some content that makes the file large enough`
   // (configPath() is mocked to _testConfigPath at the top of this file) and invalidate the cache.
   function withMinTokensSaved<T>(tokensSaved: number, fn: () => T): T {
     const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 0
     cfg.hints.diff_hint_min_tokens_saved = tokensSaved
     saveConfig(cfg)
     invalidateConfigCache()
@@ -2041,6 +2218,7 @@ Some content that makes the file large enough`
   })
 
   it('flag ON: serves "unchanged" with a section hint on re-read of an unchanged .css', () => {
+    pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
       const content = '.hero {\n  color: red;\n}\n.footer {\n  color: blue;\n}\n'
       const p = tmpFileExt(content, '.css')
@@ -2086,6 +2264,7 @@ Some content that makes the file large enough`
   })
 
   it('flag ON: .yaml (in DIFFABLE_SOURCE_RE) gets the section-style hint on unchanged re-read', () => {
+    pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
       const content = 'name: app\nversion: 1\nsteps:\n  - build\n  - test\n'
       const p = tmpFileExt(content, '.yaml')
