@@ -100,6 +100,34 @@ describe('buildTranscriptOutline', () => {
   it('returns an empty outline for zero cues', () => {
     expect(buildTranscriptOutline([])).toEqual({ speakers: [], durationSeconds: 0, markers: [] })
   })
+
+  // Regression: durationSeconds was taken from the last cue in ARRAY order, not the max
+  // endSeconds across all cues. Cues are not guaranteed to be chronologically ordered
+  // (multi-track exports, appended/corrected captions), so an out-of-order trailing cue
+  // silently corrupted the reported duration (and, via the bucket-size math it drove, could
+  // drop later cues from the markers list entirely).
+  it('computes duration from the max end time across all cues, not the last cue in array order', () => {
+    const outOfOrderVtt = `WEBVTT
+
+1
+00:00:10.000 --> 00:00:12.000
+Line ten
+
+2
+00:00:20.000 --> 00:00:22.000
+Line twenty
+
+3
+00:00:30.000 --> 00:00:32.000
+Line thirty
+
+4
+00:00:01.000 --> 00:00:02.000
+Line one appended last
+`
+    const outline = buildTranscriptOutline(parseTranscript(outOfOrderVtt))
+    expect(outline.durationSeconds).toBe(32)
+  })
 })
 
 describe('sliceTranscript', () => {

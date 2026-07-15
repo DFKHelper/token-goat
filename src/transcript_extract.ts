@@ -118,7 +118,10 @@ export function buildTranscriptOutline(cues: TranscriptCue[], bucketCount = 10):
   }
   const speakers = [...speakerCounts.entries()].map(([name, cueCount]) => ({ name, cueCount }))
 
-  const durationSeconds = (cues[cues.length - 1] as TranscriptCue).endSeconds
+  // Cues are not guaranteed to be in chronological array order (multi-track exports,
+  // corrected/appended captions), so the last array element is not necessarily the one
+  // with the latest end time -- use the true max across all cues instead.
+  const durationSeconds = Math.max(...cues.map((c) => c.endSeconds))
   const bucketSize = durationSeconds / Math.min(bucketCount, cues.length)
   const markers: TranscriptOutlineEntry[] = []
   let nextBucketStart = 0
