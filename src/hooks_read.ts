@@ -469,6 +469,23 @@ function quietContextOutput(context: string): HookOutput {
 }
 
 /**
+ * Suffix appended to the large-file structural-nav hint when context pressure is elevated,
+ * gated on hints.context_threshold_advisory. Only 'hot'/'critical' warrant surfacing this --
+ * 'cool'/'warm' are the normal operating range and would just be noise on every large-file hint.
+ */
+function contextPressureAdvisorySuffix(): string {
+  if (!loadConfig().hints.context_threshold_advisory) return ''
+  const tier = getContextPressure(loadSessionCache(getSessionId()) ?? undefined).tier
+  if (tier === 'hot') {
+    return ' Context pressure: hot -- consider wrapping up soon or running /compact.'
+  }
+  if (tier === 'critical') {
+    return ' Context pressure: critical -- strongly consider /compact now.'
+  }
+  return ''
+}
+
+/**
  * True if `normalized` is among the `n` most-recently-read files this session (ranked by
  * lastReadAt descending, ties broken by path for determinism). `n` <= 0 means no exemption
  * ever applies. Used to exempt just-read files from the re-read-deny hints below.
@@ -1038,7 +1055,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
     return quietContextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
-        hint,
+        hint + contextPressureAdvisorySuffix(),
     )
   }
 
