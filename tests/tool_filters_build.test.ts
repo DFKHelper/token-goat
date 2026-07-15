@@ -466,6 +466,19 @@ describe('SbtFilter', () => {
     expect(matches.length).toBeLessThanOrEqual(5)
     expect(result).toContain('collapsed')
   })
+
+  // Regression: the dedup key was truncated to the first 60 characters of each
+  // [warn] line, so distinct warnings sharing a long common file-path prefix
+  // collided and one was silently dropped as a false "repeat".
+  it('does not drop a distinct [warn] line that shares its first 60 characters with another', () => {
+    const longPrefix = '/home/ci/workspace/very-long-monorepo-name-example/backend-service/src/main/scala/com/example/app/service/OrderService.scala'
+    const lines = Array.from({ length: 6 }, (_, i) => `[warn] ${longPrefix}:${100 + i}:5: distinct warning message number ${i}`)
+    const out = lines.join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['sbt', 'compile'])
+    for (let i = 0; i < 6; i++) {
+      expect(result).toContain(`distinct warning message number ${i}`)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
