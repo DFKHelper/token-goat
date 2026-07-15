@@ -226,6 +226,23 @@ describe('budget command', () => {
     expect(r.stdout).toMatch(/\d+% of 200K/)
   })
 
+  // Regression: context.model_window_tokens was a fully-validated, env-overridable config knob
+  // with zero read-side consumers -- cmdBudget only ever showed the percentage when --context
+  // was passed explicitly on every invocation, silently ignoring the configured window size.
+  it('shows the percentage fill using the configured context.model_window_tokens when --context is omitted', () => {
+    const r = run(['budget', 'hello.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    // Default context.model_window_tokens is 200_000 -> 200K.
+    expect(r.stdout).toMatch(/\d+% of 200K/)
+  })
+
+  it('an explicit --context still overrides the configured default', () => {
+    const r = run(['budget', 'hello.ts', '--context', '50'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/\d+% of 50K/)
+    expect(r.stdout).not.toMatch(/% of 200K/)
+  })
+
   it('--context rejects a negative value instead of printing a bogus negative percentage', () => {
     const r = run(['budget', 'hello.ts', '--context', '-5'])
     expect(r.status).not.toBe(0)
