@@ -914,12 +914,26 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only
     // hinted via the contextOutput fallback at the bottom of this block.
     if (config.hints.reread_deny) {
-      // Item 1: file was truncated on last read — surgical reads only
+      // Item 1: file was truncated on last read — surgical reads only, gated on
+      // hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch
+      // above) so a small file that happened to trip the token-based truncation marker
+      // doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
-        return denyOutput(
-          'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-        )
+        let truncatedLineCount2 = Infinity
+        try {
+          const sz2 = statSize(normalized)
+          if (sz2 !== null && sz2 <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+            truncatedLineCount2 = countTextLines(fs.readFileSync(normalized, 'utf8'))
+          }
+        } catch {
+          // best-effort — treat as eligible for the deny below on read/stat failure
+        }
+        if (truncatedLineCount2 >= config.hints.truncated_read_min_lines) {
+          return denyOutput(
+            'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+            ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+          )
+        }
       }
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
