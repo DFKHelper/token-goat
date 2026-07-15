@@ -1544,37 +1544,39 @@ Some content that makes the file large enough`
 
   // Doc-file auto-diff on re-read
   it('injects diff in deny when .md file content changed since last read', () => {
-    const content1 = '# Title\n\nOriginal content here.\n'
-    const content2 = '# Title\n\nOriginal content here.\n\n## New Section\n\nAdded content.\n'
-    const p = path.join(
-      os.tmpdir(),
-      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
-    )
-    fs.writeFileSync(p, content1)
-    tmpFiles.push(p)
+    withMinTokensSaved(0, () => {
+      const content1 = '# Title\n\nOriginal content here.\n'
+      const content2 = '# Title\n\nOriginal content here.\n\n## New Section\n\nAdded content.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+      )
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
 
-    // Simulate a successful Read: postReadHandler stores the snapshot
-    const postEvent: HookEvent = {
-      eventName: 'post_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: p },
-      sessionId: 'test',
-      raw: { tool_response: content1 },
-    }
-    postReadHandler(postEvent)
-    recordFileRead(normalizePath(p))
+      // Simulate a successful Read: postReadHandler stores the snapshot
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
 
-    // File changes between reads
-    fs.writeFileSync(p, content2)
+      // File changes between reads
+      fs.writeFileSync(p, content2)
 
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Content changed since last read')
-      expect(result.message).toContain('```diff')
-      expect(result.message).toContain('New Section')
-      expect(result.message).toContain('token-goat section')
-    }
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('New Section')
+        expect(result.message).toContain('token-goat section')
+      }
+    })
   })
 
   it('returns unchanged deny when .md file content is same as at last read', () => {
@@ -1605,63 +1607,67 @@ Some content that makes the file large enough`
   })
 
   it('injects diff for .rst file that changed since last read', () => {
-    const content1 = 'Title\n=====\n\nOriginal.\n'
-    const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
-    const p = path.join(
-      os.tmpdir(),
-      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`,
-    )
-    fs.writeFileSync(p, content1)
-    tmpFiles.push(p)
+    withMinTokensSaved(0, () => {
+      const content1 = 'Title\n=====\n\nOriginal.\n'
+      const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`,
+      )
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
 
-    const postEvent: HookEvent = {
-      eventName: 'post_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: p },
-      sessionId: 'test',
-      raw: { tool_response: content1 },
-    }
-    postReadHandler(postEvent)
-    recordFileRead(normalizePath(p))
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
 
-    fs.writeFileSync(p, content2)
+      fs.writeFileSync(p, content2)
 
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Content changed since last read')
-      expect(result.message).toContain('```diff')
-    }
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+      }
+    })
   })
 
   it('injects diff for .markdown file that changed since last read (isDocDiffable regex previously excluded .markdown, unlike its sibling regexes, so a changed .markdown fell through to the generic "already read" deny instead of serving the diff)', () => {
-    const content1 = 'Title\n=====\n\nOriginal.\n'
-    const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
-    const p = path.join(
-      os.tmpdir(),
-      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`,
-    )
-    fs.writeFileSync(p, content1)
-    tmpFiles.push(p)
+    withMinTokensSaved(0, () => {
+      const content1 = 'Title\n=====\n\nOriginal.\n'
+      const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
+      const p = path.join(
+        os.tmpdir(),
+        `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`,
+      )
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
 
-    const postEvent: HookEvent = {
-      eventName: 'post_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: p },
-      sessionId: 'test',
-      raw: { tool_response: content1 },
-    }
-    postReadHandler(postEvent)
-    recordFileRead(normalizePath(p))
+      const postEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        raw: { tool_response: content1 },
+      }
+      postReadHandler(postEvent)
+      recordFileRead(normalizePath(p))
 
-    fs.writeFileSync(p, content2)
+      fs.writeFileSync(p, content2)
 
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('Content changed since last read')
-      expect(result.message).toContain('```diff')
-    }
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+      }
+    })
   })
 
   it('postReadHandler stores snapshot for .md files (enables future diff)', () => {
@@ -1697,6 +1703,26 @@ Some content that makes the file large enough`
     }
   }
 
+  // hints.diff_hint_min_tokens_saved has no env-var override (unlike most hints fields), so
+  // tests drive it the same way as the reread_deny wiring tests above: write a temp config.toml
+  // (configPath() is mocked to _testConfigPath at the top of this file) and invalidate the cache.
+  function withMinTokensSaved<T>(tokensSaved: number, fn: () => T): T {
+    const cfg = defaultConfig()
+    cfg.hints.diff_hint_min_tokens_saved = tokensSaved
+    saveConfig(cfg)
+    invalidateConfigCache()
+    try {
+      return fn()
+    } finally {
+      invalidateConfigCache()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    }
+  }
+
   // Build a multi-line source file large enough that a 1-line change diffs well under the savings cap.
   function bigSource(varValue: number): string {
     const lines = Array.from({ length: 30 }, (_, i) => `  const x${i} = ${i === 5 ? varValue : i}`).join('\n')
@@ -1723,22 +1749,40 @@ Some content that makes the file large enough`
 
   it('flag ON: serves a diff (with symbol hint) on re-read of a changed .tsx', () => {
     withDiffFlag(true, () => {
-      const content1 = bigSource(5)
-      const p = tmpFileExt(content1, '.tsx')
-      snapshotFirstRead(p, content1)
-      fs.writeFileSync(p, bigSource(555)) // one line changed
+      withMinTokensSaved(0, () => {
+        const content1 = bigSource(5)
+        const p = tmpFileExt(content1, '.tsx')
+        snapshotFirstRead(p, content1)
+        fs.writeFileSync(p, bigSource(555)) // one line changed
 
-      const result = preReadHandler(readEvent(p))
-      expect(result.hookType).toBe('deny')
-      if (result.hookType === 'deny') {
-        expect(result.message).toContain('Content changed since last read')
-        expect(result.message).toContain('```diff')
-        // Real unified-diff body, not just a substring of the new content.
-        expect(result.message).toContain('-  const x5 = 5')
-        expect(result.message).toContain('+  const x5 = 555')
-        // .tsx is symbol-style: hint must point to `token-goat read ::Symbol`, not section
-        expect(result.message).toContain('token-goat read')
-      }
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('deny')
+        if (result.hookType === 'deny') {
+          expect(result.message).toContain('Content changed since last read')
+          expect(result.message).toContain('```diff')
+          // Real unified-diff body, not just a substring of the new content.
+          expect(result.message).toContain('-  const x5 = 5')
+          expect(result.message).toContain('+  const x5 = 555')
+          // .tsx is symbol-style: hint must point to `token-goat read ::Symbol`, not section
+          expect(result.message).toContain('token-goat read')
+        }
+      })
+    })
+  })
+
+  it('flag ON: hints.diff_hint_min_tokens_saved suppresses a diff that saves fewer tokens than the configured floor (regression: field had zero consumers)', () => {
+    withDiffFlag(true, () => {
+      withMinTokensSaved(100_000, () => {
+        const content1 = bigSource(5)
+        const p = tmpFileExt(content1, '.tsx')
+        snapshotFirstRead(p, content1)
+        fs.writeFileSync(p, bigSource(555)) // one line changed -- tiny real savings
+
+        const result = preReadHandler(readEvent(p))
+        // Same fixture that serves a diff at the default/zero floor above must NOT serve one
+        // once the floor is set far above what this tiny change actually saves.
+        expect(result.message ?? '').not.toContain('```diff')
+      })
     })
   })
 
