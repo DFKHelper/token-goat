@@ -341,14 +341,27 @@ describe('MSBuildFilter', () => {
     expect(result).toContain('error CS0103')
   })
 
-  it('deduplicates warnings by code', () => {
-    const lines = Array.from({ length: 5 }, (_, i) => `foo.cs(${i},1): warning CS0649: field unused`)
+  it('deduplicates warnings by exact file+line+code repeat', () => {
+    // Genuinely the same diagnostic, e.g. re-emitted for each of several build targets.
+    const lines = Array.from({ length: 5 }, () => 'foo.cs(1,1): warning CS0649: field unused')
     const out = lines.join('\n') + '\n'
     const result = apply(f, out, '', 0, ['msbuild'])
     // Only first occurrence of CS0649 is kept
     const warningMatches = result.match(/warning CS0649/g) ?? []
     expect(warningMatches.length).toBe(1)
     expect(result).toContain('collapsed 4 duplicate warning')
+  })
+
+  // Regression: the dedup key was file path + code only, omitting the line number, so distinct
+  // warnings of the same code on different lines of the same file were wrongly collapsed even
+  // though the code's own comment states "same code in different files/lines is distinct".
+  it('preserves the same warning code on distinct lines of the same file', () => {
+    const lines = Array.from({ length: 5 }, (_, i) => `foo.cs(${i},1): warning CS0649: field unused`)
+    const out = lines.join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['msbuild'])
+    const warningMatches = result.match(/warning CS0649/g) ?? []
+    expect(warningMatches.length).toBe(5)
+    expect(result).not.toContain('collapsed')
   })
 
   it('collapses Copy task lines', () => {

@@ -745,7 +745,7 @@ export class MesonFilter extends ToolFilter {
 // ---------------------------------------------------------------------------
 
 const MSBUILD_ERROR_RE = /.*\(\d+(?:,\d+)?\)\s*:\s*error\s+/
-const MSBUILD_WARNING_RE = /(.*?)\(\d+(?:,\d+)?\)\s*:\s*warning\s+(\w+)/
+const MSBUILD_WARNING_RE = /(.*?)\((\d+)(?:,\d+)?\)\s*:\s*warning\s+(\w+)/
 const MSBUILD_BUILD_STARTED_RE = /^Build started/
 const MSBUILD_PROJECT_BUILDING_RE = /^------ Build started: Project:/
 const MSBUILD_COPY_RE = /^\s+(?:Copy|CopyFilesToOutputDirectory|CopyToOutputDirectory)\b/
@@ -783,12 +783,14 @@ export class MSBuildFilter extends ToolFilter {
         kept.push(line)
         continue
       }
-      // Deduplicate warnings by file path + code (same code in different files/lines is distinct)
+      // Deduplicate warnings by file path + line + code (same code in a different file, line, or
+      // both is a distinct diagnostic and must never be collapsed)
       const warnMatch = MSBUILD_WARNING_RE.exec(line)
       if (warnMatch) {
         const filePath = (warnMatch[1] ?? "").trim()
-        const code = warnMatch[2] ?? ""
-        const dedupKey = `${filePath}|${code}`
+        const lineNum = warnMatch[2] ?? ""
+        const code = warnMatch[3] ?? ""
+        const dedupKey = `${filePath}|${lineNum}|${code}`
         if (!seenWarningCodes.has(dedupKey)) {
           seenWarningCodes.add(dedupKey)
           kept.push(line)
