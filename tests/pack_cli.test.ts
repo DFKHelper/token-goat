@@ -130,6 +130,39 @@ describe('pack command', () => {
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('no files matched')
   })
+
+  // Regression guard: --no-ignore was registered on the pack command with the help text
+  // "bypass .tokengoatignore patterns", and collectFiles/collectFromStdin already accepted an
+  // ignore_patterns option, but cmdPack never read a .tokengoatignore file or forwarded any
+  // patterns to collectOpts -- the flag was a complete no-op and the file was never read.
+  describe('.tokengoatignore', () => {
+    let ignoreDir: string
+
+    beforeAll(() => {
+      ignoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pack-ignore-'))
+      fs.writeFileSync(path.join(ignoreDir, 'keep.ts'), 'export const keep = 1\n')
+      fs.writeFileSync(path.join(ignoreDir, 'secret.ts'), 'const key = "AKIAIOSFODNN7EXAMPLE"\n')
+      fs.writeFileSync(path.join(ignoreDir, '.tokengoatignore'), '# comment\nsecret.ts\n')
+    })
+
+    afterAll(() => {
+      fs.rmSync(ignoreDir, { recursive: true, force: true })
+    })
+
+    it('excludes a file matching a .tokengoatignore pattern by default', () => {
+      const r = run(['pack', 'keep.ts', 'secret.ts'], { cwd: ignoreDir })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('keep')
+      expect(r.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    })
+
+    it('--no-ignore includes a file that would otherwise be excluded', () => {
+      const r = run(['pack', 'keep.ts', 'secret.ts', '--no-ignore'], { cwd: ignoreDir })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('keep')
+      expect(r.stdout).toContain('AKIAIOSFODNN7EXAMPLE')
+    })
+  })
 })
 
 // tokens
