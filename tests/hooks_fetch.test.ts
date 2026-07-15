@@ -97,6 +97,42 @@ describe('preFetchHandler', () => {
     }
   });
 
+  it('does not redirect a cached response below hints.web_dedup_min_bytes, and re-fetches instead', () => {
+    const url = 'https://example.com/tiny-cached';
+    const sessionId = 'tiny-cache-session';
+    const orig = process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'];
+    try {
+      process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = '999999';
+      clearModuleCaches();
+
+      const postResult = postFetchHandler({
+        eventName: 'post_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId,
+        raw: { tool_response: 'x'.repeat(2000) },
+      });
+      expect(postResult.hookType).toBe('pass');
+
+      const result = preFetchHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId,
+        raw: {},
+      });
+
+      expect(result.hookType).toBe('pass');
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'];
+      } else {
+        process.env['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'] = orig;
+      }
+      clearModuleCaches();
+    }
+  });
+
   it('does not redirect a different prompt against the same URL to the wrong cached answer (regression: dedup key ignored prompt)', () => {
     const url = 'https://example.com/prompt-dedup';
     const sessionId = 'prompt-dedup-session';

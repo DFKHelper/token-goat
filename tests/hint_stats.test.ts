@@ -14,6 +14,7 @@ import {
   logHintEmission,
   markCategoryEffective,
   markCategoryIneffective,
+  meetsSavingsFloor,
   resetHintStats,
   resolvePendingHintsForEvent,
   shouldSuppress,
@@ -382,6 +383,36 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     saveConfig(cfg)
     // Same 50% data, now below a 60% threshold.
     expect(shouldSuppress('read_structural_nav', nonce())).toBe(true)
+  })
+})
+
+describe('meetsSavingsFloor', () => {
+  it('is false when a hint emission carries fewer bytes than hints.min_session_hint_savings_bytes', () => {
+    const cfg = defaultConfig()
+    cfg.hints.min_session_hint_savings_bytes = 512
+    saveConfig(cfg)
+
+    expect(meetsSavingsFloor(100)).toBe(false)
+  })
+
+  it('is true once a hint emission meets or exceeds hints.min_session_hint_savings_bytes', () => {
+    const cfg = defaultConfig()
+    cfg.hints.min_session_hint_savings_bytes = 512
+    saveConfig(cfg)
+
+    expect(meetsSavingsFloor(512)).toBe(true)
+    expect(meetsSavingsFloor(1024)).toBe(true)
+  })
+
+  it('respects a reconfigured floor', () => {
+    const cfg = defaultConfig()
+    cfg.hints.min_session_hint_savings_bytes = 0
+    saveConfig(cfg)
+    expect(meetsSavingsFloor(1)).toBe(true)
+
+    cfg.hints.min_session_hint_savings_bytes = 2000
+    saveConfig(cfg)
+    expect(meetsSavingsFloor(1)).toBe(false)
   })
 })
 

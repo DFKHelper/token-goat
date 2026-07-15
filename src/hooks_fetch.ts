@@ -62,12 +62,15 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     // Guard on the content blob (in-memory or on disk), not just the session index, so a pruned or evicted entry never yields a web-output hint that would error - mirrors the curl-GET recall guard in hooks_bash.
     const cached = getWebOutput(cacheId);
     if (cached !== null) {
-      recordStat('webfetch:recall', Buffer.byteLength(cached, 'utf-8'), Math.round(cached.length / 4));
-      return denyOutput(
-        'Already fetched this URL with this prompt; the response is cached. ' +
-        'Use `token-goat web-output ' + cacheId + '` to recall it ' +
-        '(append `--grep PATTERN` to filter or `--section Heading` for a markdown section) instead of re-fetching.',
-      );
+      const cachedBytes = Buffer.byteLength(cached, 'utf-8');
+      if (cachedBytes >= loadConfig().hints.web_dedup_min_bytes) {
+        recordStat('webfetch:recall', cachedBytes, Math.round(cached.length / 4));
+        return denyOutput(
+          'Already fetched this URL with this prompt; the response is cached. ' +
+          'Use `token-goat web-output ' + cacheId + '` to recall it ' +
+          '(append `--grep PATTERN` to filter or `--section Heading` for a markdown section) instead of re-fetching.',
+        );
+      }
     }
 
     return passOutput();

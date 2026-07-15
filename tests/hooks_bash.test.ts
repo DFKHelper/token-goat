@@ -1580,6 +1580,30 @@ describe('preBashHandler — curl GET recall', () => {
     }
   })
 
+  it('does not redirect a cached curl GET response below hints.bash_dedup_min_bytes, and lets the command run instead', async () => {
+    const cmd = 'curl -s https://api.example.com/tiny-cached-data'
+    // Large enough to clear bash_compress.cache_min_bytes (default 512) so it actually gets
+    // cached, but well under the inflated hints.bash_dedup_min_bytes floor set below.
+    const cachedOutput = JSON.stringify({ items: new Array(200).fill({ id: 1, name: 'foo' }) })
+    const orig = process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+    try {
+      await postBashHandler(makePostBashEvent(cmd, cachedOutput))
+
+      process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = '999999'
+      invalidateConfigCache()
+
+      const result = preBashHandler(makeBashEvent(cmd))
+      expect(result.hookType).not.toBe('context')
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_BASH_DEDUP_MIN_BYTES'] = orig
+      }
+      clearModuleCaches()
+    }
+  })
+
   it('names the actual differently-piped command that produced the cached value, instead of silently implying it matches the new filter (BASHCACHE-KEY-STRIPS-PIPELINE regression)', async () => {
     const url = 'https://api.example.com/data'
     const firstCmd = 'curl -s ' + url + ' | jq .items'
@@ -1817,7 +1841,8 @@ describe('preBashHandler — curl download dedup', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-curl-'))
     const v1Path = join(dir, 'report-v1.json')
     try {
-      writeFileSync(v1Path, '{}')
+      // Above hints.bash_dedup_min_bytes (default 200) so the recall deny actually fires.
+      writeFileSync(v1Path, JSON.stringify({ items: new Array(20).fill({ id: 1, name: 'foo' }) }))
       const url = 'https://example.com/report.json'
       const firstCmd = `curl ${url} -o ${v1Path}`
       await postBashHandler(makePostBashEvent(firstCmd, ''))
@@ -1846,7 +1871,8 @@ describe('preBashHandler — curl download dedup', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-curl-'))
     const outPath = join(dir, 'script.sh')
     try {
-      writeFileSync(outPath, '#!/bin/sh\necho hi\n')
+      // Above hints.bash_dedup_min_bytes (default 200) so the recall deny actually fires.
+      writeFileSync(outPath, '#!/bin/sh\necho hi\n' + '# padding to clear the dedup min-bytes floor\n'.repeat(10))
       const cmd = `curl https://example.com/script.sh -o ${outPath}`
       await postBashHandler(makePostBashEvent(cmd, ''))
       const result = preBashHandler(makeBashEvent(cmd))
@@ -1862,7 +1888,8 @@ describe('preBashHandler — curl download dedup', () => {
     try {
       const url = 'https://example.com/artifact.json'
       const cmd = `curl ${url} -o ${outPath}`
-      writeFileSync(outPath, '{"v":1}')
+      // Above hints.bash_dedup_min_bytes (default 200) so the recall deny actually fires.
+      writeFileSync(outPath, JSON.stringify({ v: 1, padding: 'x'.repeat(200) }))
       await postBashHandler(makePostBashEvent(cmd, ''))
       expect(preBashHandler(makeBashEvent(cmd)).hookType).toBe('deny')
 
