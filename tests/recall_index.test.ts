@@ -49,6 +49,7 @@ import {
   searchRecall,
   resetRecallFtsCacheForTesting,
   clearRecallEntriesForTesting,
+  likeSearchForTesting,
 } from '../src/recall_index.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -205,5 +206,16 @@ describe('searchRecall — ranking', () => {
     const hits = searchRecall(`rankterm-${n}`)
     expect(hits.length).toBe(2)
     expect(hits[0]?.id).toBe(`strong-${n}`)
+  })
+})
+
+describe('likeSearch (LIKE fallback) — literal backslash in the query', () => {
+  it('finds a Windows-path entry via the LIKE fallback when the query itself contains a literal backslash', () => {
+    const n = nonce()
+    indexRecallEntry('bash', `bsl-${n}`, `label-${n}`, `git diff for C:\\Users\\alice\\project-${n}\\worker.ts`, Date.now())
+
+    const hits = likeSearchForTesting(`C:\\Users\\alice\\project-${n}`)
+    expect(hits.length).toBe(1)
+    expect(hits[0]?.id).toBe(`bsl-${n}`)
   })
 })

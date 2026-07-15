@@ -182,7 +182,10 @@ function likeSearch(query: string, type: RecallCacheType | undefined, limit: num
   const trimmed = query.trim()
   if (!trimmed) return []
   const db = getDb(globalDbPath())
-  const needle = `%${trimmed.replace(/[%_]/g, (c) => `\\${c}`)}%`
+  // Backslash must be escaped first -- ESCAPE '\' means an unescaped literal `\` in the
+  // pattern (e.g. from a Windows path like `C:\Users`) is otherwise consumed as an escape
+  // marker and silently stripped, so the pattern never matches the real backslash in the text.
+  const needle = `%${trimmed.replace(/\\/g, '\\\\').replace(/[%_]/g, (c) => `\\${c}`)}%`
   const rows = (
     type !== undefined
       ? db
@@ -214,6 +217,11 @@ function likeSearch(query: string, type: RecallCacheType | undefined, limit: num
       snippet: buildSnippet(r.content ?? '', trimmed),
       storedAt: r.storedAt ?? 0,
     }))
+}
+
+/** Test-only: exercises the LIKE fallback directly, without needing to disable the real `cache_recall_fts` schema (dropping/rebuilding an FTS5 virtual table mid-suite corrupts the shared test db). */
+export function likeSearchForTesting(query: string, type?: RecallCacheType, limit = 10): RecallHit[] {
+  return likeSearch(query, type, limit)
 }
 
 /**
