@@ -21,7 +21,7 @@ import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } fr
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath, escapeRegExp } from './util.js'
-import { stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
@@ -100,7 +100,7 @@ function staleWarning(resolvedPath: string): string {
 }
 
 function emit(text: string): void {
-  const out = process.stdout.isTTY === true ? text : stripAnsi(text)
+  const out = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(out))
 }
 

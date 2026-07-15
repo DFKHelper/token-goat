@@ -24,12 +24,12 @@ import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath } from './util.js'
 import { normalizePath } from './paths.js'
-import { stripAnsi } from './render/ansi.js'
+import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
 
 function emit(text: string): void {
-  const payload = process.stdout.isTTY === true ? text : stripAnsi(text)
+  const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
 }
 

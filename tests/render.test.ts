@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   fg,
   bg,
@@ -8,6 +8,8 @@ import {
   stripAnsi,
   fmtBytes,
   lerpRgb,
+  colorStderr,
+  colorStdout,
   C,
   RESET,
 } from '../src/render/ansi.js'
@@ -131,6 +133,55 @@ describe('ANSI formatting', () => {
     expect(C.GREEN5).toBeDefined()
     expect(Array.isArray(C.BLUE)).toBe(true)
     expect(C.BLUE.length).toBe(3)
+  })
+})
+
+describe('colorStdout / colorStderr (NO_COLOR convention)', () => {
+  let prevNoColor: string | undefined
+  let prevStdoutIsTty: boolean | undefined
+  let prevStderrIsTty: boolean | undefined
+
+  beforeEach(() => {
+    prevNoColor = process.env['NO_COLOR']
+    prevStdoutIsTty = process.stdout.isTTY
+    prevStderrIsTty = process.stderr.isTTY
+  })
+
+  afterEach(() => {
+    if (prevNoColor === undefined) {
+      delete process.env['NO_COLOR']
+    } else {
+      process.env['NO_COLOR'] = prevNoColor
+    }
+    Object.defineProperty(process.stdout, 'isTTY', { value: prevStdoutIsTty, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: prevStderrIsTty, configurable: true })
+  })
+
+  it('returns false on a real TTY when NO_COLOR is set (regression: callers reimplemented a bare isTTY check that ignored this)', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true })
+    process.env['NO_COLOR'] = '1'
+
+    expect(colorStdout()).toBe(false)
+    expect(colorStderr()).toBe(false)
+  })
+
+  it('returns true on a real TTY when NO_COLOR is unset', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true })
+    delete process.env['NO_COLOR']
+
+    expect(colorStdout()).toBe(true)
+    expect(colorStderr()).toBe(true)
+  })
+
+  it('returns false when not a TTY, regardless of NO_COLOR', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: false, configurable: true })
+    delete process.env['NO_COLOR']
+
+    expect(colorStdout()).toBe(false)
+    expect(colorStderr()).toBe(false)
   })
 })
 
