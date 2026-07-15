@@ -72,6 +72,33 @@ export function dataDirForHome(homeDir: string): string {
  * to the home-based default (via `dataDirForHome`) so a crafted env var
  * cannot redirect data paths.
  */
+/**
+ * dataDirForHome(os.homedir()) is the correct real-machine fallback when no platform env var
+ * override is present -- but tests/setup/isolate-home.ts unconditionally pins LOCALAPPDATA/
+ * XDG_DATA_HOME for every Vitest worker specifically so this fallback is never reached in
+ * tests. Reaching it there means some test (directly, or via a spawned child process whose env
+ * was rebuilt without inheriting the override) cleared the isolation var without supplying its
+ * own -- and is about to read/write the developer's real global.db/config.toml. Confirmed this
+ * happened in practice: production config.toml was found holding `large_file_skip_kb = 1` and
+ * `skip_dirs = ["a"]`, unmistakable test-fixture values, which silently broke real indexing (any
+ * source file over 1 KB became skip-eligible). Fail loudly instead of corrupting real data.
+ * VITEST_ALLOW_REAL_DATA_DIR opts a test out deliberately when it has already substituted a
+ * synthetic home (e.g. tests/constants.test.ts's own home-fallback-formula regression test,
+ * which mocks os.homedir() rather than touching the real one).
+ */
+function homeFallbackOrGuard(): string {
+  const inVitest = process.env['VITEST_WORKER_ID'] !== undefined || process.env['VITEST'] === 'true'
+  if (inVitest && process.env['VITEST_ALLOW_REAL_DATA_DIR'] !== '1') {
+    throw new Error(
+      'token-goat: refusing to resolve DATA_DIR against the real home directory inside a ' +
+        'Vitest worker (LOCALAPPDATA/XDG_DATA_HOME is unset). This would read or write the ' +
+        "developer's real global.db/config.toml. Set LOCALAPPDATA/XDG_DATA_HOME explicitly for " +
+        'this process, or VITEST_ALLOW_REAL_DATA_DIR=1 if this is an intentional mocked-home test.',
+    )
+  }
+  return dataDirForHome(os.homedir())
+}
+
 function defaultDataDir(): string {
   const platform = process.platform
   if (platform === 'win32') {
@@ -80,10 +107,10 @@ function defaultDataDir(): string {
     if (base !== undefined) {
       return path.join(base, 'dfk-helper', 'token-goat')
     }
-    return dataDirForHome(os.homedir())
+    return homeFallbackOrGuard()
   }
   if (platform === 'darwin') {
-    return dataDirForHome(os.homedir())
+    return homeFallbackOrGuard()
   }
   // Linux / BSD / WSL — honour XDG_DATA_HOME.
   const xdg = process.env['XDG_DATA_HOME'] ?? ''
@@ -91,7 +118,7 @@ function defaultDataDir(): string {
   if (base !== undefined) {
     return path.join(base, 'token-goat')
   }
-  return dataDirForHome(os.homedir())
+  return homeFallbackOrGuard()
 }
 
 // Computed once at module load: the data directory never changes within a process lifetime, so caching avoids repeated env reads on the hot hook path.
