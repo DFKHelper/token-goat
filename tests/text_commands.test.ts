@@ -99,6 +99,19 @@ describe('todo command', () => {
     expect(r.stdout).not.toMatch(/:\d+\s+TODO/)
   })
 
+  it('does not match a marker name as a prefix of a longer identifier/word (regression: the marker regex had a leading \\b but no trailing one, so "\\s*:?\\s*" matched zero-width and swallowed the rest of a longer word like "NOTEBOOK" or "TODOLIST" into the captured text)', () => {
+    const src = path.join(tmpDir, 'prefix_word.ts')
+    fs.writeFileSync(
+      src,
+      '// NOTEBOOK: this is just a variable name comment, not a marker\nconst TODOLIST = ["a", "b"]\nfunction HACKATHON() { return 1 }\n',
+      'utf8',
+    )
+    const r = run(['todo', src, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { items: Array<{ kind: string }> }
+    expect(parsed.items).toEqual([])
+  })
+
   it('--kinds limits which markers are reported', () => {
     const src = path.join(tmpDir, 'kinds.ts')
     fs.writeFileSync(src, '// TODO: a\n// FIXME: b\n// HACK: c\n', 'utf8')
