@@ -116,8 +116,11 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     ...lines.slice(-5),
   ].join('\n')
 
+  // `bash-output <id>` errors for a file read directly off disk (never went through the
+  // bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching
+  // hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
   const recall = isLog
-    ? 'Log file — use Read with offset/limit params, or: token-goat bash-output <id> --tail 100 --grep "error|ERROR"'
+    ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file "${filePath}" --tail 100 --grep "error|ERROR"`
     : 'Use Read with offset and limit params to sample specific line ranges.'
 
   return {
