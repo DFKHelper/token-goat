@@ -577,7 +577,11 @@ function parseRequirementsTxt(content: string): DepEntry[] {
     // the URL and leaves the name-capture regex below matching the URL scheme ("git") instead of
     // the real package name. Recover the name from the fragment before the generic comment-strip
     // would otherwise discard it.
-    const eggMatch = /#egg=([A-Za-z0-9_.-]+)/.exec(raw)
+    // Only apply the egg-fragment recovery when the line itself IS the VCS spec (starts
+    // with a VCS scheme). An ordinary pinned dependency with a trailing inline comment that
+    // merely mentions "#egg=" (e.g. documenting an alternate install method) must not have
+    // its real spec discarded and replaced by a fabricated dependency parsed from the comment.
+    const eggMatch = /^\s*(?:git|hg|svn|bzr)\+.*#egg=([A-Za-z0-9_.-]+)/.exec(raw)
     if (eggMatch !== null) {
       deps.push({ name: eggMatch[1] ?? '', version: '', kind: 'unknown' })
       continue
