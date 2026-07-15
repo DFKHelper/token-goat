@@ -14,12 +14,26 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Redirects configPath() to a per-test-file temp file so the cache-audit large_file_skip_kb
+// tests below can saveConfig() without touching the real per-worker DATA_DIR/config.toml that
+// other tests in this file (and other files sharing this worker) implicitly depend on. Mirrors
+// tests/hooks_grep.test.ts/hooks_bash.test.ts's pattern. Confirmed necessary: writing through
+// the shared config.toml here broke cmdCompactHint's "reflects the real session tier" test
+// further down this same file, even mutating only one unrelated field.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return { ...original, configPath: () => _testConfigPath }
+})
+
+const _testConfigPath = path.join(os.tmpdir(), `tg-cache-session-commands-config-test-${process.pid}.toml`)
+
 import { listBlobs, storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from '../src/web_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
 import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from '../src/cache_session_commands.js'
 import { buildResumePacket, MAX_RESUME_CHARS } from '../src/resume.js'
+import { loadConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -51,6 +65,10 @@ afterEach(() => {
   else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prevHarnessOverride
   try { fs.rmSync(tmpHome, { recursive: true, force: true }) } catch {
     // best-effort cleanup
+  }
+  invalidateConfigCache()
+  try { fs.unlinkSync(_testConfigPath) } catch {
+    // ok -- may not exist
   }
 })
 
@@ -370,6 +388,57 @@ describe('cmdCacheAudit', () => {
     const checks = parsed.findings.map((f) => f.check)
     expect(checks).toContain('hooks:user')
     expect(checks).toContain('hooks:project')
+  })
+
+  // Regression: a corrupted/misconfigured indexing.large_file_skip_kb (e.g. left at a tiny
+  // value from an aborted test run or stray manual `config set`) silently skips nearly every
+  // real source file from indexing, with no error anywhere -- exactly what happened to this
+  // repo's own live config.toml this session. cache-audit must surface it. Mutates only the one
+  // field being tested (structuredClone + restore, matching this session's established pattern
+  // in tests/hooks_session.test.ts/embed_sha_gate.test.ts) rather than writing a full
+  // defaultConfig() snapshot, which would clobber unrelated config state other tests in this
+  // shared-worker-DATA_DIR file depend on (confirmed: a blanket defaultConfig() write here broke
+  // cmdCompactHint's "reflects the real session tier" test further down the file).
+  it('flags a suspiciously small indexing.large_file_skip_kb as an issue', () => {
+    const originalSkipKb = loadConfig().indexing.large_file_skip_kb
+    const cfg = structuredClone(loadConfig())
+    cfg.indexing.large_file_skip_kb = 1
+    saveConfig(cfg)
+    invalidateConfigCache()
+    try {
+      cmdCacheAudit({ json: true })
+      const parsed = JSON.parse(capturedOutput()) as { findings: Array<{ check: string; ok: boolean; detail: string }>; issueCount: number }
+      const finding = parsed.findings.find((f) => f.check === 'indexing:large_file_skip_kb')
+      expect(finding).toBeDefined()
+      expect(finding!.ok).toBe(false)
+      expect(finding!.detail).toContain('large_file_skip_kb=1')
+      expect(parsed.issueCount).toBeGreaterThanOrEqual(1)
+    } finally {
+      const restoreCfg = structuredClone(loadConfig())
+      restoreCfg.indexing.large_file_skip_kb = originalSkipKb
+      saveConfig(restoreCfg)
+      invalidateConfigCache()
+    }
+  })
+
+  it('does not flag a healthy indexing.large_file_skip_kb', () => {
+    const originalSkipKb = loadConfig().indexing.large_file_skip_kb
+    const cfg = structuredClone(loadConfig())
+    cfg.indexing.large_file_skip_kb = 2048
+    saveConfig(cfg)
+    invalidateConfigCache()
+    try {
+      cmdCacheAudit({ json: true })
+      const parsed = JSON.parse(capturedOutput()) as { findings: Array<{ check: string; ok: boolean }> }
+      const finding = parsed.findings.find((f) => f.check === 'indexing:large_file_skip_kb')
+      expect(finding).toBeDefined()
+      expect(finding!.ok).toBe(true)
+    } finally {
+      const restoreCfg = structuredClone(loadConfig())
+      restoreCfg.indexing.large_file_skip_kb = originalSkipKb
+      saveConfig(restoreCfg)
+      invalidateConfigCache()
+    }
   })
 })
 
