@@ -16,7 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { execFileSync } from 'node:child_process';
-import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS } from '../src/project.js';
+import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS, isUnderSystemTemp } from '../src/project.js';
 import { lowercaseDriveLetter } from '../src/paths.js';
 
 describe('project', () => {
@@ -444,6 +444,29 @@ describe('project', () => {
 
     it('should be non-empty', () => {
       expect(PROJECT_MARKERS.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('isUnderSystemTemp', () => {
+    it('returns true for a path directly inside os.tmpdir()', () => {
+      expect(isUnderSystemTemp(path.join(os.tmpdir(), 'some-file.ts'))).toBe(true);
+    });
+
+    it('returns true for a path nested arbitrarily deep under os.tmpdir()', () => {
+      const nested = path.join(tmpDir, 'scratch-checkout', 'src', 'index.ts');
+      expect(isUnderSystemTemp(nested)).toBe(true);
+    });
+
+    it('returns false for a path outside os.tmpdir(), e.g. this repo', () => {
+      expect(isUnderSystemTemp(__filename)).toBe(false);
+    });
+
+    it('returns false for a sibling directory that merely shares os.tmpdir() as a string prefix', () => {
+      // Guards against a naive startsWith(sysTemp) check (no separator) matching e.g.
+      // "/tmp-other/file.ts" against a system temp dir of "/tmp".
+      const sysTemp = os.tmpdir().replace(/[/\\]+$/, '');
+      const sibling = `${sysTemp}-other-dir/file.ts`;
+      expect(isUnderSystemTemp(sibling)).toBe(false);
     });
   });
 });

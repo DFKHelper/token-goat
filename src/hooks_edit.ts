@@ -24,6 +24,7 @@ import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
 import { recordFileEdit } from './session.js'
+import { isUnderSystemTemp } from './project.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { compactPathFor, markCompactStale } from './doc_compact.js'
@@ -45,32 +46,39 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
-  try {
-    appendDirtyPath(normalized)
-  } catch (e) {
-    // Fail-soft: a transient fs error (disk full, permission, Windows file lock)
-    // must not crash the whole handler — recordFileEdit above already succeeded,
-    // and the rest of this handler's work (the markdown hint below) should still
-    // run rather than the exception propagating out of postEditHandler.
-    recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
-  }
+  // Nothing under the OS system temp dir (scratch checkouts, ad hoc debugging copies, per-test
+  // fixture dirs) should ever become a permanent index citizen -- see isUnderSystemTemp's
+  // docstring for the concrete pollution this prevents. Skip both the dirty-queue enqueue and
+  // the known-root recording that would otherwise permanently index it as a distinct project.
+  const underSystemTemp = isUnderSystemTemp(normalized)
+  if (!underSystemTemp) {
+    try {
+      appendDirtyPath(normalized)
+    } catch (e) {
+      // Fail-soft: a transient fs error (disk full, permission, Windows file lock)
+      // must not crash the whole handler — recordFileEdit above already succeeded,
+      // and the rest of this handler's work (the markdown hint below) should still
+      // run rather than the exception propagating out of postEditHandler.
+      recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+    }
 
-  // Work was just queued above for the background worker to drain -- nudge it back to life if
-  // the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring).
-  // Rate-limited internally, so this is cheap on every call after the first in a given window.
-  try {
-    ensureWorkerAlive()
-  } catch (e) {
-    recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
-  }
+    // Work was just queued above for the background worker to drain -- nudge it back to life if
+    // the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring).
+    // Rate-limited internally, so this is cheap on every call after the first in a given window.
+    try {
+      ensureWorkerAlive()
+    } catch (e) {
+      recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+    }
 
-  // Record this file's project root as known-alive so the worker's periodic sweep
-  // (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from --
-  // see recordKnownRootThrottled's docstring. Also rate-limited internally.
-  try {
-    recordKnownRootThrottled(normalized)
-  } catch (e) {
-    recordStat('known_root_record_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+    // Record this file's project root as known-alive so the worker's periodic sweep
+    // (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from --
+    // see recordKnownRootThrottled's docstring. Also rate-limited internally.
+    try {
+      recordKnownRootThrottled(normalized)
+    } catch (e) {
+      recordStat('known_root_record_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+    }
   }
 
   // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid
