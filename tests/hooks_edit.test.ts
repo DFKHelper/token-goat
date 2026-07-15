@@ -190,6 +190,26 @@ describe('postEditHandler', () => {
       expect(result.context).not.toContain('say "hi"')
     }
   })
+
+  it('suppresses the markdown re-read hint when the edited file is smaller than hints.min_session_hint_savings_bytes', () => {
+    const tmpFile = path.join(DATA_DIR, 'small.md')
+    fs.writeFileSync(tmpFile, '# tiny\n')
+    const orig = process.env['TOKEN_GOAT_SESSION_HINT_MIN_BYTES']
+    try {
+      process.env['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'] = '999999'
+      invalidateConfigCache()
+      const result = postEditHandler(editEvent(tmpFile))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_SESSION_HINT_MIN_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'] = orig
+      }
+      invalidateConfigCache()
+      fs.rmSync(tmpFile, { force: true })
+    }
+  })
 })
 
 describe('postEditHandler — stable-doc compact staleness marking', () => {

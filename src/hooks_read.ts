@@ -18,7 +18,7 @@ import * as path from 'node:path'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { applyHintTracking, classifyReadHint } from './hint_stats.js'
+import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { normalizePath } from './paths.js'
 import { foldPath, isWithinQuietHours } from './util.js'
 import { loadConfig } from './config.js'
@@ -1030,6 +1030,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       )
     }
     recordActualRead(event, normalized)
+    if (!meetsSavingsFloor(size)) {
+      return passOutput()
+    }
     if (config.hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalized, size)
     }
@@ -1175,7 +1178,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
-        if (lineCount >= minLines) {
+        if (lineCount >= minLines && meetsSavingsFloor(sz)) {
           recordStat('session_hint', sz, Math.round(sz / 4))
           return quietContextOutput(
             normalized + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + normalized + '"` or `token-goat outline "' + normalized + '"` for structural navigation instead of a future full re-read.',

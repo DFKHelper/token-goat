@@ -13,12 +13,13 @@
  */
 
 import * as path from 'node:path'
+import { statSync } from 'node:fs'
 
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
-import { applyHintTracking, classifyEditHint } from './hint_stats.js'
+import { applyHintTracking, classifyEditHint, meetsSavingsFloor } from './hint_stats.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
@@ -82,13 +83,25 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
 
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
-    const escapedPath = normalized.replace(/`/g, '\\`').replace(/"/g, '\\"')
-    return contextOutput(
-      editedBasename +
-        ' was edited. Use `token-goat section "' +
-        escapedPath +
-        '::HeadingName"` to re-read a specific section rather than the full file.',
-    )
+    // The hint's value is re-reading via `section` instead of the whole file, so its
+    // quantified savings are the edited file's own size — skip the fs.statSync entirely on
+    // failure (fail-soft, matching every other best-effort fs read in this handler) rather than
+    // let a stat error suppress a hint that would otherwise have fired.
+    let editedSize = Infinity
+    try {
+      editedSize = statSync(normalized).size
+    } catch {
+      // best-effort; treat as eligible for the hint below on stat failure
+    }
+    if (meetsSavingsFloor(editedSize)) {
+      const escapedPath = normalized.replace(/`/g, '\\`').replace(/"/g, '\\"')
+      return contextOutput(
+        editedBasename +
+          ' was edited. Use `token-goat section "' +
+          escapedPath +
+          '::HeadingName"` to re-read a specific section rather than the full file.',
+      )
+    }
   }
 
   return passOutput()

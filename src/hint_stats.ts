@@ -357,6 +357,21 @@ export function shouldSuppress(category: HintCategory, _sessionId: string): bool
   }
 }
 
+/**
+ * True when a specific hint emission's own quantified byte savings meet
+ * `hints.min_session_hint_savings_bytes`. Unlike {@link shouldSuppress} (a cross-session,
+ * per-category historical-efficacy signal backed by `hint_emissions`), this is a cheap, local,
+ * per-call floor: "is THIS hint's savings big enough to be worth the friction of showing it,
+ * right now" — no persistence, no sampling, just the one number the caller already computed.
+ * Callers that already derive a concrete bytesSaved figure immediately before emitting a
+ * `context` hint should gate on this the same way they gate on {@link shouldSuppress} results —
+ * swap the hint for a silent `passOutput()` (or let the underlying command run normally) when
+ * it returns false.
+ */
+export function meetsSavingsFloor(bytesSaved: number): boolean {
+  return bytesSaved >= loadConfig().hints.min_session_hint_savings_bytes
+}
+
 function manualMarks(category: HintCategory): { effective: number; ineffective: number } {
   try {
     const db = getDb(globalDbPath())
