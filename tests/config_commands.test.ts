@@ -67,6 +67,10 @@ vi.mock('../src/util.js', async (importOriginal) => {
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
 
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory, cmdFetchImage } from '../src/config_commands.js'
+import { globalDbPath } from '../src/constants.js'
+import { indexFileSync } from '../src/parser.js'
+import { normalizePath } from '../src/paths.js'
+import { getDb } from '../src/db.js'
 import { compactPathFor, isCompactFresh } from '../src/doc_compact.js'
 import { invalidateConfigCache, loadConfig, loadPersistedConfig, saveConfig, defaultConfig } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
@@ -766,6 +770,83 @@ describe('cmdProject prune', () => {
     invalidateConfigCache()
     const after = loadConfig()
     expect(after.worker.blocked_roots).toContain(fake)
+  })
+})
+
+// Regression: `project prune`'s help text has always described "prune = remove stale entries",
+// but the implementation only ever touched cfg.worker.blocked_roots -- it never purged already-
+// indexed rows for files under the OS system temp directory (scratch checkouts, ad hoc debugging
+// copies). These cover the retroactive-cleanup half now wired in alongside the existing
+// blocked_roots pruning.
+describe('cmdProject prune retroactively removes indexed system-temp files', () => {
+  let tempDir: string
+  let nonTempDir: string
+
+  function symbolCount(key: string): number {
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE file_path = ?').get(key) as { n: number }
+    return row.n
+  }
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdproject-prune-'))
+    nonTempDir = fs.mkdtempSync(path.join(process.cwd(), 'tg-cmdproject-prune-nontemp-'))
+  })
+
+  afterEach(() => {
+    const db = getDb(globalDbPath())
+    for (const d of [tempDir, nonTempDir]) {
+      const prefix = normalizePath(d)
+      try { db.prepare('DELETE FROM symbols WHERE file_path LIKE ?').run(`${prefix}%`) } catch { /* ok */ }
+      try { db.prepare('DELETE FROM files WHERE path LIKE ?').run(`${prefix}%`) } catch { /* ok */ }
+    }
+    try { fs.rmSync(tempDir, { recursive: true, force: true }) } catch { /* ok */ }
+    try { fs.rmSync(nonTempDir, { recursive: true, force: true }) } catch { /* ok */ }
+  })
+
+  it('non-json prune purges indexed rows under system temp and keeps real-project rows', () => {
+    const tempFile = path.join(tempDir, 'scratch.ts')
+    fs.writeFileSync(tempFile, 'export const scratchSym = 1\n')
+    const tempKey = normalizePath(tempFile)
+    indexFileSync(tempKey, globalDbPath())
+
+    const realFile = path.join(nonTempDir, 'real.ts')
+    fs.writeFileSync(realFile, 'export const realSym = 1\n')
+    const realKey = normalizePath(realFile)
+    indexFileSync(realKey, globalDbPath())
+
+    expect(symbolCount(tempKey)).toBeGreaterThan(0)
+    expect(symbolCount(realKey)).toBeGreaterThan(0)
+
+    cmdProject({ action: 'prune' })
+
+    expect(symbolCount(tempKey)).toBe(0)
+    expect(symbolCount(realKey)).toBeGreaterThan(0)
+  })
+
+  it('--json reports a prunedTempFiles count', () => {
+    const tempFile = path.join(tempDir, 'scratch2.ts')
+    fs.writeFileSync(tempFile, 'export const scratchSym2 = 1\n')
+    const tempKey = normalizePath(tempFile)
+    indexFileSync(tempKey, globalDbPath())
+
+    cmdProject({ action: 'prune', json: true })
+    const parsed = JSON.parse(captured()) as { pruned: number; blocked_roots: string[]; prunedTempFiles: number }
+    expect(parsed.prunedTempFiles).toBeGreaterThan(0)
+    expect(symbolCount(tempKey)).toBe(0)
+  })
+
+  it('--dry-run reports staleTempFiles without deleting them', () => {
+    const tempFile = path.join(tempDir, 'scratch3.ts')
+    fs.writeFileSync(tempFile, 'export const scratchSym3 = 1\n')
+    const tempKey = normalizePath(tempFile)
+    indexFileSync(tempKey, globalDbPath())
+
+    cmdProject({ action: 'prune', dryRun: true, json: true })
+    const parsed = JSON.parse(captured()) as { wouldPruneTempFiles: number; staleTempFiles: string[] }
+    expect(parsed.wouldPruneTempFiles).toBeGreaterThan(0)
+    expect(parsed.staleTempFiles).toContain(tempKey)
+    expect(symbolCount(tempKey)).toBeGreaterThan(0)
   })
 })
 

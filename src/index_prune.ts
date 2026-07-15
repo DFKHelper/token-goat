@@ -5,7 +5,7 @@ import { dataDir, globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
 import { deleteFileRows } from './parser.js'
-import { findProject } from './project.js'
+import { findProject, isUnderSystemTemp } from './project.js'
 import { foldPath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
@@ -84,6 +84,34 @@ export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbP
     try {
       removeFileFromIndex(db, p)
       pruned += 1
+    } catch {
+      // Best-effort: one file's delete failure must not abort pruning the rest.
+    }
+  }
+  return pruned
+}
+
+// Scan all indexed files and return the absolute paths that live under the OS system temp
+// directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike
+// findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral,
+// so any indexed row under it is stale regardless of which scratch checkout produced it.
+// Exported so cmdProject's --dry-run can report what would be pruned before committing.
+export function findSystemTempFiles(dbPath: string = globalDbPath()): string[] {
+  const db = getDb(dbPath)
+  const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
+  return rows.map((r) => r.path).filter((p) => isUnderSystemTemp(p))
+}
+
+// Remove index rows for every indexed file under the OS system temp directory -- the
+// retroactive half of the system-temp pollution fix (the prevention half gates
+// hooks_edit.ts's dirty-queue enqueue). Returns the pruned paths.
+export function pruneSystemTempFiles(dbPath: string = globalDbPath()): string[] {
+  const db = getDb(dbPath)
+  const pruned: string[] = []
+  for (const p of findSystemTempFiles(dbPath)) {
+    try {
+      removeFileFromIndex(db, p)
+      pruned.push(p)
     } catch {
       // Best-effort: one file's delete failure must not abort pruning the rest.
     }

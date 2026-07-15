@@ -41,6 +41,8 @@ import {
   recordKnownRoot,
   recordKnownRootThrottled,
   sweepKnownRoots,
+  findSystemTempFiles,
+  pruneSystemTempFiles,
 } from '../src/index_prune.js'
 import * as embeddingsModule from '../src/embeddings.js'
 
@@ -281,6 +283,87 @@ describe('index_prune', () => {
     // ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
     expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
     expect(filesRowCount()).toBe(1)
+  })
+})
+
+// Regression: nothing ever retroactively purged already-indexed rows for files living under the
+// OS system temp directory (scratch checkouts, ad hoc debugging copies). The prevention half
+// (hooks_edit.ts's postEditHandler gating on isUnderSystemTemp) only stops NEW pollution --
+// these two cover the retroactive cleanup half, which `token-goat project prune` now also runs.
+describe('findSystemTempFiles / pruneSystemTempFiles', () => {
+  let tempScratchDir: string
+  let nonTempDir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    // dir fixtures created via mkdtempSync(os.tmpdir(), ...) elsewhere in this file are
+    // themselves already under system temp -- reused here as the "should be pruned" side.
+    tempScratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-prune-systemp-'))
+    // A fixture rooted under the repo's own cwd, NOT under os.tmpdir(), proves the retroactive
+    // cleanup leaves legitimate real-project rows untouched.
+    nonTempDir = fs.mkdtempSync(path.join(process.cwd(), 'tg-prune-nontemp-'))
+    dbPath = path.join(tempScratchDir, 'test.db')
+  })
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tempScratchDir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if files are still locked
+    }
+    try {
+      fs.rmSync(nonTempDir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if files are still locked
+    }
+  })
+
+  it('findSystemTempFiles lists an indexed file under system temp but not one outside it', () => {
+    const tempFile = path.join(tempScratchDir, 'scratch.ts')
+    fs.writeFileSync(tempFile, 'export const scratchSym = 1\n')
+    const tempKey = normalizePath(tempFile)
+    indexFileSync(tempKey, dbPath)
+
+    const realFile = path.join(nonTempDir, 'real.ts')
+    fs.writeFileSync(realFile, 'export const realSym = 1\n')
+    const realKey = normalizePath(realFile)
+    indexFileSync(realKey, dbPath)
+
+    const found = findSystemTempFiles(dbPath)
+    expect(found).toContain(tempKey)
+    expect(found).not.toContain(realKey)
+  })
+
+  it('pruneSystemTempFiles removes indexed rows under system temp and keeps everything else', () => {
+    const tempFile = path.join(tempScratchDir, 'scratch.ts')
+    fs.writeFileSync(tempFile, 'export const scratchSym = 1\n')
+    const tempKey = normalizePath(tempFile)
+    indexFileSync(tempKey, dbPath)
+
+    const realFile = path.join(nonTempDir, 'real.ts')
+    fs.writeFileSync(realFile, 'export const realSym = 1\n')
+    const realKey = normalizePath(realFile)
+    indexFileSync(realKey, dbPath)
+
+    expect(symbolCount(dbPath, tempKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
+
+    const pruned = pruneSystemTempFiles(dbPath)
+
+    expect(pruned).toContain(tempKey)
+    expect(pruned).not.toContain(realKey)
+    expect(symbolCount(dbPath, tempKey)).toBe(0)
+    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
+  })
+
+  it('is a no-op when nothing indexed lives under system temp', () => {
+    const realFile = path.join(nonTempDir, 'real.ts')
+    fs.writeFileSync(realFile, 'export const realSym = 1\n')
+    const realKey = normalizePath(realFile)
+    indexFileSync(realKey, dbPath)
+
+    expect(pruneSystemTempFiles(dbPath)).toEqual([])
+    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
   })
 })
 
