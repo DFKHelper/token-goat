@@ -17,7 +17,7 @@ import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { homedir } from 'os'
 import { dataDir } from './constants.js'
-import { atomicWriteText, isCodeFenceDelimiter } from './util.js'
+import { atomicWriteText, isCodeFenceDelimiter, stripLower } from './util.js'
 import { registerReset } from './reset.js'
 import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
 import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
@@ -199,10 +199,6 @@ export function extractAllHeadings(body: string, maxLevel: number = 3): Array<[l
   }
 
   return headings
-}
-
-function stripLower(text: string): string {
-  return text.trim().toLowerCase()
 }
 
 function parseSectionOrdinal(heading: string): [baseHeading: string, ordinal: number] {
