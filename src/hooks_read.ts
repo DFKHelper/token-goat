@@ -22,7 +22,7 @@ import { applyHintTracking, classifyReadHint } from './hint_stats.js'
 import { normalizePath } from './paths.js'
 import { foldPath, isWithinQuietHours } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -468,6 +468,21 @@ function quietContextOutput(context: string): HookOutput {
   return contextOutput(context)
 }
 
+/**
+ * True if `normalized` is among the `n` most-recently-read files this session (ranked by
+ * lastReadAt descending, ties broken by path for determinism). `n` <= 0 means no exemption
+ * ever applies. Used to exempt just-read files from the re-read-deny hints below.
+ */
+function isProtectedRecentRead(normalized: string, n: number): boolean {
+  if (n <= 0) return false
+  const ranked = Array.from(getSessionFiles().entries()).sort((a, b) => {
+    const byRecency = b[1].lastReadAt - a[1].lastReadAt
+    return byRecency !== 0 ? byRecency : a[0].localeCompare(b[0])
+  })
+  const rank = ranked.findIndex(([filePath]) => filePath === normalized)
+  return rank !== -1 && rank < n
+}
+
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -792,7 +807,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a snapshot was captured by postReadHandler on the first read. When serve_diff_on_reread is enabled, source/style/data files also get diffs. Falls through to the generic wasFileReadThisSession block when no snapshot exists, preserving existing context vs. deny behavior for un-snapshotted files.
   const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
-  if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
+  if (
+    (isDocDiffable || isSourceDiffable) &&
+    wasFileReadThisSession(normalized) &&
+    !isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
+  ) {
     // Truncation takes priority: redirect to skeleton/surgical reads, gated on
     // hints.truncated_read_min_lines so a small file that happened to trip the token-based
     // truncation marker doesn't get denied for a redirect that wouldn't help it.
@@ -898,6 +917,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const entry = getSessionFileEntry(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
+
+    // Rank must be computed against session state as of the *last* read, before the read
+    // below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank
+    // itself as the most recent and the protection window would be meaningless.
+    const protectedRead = isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)
+
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
     recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
@@ -913,7 +938,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read
     // still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only
     // hinted via the contextOutput fallback at the bottom of this block.
-    if (config.hints.reread_deny) {
+    if (config.hints.reread_deny && !protectedRead) {
       // Item 1: file was truncated on last read — surgical reads only, gated on
       // hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch
       // above) so a small file that happened to trip the token-based truncation marker
@@ -958,7 +983,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    if (config.hints.reread_deny && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
+    if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',

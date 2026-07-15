@@ -1,7 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+
+// vi.mock is hoisted -- this redirects configPath() to a per-test-file temp file so the
+// hints.pre_skill_advisory wiring tests below can set a non-default config value
+// deterministically. Mirrors tests/hooks_read.test.ts's config.toml mock.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return {
+    ...original,
+    configPath: () => _testConfigPath,
+  };
+});
+
+const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-skill-config-test-${process.pid}.toml`);
+
 import type { HookEvent } from '../src/hook_registry.js';
 import { runHook } from '../src/hook_registry.js';
 import { preSkillHandler, postSkillHandler } from '../src/hooks_skill.js';
@@ -12,6 +28,7 @@ import {
   hasSessionOutput,
   storeOutput,
 } from '../src/skill_cache.js';
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { makeHookEvent } from './helpers/hook-event.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -213,6 +230,79 @@ describe('preSkillHandler — oversized first-load gate', () => {
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
 
     const out = await preSkillHandler(skillPreEvent('small-skill', 'sess-cold3'));
+    expect(out.hookType).toBe('pass');
+  });
+});
+
+// Regression: hints.pre_skill_advisory was defined, validated, persisted, and displayed in
+// config.ts but had zero consumers -- both preSkillHandler denies (already-loaded-this-session,
+// oversized-first-load) fired unconditionally regardless of the flag's value.
+describe('hints.pre_skill_advisory wiring', () => {
+  afterEach(() => {
+    invalidateConfigCache();
+    try {
+      fsSync.unlinkSync(_testConfigPath);
+    } catch {
+      // ok -- may not exist
+    }
+  });
+
+  it('pre_skill_advisory=true (default) still denies a second load, exactly as today', async () => {
+    const cfg = defaultConfig();
+    cfg.hints.pre_skill_advisory = true;
+    saveConfig(cfg);
+
+    const post = await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-flag-true-dup'));
+    expect(post.hookType).toBe('pass');
+
+    const pre = await runHook(skillPreEvent('ollama', 'sess-flag-true-dup'));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny') {
+      expect(pre.message).toContain('already loaded this session');
+    }
+  });
+
+  it('pre_skill_advisory=true (default) still denies the first load of an oversized skill, exactly as today', async () => {
+    const cfg = defaultConfig();
+    cfg.hints.pre_skill_advisory = true;
+    saveConfig(cfg);
+
+    const skillDir = path.join(sourceDir, 'big-skill-flag-true');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary of the big skill.';
+    const detail = 'x'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('big-skill-flag-true', 'sess-flag-true-cold'));
+    expect(out.hookType).toBe('deny');
+  });
+
+  it('pre_skill_advisory=false suppresses the already-loaded-this-session deny', async () => {
+    const cfg = defaultConfig();
+    cfg.hints.pre_skill_advisory = false;
+    saveConfig(cfg);
+
+    const post = await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-flag-false-dup'));
+    expect(post.hookType).toBe('pass');
+
+    const pre = await runHook(skillPreEvent('ollama', 'sess-flag-false-dup'));
+    expect(pre.hookType).toBe('pass');
+  });
+
+  it('pre_skill_advisory=false suppresses the oversized-first-load deny', async () => {
+    const cfg = defaultConfig();
+    cfg.hints.pre_skill_advisory = false;
+    saveConfig(cfg);
+
+    const skillDir = path.join(sourceDir, 'big-skill-flag-false');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary of the big skill.';
+    const detail = 'x'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('big-skill-flag-false', 'sess-flag-false-cold'));
     expect(out.hookType).toBe('pass');
   });
 });

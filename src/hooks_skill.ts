@@ -3,6 +3,7 @@ import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, denyOutput, getToolName, getToolInput } from './hooks_common.js';
+import { loadConfig } from './config.js';
 import { recordStat } from './stats.js';
 import {
   storeOutput,
@@ -63,6 +64,10 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
     }
 
     if (!event.sessionId) {
+      return passOutput();
+    }
+
+    if (!loadConfig().hints.pre_skill_advisory) {
       return passOutput();
     }
 
