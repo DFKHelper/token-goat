@@ -81,4 +81,9 @@ export interface GitResult {
 /** Options accepted by `runGit`. */
 export interface RunGitOptions {
   readonly cwd?: string
+  /** Kill the git process if it runs longer than this (ms). Used by opportunistic,
+   *  advisory-only callers (e.g. hooks_session.ts's hint-computation git calls) that must
+   *  never stall a hook; omit for functional git calls that need to complete regardless
+   *  of duration. */
+  readonly timeoutMs?: number
 }

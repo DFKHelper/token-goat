@@ -1,10 +1,20 @@
 import { spawn } from 'node:child_process'
+import type * as cp from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export
+// issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through
+// needs the same hoisted-mock pattern: every call passes straight through to the real
+// spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...).
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof cp>()
+  return { ...actual, spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)) }
+})
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine
 // property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same
@@ -33,6 +43,7 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 import type * as fs from 'node:fs'
+import * as childProcess from 'node:child_process'
 
 import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
@@ -330,6 +341,25 @@ describe('runGit', () => {
     // The actual test is that the source code includes the flag (verified by code inspection)
     expect(result.exitCode).toBe(0)
     expect(result.stdout.toLowerCase()).toContain('git version')
+  })
+
+  // hints.git_hint_max_ms wiring: hooks_session.ts's advisory-only git calls (branch-name
+  // hint, uncommitted-changes check) pass this through as timeoutMs so a slow git invocation
+  // can never stall a hook. Verified here as a spawnSync option pass-through rather than a
+  // genuinely slow subprocess, since forcing git itself to run past a timeout portably isn't
+  // practical -- the timeout enforcement itself is Node's spawnSync, not code in this repo.
+  it('forwards timeoutMs to spawnSync as its `timeout` option', () => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['--version'], { timeoutMs: 1234 })
+    const opts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+    expect(opts?.['timeout']).toBe(1234)
+  })
+
+  it('omits the timeout option entirely when timeoutMs is not provided', () => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['--version'])
+    const opts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+    expect(opts).not.toHaveProperty('timeout')
   })
 
 })
