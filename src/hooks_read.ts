@@ -810,13 +810,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
           const diff = buildLineDiff(oldContent, currentContent, basename)
           if (diff !== '') {
-            // Savings guard for non-doc files: only serve diff if it's meaningfully smaller than a full re-read
-            if (isSourceDiffable && !isDocDiffable && diff.length > currentContent.length * 0.6) {
+            const savedBytes = Math.max(0, currentContent.length - diff.length)
+            // Savings guard, uniform for doc and source files: only serve the diff if it
+            // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
+            if (Math.round(savedBytes / 4) < loadConfig().hints.diff_hint_min_tokens_saved) {
               // Diff is not a good savings — fall through to generic deny block below
             } else {
               recordActualRead(event, normalized)
-              const savedBytes = Math.max(0, currentContent.length - diff.length)
-              recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+              recordStat('diff_hint', savedBytes, Math.round(savedBytes / 4))
               return denyOutput(
                 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
                 '```diff\n' + diff + '\n```\n\n' +
