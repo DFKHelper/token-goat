@@ -3,6 +3,7 @@ import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, contextOutput } from './hooks_common.js';
 import { runGit } from './util.js';
+import { loadConfig } from './config.js';
 
 function userPromptSubmitHandler(event: HookEvent): HookOutput {
   try {
@@ -21,7 +22,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
 
     if (cwd) {
       try {
-        const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
+        const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
         if (result.exitCode === 0 && result.stdout) {
           const branch = result.stdout.trim();
           if (branch) {
@@ -72,7 +73,7 @@ function subagentStopHandler(event: HookEvent): HookOutput {
     }
 
     try {
-      const result = runGit(['status', '--porcelain'], { cwd });
+      const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
       if (result.exitCode === 0) {
         const gitOutput = result.stdout.trim();
         if (!gitOutput) {
@@ -103,4 +104,4 @@ function subagentStopHandler(event: HookEvent): HookOutput {
 registerHook('user_prompt_submit', userPromptSubmitHandler);
 registerHook('subagent_stop', subagentStopHandler);
 
-export { subagentStopHandler };
+export { subagentStopHandler, userPromptSubmitHandler };

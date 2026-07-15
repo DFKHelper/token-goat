@@ -1,15 +1,40 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { HookEvent } from '../src/hook_registry.js';
 import * as util from '../src/util.js';
-import { subagentStopHandler } from '../src/hooks_session.js';
 
-vi.mock('../src/util.js', () => ({
-  runGit: vi.fn(),
-}));
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, runGit: vi.fn() };
+});
+
+// Redirects configPath() to a per-test-file temp file so the hints.git_hint_max_ms wiring
+// tests can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return { ...original, configPath: () => _testConfigPath };
+});
+
+const _testConfigPath = join(tmpdir(), `tg-hooks-session-config-test-${process.pid}.toml`);
+
+import { subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 
 describe('hooks_session', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invalidateConfigCache();
+  });
+
+  afterEach(() => {
+    invalidateConfigCache();
+    try {
+      unlinkSync(_testConfigPath);
+    } catch {
+      // ok -- may not exist
+    }
   });
 
   it('should handle user_prompt_submit event for short prompts', () => {
@@ -250,6 +275,56 @@ describe('hooks_session', () => {
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+  });
+
+  describe('hints.git_hint_max_ms wiring', () => {
+    it('userPromptSubmitHandler passes the configured value through to runGit as timeoutMs', () => {
+      const cfg = defaultConfig();
+      cfg.hints.git_hint_max_ms = 777;
+      saveConfig(cfg);
+      invalidateConfigCache();
+
+      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', exitCode: 0 });
+
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
+      };
+
+      userPromptSubmitHandler(event);
+
+      expect(util.runGit).toHaveBeenCalledWith(
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        { cwd: '/tmp/repo', timeoutMs: 777 },
+      );
+    });
+
+    it('subagentStopHandler passes the configured value through to runGit as timeoutMs', () => {
+      const cfg = defaultConfig();
+      cfg.hints.git_hint_max_ms = 333;
+      saveConfig(cfg);
+      invalidateConfigCache();
+
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: { cwd: '/tmp/repo' },
+      };
+
+      subagentStopHandler(event);
+
+      expect(util.runGit).toHaveBeenCalledWith(
+        ['status', '--porcelain'],
+        { cwd: '/tmp/repo', timeoutMs: 333 },
+      );
     });
   });
 });

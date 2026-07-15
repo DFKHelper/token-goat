@@ -80,11 +80,15 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const fullArgs = ['-c', 'core.fsmonitor=', '-c', 'core.quotepath=false', ...args]
   const result = spawnSync('git', fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     encoding: 'utf-8',
     windowsHide: true,
     maxBuffer: 200 * 1024 * 1024, // 200 MB - allow large git outputs (ls-files, log, diff on large repos)
   })
 
+  // A timed-out spawnSync sets result.error (ETIMEDOUT) with a null status -- already handled
+  // by the existing error branch below, so a caller that opted into timeoutMs just sees a
+  // non-zero exitCode and fails soft, exactly like any other git failure.
   if (result.error) {
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1 }
   }
