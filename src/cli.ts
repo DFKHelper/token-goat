@@ -1921,7 +1921,11 @@ function cmdBudget(
     if (opts.json === true) {
       out(JSON.stringify(result, null, 2))
     } else {
-      const contextK = opts.context !== undefined ? requirePositiveInt('--context', opts.context) : undefined
+      // Falls back to the configured context.model_window_tokens (in thousands, matching
+      // --context's own units) so the % line shows up without requiring --context on every call.
+      const contextK = opts.context !== undefined
+        ? requirePositiveInt('--context', opts.context)
+        : Math.round(loadConfig().context.model_window_tokens / 1000)
       out(formatBudgetText(result, contextK))
     }
     process.exitCode = 0
