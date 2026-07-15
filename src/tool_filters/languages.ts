@@ -1315,7 +1315,10 @@ export class PowerShellErrorFilter extends ToolFilter {
         continue
       }
       if (PWSH_WARNING_RE.test(line)) {
-        const key = line.slice(0, 40)
+        // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a
+        // long leading substring collide, silently dropping one as a false "repeat".
+        const key = line
+
         const n = (warnSeen.get(key) ?? 0) + 1
         warnSeen.set(key, n)
         if (n <= 1) kept.push(line)

@@ -635,6 +635,18 @@ describe('powerShellFilter compress', () => {
     expect(out.split(warn).length - 1).toBe(1)
     expect(out).toContain('Done')
   })
+
+  // Regression: the dedup key was truncated to the first 40 characters of each WARNING line,
+  // so two distinct warnings sharing a long common leading substring collided and one was
+  // silently dropped as a false "repeat".
+  it('does not drop a distinct warning that shares its first 40 characters with another', () => {
+    const w1 = 'WARNING: Failed to install package foo-service-alpha (timeout)'
+    const w2 = 'WARNING: Failed to install package foo-service-beta (disk full)'
+    const lines = [w1, w2, 'Done'].join('\n')
+    const out = compress(powerShellFilter, lines, ['pwsh', '-File', 'x.ps1'])
+    expect(out).toContain('service-alpha')
+    expect(out).toContain('service-beta')
+  })
 })
 
 describe('powerShellFilter compress: CommandNotFoundException ErrorRecord collapse', () => {
