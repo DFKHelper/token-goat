@@ -1163,6 +1163,25 @@ describe('SnykFilter output', () => {
     expect(out).not.toContain('More about this vulnerability:')
   })
 
+  // Regression: the license-line branch was checked before the code that closes
+  // out an open "More about" run, so a license line immediately following a
+  // "More about"/URL block skipped the flush entirely, silently dropping the
+  // '[token-goat: collapsed N ...]' marker for that run.
+  it('flushes a pending More-about run before a license line, not after', () => {
+    const input =
+      'Testing /some/project\n' +
+      'More about this vulnerability:\n' +
+      '  https://snyk.io/vuln/SNYK-JS-1\n' +
+      'License information for foo-pkg: MIT\n' +
+      'Some trailing context line\n'
+    const out = apply(f, input, argv)
+    expect(out).toContain("collapsed 2 'More about' URL line(s)")
+    expect(out).toContain('License information for foo-pkg: MIT')
+    const collapsedIdx = out.indexOf("collapsed 2 'More about'")
+    const licenseIdx = out.indexOf('License information for foo-pkg: MIT')
+    expect(collapsedIdx).toBeLessThan(licenseIdx)
+  })
+
   it('keeps summary line', () => {
     const out = apply(f, snykOutput(), argv)
     expect(out).toMatch(/unique vulnerabilities|issues found/)
