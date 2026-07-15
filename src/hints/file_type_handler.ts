@@ -180,7 +180,10 @@ export function handleDocx(filePath: string): FileTypeResult {
 
 /** CSV/TSV handler — blocks when file exceeds threshold. */
 export function handleCsv(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
-  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.csv) return { shouldBlock: false, message: '' }
+  // Extension-aware: FILE_TYPE_THRESHOLDS.tsv is a distinct, independently configurable knob
+  // from .csv's, so it must be selected the same way the delimiter below is.
+  const threshold = filePath.toLowerCase().endsWith('.tsv') ? FILE_TYPE_THRESHOLDS.tsv : FILE_TYPE_THRESHOLDS.csv
+  if ((contentLengthHint ?? content.length) < threshold) return { shouldBlock: false, message: '' }
 
   const lines = content.split('\n').filter(l => l.trim())
   const headers = lines[0] ?? ''

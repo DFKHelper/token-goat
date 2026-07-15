@@ -341,6 +341,25 @@ describe('handleCsv', () => {
     expect(result.shouldBlock).toBe(true)
   })
 
+  // Regression: FILE_TYPE_THRESHOLDS.csv and .tsv are independently configurable, but
+  // handleCsv always compared content length against .csv regardless of extension, so a
+  // .tsv-specific threshold had zero effect. csv and tsv default to the same numeric value,
+  // which hides the bug from the tests above -- mutate .tsv to a distinct value here to prove
+  // handleCsv actually reads the tsv-specific threshold rather than always falling back to csv.
+  it('honors a .tsv-specific threshold independently of .csv (mutation-verified, not masked by equal defaults)', () => {
+    const thresholds = FILE_TYPE_THRESHOLDS as unknown as Record<string, number>
+    const originalTsv = thresholds.tsv
+    try {
+      thresholds.tsv = thresholds.csv + 5000
+      const content = `col1\tcol2\n${makeStr(thresholds.csv + 1)}`
+      // Above the .csv threshold but still below the diverged .tsv threshold: must NOT block.
+      const result = handleCsv('/path/to/data.tsv', content)
+      expect(result.shouldBlock).toBe(false)
+    } finally {
+      thresholds.tsv = originalTsv
+    }
+  })
+
   // Regression: dispatchFileTypeHandler routes .csv/.tsv by a lowercased extension
   // but passes the original-case filePath through — handleCsv used to re-derive the
   // separator via a case-sensitive endsWith('.tsv'), so an uppercase .TSV file was
