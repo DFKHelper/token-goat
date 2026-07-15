@@ -34,7 +34,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import type * as fs from 'node:fs'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -462,5 +462,34 @@ describe('backupFile', () => {
     // Keeps the newest ones (i=3..7), not the oldest (i=0..2).
     expect(backups[0]).toContain('2026-01-01T00-00-03')
     expect(backups[4]).toContain('2026-01-01T00-00-07')
+  })
+})
+
+describe('isWithinQuietHours', () => {
+  it('returns false for an empty spec (disabled, the default)', () => {
+    expect(isWithinQuietHours('', new Date(2026, 0, 1, 23, 0))).toBe(false)
+  })
+
+  it('returns false for a spec that fails to parse', () => {
+    expect(isWithinQuietHours('not-a-window', new Date(2026, 0, 1, 23, 0))).toBe(false)
+    expect(isWithinQuietHours('25:00-06:00', new Date(2026, 0, 1, 23, 0))).toBe(false)
+  })
+
+  it('is true inside a same-day window and false outside it', () => {
+    expect(isWithinQuietHours('09:00-17:00', new Date(2026, 0, 1, 12, 0))).toBe(true)
+    expect(isWithinQuietHours('09:00-17:00', new Date(2026, 0, 1, 8, 59))).toBe(false)
+    expect(isWithinQuietHours('09:00-17:00', new Date(2026, 0, 1, 17, 0))).toBe(false)
+  })
+
+  it('handles a window that wraps past midnight', () => {
+    expect(isWithinQuietHours('22:00-06:00', new Date(2026, 0, 1, 23, 30))).toBe(true)
+    expect(isWithinQuietHours('22:00-06:00', new Date(2026, 0, 1, 3, 0))).toBe(true)
+    expect(isWithinQuietHours('22:00-06:00', new Date(2026, 0, 1, 12, 0))).toBe(false)
+    expect(isWithinQuietHours('22:00-06:00', new Date(2026, 0, 1, 21, 59))).toBe(false)
+    expect(isWithinQuietHours('22:00-06:00', new Date(2026, 0, 1, 6, 0))).toBe(false)
+  })
+
+  it('treats an identical start and end as always-false', () => {
+    expect(isWithinQuietHours('09:00-09:00', new Date(2026, 0, 1, 9, 0))).toBe(false)
   })
 })

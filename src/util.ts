@@ -537,3 +537,24 @@ export function isUnderBlockedRoot(filePath: string, blockedRoots: readonly stri
   }
   return false
 }
+
+const QUIET_HOURS_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/
+
+/**
+ * True when `now` (local time) falls inside the `"HH:MM-HH:MM"` window described by
+ * `spec` (24h clock). An empty `spec` or one that doesn't parse means quiet hours are
+ * disabled -- always false. A window whose end is earlier than or equal to its start
+ * (e.g. `"22:00-06:00"`) wraps past midnight.
+ */
+export function isWithinQuietHours(spec: string, now: Date = new Date()): boolean {
+  const m = QUIET_HOURS_RE.exec(spec)
+  if (!m) return false
+
+  const startMin = Number(m[1]) * 60 + Number(m[2])
+  const endMin = Number(m[3]) * 60 + Number(m[4])
+  const nowMin = now.getHours() * 60 + now.getMinutes()
+
+  if (startMin === endMin) return false
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin
+  return nowMin >= startMin || nowMin < endMin
+}
