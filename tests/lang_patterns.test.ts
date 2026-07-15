@@ -242,6 +242,12 @@ describe('isBuildCommand', () => {
     // pip
     'pip install -r requirements.txt',
     'pip freeze',
+    // npm audit / npm outdated — regression: isNpmAuditCommand/
+    // isNpmOutdatedCommand (bash_output_cache.ts) each carry a `lockfile`
+    // fingerprint, but neither ever ran outside their own unit tests because
+    // no npm subcommand reached the cache-storage gate in production.
+    'npm audit',
+    'npm outdated',
     // Poetry
     'poetry install',
     'poetry update',

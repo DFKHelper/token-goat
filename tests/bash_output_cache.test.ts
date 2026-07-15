@@ -344,6 +344,29 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
   })
+
+  // Regression: isNpmAuditCommand/isNpmOutdatedCommand (bash_output_cache.ts) had a purpose-built
+  // regex pattern and classifier each, but zero call sites anywhere -- npm audit/outdated results
+  // never got a lockfile fingerprint, so a cached `npm audit` run before `npm install` added a
+  // vulnerable package would be served as fresh forever after, with no invalidation signal.
+  it.each(['npm audit', 'npm outdated'])(
+    'detects a stale `%s` entry once package-lock.json changes',
+    async (cmd) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-npmaudit-'))
+      try {
+        fs.writeFileSync(path.join(tmpDir, 'package-lock.json'), '{"lockfileVersion": 1}\n')
+        const id = await storeBashOutput(cmd, 'no issues found', 0, tmpDir)
+        const entry = getBashOutput(id)
+        expect(entry?.fingerprints?.lockfile).toBeDefined()
+        expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
+
+        fs.writeFileSync(path.join(tmpDir, 'package-lock.json'), '{"lockfileVersion": 2}\n')
+        expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(true)
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      }
+    },
+  )
 })
 
 /** Init a git repo with one committed file at `<repo>/a.txt`, returning the repo dir. */
