@@ -1092,7 +1092,10 @@ export class SbtFilter extends ToolFilter {
         continue
       }
       if (SBT_WARN_RE.test(line)) {
-        const category = line.slice(0, 60).trim()
+        // Do not truncate the key: a fixed-length cap makes two DISTINCT [warn] lines
+        // that share a long common prefix (e.g. a long file path) collide, silently
+        // dropping one as a false "repeat".
+        const category = line.trim()
         const count = warnCounts.get(category) ?? 0
         warnCounts.set(category, count + 1)
         if (count < SBT_MAX_WARN_PER_CATEGORY) {
