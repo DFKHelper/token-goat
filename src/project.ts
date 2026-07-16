@@ -2,10 +2,10 @@
  * Project marker detection and path canonicalization.
  */
 
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { shortFingerprint } from './fingerprint.js';
 import { extractErrorMessage, foldPath, runGit } from './util.js';
 import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias } from './paths.js';
 
@@ -115,11 +115,7 @@ export function projectHash(canonicalRoot: string): string {
   // hash) across two hashes. Fold through foldPath (util.ts) first, matching the
   // platform-gated convention used elsewhere (isUnderBlockedRoot, assertWalkableRoot,
   // pruneDeletedFiles).
-  const hash = crypto
-    .createHash('sha256')
-    .update(foldPath(canonicalRoot), 'utf-8')
-    .digest('hex');
-  return hash.slice(0, 16);
+  return shortFingerprint(foldPath(canonicalRoot));
 }
 
 /**

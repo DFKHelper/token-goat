@@ -9,8 +9,8 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import * as crypto from 'node:crypto'
 
+import { fingerprintContent } from './fingerprint.js'
 import { atomicWriteBytes } from './util.js'
 
 // Minimum bytes saved by output stripping before a redirect is worth emitting.
@@ -116,7 +116,7 @@ export function getOrCreateSidecar(
   cacheRoot: string,
   opts: { maxCount?: number; maxAgeMs?: number } = {},
 ): [string, boolean] {
-  const sha = crypto.createHash('sha256').update(rawBytes).digest('hex')
+  const sha = fingerprintContent(rawBytes)
   const sidecarDir = path.join(cacheRoot, 'nb_strip', sha)
   const sidecarPath = path.join(sidecarDir, 'stripped.ipynb')
 

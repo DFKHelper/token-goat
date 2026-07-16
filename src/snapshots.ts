@@ -2,8 +2,8 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import * as crypto from 'node:crypto'
 
+import { fingerprintContent } from './fingerprint.js'
 import { foldPath, normalizePath, atomicWriteBytes } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 
@@ -46,7 +46,7 @@ function pathKey(filePath: string): string {
   // read-dedup map key -- or a file read under two casings in one session gets two different
   // snapshot files on disk, and load() silently fails to find the prior
   // snapshot under the new casing.
-  return crypto.createHash('sha256').update(foldPath(normalizePath(filePath)), 'utf8').digest('hex').slice(0, 32)
+  return fingerprintContent(foldPath(normalizePath(filePath))).slice(0, 32)
 }
 
 export function snapshot_path(sessionId: string, filePath: string): string | null {
@@ -144,7 +144,7 @@ export function store(
   const p = snapshot_path(sessionId, filePath)
   if (!p) return null
 
-  const sha = crypto.createHash('sha256').update(stored).digest('hex')
+  const sha = fingerprintContent(stored)
 
   try {
     const isNewEntry = !fs.existsSync(p)
@@ -214,7 +214,7 @@ export function load(sessionId: string, filePath: string, opts: { expected_sha?:
   try {
     const data = fs.readFileSync(p)
     if (opts.expected_sha) {
-      const actualSha = crypto.createHash('sha256').update(data).digest('hex')
+      const actualSha = fingerprintContent(data)
       if (actualSha.toLowerCase() !== opts.expected_sha.toLowerCase()) {
         return null
       }

@@ -13,10 +13,10 @@
  */
 
 import * as fs from 'fs/promises'
-import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { homedir } from 'os'
 import { dataDir } from './constants.js'
+import { shortFingerprint } from './fingerprint.js'
 import { atomicWriteText, isCodeFenceDelimiter, stripLower } from './util.js'
 import { registerReset } from './reset.js'
 import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
@@ -86,10 +86,7 @@ async function ensureSkillsDir(): Promise<void> {
 }
 
 export function contentHash(content: string): string {
-  return createHash('sha256')
-    .update(content, 'utf-8')
-    .digest('hex')
-    .slice(0, 16)
+  return shortFingerprint(content)
 }
 
 function safeSessionFragment(sessionId: string): string {
