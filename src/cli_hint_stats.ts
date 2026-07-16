@@ -7,6 +7,7 @@
  */
 
 import { getHintStatsSummary, resetHintStats, markCategoryEffective, markCategoryIneffective, type CategoryEfficacy, type HintCategory } from './hint_stats.js'
+import { pad } from './util.js'
 
 export interface HintStatsCommandOptions {
   json?: boolean
@@ -15,9 +16,7 @@ export interface HintStatsCommandOptions {
   markIneffective?: HintCategory
 }
 
-function pad(s: string, n: number): string {
-  return s.length >= n ? s : s + ' '.repeat(n - s.length)
-}
+
 
 function printSummary(rows: readonly CategoryEfficacy[]): void {
   const w = (text: string) => {

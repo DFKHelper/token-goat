@@ -519,6 +519,12 @@ export function isCodeFenceDelimiter(line: string): boolean {
   return s.startsWith('```') || s.startsWith('~~~')
 }
 
+/** Right-pad `s` with spaces to width `n` (no-op if already at/over width). Extracted from
+ * byte-identical private copies in cache_session_commands.ts, cli_hint_stats.ts, cli_recall.ts. */
+export function pad(s: string, n: number): string {
+  return s.length >= n ? s : s + ' '.repeat(n - s.length)
+}
+
 /** Normalize path and convert backslashes to forward slashes. Extracted from 3 call sites in compact.ts. */
 export function normalizePathForwardSlash(p: string, toLowerCase?: boolean): string {
   let result = normalizePath(p).replace(/\\/g, '/')

@@ -14,7 +14,7 @@ import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
-import { ensureNewline, requireNonNegativeStrictInt } from './util.js'
+import { ensureNewline, pad, requireNonNegativeStrictInt } from './util.js'
 import { loadConfig } from './config.js'
 
 function emitErr(text: string): void {
@@ -39,9 +39,7 @@ const CACHE_ENV_GATES: Array<{ key: string; what: string }> = [
 
 const INDEXING_SKIP_KB_SANITY_FLOOR = 5
 
-function pad(s: string, n: number): string {
-  return s.length >= n ? s : s + ' '.repeat(n - s.length)
-}
+
 
 /**
  * List session blobs, excluding agent-salted subagent blobs (see
