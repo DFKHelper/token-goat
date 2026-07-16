@@ -933,7 +933,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
-    recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
 
     const config = loadConfig()
     if (config.hints.log_large_file_hint_outcomes) {
@@ -942,6 +941,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('large_file_hint_ignored', 0, 0, undefined, `${normalized} (${pendingSize} bytes) — hint fired but file was fully re-read instead of surgically read`)
       }
     }
+
+    // session_hint is recorded per-branch below, only where a deny actually returns or the
+    // final quietContextOutput will actually be visible -- recording it unconditionally here
+    // (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to
+    // passOutput(), including protected/non-denying re-reads whose only possible output is that
+    // same quiet-hours-degradable fallback note. Session tracking above is unaffected either
+    // way; only this stat's accounting changes.
 
     // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read
     // still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only
@@ -962,6 +968,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           // best-effort — treat as eligible for the deny below on read/stat failure
         }
         if (truncatedLineCount2 >= config.hints.truncated_read_min_lines) {
+          recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
           return denyOutput(
             'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
             ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
@@ -971,6 +978,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
+        recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
           ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
@@ -981,6 +989,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const isSourceExt = isSourceExtension(basename)
       if (isSourceExt && reads >= 2) {
         recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
+        recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
         return denyOutput(
           'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
           ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
@@ -992,10 +1001,18 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
+      recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
+    }
+    // Only counted when the note actually reaches the caller -- quietContextOutput silently
+    // degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this
+    // used to) over-counted the ledger on every quiet-hours re-read that produced no visible
+    // output at all.
+    if (!isWithinQuietHours(config.hints.quiet_hours)) {
+      recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
     }
     return quietContextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +

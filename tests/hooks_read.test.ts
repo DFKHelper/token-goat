@@ -1051,6 +1051,67 @@ describe('preReadHandler', () => {
     )
   })
 
+  describe('session_hint stat over-count regression (#count-based re-read dedup quiet-hours)', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      vi.useRealTimers()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it(
+      'records a session_hint stat for the already-read note outside quiet hours ' +
+        '(control case for the regression below)',
+      () => {
+        const cfg = defaultConfig()
+        cfg.hints.protect_recent_reads = 0
+        cfg.hints.reread_deny = false
+        saveConfig(cfg)
+        invalidateConfigCache()
+
+        const p = makeTmpFile()
+        recordFileRead(normalizePath(p))
+
+        const before = summarize(30).by_kind['session_hint']?.events ?? 0
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('context')
+
+        const after = summarize(30).by_kind['session_hint']?.events ?? 0
+        expect(after).toBe(before + 1)
+      },
+    )
+
+    it(
+      'does not record a session_hint stat when the already-read note is silently suppressed ' +
+        'during quiet hours (regression: recordStat fired unconditionally before the count-based ' +
+        'dedup block protectedRead/reread_deny checks and before quietContextOutput internal ' +
+        'quiet-hours degrade, over-counting the ledger for a note the caller never actually saw)',
+      () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
+        const cfg = defaultConfig()
+        cfg.hints.protect_recent_reads = 0
+        cfg.hints.reread_deny = false
+        cfg.hints.quiet_hours = '22:00-06:00'
+        saveConfig(cfg)
+        invalidateConfigCache()
+
+        const p = makeTmpFile()
+        recordFileRead(normalizePath(p))
+
+        const before = summarize(30).by_kind['session_hint']?.events ?? 0
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('pass')
+
+        const after = summarize(30).by_kind['session_hint']?.events ?? 0
+        expect(after).toBe(before)
+      },
+    )
+  })
+
   it('returns pass for a small, never-read file', () => {
     const p = makeTmpFile('small')
     const result = preReadHandler(readEvent(p))
