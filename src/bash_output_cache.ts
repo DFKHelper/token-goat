@@ -302,7 +302,7 @@ export async function commandHash(command: string, cwd: string | null = null): P
   }
 
   if (cwd && isDirListingCommand(command)) {
-    const target = extractLsTarget(command, cwd)
+    const target = extractFirstPathArg(command, cwd, cwd)
     if (target) {
       const fp = dirStateFingerprintSync(target)
       if (fp) key = `${key}\x00dir:${fp}`
@@ -360,7 +360,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
   }
 
   if (cwd && isDirListingCommand(command)) {
-    const target = extractLsTarget(command, cwd)
+    const target = extractFirstPathArg(command, cwd, cwd)
     if (target) {
       const fp = dirStateFingerprintSync(target)
       if (fp) fingerprints.dir = fp
@@ -373,7 +373,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
   }
 
   if (cwd && isCatCommand(command)) {
-    const target = extractCatTarget(command, cwd)
+    const target = extractFirstPathArg(command, cwd, null)
     if (target) {
       const fp = fileStateFingerprintSync(target)
       if (fp) fingerprints.file = fp
@@ -405,7 +405,7 @@ export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: s
 /**
  * Split a command string into argv-like tokens, quote-aware: whitespace inside a single- or
  * double-quoted span does not split a token, and the surrounding quote characters are stripped
- * from the result. Used by {@link extractLsTarget}/{@link extractCatTarget} so a quoted path
+ * from the result. Used by {@link extractFirstPathArg} so a quoted path
  * with a space (e.g. `cat "release notes.txt"`) resolves to the real path instead of a garbage
  * partial token like `"release`.
  */
@@ -446,7 +446,12 @@ function tokenizeShellArgs(cmd: string): string[] {
   return tokens
 }
 
-function extractLsTarget(cmd: string, cwd: string): string | null {
+/**
+ * First non-flag argument of `cmd`, resolved against `cwd`. `fallback` is returned when no such
+ * argument exists -- `ls`'s implicit target is the cwd itself, while `cat` with no file argument
+ * reads stdin and has no sensible default target.
+ */
+function extractFirstPathArg(cmd: string, cwd: string, fallback: string | null): string | null {
   const tokens = tokenizeShellArgs(cmd)
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i]!
@@ -457,22 +462,7 @@ function extractLsTarget(cmd: string, cwd: string): string | null {
       return token
     }
   }
-  return cwd
-}
-
-/** Same shape as {@link extractLsTarget}, but `cat` with no file argument (reads stdin) has no sensible default target. */
-function extractCatTarget(cmd: string, cwd: string): string | null {
-  const tokens = tokenizeShellArgs(cmd)
-  for (let i = 1; i < tokens.length; i++) {
-    const token = tokens[i]!
-    if (!token.startsWith('-')) {
-      if (!token.startsWith('/')) {
-        return resolve(cwd, token)
-      }
-      return token
-    }
-  }
-  return null
+  return fallback
 }
 
 /** A line that looks like it reports a problem: generic error/failure/warning marker, not tied to any specific test-runner or linter's output format. */

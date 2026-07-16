@@ -501,6 +501,15 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hint_stats.min_sample_size': {min: 1, max: 10000},
 }
 
+/** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/
+ *  validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of
+ *  restating each field's min/max a second time at its build-time validation call site. */
+function boundsOf(key: string): [number, number] {
+  const b = NUMERIC_FIELD_BOUNDS[key]
+  if (!b) throw new Error(`token-goat: no NUMERIC_FIELD_BOUNDS entry for '${key}'`)
+  return [b.min, b.max]
+}
+
 /**
  * Validate a single numeric config field against its documented bounds and cross-field constraints.
  * Used by config set to reject out-of-range values without rebuilding the entire config tree.
@@ -768,16 +777,16 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const ca = getDefaultConfig('compact_assist') as CompactAssistConfig
   ca.enabled = validatedBool(ca_raw['enabled'], ca.enabled)
   ca.triggers = validatedStrList(ca_raw['triggers'], ca.triggers)
-  ca.min_events = validatedInt(ca_raw['min_events'], ca.min_events, 0, 1000)
-  ca.max_manifest_tokens = validatedInt(ca_raw['max_manifest_tokens'], ca.max_manifest_tokens, 50, 10000)
-  ca.auto_trigger_multiplier = validatedFloat(ca_raw['auto_trigger_multiplier'], ca.auto_trigger_multiplier, 1.0, 10.0)
-  ca.compact_skip_ttl_secs = validatedFloat(ca_raw['compact_skip_ttl_secs'], ca.compact_skip_ttl_secs, 1.0, 3600.0)
-  ca.noise_floor_tokens = validatedInt(ca_raw['noise_floor_tokens'], ca.noise_floor_tokens, 0, 10000)
-  ca.edited_dir_group_threshold = validatedInt(ca_raw['edited_dir_group_threshold'], ca.edited_dir_group_threshold, 0, 100)
-  ca.max_section_lines = validatedInt(ca_raw['max_section_lines'], ca.max_section_lines, 0, 10000)
-  ca.wide_session_threshold = validatedInt(ca_raw['wide_session_threshold'], ca.wide_session_threshold, 1, 10000)
-  ca.orchestrator_commit_threshold = validatedInt(ca_raw['orchestrator_commit_threshold'], ca.orchestrator_commit_threshold, 1, 10000)
-  ca.max_manifest_chars = validatedInt(ca_raw['max_manifest_chars'], ca.max_manifest_chars, 0, 16000)
+  ca.min_events = validatedInt(ca_raw['min_events'], ca.min_events, ...boundsOf('compact_assist.min_events'))
+  ca.max_manifest_tokens = validatedInt(ca_raw['max_manifest_tokens'], ca.max_manifest_tokens, ...boundsOf('compact_assist.max_manifest_tokens'))
+  ca.auto_trigger_multiplier = validatedFloat(ca_raw['auto_trigger_multiplier'], ca.auto_trigger_multiplier, ...boundsOf('compact_assist.auto_trigger_multiplier'))
+  ca.compact_skip_ttl_secs = validatedFloat(ca_raw['compact_skip_ttl_secs'], ca.compact_skip_ttl_secs, ...boundsOf('compact_assist.compact_skip_ttl_secs'))
+  ca.noise_floor_tokens = validatedInt(ca_raw['noise_floor_tokens'], ca.noise_floor_tokens, ...boundsOf('compact_assist.noise_floor_tokens'))
+  ca.edited_dir_group_threshold = validatedInt(ca_raw['edited_dir_group_threshold'], ca.edited_dir_group_threshold, ...boundsOf('compact_assist.edited_dir_group_threshold'))
+  ca.max_section_lines = validatedInt(ca_raw['max_section_lines'], ca.max_section_lines, ...boundsOf('compact_assist.max_section_lines'))
+  ca.wide_session_threshold = validatedInt(ca_raw['wide_session_threshold'], ca.wide_session_threshold, ...boundsOf('compact_assist.wide_session_threshold'))
+  ca.orchestrator_commit_threshold = validatedInt(ca_raw['orchestrator_commit_threshold'], ca.orchestrator_commit_threshold, ...boundsOf('compact_assist.orchestrator_commit_threshold'))
+  ca.max_manifest_chars = validatedInt(ca_raw['max_manifest_chars'], ca.max_manifest_chars, ...boundsOf('compact_assist.max_manifest_chars'))
   ca.harness = validatedStr(ca_raw['harness'], ca.harness)
   // env overrides
   ca.enabled = envBool('TOKEN_GOAT_COMPACT_ASSIST', envBool('TOKENWISE_COMPACT_ASSIST', ca.enabled))
@@ -786,9 +795,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const bc = getDefaultConfig('bash_compress') as BashCompressConfig
   bc.enabled = validatedBool(bc_raw['enabled'], bc.enabled)
   bc.disabled_filters = validatedStrList(bc_raw['disabled_filters'], bc.disabled_filters)
-  bc.max_lines = validatedInt(bc_raw['max_lines'], bc.max_lines, 50, 100_000)
-  bc.max_bytes = validatedInt(bc_raw['max_bytes'], bc.max_bytes, 1024, 16 * 1024 * 1024)
-  bc.timeout_seconds = validatedInt(bc_raw['timeout_seconds'], bc.timeout_seconds, 5, 7200)
+  bc.max_lines = validatedInt(bc_raw['max_lines'], bc.max_lines, ...boundsOf('bash_compress.max_lines'))
+  bc.max_bytes = validatedInt(bc_raw['max_bytes'], bc.max_bytes, ...boundsOf('bash_compress.max_bytes'))
+  bc.timeout_seconds = validatedInt(bc_raw['timeout_seconds'], bc.timeout_seconds, ...boundsOf('bash_compress.timeout_seconds'))
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
   // round trip (see saveConfig), so any pre-687758ae user who ran `config set` for an unrelated
   // key got the then-in-memory default cache_min_bytes (0) permanently persisted, even though
@@ -802,15 +811,15 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // sentinel values were, so callers who really want 0 can work around this by setting 1 instead.
   bc.cache_min_bytes = bc_raw['cache_min_bytes'] === 0
     ? bc.cache_min_bytes
-    : validatedInt(bc_raw['cache_min_bytes'], bc.cache_min_bytes, 0, 100 * 1024 * 1024)
-  bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, 1, 1_000_000)
-  bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
-  bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
+    : validatedInt(bc_raw['cache_min_bytes'], bc.cache_min_bytes, ...boundsOf('bash_compress.cache_min_bytes'))
+  bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
+  bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
+  bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
   bc.enabled = envBool('TOKEN_GOAT_BASH_COMPRESS', bc.enabled)
-  bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes, 0, 100 * 1024 * 1024)
-  bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, 1, 1_000_000)
-  bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
-  bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
+  bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes, ...boundsOf('bash_compress.cache_min_bytes'))
+  bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
+  bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
+  bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
   // A per-item cap larger than the total-directory budget is nonsensical: pruneBlobs()
   // would otherwise evict a freshly-written item (and everything else) in the same
   // storeBlob() call that just wrote it. Clamp it so the per-item cap can never
@@ -819,16 +828,16 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig
-  bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, 1, 10000)
+  bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, ...boundsOf('bash_diff.max_hunks_per_file'))
 
   const sl_raw = section(raw, 'bash_severity_log')
   const sl = getDefaultConfig('bash_severity_log') as SeverityLogConfig
-  sl.context_lines = validatedInt(sl_raw['context_lines'], sl.context_lines, 0, 100)
-  sl.score_threshold = validatedFloat(sl_raw['score_threshold'], sl.score_threshold, 0.0, 1.0)
+  sl.context_lines = validatedInt(sl_raw['context_lines'], sl.context_lines, ...boundsOf('bash_severity_log.context_lines'))
+  sl.score_threshold = validatedFloat(sl_raw['score_threshold'], sl.score_threshold, ...boundsOf('bash_severity_log.score_threshold'))
 
   const cc_raw = section(raw, 'post_read_code_compress')
   const cc = getDefaultConfig('post_read_code_compress') as CodeCompressConfig
-  cc.min_lines = validatedInt(cc_raw['min_lines'], cc.min_lines, 0, 1_000_000)
+  cc.min_lines = validatedInt(cc_raw['min_lines'], cc.min_lines, ...boundsOf('post_read_code_compress.min_lines'))
 
   const sb_raw = section(raw, 'session_brief')
   const sb = getDefaultConfig('session_brief') as SessionBriefConfig
@@ -838,12 +847,12 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const sp_raw = section(raw, 'skill_preservation')
   const sp = getDefaultConfig('skill_preservation') as SkillPreservationConfig
   sp.enabled = validatedBool(sp_raw['enabled'], sp.enabled)
-  sp.max_cache_bytes = validatedInt(sp_raw['max_cache_bytes'], sp.max_cache_bytes, 64 * 1024, 512 * 1024 * 1024)
+  sp.max_cache_bytes = validatedInt(sp_raw['max_cache_bytes'], sp.max_cache_bytes, ...boundsOf('skill_preservation.max_cache_bytes'))
   sp.orphan_sweep_enabled = validatedBool(sp_raw['orphan_sweep_enabled'], sp.orphan_sweep_enabled)
-  sp.orphan_age_secs = validatedInt(sp_raw['orphan_age_secs'], sp.orphan_age_secs, 1, 2_592_000)
-  sp.truncation_budget_tokens = validatedInt(sp_raw['truncation_budget_tokens'], sp.truncation_budget_tokens, 0, 8000)
+  sp.orphan_age_secs = validatedInt(sp_raw['orphan_age_secs'], sp.orphan_age_secs, ...boundsOf('skill_preservation.orphan_age_secs'))
+  sp.truncation_budget_tokens = validatedInt(sp_raw['truncation_budget_tokens'], sp.truncation_budget_tokens, ...boundsOf('skill_preservation.truncation_budget_tokens'))
   sp.compress_bodies = validatedBool(sp_raw['compress_bodies'], sp.compress_bodies)
-  sp.compress_min_bytes = validatedInt(sp_raw['compress_min_bytes'], sp.compress_min_bytes, 1024, 10 * 1024 * 1024)
+  sp.compress_min_bytes = validatedInt(sp_raw['compress_min_bytes'], sp.compress_min_bytes, ...boundsOf('skill_preservation.compress_min_bytes'))
   sp.inline_snippets = validatedBool(sp_raw['inline_snippets'], sp.inline_snippets)
   sp.pre_skill_enabled = validatedBool(sp_raw['pre_skill_enabled'], sp.pre_skill_enabled)
   sp.first_load_compact = validatedBool(sp_raw['first_load_compact'], sp.first_load_compact)
@@ -856,10 +865,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const is_raw = section(raw, 'image_shrink')
   const is_cfg = getDefaultConfig('image_shrink') as ImageShrinkConfig
   is_cfg.enabled = validatedBool(is_raw['enabled'], is_cfg.enabled)
-  is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, 1, 100)
-  is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 0, 1_000_000_000)
+  is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, ...boundsOf('image_shrink.jpeg_quality'))
+  is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
-  is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, 0, 1_000_000_000)
+  is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
 
   const sc_raw = section(raw, 'screenshot')
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
@@ -867,17 +876,17 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const rm_raw = section(raw, 'repomap')
   const rm = getDefaultConfig('repomap') as RepomapConfig
-  rm.compact_file_threshold = validatedInt(rm_raw['compact_file_threshold'], rm.compact_file_threshold, 0, 100_000)
+  rm.compact_file_threshold = validatedInt(rm_raw['compact_file_threshold'], rm.compact_file_threshold, ...boundsOf('repomap.compact_file_threshold'))
   rm.exclude_tests = validatedBool(rm_raw['exclude_tests'], rm.exclude_tests)
-  rm.compact_file_threshold = envInt('TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD', rm.compact_file_threshold, 0, 100_000)
+  rm.compact_file_threshold = envInt('TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD', rm.compact_file_threshold, ...boundsOf('repomap.compact_file_threshold'))
   rm.exclude_tests = envBool('TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS', rm.exclude_tests)
 
   const og_raw = section(raw, 'overflow_guard')
   const og = getDefaultConfig('overflow_guard') as OverflowGuardConfig
   og.enabled = validatedBool(og_raw['enabled'], og.enabled)
-  og.max_tokens = validatedInt(og_raw['max_tokens'], og.max_tokens, 1000, 1_000_000)
+  og.max_tokens = validatedInt(og_raw['max_tokens'], og.max_tokens, ...boundsOf('overflow_guard.max_tokens'))
   og.enabled = envBool('TOKEN_GOAT_OVERFLOW_GUARD', og.enabled)
-  og.max_tokens = envInt('TOKEN_GOAT_OVERFLOW_MAX_TOKENS', og.max_tokens, 1000, 1_000_000)
+  og.max_tokens = envInt('TOKEN_GOAT_OVERFLOW_MAX_TOKENS', og.max_tokens, ...boundsOf('overflow_guard.max_tokens'))
 
   const st_raw = section(raw, 'stats')
   const st = getDefaultConfig('stats') as StatsConfig
@@ -885,24 +894,24 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const hi_raw = section(raw, 'hints')
   const hi = getDefaultConfig('hints') as HintsConfig
-  hi.suppress_after_ignored = validatedInt(hi_raw['suppress_after_ignored'], hi.suppress_after_ignored, 0, 1000)
+  hi.suppress_after_ignored = validatedInt(hi_raw['suppress_after_ignored'], hi.suppress_after_ignored, ...boundsOf('hints.suppress_after_ignored'))
   hi.quiet_hours = validatedStr(hi_raw['quiet_hours'], hi.quiet_hours)
   hi.json_sidecar = validatedBool(hi_raw['json_sidecar'], hi.json_sidecar)
-  hi.verbose_until_seen_count = validatedInt(hi_raw['verbose_until_seen_count'], hi.verbose_until_seen_count, 0, 10000)
-  hi.min_file_lines_for_hint = validatedInt(hi_raw['min_file_lines_for_hint'], hi.min_file_lines_for_hint, 0, 1_000_000)
-  hi.bash_dedup_min_bytes = validatedInt(hi_raw['bash_dedup_min_bytes'], hi.bash_dedup_min_bytes, 0, 100_000)
-  hi.bash_dedup_min_bytes = envInt('TOKEN_GOAT_BASH_DEDUP_MIN_BYTES', hi.bash_dedup_min_bytes, 0, 100_000)
-  hi.web_dedup_min_bytes = validatedInt(hi_raw['web_dedup_min_bytes'], hi.web_dedup_min_bytes, 0, 100_000)
-  hi.web_dedup_min_bytes = envInt('TOKEN_GOAT_WEB_DEDUP_MIN_BYTES', hi.web_dedup_min_bytes, 0, 100_000)
-  hi.grep_dedup_min_matches = validatedInt(hi_raw['grep_dedup_min_matches'], hi.grep_dedup_min_matches, 0, 100_000)
-  hi.grep_dedup_min_matches = envInt('TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES', hi.grep_dedup_min_matches, 0, 100_000)
+  hi.verbose_until_seen_count = validatedInt(hi_raw['verbose_until_seen_count'], hi.verbose_until_seen_count, ...boundsOf('hints.verbose_until_seen_count'))
+  hi.min_file_lines_for_hint = validatedInt(hi_raw['min_file_lines_for_hint'], hi.min_file_lines_for_hint, ...boundsOf('hints.min_file_lines_for_hint'))
+  hi.bash_dedup_min_bytes = validatedInt(hi_raw['bash_dedup_min_bytes'], hi.bash_dedup_min_bytes, ...boundsOf('hints.bash_dedup_min_bytes'))
+  hi.bash_dedup_min_bytes = envInt('TOKEN_GOAT_BASH_DEDUP_MIN_BYTES', hi.bash_dedup_min_bytes, ...boundsOf('hints.bash_dedup_min_bytes'))
+  hi.web_dedup_min_bytes = validatedInt(hi_raw['web_dedup_min_bytes'], hi.web_dedup_min_bytes, ...boundsOf('hints.web_dedup_min_bytes'))
+  hi.web_dedup_min_bytes = envInt('TOKEN_GOAT_WEB_DEDUP_MIN_BYTES', hi.web_dedup_min_bytes, ...boundsOf('hints.web_dedup_min_bytes'))
+  hi.grep_dedup_min_matches = validatedInt(hi_raw['grep_dedup_min_matches'], hi.grep_dedup_min_matches, ...boundsOf('hints.grep_dedup_min_matches'))
+  hi.grep_dedup_min_matches = envInt('TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES', hi.grep_dedup_min_matches, ...boundsOf('hints.grep_dedup_min_matches'))
   hi.serve_diff_on_reread = validatedBool(hi_raw['serve_diff_on_reread'], hi.serve_diff_on_reread)
   hi.backoff_thresholds = validatedIntList(hi_raw['backoff_thresholds'], hi.backoff_thresholds)
-  hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, 0, 10000)
-  hi.min_session_hint_savings_bytes = validatedInt(hi_raw['min_session_hint_savings_bytes'], hi.min_session_hint_savings_bytes, 0, 1_000_000)
+  hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
+  hi.min_session_hint_savings_bytes = validatedInt(hi_raw['min_session_hint_savings_bytes'], hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
   hi.pre_skill_advisory = validatedBool(hi_raw['pre_skill_advisory'], hi.pre_skill_advisory)
   hi.context_threshold_advisory = validatedBool(hi_raw['context_threshold_advisory'], hi.context_threshold_advisory)
-  hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, 0, 100_000)
+  hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
   // round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated
   // key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted,
@@ -914,7 +923,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // value (including a deliberate 45_000 set after upgrading) is respected as-is.
   hi.large_read_redirect_bytes = hi_raw['large_read_redirect_bytes'] === 45_000
     ? hi.large_read_redirect_bytes
-    : validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 0, 100_000_000)
+    : validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, ...boundsOf('hints.large_read_redirect_bytes'))
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
   // round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated
@@ -927,24 +936,24 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // deliberate 2048 set after upgrading) is respected as-is.
   hi.reread_deny_min_bytes = hi_raw['reread_deny_min_bytes'] === 2048
     ? hi.reread_deny_min_bytes
-    : validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 0, 100_000_000)
+    : validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, ...boundsOf('hints.reread_deny_min_bytes'))
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
-  hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
-  hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)
+  hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
+  hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.warn_unbalanced_shell_quoting = validatedBool(hi_raw['warn_unbalanced_shell_quoting'], hi.warn_unbalanced_shell_quoting)
   hi.log_large_file_hint_outcomes = validatedBool(hi_raw['log_large_file_hint_outcomes'], hi.log_large_file_hint_outcomes)
   hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
-  hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, 0, 100_000_000)
+  hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, ...boundsOf('hints.large_read_redirect_bytes'))
   hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
-  hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
+  hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, ...boundsOf('hints.cross_session_read_dedup_ttl_secs'))
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
-  hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs, 1, 86400)
-  hi.mcp_dedup_ttl_secs = validatedInt(hi_raw['mcp_dedup_ttl_secs'], hi.mcp_dedup_ttl_secs, 1, 3600)
-  hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs, 1, 3600)
-  hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes, 0, 1_000_000)
+  hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs, ...boundsOf('hints.cross_session_read_dedup_ttl_secs'))
+  hi.mcp_dedup_ttl_secs = validatedInt(hi_raw['mcp_dedup_ttl_secs'], hi.mcp_dedup_ttl_secs, ...boundsOf('hints.mcp_dedup_ttl_secs'))
+  hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs, ...boundsOf('hints.mcp_dedup_ttl_secs'))
+  hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
   if (Array.isArray(triggers_raw)) {
@@ -959,31 +968,31 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const hk_raw = section(raw, 'hooks')
   const hk = getDefaultConfig('hooks') as HooksConfig
-  hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, 100, 30000)
-  hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms, 100, 30000)
+  hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
+  hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms, ...boundsOf('hooks.watchdog_ms'))
 
   const wf_raw = section(raw, 'webfetch')
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
   wf.allow = validatedStrList(wf_raw['allow'], wf.allow)
   wf.deny = validatedStrList(wf_raw['deny'], wf.deny)
-  wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, 0, 10_000_000)
-  wf.max_file_count = envInt('TOKEN_GOAT_WEB_CACHE_MAX_FILES', wf.max_file_count, 0, 10_000_000)
-  wf.max_bytes = validatedInt(wf_raw['max_bytes'], wf.max_bytes, 0, 100 * 1024 * 1024 * 1024)
-  wf.max_bytes = envInt('TOKEN_GOAT_WEB_CACHE_MAX_BYTES', wf.max_bytes, 0, 100 * 1024 * 1024 * 1024)
+  wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, ...boundsOf('webfetch.max_file_count'))
+  wf.max_file_count = envInt('TOKEN_GOAT_WEB_CACHE_MAX_FILES', wf.max_file_count, ...boundsOf('webfetch.max_file_count'))
+  wf.max_bytes = validatedInt(wf_raw['max_bytes'], wf.max_bytes, ...boundsOf('webfetch.max_bytes'))
+  wf.max_bytes = envInt('TOKEN_GOAT_WEB_CACHE_MAX_BYTES', wf.max_bytes, ...boundsOf('webfetch.max_bytes'))
   wf.compress_bodies = validatedBool(wf_raw['compress_bodies'], wf.compress_bodies)
-  wf.compress_min_bytes = validatedInt(wf_raw['compress_min_bytes'], wf.compress_min_bytes, 1024, 10 * 1024 * 1024)
+  wf.compress_min_bytes = validatedInt(wf_raw['compress_min_bytes'], wf.compress_min_bytes, ...boundsOf('webfetch.compress_min_bytes'))
   wf.compress_bodies = envBool('TOKEN_GOAT_WEB_COMPRESS', wf.compress_bodies)
 
   const wk_raw = section(raw, 'worker')
   const wk = getDefaultConfig('worker') as WorkerConfig
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
-  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
-  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, 1, 8)
+  wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, ...boundsOf('worker.max_pool_workers'))
+  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, ...boundsOf('worker.max_pool_workers'))
 
   const ix_raw = section(raw, 'indexing')
   const ix = getDefaultConfig('indexing') as IndexingConfig
-  ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, 1, 1048576)
-  ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, 1, 1048576)
+  ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, ...boundsOf('indexing.large_file_symbol_only_kb'))
+  ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, ...boundsOf('indexing.large_file_skip_kb'))
   // A symbol-only threshold larger than the skip threshold is nonsensical: files would be
   // skipped entirely before the symbol-only tier's condition could ever apply. Clamp
   // symbol_only_kb so it never exceeds skip_kb.
@@ -999,8 +1008,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const ctx_raw = section(raw, 'context')
   const ctx = getDefaultConfig('context') as ContextConfig
-  ctx.model_window_tokens = validatedInt(ctx_raw['model_window_tokens'], ctx.model_window_tokens, 10_000, 10_000_000)
-  ctx.model_window_tokens = envInt('TOKEN_GOAT_MODEL_WINDOW_TOKENS', ctx.model_window_tokens, 10_000, 10_000_000)
+  ctx.model_window_tokens = validatedInt(ctx_raw['model_window_tokens'], ctx.model_window_tokens, ...boundsOf('context.model_window_tokens'))
+  ctx.model_window_tokens = envInt('TOKEN_GOAT_MODEL_WINDOW_TOKENS', ctx.model_window_tokens, ...boundsOf('context.model_window_tokens'))
 
   const inj_raw = section(raw, 'injection')
   const inj = getDefaultConfig('injection') as InjectionConfig
@@ -1009,8 +1018,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const hs_raw = section(raw, 'hint_stats')
   const hs = getDefaultConfig('hint_stats') as HintStatsConfig
-  hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, 0, 100)
-  hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, 1, 10000)
+  hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, ...boundsOf('hint_stats.suppress_threshold_pct'))
+  hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, ...boundsOf('hint_stats.min_sample_size'))
 
   return {
     compact_assist: ca,
