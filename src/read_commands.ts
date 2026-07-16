@@ -853,9 +853,17 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
   return `No indexed symbols found in '${displayPath}'`
 }
 
-/** Handle ``token-goat skeleton file``. */
-export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+/**
+ * Shared prologue for `skeleton`/`outline`: resolve the file, optionally reparse it, fetch its
+ * indexed symbols, and (on a non-empty result) apply the `--min-lines` filter and optional
+ * `--stats` ref-count lookup. Both commands share this exact sequence verbatim; only their JSON
+ * row shape and text-line formatting differ, so those stay in each command's own function.
+ */
+function prepareSymbolListing(
+  file: string,
+  opts: { minLines?: number; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
+): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number } {
+  const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved)
@@ -863,7 +871,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 
   if (symbols.length === 0) {
-    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
+    return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
   }
 
   const filtered =
@@ -877,6 +885,17 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       : undefined
 
   const fullSourceBytes = sumFileSizes([resolved])
+
+  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes }
+}
+
+/** Handle ``token-goat skeleton file``. */
+export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
+  const prep = prepareSymbolListing(opts.file, opts)
+  if (prep.kind === 'empty') {
+    return { text: prep.text, code: 1 }
+  }
+  const { resolved, filtered, refCounts, fullSourceBytes } = prep
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -929,28 +948,11 @@ export interface OutlineOptions {
 
 /** Handle ``token-goat outline file``. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
-  const resolved = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
-  if (opts.forceRefresh === true) {
-    indexFileSync(resolved, globalDbPath())
-    enqueueDirtyPathSafe(resolved)
+  const prep = prepareSymbolListing(opts.file, opts)
+  if (prep.kind === 'empty') {
+    return { text: prep.text, code: 1 }
   }
-  const symbols = querySymbols({ filePath: resolved, limit: 500 })
-
-  if (symbols.length === 0) {
-    return { text: noSymbolsMessage(opts.file, resolved), code: 1 }
-  }
-
-  const filtered =
-    opts.minLines !== undefined
-      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
-      : symbols
-
-  const refCounts =
-    opts.stats === true
-      ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
-      : undefined
-
-  const fullSourceBytes = sumFileSizes([resolved])
+  const { resolved, filtered, refCounts, fullSourceBytes } = prep
 
   if (opts.json === true) {
     const rows =
