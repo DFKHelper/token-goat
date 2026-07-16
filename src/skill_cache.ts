@@ -123,24 +123,45 @@ export function outputIdFor(sessionId: string, skillName: string, contentSha: st
   return `${sessionSkillPrefix(sessionId, skillName)}${contentSha}`
 }
 
+// Yields [index, trimmed-line] for every line of `lines` outside a fenced code block (fence
+// lines themselves and everything between a pair of them are skipped). Shared by every
+// heading/marker scanner below so the fence-toggle logic can't drift between them.
+function* contentLineEntries(lines: string[]): Generator<[index: number, stripped: string]> {
+  let inCodeBlock = false
+  for (let i = 0; i < lines.length; i++) {
+    const stripped = lines[i]!.trim()
+    if (isCodeFenceDelimiter(stripped)) {
+      inCodeBlock = !inCodeBlock
+      continue
+    }
+    if (!inCodeBlock) yield [i, stripped]
+  }
+}
+
+// Collects `lines` from `startIdx` up to (not including) the next top-level `## ` heading that
+// isn't itself inside a fenced code block. Shared by extractNamedSection/extractChecklistSection,
+// whose "gather this section's body" loops were otherwise byte-identical apart from the start index.
+function collectSectionBody(lines: string[], startIdx: number): string[] {
+  const bodyLines: string[] = []
+  let inBodyCodeBlock = false
+  for (let j = startIdx; j < lines.length; j++) {
+    const stripped = lines[j]!.trim()
+    if (isCodeFenceDelimiter(stripped)) {
+      inBodyCodeBlock = !inBodyCodeBlock
+    }
+    if (!inBodyCodeBlock && stripped.startsWith('## ')) break
+    bodyLines.push(lines[j]!)
+  }
+  return bodyLines
+}
+
 export function extractCompactFromMarker(body: string): string | null {
   if (!body || !body.includes(COMPACT_END_MARKER)) {
     return null
   }
 
-  let inCodeBlock = false
   const lines = body.split('\n')
-
-  for (let i = 0; i < lines.length; i++) {
-    const stripped = lines[i]!.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inCodeBlock = !inCodeBlock
-      continue
-    }
-
-    if (inCodeBlock) continue
-
+  for (const [i, stripped] of contentLineEntries(lines)) {
     if (stripped === COMPACT_END_MARKER) {
       const preMarker = lines.slice(0, i).join('\n').trim()
       return preMarker || null
@@ -154,14 +175,8 @@ export function extractH2Headings(body: string): string[] {
   if (!body) return []
 
   const headings: string[] = []
-  let inCodeBlock = false
-
-  for (const line of body.split('\n')) {
-    const stripped = line.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inCodeBlock = !inCodeBlock
-    } else if (!inCodeBlock && stripped.startsWith('## ') && stripped.length > 3) {
+  for (const [, stripped] of contentLineEntries(body.split('\n'))) {
+    if (stripped.startsWith('## ') && stripped.length > 3) {
       headings.push(stripped.slice(3).trim())
     }
   }
@@ -173,19 +188,8 @@ export function extractAllHeadings(body: string, maxLevel: number = 3): Array<[l
   if (!body) return []
 
   const headings: Array<[number, string]> = []
-  let inCodeBlock = false
-
-  for (const line of body.split('\n')) {
-    const stripped = line.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inCodeBlock = !inCodeBlock
-      continue
-    }
-
-    if (inCodeBlock || !stripped.startsWith('#')) {
-      continue
-    }
+  for (const [, stripped] of contentLineEntries(body.split('\n'))) {
+    if (!stripped.startsWith('#')) continue
 
     const level = stripped.length - stripped.replace(/^#+/, '').length
     if (level < 2 || level > maxLevel) {
@@ -216,22 +220,11 @@ export function extractNamedSection(body: string, heading: string): string | nul
   const [baseHeading, ordinal] = parseSectionOrdinal(heading)
   const headingLower = stripLower(baseHeading)
   const lines = body.split('\n')
-  const n = lines.length
 
   let matchCount = 0
   let startIdx = -1
 
-  let inCodeBlock = false
-  for (let i = 0; i < n; i++) {
-    const stripped = lines[i]!.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inCodeBlock = !inCodeBlock
-      continue
-    }
-
-    if (inCodeBlock) continue
-
+  for (const [i, stripped] of contentLineEntries(lines)) {
     if (stripped.startsWith('## ') && stripped.length > 3) {
       const headingText = stripLower(stripped.slice(3))
       if (headingText === headingLower) {
@@ -246,23 +239,7 @@ export function extractNamedSection(body: string, heading: string): string | nul
 
   if (startIdx === -1) return null
 
-  const bodyLines: string[] = []
-  let inBodyCodeBlock = false
-  for (let j = startIdx; j < n; j++) {
-    const stripped = lines[j]!.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inBodyCodeBlock = !inBodyCodeBlock
-    }
-
-    if (!inBodyCodeBlock && stripped.startsWith('## ')) {
-      break
-    }
-
-    bodyLines.push(lines[j]!)
-  }
-
-  const text = bodyLines.join('\n').trim()
+  const text = collectSectionBody(lines, startIdx).join('\n').trim()
   return text || null
 }
 
@@ -271,22 +248,11 @@ export function extractChecklistSection(body: string): string | null {
 
   const checklistHeadings = ['checklist', 'check list', 'to-do', 'todo']
   const lines = body.split('\n')
-  const n = lines.length
 
   let bestPriority = checklistHeadings.length
   let bestStart = -1
 
-  let inCodeBlock = false
-  for (let i = 0; i < n; i++) {
-    const stripped = lines[i]!.trim()
-
-    if (isCodeFenceDelimiter(stripped)) {
-      inCodeBlock = !inCodeBlock
-      continue
-    }
-
-    if (inCodeBlock) continue
-
+  for (const [i, stripped] of contentLineEntries(lines)) {
     if (stripped.startsWith('## ') && stripped.length > 3) {
       const headingText = stripLower(stripped.slice(3))
       for (let p = 0; p < checklistHeadings.length; p++) {
@@ -303,17 +269,7 @@ export function extractChecklistSection(body: string): string | null {
 
   if (bestStart === -1) return null
 
-  const bodyLines: string[] = []
-  let inBodyCodeBlock = false
-  for (let j = bestStart + 1; j < n; j++) {
-    const stripped = lines[j]!.trim()
-    if (isCodeFenceDelimiter(stripped)) {
-      inBodyCodeBlock = !inBodyCodeBlock
-    }
-    if (!inBodyCodeBlock && stripped.startsWith('## ')) break
-    bodyLines.push(lines[j]!)
-  }
-
+  const bodyLines = collectSectionBody(lines, bestStart + 1)
   let text = bodyLines.join('\n').trim()
   const maxChars = 2000
   if (text.length > maxChars) {
@@ -543,22 +499,31 @@ export async function getCompact(sessionId: string, skillName: string): Promise<
   }
 }
 
+// Exact '@'-delimited compact-cache suffix for a skill name, or null if the name is invalid.
+// '@' cannot occur in a sanitized name (outside safeSkillName's charset), so matching this exact
+// suffix (not a raw substring) can never match a differently-named skill whose sanitized name
+// merely ends with this one's text (e.g. name 'loop' must not match a stored file for
+// 'ralph-loop'). Shared by getCompactAnySession/getCompactAnySessionSync so the collision-safe
+// matching logic can't drift between the two.
+function compactSessionSuffix(skillName: string): string | null {
+  const name = safeSkillName(skillName)
+  return name ? `@${sanitizeSkillId(name)}@compact` : null
+}
+
+function matchesCompactSuffix(entryName: string, isFile: boolean, suffix: string): boolean {
+  return isFile && entryName.endsWith('@compact') && entryName.endsWith(suffix)
+}
+
 export async function getCompactAnySession(skillName: string): Promise<string | null> {
   try {
-    const name = safeSkillName(skillName)
-    if (!name) return null
+    const suffix = compactSessionSuffix(skillName)
+    if (!suffix) return null
 
     const dir = skillOutputsDir()
     const entries = await fs.readdir(dir, { withFileTypes: true })
-    // Match the exact '@'-delimited suffix, not a raw substring: '@' cannot occur in a
-    // sanitized name (outside safeSkillName's charset), so this can never match a
-    // differently-named skill whose sanitized name merely ends with this one's text
-    // (e.g. name 'loop' must not match a stored file for 'ralph-loop').
-    const suffix = `@${sanitizeSkillId(name)}@compact`
 
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('@compact')) continue
-      if (!entry.name.endsWith(suffix)) continue
+      if (!matchesCompactSuffix(entry.name, entry.isFile(), suffix)) continue
 
       try {
         const text = await fs.readFile(resolve(dir, entry.name), 'utf-8')
@@ -577,14 +542,12 @@ export async function getCompactAnySession(skillName: string): Promise<string | 
 // Synchronous sibling of getCompactAnySession for the hot pre-read path: first non-empty cached compact body for a skill across sessions, or null.
 export function getCompactAnySessionSync(skillName: string): string | null {
   try {
-    const name = safeSkillName(skillName)
-    if (!name) return null
+    const suffix = compactSessionSuffix(skillName)
+    if (!suffix) return null
     const dir = skillOutputsDir()
     const entries = readdirSync(dir, { withFileTypes: true })
-    const suffix = `@${sanitizeSkillId(name)}@compact`
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('@compact')) continue
-      if (!entry.name.endsWith(suffix)) continue
+      if (!matchesCompactSuffix(entry.name, entry.isFile(), suffix)) continue
       try {
         const text = readFileSync(resolve(dir, entry.name), 'utf-8')
         if (text.trim()) return text
