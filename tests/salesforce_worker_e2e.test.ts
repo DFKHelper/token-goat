@@ -116,6 +116,21 @@ describe('Salesforce DX worker default path', () => {
       expect(querySymbols({ name: 'loadAccount' }, dbPath)[0]).toMatchObject({
         kind: 'apex_method',
       })
+      // Safe-navigation is covered on the real worker path, including methods after it. The
+      // fixture also contains an apostrophe in a preceding line comment, the historical masker
+      // failure that could blank the remainder of an otherwise valid Apex file.
+      for (const name of [
+        'hasDirectName',
+        'hasRelatedName',
+        'logRelatedName',
+        'finishWork',
+        'afterFinish',
+        'finalMethod',
+      ]) {
+        expect(querySymbols({ name }, dbPath)[0], name).toMatchObject({
+          kind: 'apex_method',
+        })
+      }
 
       // The LWC bundle and its public API are addressable across JS/template/metadata files.
       expect(querySymbols({ name: 'accountCard' }, dbPath).length).toBeGreaterThan(0)
@@ -156,6 +171,37 @@ describe('Salesforce DX built bundle smoke', () => {
     const indexed = runBundle(repo, dataBase, ['index', repo])
     expect(indexed.status, indexed.stderr).toBe(0)
     expect(indexed.stdout).toMatch(/Indexed \d+ files/)
+
+    // Exercise every user-visible read seam against the shipped bundle, not only the adapter.
+    const apexFile = 'force-app/main/default/classes/SafeNavigationService.cls'
+    const outline = runBundle(repo, dataBase, ['outline', apexFile])
+    expect(outline.status, outline.stderr).toBe(0)
+    expect(outline.stdout).toContain('SafeNavigationService')
+    for (const name of [
+      'hasDirectName',
+      'hasRelatedName',
+      'logRelatedName',
+      'finishWork',
+      'afterFinish',
+      'finalMethod',
+    ]) {
+      expect(outline.stdout, name).toContain(name)
+    }
+
+    const safeNavigationSymbol = runBundle(repo, dataBase, ['symbol', 'hasRelatedName'])
+    expect(safeNavigationSymbol.status, safeNavigationSymbol.stderr).toBe(0)
+    expect(safeNavigationSymbol.stdout).toContain('account?.Parent?.Name')
+
+    const methodAfterSafeNavigation = runBundle(repo, dataBase, [
+      'read',
+      `${apexFile}::finishWork`,
+    ])
+    expect(methodAfterSafeNavigation.status, methodAfterSafeNavigation.stderr).toBe(0)
+    expect(methodAfterSafeNavigation.stdout).toContain('public void finishWork()')
+
+    const fullClass = runBundle(repo, dataBase, ['read', `${apexFile}::SafeNavigationService`])
+    expect(fullClass.status, fullClass.stderr).toBe(0)
+    expect(fullClass.stdout).toContain('public void finalMethod()')
 
     const symbol = runBundle(repo, dataBase, ['symbol', 'accountCard'])
     expect(symbol.status, symbol.stderr).toBe(0)
