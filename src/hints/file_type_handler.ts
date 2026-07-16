@@ -29,7 +29,9 @@ export const FILE_TYPE_THRESHOLDS = {
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1_048_576) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1_048_576).toFixed(1)} MB`
+  if (n < 1_073_741_824) return `${(n / 1_048_576).toFixed(1)} MB`
+  if (n < 1_099_511_627_776) return `${(n / 1_073_741_824).toFixed(1)} GB`
+  return `${(n / 1_099_511_627_776).toFixed(1)} TB`
 }
 
 /** Advice for a file whose content shape (e.g. one long minified/base64 line) makes any
