@@ -54,6 +54,20 @@ function listParentSessionBlobs(): Array<{ id: string; mtime: number; value: unk
     .sort((a, b) => b.mtime - a.mtime)
 }
 
+/**
+ * Newest parent session blob's id and its `files` array, normalized against a malformed or
+ * missing shape — shared by cmdSessionSummary and cmdCost, which both need exactly this. Returns
+ * null when no parent session blob exists at all (callers render their own "no session" message).
+ */
+function getNewestSessionFiles(): { id: string; sessionCount: number; filesArr: Array<Record<string, unknown>> } | null {
+  const blobs = listParentSessionBlobs()
+  if (blobs.length === 0) return null
+  const newest = blobs[0]!
+  const raw = (typeof newest.value === 'object' && newest.value !== null) ? (newest.value as Record<string, unknown>) : {}
+  const filesArr = Array.isArray(raw['files']) ? (raw['files'] as Array<Record<string, unknown>>) : []
+  return { id: newest.id, sessionCount: blobs.length, filesArr }
+}
+
 // ── bash-history ─────────────────────────────────────────────────────────────
 
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
@@ -361,8 +375,8 @@ export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; jso
 
 /** One-screen summary of the latest cached session: file counts, top files, session id. */
 export function cmdSessionSummary(opts: { json?: boolean }): void {
-  const blobs = listParentSessionBlobs()
-  if (blobs.length === 0) {
+  const session = getNewestSessionFiles()
+  if (session === null) {
     if (opts.json === true) {
       process.stdout.write(JSON.stringify({ sessionCount: 0, message: 'no session blobs found' }, null, 2) + '\n')
       return
@@ -370,9 +384,7 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
     process.stdout.write('No session blobs found.\n')
     return
   }
-  const newest = blobs[0]!
-  const raw = (typeof newest.value === 'object' && newest.value !== null) ? (newest.value as Record<string, unknown>) : {}
-  const filesArr = Array.isArray(raw['files']) ? (raw['files'] as Array<Record<string, unknown>>) : []
+  const { id, sessionCount, filesArr } = session
   const filesEdited = filesArr.filter((f) => f['wasEdited'] === true).length
   const filesRead = filesArr.filter((f) => f['wasEdited'] !== true).length
   const topFiles = [...filesArr]
@@ -381,11 +393,11 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
     .map((f) => (typeof f['path'] === 'string' ? f['path'] : ''))
     .filter(Boolean)
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ sessionId: newest.id, sessionCount: blobs.length, filesRead, filesEdited, topFiles }, null, 2) + '\n')
+    process.stdout.write(JSON.stringify({ sessionId: id, sessionCount, filesRead, filesEdited, topFiles }, null, 2) + '\n')
     return
   }
-  process.stdout.write(`Session: ${newest.id}\n`)
-  process.stdout.write(`Sessions cached: ${blobs.length}\n`)
+  process.stdout.write(`Session: ${id}\n`)
+  process.stdout.write(`Sessions cached: ${sessionCount}\n`)
   process.stdout.write(`Files read: ${filesRead}, edited: ${filesEdited}\n`)
   if (topFiles.length > 0) {
     process.stdout.write('Top files:\n')
@@ -398,8 +410,8 @@ export function cmdSessionSummary(opts: { json?: boolean }): void {
 /** Tokens-saved / cost breakdown. Thin framing over runStats from cli_stats.ts. */
 export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
   if (opts.session === true) {
-    const blobs = listParentSessionBlobs()
-    if (blobs.length === 0) {
+    const session = getNewestSessionFiles()
+    if (session === null) {
       if (opts.json === true) {
         process.stdout.write(JSON.stringify({ session: true, message: 'no session blobs found' }, null, 2) + '\n')
         return
@@ -407,17 +419,15 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
       process.stdout.write('No session data found.\n')
       return
     }
-    const newest = blobs[0]!
-    const raw = (typeof newest.value === 'object' && newest.value !== null) ? (newest.value as Record<string, unknown>) : {}
-    const filesArr = Array.isArray(raw['files']) ? (raw['files'] as Array<Record<string, unknown>>) : []
+    const { id, filesArr } = session
     const totalFiles = filesArr.length
     const totalReads = filesArr.reduce((sum, f) => sum + (typeof f['readCount'] === 'number' ? f['readCount'] : 0), 0)
     const totalBytes = filesArr.reduce((sum, f) => sum + (typeof f['sizeBytes'] === 'number' ? f['sizeBytes'] : 0), 0)
     if (opts.json === true) {
-      process.stdout.write(JSON.stringify({ session: true, sessionId: newest.id, totalFiles, totalReads, totalBytes }, null, 2) + '\n')
+      process.stdout.write(JSON.stringify({ session: true, sessionId: id, totalFiles, totalReads, totalBytes }, null, 2) + '\n')
       return
     }
-    process.stdout.write(`Session: ${newest.id}\n`)
+    process.stdout.write(`Session: ${id}\n`)
     process.stdout.write(`Files touched: ${totalFiles}, total reads: ${totalReads}, bytes scanned: ${totalBytes}\n`)
     return
   }
