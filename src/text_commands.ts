@@ -16,7 +16,7 @@ import { normalizeDarwinSystemAlias } from './paths.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
-import { foldPath, escapeRegExp } from './util.js'
+import { foldPath, escapeRegExp, requireNonNegativeStrictInt } from './util.js'
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -31,17 +31,6 @@ function readInput(src: string | undefined): string {
 // or negative value instead of `Number.parseInt` silently producing NaN or a negative count,
 // both of which fail the `> 0` guards these commands used to gate their `.slice()` calls with
 // and so fell through to printing every entry unbounded instead of erroring or limiting.
-function requireNonNegativeInt(flag: string, raw: string): number {
-  if (!/^-?\d+$/.test(raw)) {
-    throw new Error(`${flag} must be a number, got: "${raw}"`)
-  }
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n < 0) {
-    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
-  }
-  return n
-}
-
 /** Split text into lines, normalizing CRLF. */
 function splitLines(text: string): string[] {
   return text.split(/\r?\n/)
@@ -286,7 +275,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     return
   }
   const cwd = process.cwd()
-  const keepN = opts.keep !== undefined ? requireNonNegativeInt('--keep', opts.keep) : 0
+  const keepN = opts.keep !== undefined ? requireNonNegativeStrictInt('--keep', opts.keep) : 0
 
   const filtered = blocks.map((b) => {
     let frames = b.frames.filter((f) => isProjectFrame(f.file, cwd))
@@ -375,7 +364,7 @@ export function cmdLogfold(src: string | undefined, opts: { tail?: string | unde
   const text = readInput(src)
   let lines = splitLines(text)
   if (opts.tail !== undefined) {
-    const n = requireNonNegativeInt('--tail', opts.tail)
+    const n = requireNonNegativeStrictInt('--tail', opts.tail)
     lines = lines.slice(Math.max(0, lines.length - n))
   }
 
@@ -746,7 +735,7 @@ function loadAllSessionReadCounts(): Map<string, number> {
 }
 
 export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean }): void {
-  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
+  const limit = opts.limit !== undefined ? requireNonNegativeStrictInt('--limit', opts.limit) : 20
   const totals = loadAllSessionReadCounts()
 
   let entries: HotEntry[] = [...totals.entries()].map(([p, rc]) => ({ path: p, readCount: rc }))
@@ -801,7 +790,7 @@ interface RecentEntry {
 }
 
 export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): void {
-  const n = nStr !== undefined ? requireNonNegativeInt('recent', nStr) : 20
+  const n = nStr !== undefined ? requireNonNegativeStrictInt('recent', nStr) : 20
   const sessionFiles = getSessionFiles()
 
   const entries: RecentEntry[] = [...sessionFiles.values()]
