@@ -490,6 +490,13 @@ describe('dispatchFileTypeHandler', () => {
     expect(result?.message).toContain('2.0 MB')
   })
 
+  it('renders a GB-scale contentLengthHint in GB, not a huge MB figure', () => {
+    const result = dispatchFileTypeHandler('/path/to/doc.pdf', '', 1_500_000_000)
+    expect(result?.shouldBlock).toBe(true)
+    expect(result?.message).toContain('1.4 GB')
+    expect(result?.message).not.toContain('MB')
+  })
+
   it('dispatches HTML above threshold', () => {
     const content = `<html><body>${makeStr(FILE_TYPE_THRESHOLDS.html)}</body></html>`
     const result = dispatchFileTypeHandler('/path/to/page.html', content)
