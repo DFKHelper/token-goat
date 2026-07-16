@@ -615,6 +615,65 @@ describe('parseFile reference extraction', () => {
     expect(refNames).toContain('sort')
   })
 
+  // Regression: REF_NOISE_BY_LANG only defined a builtin-noise filter for typescript/python, so
+  // go/rust/c/cpp/ruby's bare-identifier stdlib/language builtins (fmt-adjacent bare calls like
+  // Go's len/println, Rust's println!/vec! macros, C's printf/malloc) were never filtered out of
+  // refs, unlike TS's bare parseInt/setTimeout or Python's bare print/len -- an asymmetric gap in
+  // an already-documented mechanism, not a difference in design intent.
+  it('filters bare Go builtins (len, println) out of refs but keeps a real helper call', async () => {
+    const file = write(
+      'noise.go',
+      'package main\n' +
+        'func helper() int { return 1 }\n' +
+        'func driver() {\n' +
+        '  s := make([]int, 0)\n' +
+        '  println(len(s))\n' +
+        '  helper()\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const refNames = result.refs.map((r) => r.name)
+    expect(refNames).not.toContain('println')
+    expect(refNames).not.toContain('len')
+    expect(refNames).not.toContain('make')
+    expect(refNames).toContain('helper')
+  })
+
+  it('filters bare Rust macros (println!, vec!) out of refs but keeps a real helper call', async () => {
+    const file = write(
+      'noise.rs',
+      'fn helper() -> i32 { 1 }\n' +
+        'fn driver() {\n' +
+        '  let v = vec![1, 2, 3];\n' +
+        '  let h = helper();\n' +
+        '  println!("{:?} {}", v, h);\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const refNames = result.refs.map((r) => r.name)
+    expect(refNames).not.toContain('println')
+    expect(refNames).not.toContain('vec')
+    expect(refNames).toContain('helper')
+  })
+
+  it('filters bare C stdlib builtins (printf, malloc) out of refs but keeps a real helper call', async () => {
+    const file = write(
+      'noise.c',
+      'int helper(){ return 1; }\n' +
+        'void driver(){\n' +
+        '  int* p = malloc(sizeof(int));\n' +
+        '  printf("%d\n", helper());\n' +
+        '  free(p);\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const refNames = result.refs.map((r) => r.name)
+    expect(refNames).not.toContain('printf')
+    expect(refNames).not.toContain('malloc')
+    expect(refNames).not.toContain('free')
+    expect(refNames).toContain('helper')
+  })
+
   // Regression: extractRefs only walked call-site node types (call_expression/new_expression),
   // so a symbol used only in a "value position" -- passed as a callback, assigned to a variable,
   // stored as an object-literal value -- was invisible to the refs table. That made `dead`
