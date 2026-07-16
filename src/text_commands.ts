@@ -243,6 +243,21 @@ function parseTracebacks(text: string): TraceBlock[] {
   return blocks
 }
 
+/**
+ * True when `normalPath` is `normalRoot` itself or a real descendant of it (both
+ * already normalized/case-folded by the caller). Checks the character right after
+ * the prefix match is a path separator (`/` or backslash) so `/tmp/abc-fork` doesn't
+ * false-match root `/tmp/abc` on a bare prefix comparison. Handles raw Windows
+ * paths (backslash-separated), so it is not a drop-in replacement for util.ts's
+ * isUnderBlockedRoot, which only checks `/`.
+ */
+function isPathUnderRoot(normalPath: string, normalRoot: string): boolean {
+  if (!normalPath.startsWith(normalRoot)) return false
+  if (normalPath === normalRoot) return true
+  const nextChar = normalPath[normalRoot.length]
+  return nextChar === '/' || nextChar === '\\'
+}
+
 function isProjectFrame(framePath: string, cwd: string): boolean {
   // Route through canonicalize (project.ts) so a WSL/MSYS-style frame path (e.g.
   // /mnt/c/Projects/token-goat/...) is recognized as the same file as its native
@@ -252,13 +267,8 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // (matching the platform-gated convention used elsewhere, e.g. isUnderBlockedRoot).
   const normalCwd = normalizeDarwinSystemAlias(foldPath(canonicalize(cwd)))
   const normalAbs = normalizeDarwinSystemAlias(foldPath(canonicalize(framePath, cwd)))
-  if (normalAbs.startsWith(normalCwd)) {
-    // Ensure it's a real directory boundary: the path is either exactly the cwd,
-    // or the next character after cwd is a path separator. This prevents false matches
-    // like /tmp/abc-fork matching /tmp/abc (bug: path-prefix without boundary check).
-    if (normalAbs === normalCwd || normalAbs[normalCwd.length] === '/' || normalAbs[normalCwd.length] === '\\') {
-      return true
-    }
+  if (isPathUnderRoot(normalAbs, normalCwd)) {
+    return true
   }
   if (framePath.includes('site-packages') || framePath.includes('lib/python')) return false
   if (/^<.+>$/.test(framePath)) return false
@@ -749,16 +759,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
       // wrongly treating two differently-cased directories as the same path on a case-sensitive
       // filesystem (e.g. this project's own Linux CI runner).
       const root = foldPath(project.root)
-      entries = entries.filter((e) => {
-        const normalPath = foldPath(e.path)
-        // Ensure it's a real directory boundary: the path is either exactly root,
-        // or the next character after root is a path separator. This prevents false matches
-        // like /tmp/abc-fork matching /tmp/abc (bug: path-prefix without boundary check).
-        if (!normalPath.startsWith(root)) return false
-        if (normalPath === root) return true
-        const nextChar = normalPath[root.length]
-        return nextChar === '/' || nextChar === '\\'
-      })
+      entries = entries.filter((e) => isPathUnderRoot(foldPath(e.path), root))
     }
   }
 
