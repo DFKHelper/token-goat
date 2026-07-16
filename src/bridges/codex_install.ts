@@ -154,43 +154,28 @@ function isCodexTokenGoatCommand(command: string): boolean {
   return typeof command === 'string' && CODEX_MARKER_PATTERN.test(command)
 }
 
-/** True when `groups` already has a token-goat hook entry under the exact `matcher` value. */
-function groupHasTokenGoat(groups: CodexMatcherGroup[] | undefined, matcher: string): boolean {
-  if (groups === undefined) return false
-  for (const group of groups) {
-    if (group.matcher !== matcher) continue
-    for (const h of group.hooks ?? []) {
-      if (isCodexTokenGoatCommand(h.command)) return true
-    }
-  }
-  return false
-}
-
 /**
- * True when `groups` already has a token-goat hook entry under `matcher` whose
- * command text is byte-equal to `expectedCommand` -- the exact string
- * {@link hookCommandFor} would produce right now. A marker-matched entry whose
- * baked `process.execPath`/entry-path segment has since gone stale (deleted
- * dev checkout, nvm/node-version switch) is NOT "already installed": it
- * matches the marker but not this stricter check, so {@link installCodex} can
- * tell "current" apart from "stale but marker-shaped" and upgrade the latter
- * in place instead of skipping it.
+ * True when `groups` already has a hook entry matching `predicate` under the exact `matcher`
+ * value. Defaults to {@link isCodexTokenGoatCommand} (matches ANY token-goat entry, current or
+ * stale); pass an exact-string predicate to instead check for a byte-equal current command --
+ * see {@link hookCommandFor}'s stale-vs-current distinction at the `groupHasTokenGoat(groups,
+ * matcher, (c) => c === expectedCommand)` call site below. Mirrors gemini_install.ts's
+ * groupHasTokenGoat shape.
  */
-function groupHasCurrentCodexCommand(
+function groupHasTokenGoat(
   groups: CodexMatcherGroup[] | undefined,
   matcher: string,
-  expectedCommand: string,
+  predicate: (command: string) => boolean = isCodexTokenGoatCommand,
 ): boolean {
   if (groups === undefined) return false
   for (const group of groups) {
     if (group.matcher !== matcher) continue
     for (const h of group.hooks ?? []) {
-      if (h.command === expectedCommand) return true
+      if (predicate(h.command)) return true
     }
   }
   return false
 }
-
 
 /**
  * Build the shell command Codex should run for one hook entry.
@@ -253,7 +238,7 @@ export function installCodex(): CodexInstallResult {
     const expectedCommand = hookCommandFor(scriptPath, eventArg)
     const groups = [...(hooks[event] ?? [])]
     for (const matcher of CODEX_MATCHERS) {
-      if (groupHasCurrentCodexCommand(groups, matcher, expectedCommand)) continue
+      if (groupHasTokenGoat(groups, matcher, (c) => c === expectedCommand)) continue
 
       // A marker-matched entry whose baked command text is no longer current
       // (stale execPath/entry path from a deleted dev checkout or a node
