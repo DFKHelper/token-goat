@@ -935,6 +935,26 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
     expect(out2).toContain('Line 4')
   })
 
+  it(
+    '--sentences forces a rebuild even when a fresh cache already exists from a prior call ' +
+      'with a different --sentences value (regression: opts.sentences was only applied inside ' +
+      'the `opts.force === true || !fresh` branch, so a fresh cache silently ignored an ' +
+      'explicit --sentences and returned the stale sentence count instead of rebuilding)',
+    () => {
+      const md = writeDoc('sentences-refresh.md')
+      cmdCompactDoc({ filePath: md, show: true, sentences: '1' })
+      const out1 = captured()
+      expect(out1).toContain('Line 1')
+      expect(out1).not.toContain('Line 2')
+
+      stdoutLines.length = 0
+      cmdCompactDoc({ filePath: md, show: true, sentences: '4' })
+      const out2 = captured()
+      expect(out2).toContain('Line 1')
+      expect(out2).toContain('Line 4')
+    },
+  )
+
   it('rejects a non-positive --sentences value', () => {
     const md = writeDoc('bad-sentences.md')
     expect(() => cmdCompactDoc({ filePath: md, sentences: '0' })).toThrow()
