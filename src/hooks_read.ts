@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isWithinQuietHours } from './util.js'
+import { foldPath, isWithinQuietHours, statSize } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -130,15 +130,6 @@ function isSessionArtifactFile(filePath: string): boolean {
  */
 function sessionArtifactRecall(filePath: string): string {
   return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
-}
-
-/** Best-effort file size in bytes, or null when the file cannot be stat'd. */
-function statSize(absPath: string): number | null {
-  try {
-    return fs.statSync(absPath).size
-  } catch {
-    return null
-  }
 }
 
 /** Reads a numeric tool-input param (Read's `offset`/`limit`), tolerating a numeric string. */
