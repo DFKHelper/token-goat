@@ -150,12 +150,12 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
 export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   let limit = 30
   if (opts.limit !== undefined) {
-    const n = Number.parseInt(opts.limit, 10)
-    if (!Number.isFinite(n)) {
-      emitErr(`mcp-history: --limit must be a number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+    try {
+      limit = requireNonNegativeStrictInt('--limit', opts.limit)
+    } catch (e) {
+      emitErr(`mcp-history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
     }
-    limit = Math.max(1, n)
   }
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
   const items = blobs
