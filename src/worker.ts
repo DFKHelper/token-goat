@@ -209,8 +209,13 @@ function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
 }
 
-/** Parse and deduplicate dirty queue lines. Used by both getDirtyPathsFor and the rename-to-claim drain logic. */
-function parseDirtyQueueLines(raw: string): string[] {
+/**
+ * Parse and deduplicate dirty queue lines. Used by both getDirtyPathsFor and the rename-to-claim
+ * drain logic, and reused by hooks_index.getDirtyPaths so the informational pre-compact snapshot
+ * dedupes on the same case-folded key as the real reindex drain rather than an exact-string match
+ * that missed case-variant duplicates on Windows/macOS.
+ */
+export function parseDirtyQueueLines(raw: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const line of raw.split('\n')) {
