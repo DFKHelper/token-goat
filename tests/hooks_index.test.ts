@@ -69,6 +69,24 @@ describe('dirty queue', () => {
     expect(getDirtyPaths()).toEqual(['/a/one.ts', '/a/two.ts'])
   })
 
+  it(
+    'getDirtyPaths deduplicates paths differing only by case on case-insensitive systems ' +
+      '(regression: getDirtyPaths deduped by exact string only, drifting from getDirtyPathsFor ' +
+      'in worker.ts which case-folds -- the two were documented as mirroring each other but only ' +
+      'one was hardened; now both share parseDirtyQueueLines)',
+    () => {
+      const isCaseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
+      if (!isCaseInsensitive) {
+        // Paths with different case are genuinely different entries on case-sensitive filesystems.
+        expect(true).toBe(true)
+        return
+      }
+      appendDirtyPath('c:/projects/File.ts')
+      appendDirtyPath('C:/PROJECTS/file.ts')
+      expect(getDirtyPaths().length).toBe(1)
+    },
+  )
+
   it('appendDirtyPath writes to {dataDir}/queue/dirty.txt', () => {
     appendDirtyPath('/a/one.ts')
     expect(dirtyQueuePath()).toBe(path.join(DATA_DIR, 'queue', 'dirty.txt'))

@@ -21,6 +21,7 @@ import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
 import { atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
+import { parseDirtyQueueLines } from './worker.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
 export function dirtyQueuePath(): string {
@@ -83,15 +84,7 @@ export function getDirtyPaths(): string[] {
   } catch {
     return []
   }
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed === '' || seen.has(trimmed)) continue
-    seen.add(trimmed)
-    out.push(trimmed)
-  }
-  return out
+  return parseDirtyQueueLines(raw)
 }
 
 /**
