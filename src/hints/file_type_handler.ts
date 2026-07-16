@@ -34,6 +34,15 @@ function formatBytes(n: number): string {
   return `${(n / 1_099_511_627_776).toFixed(1)} TB`
 }
 
+// The caller (hooks_read.ts) skips reading files above SLICE_ESTIMATE_SCAN_CAP_BYTES and passes
+// an empty `content` with the real size as `contentLengthHint` instead -- so an empty `content`
+// alongside a nonzero effective length means "too large to scan", not "genuinely empty file".
+// Content-derived stats (line/row counts, headings, minified-detection) would otherwise silently
+// report false zeros in that case instead of the honest "not scanned" this helper produces.
+function previewUnavailable(content: string, effectiveLength: number): boolean {
+  return content.length === 0 && effectiveLength > 0
+}
+
 /** Advice for a file whose content shape (e.g. one long minified/base64 line) makes any
  *  line-based offset/limit window meaningless — point at raw byte sampling instead. */
 export function BYTE_RANGE_ADVICE(filePath: string): string {
@@ -57,7 +66,15 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
 
 /** HTML handler — blocks when file exceeds threshold. */
 export function handleHtml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
-  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc "${filePath}" -t plain`,
+    }
+  }
 
   const title = content.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim()
   // Route through the shared findHtmlHeadingMatches helper (same one html.ts/liquid.ts/
@@ -77,14 +94,14 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if (isMinified) {
     return {
       shouldBlock: true,
-      message: `HTML file appears minified (${formatBytes(content.length)}). Consider fetching the source or converting with: pandoc "${filePath}" -t plain`,
+      message: `HTML file appears minified (${formatBytes(length)}). Consider fetching the source or converting with: pandoc "${filePath}" -t plain`,
     }
   }
 
   return {
     shouldBlock: true,
     message: [
-      `Large HTML file (${formatBytes(content.length)})${title ? `: "${title}"` : ''}.`,
+      `Large HTML file (${formatBytes(length)})${title ? `: "${title}"` : ''}.`,
       headings.length > 0 ? `Headings:\n${headings.join('\n')}` : '',
       `Use token-goat section to extract a section by heading, or convert to text: pandoc "${filePath}" -t plain`,
     ].filter(Boolean).join('\n'),
@@ -93,8 +110,25 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
 
 /** Plain text / log handler — blocks when file exceeds threshold. */
 export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
-  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
+  const length = contentLengthHint ?? content.length
+  if (length < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
 
+  // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this
+  // tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
+  const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
+  // `bash-output <id>` errors for a file read directly off disk (never went through the
+  // bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching
+  // hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
+  const recall = isLog
+    ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file "${filePath}" --tail 100 --grep "error|ERROR"`
+    : 'Use Read with offset and limit params to sample specific line ranges.'
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: `Large text file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).\n${recall}`,
+    }
+  }
 
   // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to
   // handleHtml -- but only take its result when it actually decides to block. handleHtml re-gates
@@ -107,9 +141,6 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     if (htmlResult.shouldBlock) return htmlResult
   }
   const lines = content.split('\n')
-  // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this
-  // tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
-  const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
   const preview = [
     '--- first 5 lines ---',
     ...lines.slice(0, 5),
@@ -118,16 +149,9 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     ...lines.slice(-5),
   ].join('\n')
 
-  // `bash-output <id>` errors for a file read directly off disk (never went through the
-  // bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching
-  // hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
-  const recall = isLog
-    ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file "${filePath}" --tail 100 --grep "error|ERROR"`
-    : 'Use Read with offset and limit params to sample specific line ranges.'
-
   return {
     shouldBlock: true,
-    message: `Large text file (${formatBytes(content.length)}, ${lines.length.toLocaleString()} lines).\n${preview}\n\n${recall}`,
+    message: `Large text file (${formatBytes(length)}, ${lines.length.toLocaleString()} lines).\n${preview}\n\n${recall}`,
   }
 }
 
@@ -188,7 +212,18 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   // Extension-aware: FILE_TYPE_THRESHOLDS.tsv is a distinct, independently configurable knob
   // from .csv's, so it must be selected the same way the delimiter below is.
   const threshold = filePath.toLowerCase().endsWith('.tsv') ? FILE_TYPE_THRESHOLDS.tsv : FILE_TYPE_THRESHOLDS.csv
-  if ((contentLengthHint ?? content.length) < threshold) return { shouldBlock: false, message: '' }
+  const length = contentLengthHint ?? content.length
+  if (length < threshold) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: [
+        `Large CSV file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
+      ].join('\n'),
+    }
+  }
 
   const lines = content.split('\n').filter(l => l.trim())
   const headers = lines[0] ?? ''
@@ -211,7 +246,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   return {
     shouldBlock: true,
     message: [
-      `Large CSV file (${formatBytes(content.length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
+      `Large CSV file (${formatBytes(length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
       `Columns: ${headers}`,
       `Sample rows:\n${sampleRows.join('\n')}`,
       `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
@@ -223,6 +258,17 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
 export function handleTranscript(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.transcript) return { shouldBlock: false, message: '' }
+
+  if (previewUnavailable(content, length)) {
+    return {
+      shouldBlock: true,
+      message: [
+        `Transcript file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
+        `See structure: token-goat transcript-outline "${filePath}"`,
+        `Slice by speaker/time/pattern: token-goat transcript "${filePath}" --speaker "Name" --from 00:05:00 --to 00:10:00 --grep pattern`,
+      ].join('\n'),
+    }
+  }
 
   const speakerMatches = [...content.matchAll(/^<v(?:\.\w+)?\s+([^>]+)>/gm)].map((m) => m[1]?.trim() ?? '')
   const speakers = [...new Set(speakerMatches)].slice(0, 10)

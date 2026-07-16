@@ -1084,18 +1084,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // a Grep call would fall through from the exempted gate above straight into an equally
   // tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
+    // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/
+    // handleHtml/handleGenericLarge) on the requested slice's size when one was given.
+    const ftSlice = estimateRequestedSlice(event, normalized)
+    const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize
     let ftContent = ''
-    if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt)) {
+    // Guarded the same way every other full-content fs.readFileSync in this file is (see
+    // SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB
+    // .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read
+    // into a JS string in full on every single call, even a cheap bounded offset/limit
+    // request whose small ftEffectiveLength was always going to pass every handler's
+    // length-gate below without ever touching content.
+    if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
         ftContent = fs.readFileSync(normalized, 'utf8')
       } catch {
         // best-effort — empty content will pass through
       }
     }
-    // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/
-    // handleHtml/handleGenericLarge) on the requested slice's size when one was given.
-    const ftSlice = estimateRequestedSlice(event, normalized)
-    const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize
     const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength)
     if (ftResult?.shouldBlock) {
       // Blocked read never happened — don't count it against re-read dedup. These

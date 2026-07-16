@@ -129,6 +129,17 @@ describe('handleHtml', () => {
     expect(result.message).toContain(title)
     expect(result.message).toContain('Real Heading')
   })
+
+  it('regression: reports the real size via contentLengthHint, not "0 B", when content is empty because the caller skipped reading an oversized file', () => {
+    // hooks_read.ts passes content: '' for files above its own scan cap, with the real file
+    // size as contentLengthHint -- content.length must never be mistaken for "the file is 0
+    // bytes" in that case.
+    const result = handleHtml('/path/to/huge.html', '', 5_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).not.toContain('0 B')
+    expect(result.message).toContain('4.8 MB')
+    expect(result.message).not.toContain('appears minified')
+  })
 })
 
 describe('handleTxt', () => {
@@ -280,6 +291,20 @@ describe('handleTxt', () => {
     expect(result.message).toContain('first 5 lines')
     expect(result.message).toContain('last 5 lines')
   })
+
+  it('regression: reports the real size via contentLengthHint, not "0 B" / a false "1 lines total", when content is empty because the caller skipped reading an oversized file', () => {
+    const result = handleTxt('/path/to/huge.txt', '', 5_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).not.toContain('0 B')
+    expect(result.message).toContain('4.8 MB')
+    expect(result.message).not.toContain('lines total')
+  })
+
+  it('regression: an oversized skipped-content .log file still gets the log-specific --tail recall hint, not the generic offset/limit one', () => {
+    const result = handleTxt('/var/log/huge.log', '', 5_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('--tail')
+  })
 })
 
 describe('handleXlsx', () => {
@@ -415,6 +440,14 @@ describe('handleCsv', () => {
     expect(result.message).toContain('name,age,city')
     expect(result.message).toContain('Person0')
   })
+
+  it('regression: reports the real size via contentLengthHint, not "0 B" / a false "0 rows" claim, when content is empty because the caller skipped reading an oversized file', () => {
+    const result = handleCsv('/path/to/huge.csv', '', 5_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).not.toContain('0 B')
+    expect(result.message).toContain('4.8 MB')
+    expect(result.message).not.toContain('~0 rows')
+  })
 })
 
 describe('handleTranscript', () => {
@@ -441,6 +474,14 @@ describe('handleTranscript', () => {
     const content = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHi\n' + makeStr(FILE_TYPE_THRESHOLDS.transcript * 2)
     const result = handleTranscript('/path/to/short.vtt', content, 50)
     expect(result.shouldBlock).toBe(false)
+  })
+
+  it('regression: reports the real size via contentLengthHint, not "0 B", when content is empty because the caller skipped reading an oversized file', () => {
+    const result = handleTranscript('/path/to/huge.vtt', '', 5_000_000)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).not.toContain('0 B')
+    expect(result.message).toContain('4.8 MB')
+    expect(result.message).not.toContain('~0 cues')
   })
 })
 
