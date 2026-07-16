@@ -18,6 +18,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
+import { statSize } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -193,16 +194,6 @@ export async function shrinkImage(
     }
   } catch {
     // Undecodable / unsupported input: treat as not-shrinkable.
-    return null
-  }
-}
-
-/** Best-effort file size in bytes, or null when the file cannot be stat'd. */
-function statSize(absPath: string): number | null {
-  try {
-    const st = fs.statSync(absPath)
-    return st.isFile() ? st.size : null
-  } catch {
     return null
   }
 }

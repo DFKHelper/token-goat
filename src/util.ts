@@ -52,6 +52,16 @@ export function foldPath(p: string): string {
   return isCaseInsensitiveFs() ? foldCase(p) : p
 }
 
+/** Best-effort file size in bytes, or null when the path cannot be stat'd or isn't a regular file. */
+export function statSize(absPath: string): number | null {
+  try {
+    const st = statSync(absPath)
+    return st.isFile() ? st.size : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Unicode-aware case folding primitive. This is the SINGLE source of truth for how
  * token-goat folds case: `foldPath()` uses it on the JS side, and `db.ts` registers it
