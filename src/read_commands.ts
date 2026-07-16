@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -992,32 +992,11 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
 // error on a non-numeric or negative value instead of `parseInt` silently producing NaN
 // (which downstream `.slice(0, NaN)` turns into "0 rows returned") or a negative count
 // (which `.slice(0, -N)` silently reinterprets as "all but the last N rows").
-function requireNonNegativeInt(flag: string, raw: string): number {
-  if (!/^-?\d+$/.test(raw)) {
-    throw new Error(`${flag} must be a number, got: "${raw}"`)
-  }
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n < 0) {
-    throw new Error(`${flag} must be a non-negative number, got: "${raw}"`)
-  }
-  return n
-}
-
-// Same numeric parse as requireNonNegativeInt, plus a strictly-positive check. Used for
 // screenshot --width/--height: parseInt's bare `NaN` result isn't nullish, so it survives the
 // `?? 1280`-style fallback in takeScreenshot and reaches Chrome DevTools Protocol, producing an
 // opaque `Protocol error (Emulation.setDeviceMetricsOverride)` failure after a full browser
-// launch. Validating up front fails fast with a clear CLI error before that launch happens.
-function requirePositiveInt(flag: string, raw: string): number {
-  if (!/^-?\d+$/.test(raw)) {
-    throw new Error(`${flag} must be a number, got: "${raw}"`)
-  }
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`${flag} must be a positive number, got: "${raw}"`)
-  }
-  return n
-}
+// launch. Validating up front (requirePositiveStrictInt, from util.ts) fails fast with a clear
+// CLI error before that launch happens.
 
 interface CsvQueryCliOptions {
   file: string
@@ -1045,7 +1024,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
 
   let head: number | undefined
   try {
-    head = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : undefined
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
     emitErr(e instanceof Error ? e.message : String(e))
     return 1
@@ -1149,8 +1128,8 @@ export async function runScreenshot(
 ): Promise<string> {
   const screenshotOpts: Parameters<typeof takeScreenshot>[2] = {}
   if (opts.executablePath !== undefined) screenshotOpts.executablePath = opts.executablePath
-  if (opts.width !== undefined) screenshotOpts.width = requirePositiveInt('--width', opts.width)
-  if (opts.height !== undefined) screenshotOpts.height = requirePositiveInt('--height', opts.height)
+  if (opts.width !== undefined) screenshotOpts.width = requirePositiveStrictInt('--width', opts.width)
+  if (opts.height !== undefined) screenshotOpts.height = requirePositiveStrictInt('--height', opts.height)
   if (opts.fullPage !== undefined) screenshotOpts.fullPage = opts.fullPage
   const result = await takeScreenshot(url, destPath, screenshotOpts)
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
