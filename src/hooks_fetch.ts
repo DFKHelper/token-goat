@@ -146,7 +146,11 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     recordWebFetch(url, prompt, cacheId);
 
     if (injectionMatches.length > 0) {
-      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+      // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing
+      // the raw body here would both defeat compress_bodies' token savings specifically on the
+      // injection-detected path and return content that disagrees with what a later
+      // `token-goat web-output <id>` recall of the same cache entry would return.
+      return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedBody, injectionMatches) };
     }
 
     return passOutput();
