@@ -31,7 +31,7 @@ import { listBlobs, storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from '../src/web_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
-import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from '../src/cache_session_commands.js'
+import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from '../src/cache_session_commands.js'
 import { dataDir } from '../src/constants.js'
 import { buildResumePacket, MAX_RESUME_CHARS } from '../src/resume.js'
 import { loadConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
@@ -251,6 +251,61 @@ describe('cmdWebHistory', () => {
 
   it('rejects exponential notation in --limit instead of silently truncating', () => {
     expect(() => cmdWebHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+  })
+})
+
+// ── mcp-history ───────────────────────────────────────────────────────────────
+
+describe('cmdMcpHistory', () => {
+  it('prints empty message when no blobs exist', () => {
+    cmdMcpHistory({})
+    expect(capturedOutput()).toContain('No mcp output entries cached.')
+  })
+
+  it('respects --limit', () => {
+    for (let i = 0; i < 5; i++) {
+      const e = { command: `mcp:tool${i} preview`, storedAt: Date.now() - i * 1000, sizeBytes: 0 }
+      storeBlob(BASH_OUTPUT_SUBDIR, `mcp_id${i}`, e)
+    }
+    cmdMcpHistory({ limit: '2' })
+    const out = capturedOutput()
+    const dataLines = out.split('\n').filter((l) => /tool\d/.test(l)).length
+    expect(dataLines).toBe(2)
+  })
+
+  // Regression: cmdMcpHistory had its own bare Number.parseInt + Math.max(1, n) --limit
+  // handling instead of reusing requireNonNegativeStrictInt like cmdBashHistory/cmdWebHistory
+  // (see those describe blocks above), so it silently diverged from its siblings on the exact
+  // same command family: a non-numeric --limit parsed to NaN -> Math.max(1, NaN) is NaN ->
+  // .slice(0, NaN) treats as 0, instead of failing loudly on the malformed flag.
+  it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
+    const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
+    storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
+    expect(() => cmdMcpHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+  })
+
+  it('rejects trailing garbage in --limit instead of silently truncating', () => {
+    expect(() => cmdMcpHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+  })
+
+  it('rejects exponential notation in --limit instead of silently truncating', () => {
+    expect(() => cmdMcpHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+  })
+
+  // Regression: the old Math.max(1, n) silently clamped a negative --limit to 1 (still
+  // returning a row) instead of erroring, unlike cmdBashHistory/cmdWebHistory's --limit -5.
+  it('rejects a negative --limit instead of silently clamping to 1', () => {
+    expect(() => cmdMcpHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
+  })
+
+  // Regression: the old Math.max(1, n) also meant --limit 0 returned 1 row instead of 0,
+  // unlike cmdBashHistory/cmdWebHistory's --limit 0 (both .slice(0, 0) -> empty).
+  it('--limit 0 returns zero entries, matching cmdBashHistory/cmdWebHistory', () => {
+    const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
+    storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
+    cmdMcpHistory({ limit: '0', json: true })
+    const parsed = JSON.parse(capturedOutput()) as unknown[]
+    expect(parsed).toHaveLength(0)
   })
 })
 
