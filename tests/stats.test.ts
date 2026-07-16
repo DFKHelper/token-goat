@@ -850,6 +850,56 @@ describe('stats', () => {
       expect(output).toContain('Total events:   1')
       expect(output).toContain('--full')
     })
+
+    it('formats a gigabyte-scale total_bytes_saved as GB, not a raw MB figure (regression: stats.ts kept its own fmtBytes capped at the MB tier instead of importing the shared, GB/TB-aware fmtBytes from render/ansi.ts)', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-gb-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const now = Math.floor(Date.now() / 1000)
+      db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      ).run(now, 'image_shrink', 1000, 2_000_000_000)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origNoColor = process.env['NO_COLOR']
+      process.env['NO_COLOR'] = '1'
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+      try {
+        _renderShortStats({ windowDays: 30, homeDir: customHome, force: true })
+      } finally {
+        console.log = originalLog
+        if (origNoColor === undefined) delete process.env['NO_COLOR']
+        else process.env['NO_COLOR'] = origNoColor
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+      expect(output).toContain('Bytes saved:    1.9GB')
+      expect(output).not.toContain('MB')
+    })
   })
 
   describe('recordStat', () => {

@@ -22,6 +22,7 @@ import { getDb } from './db.js'
 import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
 import { renderStats as richRenderStats } from './render/stats_renderer.js'
+import { fmtBytes } from './render/ansi.js'
 import type { StatsData } from './render/types.js'
 import { registerReset } from './reset.js'
 
@@ -326,11 +327,7 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database, h
   }
 }
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n}B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
-  return `${(n / (1024 * 1024)).toFixed(1)}MB`
-}
+
 
 /** The short totals block shared by the plain-text and short-default renderers. */
 function _totalsLines(summary: StatsSummary): string[] {
