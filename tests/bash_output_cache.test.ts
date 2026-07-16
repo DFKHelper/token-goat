@@ -239,14 +239,13 @@ describe('extractLsTarget cwd resolution (m32 regression)', () => {
     try {
       const hash1 = await commandHash('ls sub', tmpDir)
 
-      // Bump the subdirectory's mtime. This is only observable in the hash if
+      // Add a file to the subdirectory. This is only observable in the hash if
       // the dir-state fingerprint is computed against `resolve(tmpDir, 'sub')`
       // (the command's own cwd) -- resolving against `process.cwd()` instead
       // (the test runner's real cwd, which has no 'sub' dir) would fingerprint
       // as null both times and the hash would stay identical regardless of
       // what happens to `subDir`.
-      const future = new Date(Date.now() + 60_000)
-      fs.utimesSync(subDir, future, future)
+      fs.writeFileSync(path.join(subDir, 'new-file.txt'), 'new\n')
 
       const hash2 = await commandHash('ls sub', tmpDir)
       expect(hash2).not.toBe(hash1)
@@ -320,8 +319,7 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
       }
       expect(isBashEntryStale(entry, 'ls sub', tmpDir)).toBe(false)
 
-      const future = new Date(Date.now() + 60_000)
-      fs.utimesSync(subDir, future, future)
+      fs.writeFileSync(path.join(subDir, 'new-file.txt'), 'new\n')
 
       expect(isBashEntryStale(entry, 'ls sub', tmpDir)).toBe(true)
     } finally {
@@ -492,6 +490,28 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
       fs.writeFileSync(path.join(target, 'new-file.txt'), 'new\n')
 
       expect(isBashEntryStale(entry!, 'ls "my stuff"', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('flags a dir stale for a new entry landing at the same mtime tick as the original listing (regression: the old mtime-only dir fingerprint silently kept serving the stale listing once two writes shared a dir mtime)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-ls-samemtime-'))
+    try {
+      const target = path.join(tmpDir, 'watched')
+      fs.mkdirSync(target)
+      const pinnedMtime = new Date('2026-01-01T00:00:00.000Z')
+      fs.utimesSync(target, pinnedMtime, pinnedMtime)
+
+      const id = await storeBashOutput('ls watched', '', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.dir).toBeDefined()
+      expect(isBashEntryStale(entry!, 'ls watched', tmpDir)).toBe(false)
+
+      fs.writeFileSync(path.join(target, 'new-file.txt'), 'new\n')
+      fs.utimesSync(target, pinnedMtime, pinnedMtime)
+
+      expect(isBashEntryStale(entry!, 'ls watched', tmpDir)).toBe(true)
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

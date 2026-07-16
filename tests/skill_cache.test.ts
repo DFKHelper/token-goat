@@ -18,6 +18,7 @@ const mockState = vi.hoisted(() => ({
   delayReadPath: '' as string,
   expectedConcurrent: 0,
   pending: [] as Array<() => void>,
+  failMkdirPath: '' as string,
 }))
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
@@ -41,7 +42,19 @@ vi.mock('fs/promises', async (importOriginal) => {
     }
     return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(p, ...rest)
   }) as typeof actual.readFile
-  return { ...actual, default: actual, readFile: guardedReadFile }
+  // Fails the first mkdir attempt against a specific path with a non-EEXIST error, simulating
+  // the transient Windows race where a just-rmdir'd lock directory briefly rejects an immediate
+  // re-mkdir with e.g. EPERM/EBUSY instead of ENOENT/success.
+  const guardedMkdir = (async (p: unknown, ...rest: unknown[]) => {
+    if (mockState.failMkdirPath && typeof p === 'string' && p === mockState.failMkdirPath) {
+      mockState.failMkdirPath = ''
+      const err = new Error('EPERM: operation not permitted, mkdir') as NodeJS.ErrnoException
+      err.code = 'EPERM'
+      throw err
+    }
+    return (actual.mkdir as (...args: unknown[]) => Promise<unknown>)(p, ...rest)
+  }) as typeof actual.mkdir
+  return { ...actual, default: actual, readFile: guardedReadFile, mkdir: guardedMkdir }
 })
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -821,6 +834,7 @@ describe('incrementSkillHit concurrency (regression: unlocked read-modify-write 
     mockState.delayReadPath = ''
     mockState.expectedConcurrent = 0
     mockState.pending = []
+    mockState.failMkdirPath = ''
   })
 
   it(
@@ -843,6 +857,29 @@ describe('incrementSkillHit concurrency (regression: unlocked read-modify-write 
 
       const hits = await readSkillHits(SKILL)
       expect(hits.count).toBe(CONCURRENCY)
+    },
+    15000,
+  )
+
+  it(
+    'does not perform an unlocked read-modify-write when lock acquisition fails (regression: acquireSkillHitLock returning false was ignored, so a caller that failed to acquire the lock still read-modified-wrote the hits file unprotected)',
+    async () => {
+      const SKILL = 'lock-exhausted-skill'
+      const hitsPath = path.join(raceDir, `${SKILL}.hits`)
+      const lockPath = `${hitsPath}.lock`
+
+      // Simulate the transient Windows race this bug actually surfaces from: mkdir on the lock
+      // path fails with a non-EEXIST error (e.g. EPERM/EBUSY right after a prior holder's rmdir),
+      // which acquireSkillHitLock treats as "give up immediately" rather than retrying. Seed the
+      // hits file with a known value first so an unprotected write is directly observable.
+      await fs.mkdir(raceDir, { recursive: true })
+      await fs.writeFile(hitsPath, JSON.stringify({ count: 1, lastTs: 0 }), 'utf-8')
+      mockState.failMkdirPath = lockPath
+
+      await incrementSkillHit(SKILL)
+
+      const raw = await fs.readFile(hitsPath, 'utf-8')
+      expect(JSON.parse(raw).count).toBe(1)
     },
     15000,
   )

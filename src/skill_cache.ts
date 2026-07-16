@@ -692,13 +692,19 @@ export async function incrementSkillHit(skillName: string): Promise<void> {
     const hitsFile = resolve(dir, `${sanitizeSkillId(name)}.hits`)
     const lockPath = `${hitsFile}.lock`
     const locked = await acquireSkillHitLock(lockPath)
+    // If the lock could not be acquired (another holder never released it, or the mkdir/rmdir
+    // pair raced on a filesystem where directory deletion isn't instantly visible to a
+    // subsequent create -- observed on Windows), skip the increment rather than falling back to
+    // an unprotected read-modify-write: that fallback was the exact TOCTOU race the lock exists
+    // to prevent, just gated behind a rarer trigger.
+    if (!locked) return
     try {
       const hits = await readSkillHits(name)
       hits.count++
       hits.lastTs = Date.now()
       await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
     } finally {
-      if (locked) await fs.rmdir(lockPath).catch(() => {})
+      await fs.rmdir(lockPath).catch(() => {})
     }
   } catch {
     // fail-soft

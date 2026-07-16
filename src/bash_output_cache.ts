@@ -14,7 +14,7 @@
  * store is pruned by age/count on each write.
  */
 
-import { readFileSync, statSync } from 'fs'
+import { readdirSync, readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -162,10 +162,19 @@ function gitStateFingerprintSync(cwd: string): string | null {
   }
 }
 
+/** Directories at/under this many entries are fingerprinted by their entry-name listing (exact,
+ *  immune to the same-mtime-tick race a fast successive write/rm inside the dir can trigger);
+ *  larger directories fall back to mtime to avoid a full readdir on every staleness check. */
+const DIR_FINGERPRINT_LISTING_CAP_ENTRIES = 10_000
+
 function dirStateFingerprintSync(path: string): string | null {
   try {
     const stat = statSync(path)
     if (!stat.isDirectory()) return null
+    const entries = readdirSync(path)
+    if (entries.length <= DIR_FINGERPRINT_LISTING_CAP_ENTRIES) {
+      return shortFingerprint(entries.slice().sort().join('\x00'))
+    }
     return shortFingerprint(stat.mtimeMs.toString())
   } catch {
     return null
@@ -329,7 +338,7 @@ export async function commandHash(command: string, cwd: string | null = null): P
  *   runners (pytest/vitest/jest/go test), linters (eslint/ruff), and
  *   `npm run <script>` -- since {@link gitStateFingerprintSync} already
  *   captures staged/unstaged/untracked changes anywhere in the tree.
- * - `dir`: directory-listing commands, scoped to the listed directory's mtime.
+ * - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing.
  * - `lockfile`: dependency-list/install/audit/outdated commands, scoped to
  *   the resolved lockfile's content.
  * - `file`: `cat <file>`, scoped to that one file's mtime + size.
