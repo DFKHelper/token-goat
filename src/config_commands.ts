@@ -538,7 +538,11 @@ export function cmdCompactDoc(opts: {
   let rebuilt = false
   let body: string
 
-  if (opts.force === true || !fresh) {
+  // opts.sentences must also force a rebuild: isCompactFresh only tracks source-content
+  // staleness (a sha in the cache header), never the sentence count the cache was built with,
+  // so a fresh cache from an earlier call with a different --sentences would otherwise be
+  // returned unchanged, silently ignoring the caller's explicit request.
+  if (opts.force === true || opts.sentences !== undefined || !fresh) {
     let sourceText: string
     try {
       sourceText = fs.readFileSync(resolved, 'utf-8')
