@@ -288,6 +288,25 @@ describe('loadConfig', () => {
     expect(second.compact_assist.min_events).toBe(4)
   })
 
+  it('content-hash cache: a second write landing on the same mtime is still picked up (regression: the old mtime-only cache key silently served the first write forever once two writes shared an mtime tick)', () => {
+    // Pin both writes to the exact same mtime (down to the same millisecond -- the resolution
+    // utimesSync can actually set) so this reproduces the collision deterministically instead
+    // of racing real filesystem timing.
+    const pinnedMtime = new Date('2026-01-01T00:00:00.000Z')
+
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.utimesSync(_testConfigPath, pinnedMtime, pinnedMtime)
+    const first = loadConfig()
+    expect(first.compact_assist.min_events).toBe(4)
+
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    fs.utimesSync(_testConfigPath, pinnedMtime, pinnedMtime)
+
+    const second = loadConfig()
+    expect(second.compact_assist.min_events).toBe(9)
+    expect(second).not.toBe(first)
+  })
+
   it('round-trips saveConfig → loadConfig with modified values', () => {
     const cfg = defaultConfig()
     cfg.compact_assist.min_events = 7
