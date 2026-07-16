@@ -7,10 +7,10 @@
  */
 
 import * as fs from 'fs'
-import * as crypto from 'crypto'
 import * as path from 'path'
 
 import { dataDir } from './constants.js'
+import { fingerprintContent } from './fingerprint.js'
 import { atomicWriteText, foldPath } from './util.js'
 import { resolveIndexPath } from './paths.js'
 import { eachUnfencedLine } from './markdown_lines.js'
@@ -29,8 +29,7 @@ const compactSubdir = 'doc_compacts'
  */
 function sourceHash(filePath: string): string {
   try {
-    const data = fs.readFileSync(filePath)
-    return crypto.createHash('sha256').update(data).digest('hex')
+    return fingerprintContent(fs.readFileSync(filePath))
   } catch {
     return ''
   }
@@ -40,11 +39,7 @@ function sourceHash(filePath: string): string {
  * Deterministic filename component: hash prefix + stem slug.
  */
 function _compactSlug(absPathStr: string): string {
-  const h = crypto
-    .createHash('sha256')
-    .update(foldPath(absPathStr))
-    .digest('hex')
-    .slice(0, 12)
+  const h = fingerprintContent(foldPath(absPathStr)).slice(0, 12)
 
   const ext = path.extname(absPathStr)
   const stem = path.basename(absPathStr, ext)
