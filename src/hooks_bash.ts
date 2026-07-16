@@ -67,6 +67,21 @@ function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string): strin
 }
 
 /**
+ * Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`,
+ * a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own
+ * SQL-specific hint and lead-in text, then falls through to this for the rest.
+ */
+function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean): string {
+  return isEnv
+    ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
+    : isConfig
+      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+      : isDoc
+        ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+}
+
+/**
  * Strips a command's downstream pipeline and trailing redirections, returning the
  * base command. Used to key the bash-output cache so that the same build/test
  * command run with different downstream filters (`| tail -40` vs `| grep ERROR`)
@@ -398,7 +413,7 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   const m = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const n = parseInt(m[1] ?? m[2] ?? '0', 10)
-  if (n < 10) return null // already surgical, no need to advise (0 means default 10 lines, 1-9 also surgical)
+  if (n <= 10) return null // already surgical, no need to advise (0 means default 10 lines) -- matches extractTailFile's <=10 threshold so `head -n 10`/`tail -n 10` on the same file behave identically
   const filePath = m[3] ?? m[4] ?? m[5]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
@@ -570,7 +585,7 @@ function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: b
   if (!m) return null
   const filePath = m[2]?.trim() ?? ''
   const n = parseInt(m[5] ?? '0', 10)
-  if (n < 10) return null
+  if (n <= 10) return null // already surgical -- matches extractGetContentTail's <=10 threshold
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
@@ -1320,13 +1335,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = isEnv
-      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : isDoc
-          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
 
@@ -1361,13 +1370,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         ? contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
         : denyOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
-    const hint = isEnv
-      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : isDoc
-          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
@@ -1381,13 +1384,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
-    const hint = isEnv
-      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : isDoc
-          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
+    const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
