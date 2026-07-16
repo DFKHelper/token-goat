@@ -9,6 +9,7 @@
  */
 
 import { searchRecall, type RecallCacheType, type RecallHit } from './recall_index.js'
+import { pad } from './util.js'
 
 export interface RecallCommandOptions {
   type?: RecallCacheType
@@ -25,9 +26,7 @@ const RECALL_COMMAND: Record<RecallCacheType, string> = {
   mcp: 'mcp-output',
 }
 
-function pad(s: string, n: number): string {
-  return s.length >= n ? s : s + ' '.repeat(n - s.length)
-}
+
 
 function printHits(query: string, hits: readonly RecallHit[]): void {
   const w = (text: string) => { process.stdout.write(text) }
