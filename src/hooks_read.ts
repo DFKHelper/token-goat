@@ -1026,12 +1026,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
-    recordStat('session_hint', size, Math.round(size / 4))
     if (gateSize >= largeFileDenyBytes()) {
       // The read is blocked outright, so it never actually happened — don't record it
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
+      recordStat('session_hint', size, Math.round(size / 4))
       return denyOutput(
         normalized + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
@@ -1043,6 +1043,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
     if (config.hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalized, size)
+    }
+    // Only counted when the hint actually reaches the caller -- quietContextOutput silently
+    // degrades to passOutput() during hints.quiet_hours, and recording unconditionally here
+    // (as this used to, before the deny-gate check above) over-counted the session_hint ledger
+    // on every quiet-hours large-file read that produced no visible hint at all.
+    if (!isWithinQuietHours(config.hints.quiet_hours)) {
+      recordStat('session_hint', size, Math.round(size / 4))
     }
     return quietContextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'KB). ' +

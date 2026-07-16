@@ -29,6 +29,7 @@ import { compactPathFor, writeCompact } from '../src/doc_compact.js'
 import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
@@ -994,6 +995,60 @@ describe('preReadHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('is large')
     }
+  })
+
+  it(
+    'records a session_hint stat when the large-file soft hint is actually shown ' +
+      '(control case for the quiet-hours over-count regression below)',
+    () => {
+      const before = summarize(30).by_kind['session_hint']?.events ?? 0
+
+      const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.xyz`)
+      fs.writeFileSync(p, 'x'.repeat(FILE_TYPE_THRESHOLDS.generic + 1000))
+      tmpFiles.push(p)
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+
+      const after = summarize(30).by_kind['session_hint']?.events ?? 0
+      expect(after).toBe(before + 1)
+    },
+  )
+
+  describe('session_hint stat over-count regression (#large-file quiet-hours)', () => {
+    afterEach(() => {
+      invalidateConfigCache()
+      vi.useRealTimers()
+      try {
+        fs.unlinkSync(_testConfigPath)
+      } catch {
+        // ok -- may not exist
+      }
+    })
+
+    it(
+      'does not record a session_hint stat when the hint is silently suppressed during quiet hours ' +
+        '(regression: recordStat fired unconditionally before the quiet-hours degrade, over-counting ' +
+        'the ledger for a hint the caller never actually saw)',
+      () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
+        const cfg = defaultConfig()
+        cfg.hints.quiet_hours = '22:00-06:00'
+        saveConfig(cfg)
+        invalidateConfigCache()
+
+        const before = summarize(30).by_kind['session_hint']?.events ?? 0
+
+        const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.xyz`)
+        fs.writeFileSync(p, 'x'.repeat(FILE_TYPE_THRESHOLDS.generic + 1000))
+        tmpFiles.push(p)
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('pass')
+
+        const after = summarize(30).by_kind['session_hint']?.events ?? 0
+        expect(after).toBe(before)
+      },
+    )
   })
 
   it('returns pass for a small, never-read file', () => {
