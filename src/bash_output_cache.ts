@@ -173,10 +173,18 @@ function dirStateFingerprintSync(path: string): string | null {
 }
 
 /** Fingerprint a single file's mtime + size (used for `cat <file>`). */
+/** Files at/under this size are fingerprinted by content hash (exact, immune to the
+ *  same-mtime-tick/same-size race a fast successive write can trigger); larger files fall
+ *  back to mtime+size to avoid a full read on every staleness check. */
+const FILE_FINGERPRINT_CONTENT_CAP_BYTES = 2 * 1024 * 1024
+
 function fileStateFingerprintSync(path: string): string | null {
   try {
     const stat = statSync(path)
     if (!stat.isFile()) return null
+    if (stat.size <= FILE_FINGERPRINT_CONTENT_CAP_BYTES) {
+      return shortFingerprint(readFileSync(path))
+    }
     return shortFingerprint(`${stat.mtimeMs}\x00${stat.size}`)
   } catch {
     return null
