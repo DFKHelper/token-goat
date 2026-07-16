@@ -526,12 +526,24 @@ describe('preBashHandler — cat source file recall', () => {
   })
 
   it('emits advisory context for head command on SQL file', () => {
-    const result = preBashHandler(makeBashEvent('head -10 supabase/migrations/0001_init.sql'))
+    const result = preBashHandler(makeBashEvent('head -15 supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat section')
     }
   })
+
+  it(
+    'head -n 10 and tail -n 10 on the same file agree on the surgical threshold ' +
+      '(regression: extractHeadFile used n<10 while extractTailFile used n<=10, so ' +
+      '`head -n 10 file` fired a hint that `tail -n 10 file` did not for the same line count)',
+    () => {
+      const headResult = preBashHandler(makeBashEvent('head -n 10 src/hooks_bash.ts'))
+      const tailResult = preBashHandler(makeBashEvent('tail -n 10 src/hooks_bash.ts'))
+      expect(headResult.hookType).toBe('pass')
+      expect(tailResult.hookType).toBe('pass')
+    },
+  )
 
   it('passes through head on unknown extension', () => {
     const result = preBashHandler(makeBashEvent('head -5 /proc/cpuinfo'))
