@@ -5,6 +5,7 @@ import { parse, stringify } from 'smol-toml'
 import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath } from './constants.js'
 import { envBool, envInt, envStr } from './env.js'
+import { shortFingerprint } from './fingerprint.js'
 import { atomicWriteText } from './util.js'
 
 // ---------------------------------------------------------------------------
@@ -612,7 +613,7 @@ export function configEnvFingerprint(): string {
 
 interface CacheEntry {
   config: Config
-  mtime: number
+  contentFp: string
   envFp: string
 }
 
@@ -674,30 +675,42 @@ function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: 
 export function loadConfig(): Config {
   const p = configPath()
 
-  let currentMtime = 0
+  // Content hash, not mtime: a `config set` immediately followed by another `config set`
+  // (or a concurrent writer) can land two different writes within the same mtime tick on
+  // some filesystems, which made the old mtime-only cache key silently keep serving the
+  // first write's config after the second landed. Reading the whole file is cheap (config.toml
+  // is always tiny) and this also skips the actual cost we care about avoiding on a hit --
+  // re-parsing the TOML.
+  let text: string | null = null
+  let readError: string | null = null
   try {
-    currentMtime = fs.statSync(p).mtimeMs
-  } catch {
-    // file absent — mtime stays 0
+    text = fs.readFileSync(p, 'utf8')
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') readError = e instanceof Error ? e.message : String(e)
   }
+  const contentFp = text !== null ? shortFingerprint(text) : ''
 
   const envFp = configEnvFingerprint()
-  if (_cached !== null && _cached.mtime === currentMtime && _cached.envFp === envFp) {
+  if (_cached !== null && _cached.contentFp === contentFp && _cached.envFp === envFp) {
     return _cached.config
   }
 
   let raw: Record<string, unknown> = {}
-  if (currentMtime !== 0) {
-    const result = readConfigToml(p)
-    raw = result.raw
-    _lastConfigParseError = result.parseError
+  if (text !== null) {
+    try {
+      raw = parse(text) as Record<string, unknown>
+      _lastConfigParseError = null
+    } catch (e) {
+      _lastConfigParseError = e instanceof Error ? e.message : String(e)
+    }
   } else {
-    _lastConfigParseError = null
+    _lastConfigParseError = readError
   }
 
   const cfg = deepFreeze(_buildConfig(raw))
 
-  _cached = { config: cfg, mtime: currentMtime, envFp }
+  _cached = { config: cfg, contentFp, envFp }
   return cfg
 }
 
