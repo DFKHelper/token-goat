@@ -18,7 +18,7 @@
  * than per-server parsing packs.
  */
 
-/** Below this size a result is never worth the compression pass at all. */
+/** Below this size a result is never worth the compression pass at all. Despite the name, gates on `.length` (UTF-16 code units) like the rest of this file's savings-ratio math, not true UTF-8 byte count -- unlike mcp_cache.ts's MCP_MAX_CACHE_BYTES, which uses Buffer.byteLength. */
 export const MCP_COMPRESS_MIN_BYTES = 2000
 
 /** Fewer rows than this and a table header buys nothing over the raw JSON. */
