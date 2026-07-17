@@ -1145,6 +1145,48 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
+  // Regression: `opts.path !== ''` alone let a whitespace-only --path (e.g. '   ') slip past
+  // the "was --path given" check and reach fs.existsSync, producing a confusing
+  // "skill file not found:    " message with literal embedded whitespace instead of the clean
+  // "--path cannot be empty" wording the codebase already uses for validateWritablePath /
+  // readFileBoundedRaw.
+  it('skill-compact --path "   " reports "--path cannot be empty", not a raw not-found message', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    try {
+      const r = runIsolated(['skill-compact', '--path', '   '], path.join(base, 'data'))
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('--path cannot be empty')
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // Regression: `name === ''` alone let a whitespace-only <name> slip past the
+  // "was a name given" check in the else branch, same class of bug as the --path case above.
+  it('skill-compact "   " (whitespace-only name) reports "requires a <name> or --path"', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    try {
+      const r = runIsolated(['skill-compact', '   '], path.join(base, 'data'))
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('requires a <name> or --path')
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // Regression: cmdSkillDiff's `if (!name)` guard didn't trim, so a whitespace-only name slipped
+  // past into skill-cache lookups instead of producing the clean "requires a <name>" error.
+  it('skill-diff "   " (whitespace-only name) reports "requires a <name>"', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    try {
+      const r = runIsolated(['skill-diff', '   '], path.join(base, 'data'))
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('requires a <name>')
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
   // Regression for SKILLCOMPACT-SESSIONID: cmdSkillCompact used to derive its
   // cache-scoping session id from `Array.from(getSessionFiles().keys())[0]`, which
   // is the first *file path* read this process (or 'default' when none were read -

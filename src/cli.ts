@@ -1148,6 +1148,9 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
   let sourcePath: string
 
   if (opts.path !== undefined && opts.path !== '') {
+    if (!opts.path.trim()) {
+      throw new CliError('--path cannot be empty')
+    }
     // --path bypasses name resolution: read the body straight from the given file. The cache key is the explicit name when supplied, else the parent directory name (a skill lives in ~/.claude/skills/<name>/SKILL.md, so its parent dir is its name).
     if (!fs.existsSync(opts.path)) {
       throw new CliError(`skill file not found: ${opts.path}`)
@@ -1166,7 +1169,7 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
     cacheName = name ?? path.basename(path.dirname(path.resolve(opts.path)))
     sourcePath = path.resolve(opts.path)
   } else {
-    if (name === undefined || name === '') {
+    if (name === undefined || !name.trim()) {
       throw new CliError('skill-compact requires a <name> or --path <file>')
     }
     const filePath = await getSkillFilePath(name)
@@ -1282,7 +1285,7 @@ async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
 }
 
 async function cmdSkillDiff(name: string): Promise<void> {
-  if (!name) {
+  if (!name || !name.trim()) {
     throw new CliError('skill-diff requires a <name>')
   }
   const dir = skillOutputsDir()
