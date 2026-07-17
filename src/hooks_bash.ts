@@ -8,7 +8,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
+import { contextOutput, denyOutput, passOutput, extractToolResponseField } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
@@ -1658,15 +1658,7 @@ registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
  * Claude Code may send a string or an object with an output/content field.
  */
 function extractBashOutput(raw: Record<string, unknown>): string {
-  const resp = raw['tool_response']
-  if (typeof resp === 'string') return resp
-  if (resp !== null && typeof resp === 'object') {
-    const r = resp as Record<string, unknown>
-    for (const key of ['output', 'content', 'text', 'body']) {
-      if (typeof r[key] === 'string') return r[key] as string
-    }
-  }
-  return ''
+  return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
 }
 
 /** Best-effort exit code from a Bash tool_response (absent on many harnesses). */
