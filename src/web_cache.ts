@@ -14,10 +14,9 @@
  * age/count on each write.
  */
 
-import fs from 'fs'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
-import { blobPath, DEFAULT_MAX_AGE_MS, loadBlob, storeBlob } from './disk_cache.js'
+import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { indexRecallEntry } from './recall_index.js'
 
 /** Subdir under the token-goat home where web-output blobs live. */
@@ -62,9 +61,7 @@ export function storeWebOutput(url: string, content: string, dedupKey: string = 
   _urlIndex.set(url, cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.
   storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content })
-  // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
-  // Web blobs carry no storedAt field of their own; Date.now() at write time is the closest
-  // available signal, same as bash-history/web-history's own mtime-based ordering fallback.
+  // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts. Web blobs carry no storedAt field of their own; Date.now() at write time is the closest available signal, same as bash-history/web-history's own mtime-based ordering fallback.
   indexRecallEntry('web', cacheId, url, `${url}\n${content}`, Date.now())
   return cacheId
 }
@@ -90,21 +87,7 @@ export function getWebOutput(cacheId: string): string | null {
   const hit = _byId.get(cacheId)
   if (hit !== undefined) return hit
 
-  // Check TTL: if the file exists and is stale, treat as cache miss
-  const p = blobPath(WEB_OUTPUT_SUBDIR, cacheId)
-  if (p !== null) {
-    try {
-      if (fs.existsSync(p)) {
-        const stat = fs.statSync(p)
-        const ageMs = Date.now() - stat.mtimeMs
-        if (ageMs > DEFAULT_MAX_AGE_MS) {
-          return null // Cache entry is stale
-        }
-      }
-    } catch {
-      // If we can't stat the file, fall through to loadBlob which will handle the error
-    }
-  }
+  if (isBlobStale(WEB_OUTPUT_SUBDIR, cacheId)) return null
 
   const blob = coerceWebBlob(loadBlob(WEB_OUTPUT_SUBDIR, cacheId))
   if (blob === null) return null
@@ -144,6 +127,7 @@ export function getWebOutputByUrl(url: string): { cacheId: string; content: stri
  * persisted by an earlier invocation instead of always re-fetching over the
  * network.
  */
+// Assumes cacheId is a pure function of `url` alone -- only correct when the entry was stored via storeWebOutput's default `dedupKey = url`. A caller that stored under a composite dedupKey (e.g. hooks_fetch.ts's `${url}\x00${prompt}`) will not be found here; gdrive.ts, the only current caller, always uses the default.
 export function getWebOutputByUrlFromDisk(url: string): { cacheId: string; content: string } | null {
   const cacheId = cacheIdForUrl(url)
   const content = getWebOutput(cacheId)
