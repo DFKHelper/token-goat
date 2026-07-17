@@ -141,11 +141,7 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
   const matchExpr = toFtsMatchExpr(query)
   if (matchExpr === null) return []
   const db = getDb(globalDbPath())
-  // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH`
-  // (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in this
-  // project's SQLite build (confirmed against better-sqlite3's bundled 3.49.2) -- a MATCH
-  // clause against an FTS5 table must reference the table by its real name. Only the content
-  // table (cache_recall) is aliased.
+  // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH` (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in this project's SQLite build (confirmed against better-sqlite3's bundled 3.49.2) -- a MATCH clause against an FTS5 table must reference the table by its real name. Only the content table (cache_recall) is aliased.
   const rows = (
     type !== undefined
       ? db
@@ -186,9 +182,7 @@ function likeSearch(query: string, type: RecallCacheType | undefined, limit: num
   const trimmed = query.trim()
   if (!trimmed) return []
   const db = getDb(globalDbPath())
-  // Backslash must be escaped first -- ESCAPE '\' means an unescaped literal `\` in the
-  // pattern (e.g. from a Windows path like `C:\Users`) is otherwise consumed as an escape
-  // marker and silently stripped, so the pattern never matches the real backslash in the text.
+  // Backslash must be escaped first -- ESCAPE '\' means an unescaped literal `\` in the pattern (e.g. from a Windows path like `C:\Users`) is otherwise consumed as an escape marker and silently stripped, so the pattern never matches the real backslash in the text.
   const needle = `%${trimmed.replace(/\\/g, '\\\\').replace(/[%_]/g, (c) => `\\${c}`)}%`
   const rows = (
     type !== undefined
@@ -242,9 +236,7 @@ export function searchRecall(query: string, opts: RecallSearchOptions = {}): Rec
     }
     return likeSearch(query, opts.type, limit)
   } catch {
-    // A MATCH-syntax edge case toFtsMatchExpr's quoting didn't anticipate, or any other
-    // query-time failure: degrade to the substring fallback rather than surfacing an error
-    // for what is fundamentally a best-effort recall lookup.
+    // A MATCH-syntax edge case toFtsMatchExpr's quoting didn't anticipate, or any other query-time failure: degrade to the substring fallback rather than surfacing an error for what is fundamentally a best-effort recall lookup.
     try {
       return likeSearch(query, opts.type, limit)
     } catch {

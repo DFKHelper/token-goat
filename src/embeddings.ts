@@ -16,16 +16,7 @@ import { registerReset } from './reset.js'
 
 const _require = createRequire(import.meta.url)
 
-// Optional transformer import; catches both missing package and load failures.
-// Deferred to first use (ensureTransformerLoaded), not required eagerly at module
-// load time: @xenova/transformers transitively pulls in its own bundled onnxruntime-node
-// and a nested, differently-versioned copy of sharp's native libvips binaries.
-// Loading it eagerly here — as every real CLI invocation does, since index_prune.ts
-// (needed by cmdIndex) imports this module unconditionally — poisons the process's
-// Windows DLL search order before image_shrink.ts's own `sharp` gets a chance to
-// dlopen, breaking image shrinking with ERR_DLOPEN_FAILED even though sharp loads
-// fine in isolation. Only requiring it when a caller actually needs the transformer
-// (isAvailable()/embedTexts()) means the CLI's hot hook path never touches it.
+// Optional transformer import; catches both missing package and load failures. Deferred to first use (ensureTransformerLoaded), not required eagerly at module load time: @xenova/transformers transitively pulls in its own bundled onnxruntime-node and a nested, differently-versioned copy of sharp's native libvips binaries. Loading it eagerly here — as every real CLI invocation does, since index_prune.ts (needed by cmdIndex) imports this module unconditionally — poisons the process's Windows DLL search order before image_shrink.ts's own `sharp` gets a chance to dlopen, breaking image shrinking with ERR_DLOPEN_FAILED even though sharp loads fine in isolation. Only requiring it when a caller actually needs the transformer (isAvailable()/embedTexts()) means the CLI's hot hook path never touches it.
 let _transformer: unknown = null
 let _transformerError: Error | null = null
 let _transformerLoadAttempted = false
@@ -44,29 +35,15 @@ function ensureTransformerLoaded(): void {
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
-// BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric
-// instruction prefix on the QUERY side only -- passages/documents are embedded plain.
-// See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query
-// text only (never to chunk/document text, which would just add noise) to improve
-// retrieval quality for this model family.
+// BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric instruction prefix on the QUERY side only -- passages/documents are embedded plain. See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query text only (never to chunk/document text, which would just add noise) to improve retrieval quality for this model family.
 export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '
 
-// pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights +
-// tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in
-// memoization of its own. Keyed by model name and cached as a Promise (not the resolved
-// extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight
-// construction instead of each kicking off a redundant load. Cleared via registerReset so
-// tests that mock the pipeline factory start from a clean slate.
+// pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights + tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in memoization of its own. Keyed by model name and cached as a Promise (not the resolved extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight construction instead of each kicking off a redundant load. Cleared via registerReset so tests that mock the pipeline factory start from a clean slate.
 type FeatureExtractor = (text: string, options: Record<string, unknown>) => Promise<unknown>
 type PipelineFn = (task: string, model: string) => Promise<FeatureExtractor>
 const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
 
-// @xenova/transformers is loaded via createRequire (see ensureTransformerLoaded above), which
-// resolves through Node's real CJS loader rather than vitest's mockable module graph, so
-// vi.mock('@xenova/transformers', ...) can't intercept it and its `pipeline` export is a
-// non-configurable, non-writable property that can't be monkey-patched from a test either.
-// This override lets tests substitute a cheap fake factory (mirrors the setXForTesting
-// pattern already used in skill_cache.ts) instead of constructing a real transformer pipeline.
+// @xenova/transformers is loaded via createRequire (see ensureTransformerLoaded above), which resolves through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock('@xenova/transformers', ...) can't intercept it and its `pipeline` export is a non-configurable, non-writable property that can't be monkey-patched from a test either. This override lets tests substitute a cheap fake factory (mirrors the setXForTesting pattern already used in skill_cache.ts) instead of constructing a real transformer pipeline.
 let _pipelineFnOverride: PipelineFn | null = null
 
 export function setPipelineFnForTesting(fn: PipelineFn | null): void {
@@ -78,10 +55,7 @@ registerReset(() => {
   _pipelineFnOverride = null
 })
 
-// pipelineFn('feature-extraction', modelName) downloads the model over the network on a cold
-// cache (@xenova/transformers has no retry of its own), so a single transient CDN blip fails
-// pipeline construction outright. Retrying with backoff absorbs that; PIPELINE_RETRY_DELAY_MS
-// is overridable so tests exercising the retry/failure path don't pay real wall-clock delay.
+// pipelineFn('feature-extraction', modelName) downloads the model over the network on a cold cache (@xenova/transformers has no retry of its own), so a single transient CDN blip fails pipeline construction outright. Retrying with backoff absorbs that; PIPELINE_RETRY_DELAY_MS is overridable so tests exercising the retry/failure path don't pay real wall-clock delay.
 const PIPELINE_RETRY_ATTEMPTS = 3
 let PIPELINE_RETRY_DELAY_MS = 250
 
@@ -158,15 +132,11 @@ const _MAX_VERBATIM_BOOST = 0.25
 const _TOKEN_RE = /\w+/g
 const _MIN_TOKEN_LEN = 3
 
-// Over-fetch factor for re-ranking candidates before truncating to k. Exported (matching this
-// file's other public constants' no-underscore naming) so callers like cli.ts's cmdSemantic can
-// over-fetch by the same ratio for mergeNearbyHits headroom, instead of inventing a new one.
+// Over-fetch factor for re-ranking candidates before truncating to k. Exported (matching this file's other public constants' no-underscore naming) so callers like cli.ts's cmdSemantic can over-fetch by the same ratio for mergeNearbyHits headroom, instead of inventing a new one.
 export const OVER_FETCH_FACTOR = 4
 export const MAX_OVER_FETCH = 100
 
-// ============================================================================
-// Types
-// ============================================================================
+// ============================================================================ Types ============================================================================
 
 /** Result of an embedding/index operation. */
 export interface EmbeddingsResult {
@@ -218,9 +188,7 @@ export interface SearchHit {
   adjustedDistance?: number
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
+// ============================================================================ Public API ============================================================================
 
 /**
  * Check if the transformer is available and usable.
@@ -259,24 +227,14 @@ export async function embedTexts(
     throw new Error('Transformer module is unavailable')
   }
 
-  // Use the transformer pipeline to generate embeddings, memoized per model name so the
-  // extractor is only constructed once per process (see _extractorCache above) instead of
-  // reloading model weights + tokenizer on every embedTexts call.
+  // Use the transformer pipeline to generate embeddings, memoized per model name so the extractor is only constructed once per process (see _extractorCache above) instead of reloading model weights + tokenizer on every embedTexts call.
   let extractorPromise = _extractorCache.get(modelName)
   if (!extractorPromise) {
     const transformerObj = _transformer as Record<string, unknown>
     const pipelineFn: PipelineFn =
       _pipelineFnOverride ??
       (transformerObj['pipeline'] as PipelineFn)
-    // @xenova/transformers' pipeline() downloads the model over the network on a cold cache
-    // with no retry of its own, so a single transient CDN blip (a dropped connection, a brief
-    // rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be
-    // populated with a promise that only resolves on eventual success, never with the raw
-    // pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry
-    // is deleted rather than left holding a rejected promise, because this cache is keyed by
-    // model name and lives for the process lifetime: a rejected promise cached here would
-    // permanently poison every future embedTexts call for that model, even long after a
-    // transient outage clears, since a Promise's settled state never changes once observed.
+    // @xenova/transformers' pipeline() downloads the model over the network on a cold cache with no retry of its own, so a single transient CDN blip (a dropped connection, a brief rate-limit window) fails outright. Retrying here absorbs that. The cache MUST be populated with a promise that only resolves on eventual success, never with the raw pipelineFn() promise directly - on a terminal failure (all attempts exhausted) the entry is deleted rather than left holding a rejected promise, because this cache is keyed by model name and lives for the process lifetime: a rejected promise cached here would permanently poison every future embedTexts call for that model, even long after a transient outage clears, since a Promise's settled state never changes once observed.
     extractorPromise = buildExtractorWithRetry(pipelineFn, modelName)
     _extractorCache.set(modelName, extractorPromise)
     extractorPromise.catch(() => {
@@ -451,9 +409,7 @@ export function chunkFile(
     return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
   }
 
-  // Clip to the file's actual line range and drop anything inverted, then sort by
-  // start (ties broken longest-first) so the flattening pass below always meets an
-  // outer boundary before any boundary nested inside it.
+  // Clip to the file's actual line range and drop anything inverted, then sort by start (ties broken longest-first) so the flattening pass below always meets an outer boundary before any boundary nested inside it.
   const clipped = boundaries
     .map((b) => ({
       start: Math.max(1, Math.min(b.start, totalLines)),
@@ -467,9 +423,7 @@ export function chunkFile(
     return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
   }
 
-  // Flatten nested/overlapping boundaries (a class row fully contains its own method
-  // rows) down to the outermost one - each line belongs to exactly one chunk, never
-  // embedded once as part of a member and again as part of its container.
+  // Flatten nested/overlapping boundaries (a class row fully contains its own method rows) down to the outermost one - each line belongs to exactly one chunk, never embedded once as part of a member and again as part of its container.
   const flattened: { start: number; end: number; kind: string }[] = []
   let openEnd = 0
   for (const b of clipped) {
@@ -499,18 +453,13 @@ export function chunkFile(
     const gapEnd = b.start - 1
     if (gapEnd >= gapStart) {
       if (gapLength(gapStart, gapEnd) < MIN_CHUNK_CHARS) {
-        // Fold the small gap into whichever chunk is adjacent: the previous boundary
-        // if one has already been emitted, otherwise forward into this boundary (the
-        // "content before the first heading/symbol" case has no previous to join).
+        // Fold the small gap into whichever chunk is adjacent: the previous boundary if one has already been emitted, otherwise forward into this boundary (the "content before the first heading/symbol" case has no previous to join).
         const prev = ranges[ranges.length - 1]
         if (prev !== undefined) {
           prev.end = gapEnd
         } else {
           boundaryStart = gapStart
-          // The folded-forward range now spans non-boundary content in addition to
-          // this boundary's own lines, so it's no longer purely `b.kind` (e.g.
-          // 'symbol') - relabel it 'window', the same generic kind already used
-          // above for gap content that isn't tied to a specific boundary.
+          // The folded-forward range now spans non-boundary content in addition to this boundary's own lines, so it's no longer purely `b.kind` (e.g. 'symbol') - relabel it 'window', the same generic kind already used above for gap content that isn't tied to a specific boundary.
           boundaryKind = 'window'
         }
       } else {
@@ -531,14 +480,7 @@ export function chunkFile(
     }
   }
 
-  // A boundary range itself (not just an inter-boundary gap) can still be
-  // shorter than MIN_CHUNK_CHARS on its own -- a short-symbol-dominated file
-  // (barrel/index re-exports, enum/const modules) would otherwise have every
-  // one of its boundary chunks silently dropped by splitRangeIntoChunks's own
-  // floor below, one at a time, leaving the file entirely absent from the
-  // semantic index. Fold any such range into a neighbor first, same as the
-  // gap-folding above: prefer the previous range (already finalized), falling
-  // back to merging forward only for a too-short first range.
+  // A boundary range itself (not just an inter-boundary gap) can still be shorter than MIN_CHUNK_CHARS on its own -- a short-symbol-dominated file (barrel/index re-exports, enum/const modules) would otherwise have every one of its boundary chunks silently dropped by splitRangeIntoChunks's own floor below, one at a time, leaving the file entirely absent from the semantic index. Fold any such range into a neighbor first, same as the gap-folding above: prefer the previous range (already finalized), falling back to merging forward only for a too-short first range.
   let i = 0
   while (i < ranges.length) {
     const r = ranges[i]!
@@ -638,9 +580,7 @@ export async function upsertChunks(
   `)
 
   const tx = db.transaction(() => {
-    // Delete the file's prior chunks/vectors inside the same transaction as the
-    // inserts below, so a failed insert rolls back the delete too instead of
-    // leaving the file's embeddings deleted-but-not-replaced.
+    // Delete the file's prior chunks/vectors inside the same transaction as the inserts below, so a failed insert rolls back the delete too instead of leaving the file's embeddings deleted-but-not-replaced.
     deleteFileEmbeddings(db, filePath)
 
     for (let i = 0; i < chunks.length; i++) {
@@ -665,15 +605,7 @@ export async function upsertChunks(
   return 'embedded'
 }
 
-// sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no
-// file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan
-// against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch
-// candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata
-// (joined by rowid) against the project root. If a caller-provided rootDir filters out too
-// many candidates to satisfy topK, we retry once with a larger k (BACKFILL_MULTIPLIER, capped
-// at MAX_OVER_FETCH) -- this trades a bounded amount of extra query latency (at most one retry)
-// for correctness: without it, `token-goat semantic` from project A silently returns chunks
-// from unrelated project B sharing the same machine-wide global.db (see constants.ts).
+// sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata (joined by rowid) against the project root. If a caller-provided rootDir filters out too many candidates to satisfy topK, we retry once with a larger k (BACKFILL_MULTIPLIER, capped at MAX_OVER_FETCH) -- this trades a bounded amount of extra query latency (at most one retry) for correctness: without it, `token-goat semantic` from project A silently returns chunks from unrelated project B sharing the same machine-wide global.db (see constants.ts).
 const BACKFILL_MULTIPLIER = 3
 
 /** One over-fetch-and-filter pass: KNN-search `k` candidates, then keep only those within `maxDistance` and (when `rootDir` is set) under that project root. Returns the surviving hits plus how many raw candidates the ANN scan returned, so the caller can tell whether growing `k` further could possibly help (or if the vector index is simply exhausted). Exported (not just used internally by searchSemantic) so tests can exercise the project-scoping/backfill SQL directly with a hand-built query vector, without needing a real embedding-model inference call. */
@@ -773,9 +705,7 @@ export async function searchSemantic(
     return []
   }
 
-  // Embed the query. BGE models are asymmetric: only the query side gets the
-  // retrieval-instruction prefix (see QUERY_INSTRUCTION_PREFIX) -- document/chunk
-  // embedding (the embedTexts call in chunk indexing) must stay unprefixed.
+  // Embed the query. BGE models are asymmetric: only the query side gets the retrieval-instruction prefix (see QUERY_INSTRUCTION_PREFIX) -- document/chunk embedding (the embedTexts call in chunk indexing) must stay unprefixed.
   const queryEmbeddings = await embedTexts([`${QUERY_INSTRUCTION_PREFIX}${query}`], modelName)
   if (queryEmbeddings.length === 0) {
     return []
@@ -796,10 +726,7 @@ export async function searchSemantic(
   let hits = first.hits
   const candidateCount = first.candidateCount
 
-  // Backfill: when scoped and the first pass didn't surface enough hits, retry once with a
-  // larger k -- but only if the ANN scan actually returned as many candidates as requested
-  // (candidateCount === overFetchK); if it returned fewer, the vector index is exhausted and a
-  // bigger k would return the exact same rows, so retrying would just cost latency for nothing.
+  // Backfill: when scoped and the first pass didn't surface enough hits, retry once with a larger k -- but only if the ANN scan actually returned as many candidates as requested (candidateCount === overFetchK); if it returned fewer, the vector index is exhausted and a bigger k would return the exact same rows, so retrying would just cost latency for nothing.
   if (rootDir !== undefined && hits.length < topK && candidateCount === overFetchK && overFetchK < MAX_OVER_FETCH) {
     const biggerK = Math.min(MAX_OVER_FETCH, overFetchK * BACKFILL_MULTIPLIER)
     if (biggerK > overFetchK) {
@@ -934,10 +861,7 @@ export function mergeNearbyHits(
     })
   }
 
-  // Sort by rerank score when available so rerankHits' ordering (verbatim-token
-  // boost, generated-path penalty) survives merging, instead of silently
-  // reverting to raw-distance order. Hits that never went through rerankHits
-  // (no adjustedDistance) fall back to their raw distance.
+  // Sort by rerank score when available so rerankHits' ordering (verbatim-token boost, generated-path penalty) survives merging, instead of silently reverting to raw-distance order. Hits that never went through rerankHits (no adjustedDistance) fall back to their raw distance.
   merged.sort((a, b) => (a.adjustedDistance ?? a.distance) - (b.adjustedDistance ?? b.distance))
   return merged
 }
@@ -961,10 +885,7 @@ export async function indexFile(
   const chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
   if (chunks.length > 0) {
-    // upsertChunks deletes the file's prior chunks/vectors as part of the same
-    // transaction as the new insert, so a failed insert can't leave them
-    // deleted-but-not-replaced. It returns 'unavailable' when the optional embedding
-    // deps are absent so the caller can avoid falsely stamping the file as embedded.
+    // upsertChunks deletes the file's prior chunks/vectors as part of the same transaction as the new insert, so a failed insert can't leave them deleted-but-not-replaced. It returns 'unavailable' when the optional embedding deps are absent so the caller can avoid falsely stamping the file as embedded.
     return upsertChunks(db, chunks)
   }
   // An empty file has nothing to embed regardless of whether the optional deps are present,
@@ -973,23 +894,10 @@ export async function indexFile(
   return 'embedded'
 }
 
-// Per-connection cache of whether `chunk_vectors` is actually usable (see chunkVectorsTableExists).
-// Keyed on the connection object so it is dropped when the connection is garbage-collected. A
-// connection's vec0 load state is fixed for its lifetime (db.ts loads sqlite-vec once at open),
-// so caching the boolean is safe and avoids re-probing on every embed/prune/search call.
+// Per-connection cache of whether `chunk_vectors` is actually usable (see chunkVectorsTableExists). Keyed on the connection object so it is dropped when the connection is garbage-collected. A connection's vec0 load state is fixed for its lifetime (db.ts loads sqlite-vec once at open), so caching the boolean is safe and avoids re-probing on every embed/prune/search call.
 const _chunkVectorsUsable = new WeakMap<BetterSqlite3Database, boolean>()
 
-// Is the optional sqlite-vec `chunk_vectors` virtual table actually usable on this connection?
-// A plain sqlite_master name probe is not enough: the vec0 table row PERSISTS in sqlite_master
-// once created, but its backing module is registered per-connection by sqlite-vec's runtime
-// load. If global.db was first created while sqlite-vec loaded (so the row exists), then
-// token-goat is reinstalled without the optional native dep (--no-optional, or a native build
-// failure after a Node upgrade), db.ts silently swallows the failed load -- yet the row is still
-// in sqlite_master. A bare name probe would return true, and the next `chunk_vectors` statement
-// would throw "no such module: vec0" at prepare time, aborting whatever transaction it ran in
-// (e.g. removeFileFromIndex, leaking symbols/refs/files rows) and crashing searchSemantic. So
-// probe real usability with a trivial SELECT: it throws "no such table" when the row is absent
-// AND "no such module: vec0" when the row exists but the module did not load, covering both.
+// Is the optional sqlite-vec `chunk_vectors` virtual table actually usable on this connection? A plain sqlite_master name probe is not enough: the vec0 table row PERSISTS in sqlite_master once created, but its backing module is registered per-connection by sqlite-vec's runtime load. If global.db was first created while sqlite-vec loaded (so the row exists), then token-goat is reinstalled without the optional native dep (--no-optional, or a native build failure after a Node upgrade), db.ts silently swallows the failed load -- yet the row is still in sqlite_master. A bare name probe would return true, and the next `chunk_vectors` statement would throw "no such module: vec0" at prepare time, aborting whatever transaction it ran in (e.g. removeFileFromIndex, leaking symbols/refs/files rows) and crashing searchSemantic. So probe real usability with a trivial SELECT: it throws "no such table" when the row is absent AND "no such module: vec0" when the row exists but the module did not load, covering both.
 function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
   const cached = _chunkVectorsUsable.get(db)
   if (cached !== undefined) {
@@ -1038,9 +946,7 @@ export function deleteFileEmbeddings(
   db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(folded)
 }
 
-// ============================================================================
-// Internal helpers
-// ============================================================================
+// ============================================================================ Internal helpers ============================================================================
 
 /**
  * Extract query tokens (identifiers) for verbatim boosting.
