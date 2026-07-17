@@ -1053,6 +1053,12 @@ describe('html adapter', () => {
     expect(imports.some((i) => i.kind === 'html_script' && i.target === 'app\nbundle.js')).toBe(true)
   })
 
+  it('registers a heading anchor-id section when the id value spans a literal newline (regression: the inline id-anchor regex in extractHtml used a bare `.` instead of `[\\s\\S]`, unlike the module-level ID_RE it sits right next to -- missed by the fix above since it is a separate inline .exec() call, not one of the four _RE constants)', () => {
+    const content = `<h2 id="pricing\ncard">Pricing</h2>`
+    const { sections } = extractHtml(content, 'multiline-anchor.html')
+    expect(sections.some((s) => s.heading === 'pricing\ncard')).toBe(true)
+  })
+
   it('does not index commented-out markup and preserves the real section line range', () => {
     // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
     // script regexes ran, so dead/commented-out markup was indexed identically to live markup -
