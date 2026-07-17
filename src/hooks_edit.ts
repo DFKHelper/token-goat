@@ -47,34 +47,24 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
-  // Nothing under the OS system temp dir (scratch checkouts, ad hoc debugging copies, per-test
-  // fixture dirs) should ever become a permanent index citizen -- see isUnderSystemTemp's
-  // docstring for the concrete pollution this prevents. Skip both the dirty-queue enqueue and
-  // the known-root recording that would otherwise permanently index it as a distinct project.
+  // Nothing under the OS system temp dir should ever become a permanent index citizen -- see isUnderSystemTemp's docstring for the concrete pollution this prevents; skip both the dirty-queue enqueue and the known-root recording.
   const underSystemTemp = isUnderSystemTemp(normalized)
   if (!underSystemTemp) {
     try {
       appendDirtyPath(normalized)
     } catch (e) {
-      // Fail-soft: a transient fs error (disk full, permission, Windows file lock)
-      // must not crash the whole handler — recordFileEdit above already succeeded,
-      // and the rest of this handler's work (the markdown hint below) should still
-      // run rather than the exception propagating out of postEditHandler.
+      // Fail-soft: a transient fs error (disk full, permission, Windows file lock) must not crash the whole handler -- recordFileEdit above already succeeded, and the rest of this handler's work (the markdown hint below) should still run.
       recordStat('dirty_queue_append_failed', 0, 0, undefined, extractErrorMessage(e))
     }
 
-    // Work was just queued above for the background worker to drain -- nudge it back to life if
-    // the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring).
-    // Rate-limited internally, so this is cheap on every call after the first in a given window.
+    // Work was just queued above for the background worker to drain -- nudge it back to life if the daemon died and nothing has restarted it since (see ensureWorkerAlive's docstring). Rate-limited internally, so this is cheap on every call after the first in a given window.
     try {
       ensureWorkerAlive()
     } catch (e) {
       recordStat('worker_healthcheck_failed', 0, 0, undefined, extractErrorMessage(e))
     }
 
-    // Record this file's project root as known-alive so the worker's periodic sweep
-    // (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from --
-    // see recordKnownRootThrottled's docstring. Also rate-limited internally.
+    // Record this file's project root as known-alive so the worker's periodic sweep (sweepKnownRoots) has a safe, bounded set of roots to auto-prune dead file rows from -- see recordKnownRootThrottled's docstring. Also rate-limited internally.
     try {
       recordKnownRootThrottled(normalized)
     } catch (e) {
@@ -82,20 +72,14 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid
-  // while the source is unchanged — mark it stale so pre_read falls back to a
-  // full read instead of serving outdated content. markCompactStale is a
-  // fail-soft no-op when no sidecar exists for this path.
+  // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid while the source is unchanged -- mark it stale so pre_read falls back to a full read instead of serving outdated content. markCompactStale is a fail-soft no-op when no sidecar exists for this path.
   if (loadConfig().hints.stable_doc_compacts) {
     markCompactStale(compactPathFor(normalized))
   }
 
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
-    // The hint's value is re-reading via `section` instead of the whole file, so its
-    // quantified savings are the edited file's own size — skip the fs.statSync entirely on
-    // failure (fail-soft, matching every other best-effort fs read in this handler) rather than
-    // let a stat error suppress a hint that would otherwise have fired.
+    // The hint's value is re-reading via `section` instead of the whole file, so its quantified savings are the edited file's own size -- skip the fs.statSync entirely on failure (fail-soft) rather than let a stat error suppress a hint that would otherwise have fired.
     let editedSize = Infinity
     try {
       editedSize = statSync(normalized).size
