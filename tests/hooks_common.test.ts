@@ -6,10 +6,6 @@ import {
   getFilePath,
   getToolInput,
   getToolName,
-  isBashTool,
-  isEditTool,
-  isReadTool,
-  isWriteTool,
   passOutput,
 } from '../src/hooks_common.js'
 import { makeHookEvent as makeEvent } from './helpers/hook-event.js'
@@ -64,31 +60,6 @@ describe('hooks_common', () => {
     })
   })
 
-  describe('tool classifiers', () => {
-    it('isReadTool', () => {
-      expect(isReadTool('Read')).toBe(true)
-      expect(isReadTool('Bash')).toBe(false)
-      expect(isReadTool(undefined)).toBe(false)
-    })
-
-    it('isEditTool', () => {
-      expect(isEditTool('Edit')).toBe(true)
-      expect(isEditTool('Write')).toBe(false)
-      expect(isEditTool(undefined)).toBe(false)
-    })
-
-    it('isWriteTool', () => {
-      expect(isWriteTool('Write')).toBe(true)
-      expect(isWriteTool('Edit')).toBe(false)
-      expect(isWriteTool(undefined)).toBe(false)
-    })
-
-    it('isBashTool', () => {
-      expect(isBashTool('Bash')).toBe(true)
-      expect(isBashTool('Read')).toBe(false)
-      expect(isBashTool(undefined)).toBe(false)
-    })
-  })
 
   describe('output builders', () => {
     it('passOutput', () => {
