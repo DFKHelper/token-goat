@@ -234,6 +234,20 @@ describe('project_memory', () => {
       expect(result!.length).toBeLessThan(4100); // MAX_TOTAL_CHARS + some margin
     });
 
+    // Regression guard: the "+N more entries omitted" trailer line was appended after the
+    // MAX_TOTAL_CHARS budget check, uncounted against it, so it could push the returned string
+    // past the exact bound the function exists to enforce (by up to the trailer's own length,
+    // ~70 chars). This asserts the strict bound, not the old test's loose "+100 char margin".
+    it('never exceeds MAX_TOTAL_CHARS even when the omitted-entries trailer is appended', () => {
+      for (let i = 0; i < 40; i++) {
+        setEntry('test', `key${i}`, 'x'.repeat(122));
+      }
+      const result = buildInjection('test');
+      expect(result).toBeDefined();
+      expect(result).toContain('omitted');
+      expect(result!.length).toBeLessThanOrEqual(4000);
+    });
+
     it('should sort entries alphabetically', () => {
       setEntry('test', 'zebra', 'z');
       setEntry('test', 'apple', 'a');
