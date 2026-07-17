@@ -692,7 +692,6 @@ export interface RefsOptions {
   limit?: number
 }
 
-/** Handle ``token-goat refs file::symbol``. */
 /** Splits a refs spec into an optional `::`-prefixed file scope and the comma-separated symbol list after it. With no `::`, the whole spec is the comma-separated symbol list; with no comma, a single-element list (the original single-symbol form). */
 function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: string[] } {
   const colonIdx = findSpecSeparator(spec)
@@ -763,6 +762,7 @@ export function runRefs(opts: RefsOptions): number {
   return anyFound ? 0 : 1
 }
 
+/** Handle ``token-goat refs file::symbol``. */
 function runRefsSingle(opts: RefsOptions): number {
   const { file, symbol } = parseReadSpec(opts.spec)
   const symName = symbol ?? file
