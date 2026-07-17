@@ -38,9 +38,6 @@ const _GH_BASE64_MIN_LEN = 200
 // GhRunLogFilter regexes
 // ---------------------------------------------------------------------------
 
-// ISO-8601 timestamp prefix: 2024-01-15T12:34:56.1234567Z
-const _GH_LOG_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s?/
-
 // ##[group]Step name
 const _GH_LOG_GROUP_RE = /^##\[group\](.*)/
 // ##[endgroup]
@@ -86,8 +83,6 @@ const _ACT_MATRIX_EXPAND_RE = /^\[.*\]\s+Matrix:/
 // GenericCIFilter regexes
 // ---------------------------------------------------------------------------
 
-// ISO-8601 or date-time-like timestamp prefix
-const _CI_TIMESTAMP_RE = /^\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\]?\s+/
 // ANSI escape sequences
 // eslint-disable-next-line no-control-regex
 const _CI_ANSI_RE = /\x1b(?:\[[0-9;]*[mABCDEFGHJKSTf]|\](?:[^\x07\x1b]|\x1b[^\\])*(?:\x07|\x1b\\))/g
@@ -115,7 +110,6 @@ const _PRECOMMIT_INFO_RE = /^\[INFO\]\s+(Initializing|Installing|Restored|Clonin
 const _BANDIT_RUN_STARTED_RE = /^Run started:/
 const _BANDIT_TEST_RESULTS_RE = /^Test results:/
 const _BANDIT_ISSUE_SEVERITY_RE = /^>>\s+Issue:\s+\[/i
-const _BANDIT_ISSUE_META_RE = /^\s+(Severity|Confidence|CWE|Location|More Info):/
 const _BANDIT_CODE_SCANNED_RE = /^Code scanned:/
 const _BANDIT_TOTAL_ISSUES_RE = /^Total issues \(by/
 const _BANDIT_STAT_LINE_RE = /^\s+\|?\s*\d/
