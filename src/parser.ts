@@ -106,12 +106,7 @@ function loadParserCtor(): TsParserCtor | null {
   return _parserCtor
 }
 
-// `tree-sitter-typescript` ships two distinct grammars from one package: `typescript` (plain
-// .ts/.mts/.cts — rejects JSX syntax) and `tsx` (a superset that also parses JSX). Both share
-// the `Language` value 'typescript', so the caller's file path — not the Language — is what
-// distinguishes them. Parsing a .tsx file with the `typescript` grammar still "succeeds" (tree-sitter's
-// error recovery doesn't throw) but produces ERROR nodes around JSX, silently dropping or
-// mis-scoping symbols/refs.
+// `tree-sitter-typescript` ships two distinct grammars from one package: `typescript` (plain .ts/.mts/.cts — rejects JSX syntax) and `tsx` (a superset that also parses JSX). Both share the `Language` value 'typescript', so the caller's file path — not the Language — is what distinguishes them. Parsing a .tsx file with the `typescript` grammar still "succeeds" (tree-sitter's error recovery doesn't throw) but produces ERROR nodes around JSX, silently dropping or mis-scoping symbols/refs.
 function loadGrammar(lang: Language, filePath?: string): Grammar | null {
   const useTsx = lang === 'typescript' && filePath !== undefined && path.extname(filePath).toLowerCase() === '.tsx'
   const cacheKey = useTsx ? 'typescript:tsx' : lang
@@ -319,12 +314,7 @@ function extractPythonSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       const name = nodeName(node)
       if (name !== null && name !== '') {
         const kind = node.type === 'function_definition' && insideClass ? 'method' : baseKind
-        // A decorated def's tree-sitter node starts at `def`/`class`, not its `@decorator`
-        // line(s) above — decorated_definition has no PY_KIND_BY_TYPE entry, so it's never
-        // the node a symbol is built from. Widen to the enclosing decorated_definition's own
-        // range (decorators through end of the def) when present, so `read`/`skeleton`
-        // include the decorator lines; name/kind/docstring still come from the inner def
-        // node so method-vs-function and class-scope detection are unaffected.
+        // A decorated def's tree-sitter node starts at `def`/`class`, not its `@decorator` line(s) above — decorated_definition has no PY_KIND_BY_TYPE entry, so it's never the node a symbol is built from. Widen to the enclosing decorated_definition's own range (decorators through end of the def) when present, so `read`/`skeleton` include the decorator lines; name/kind/docstring still come from the inner def node so method-vs-function and class-scope detection are unaffected.
         const rangeNode = node.parent?.type === 'decorated_definition' ? node.parent : node
         out.push({
           ...makeSymbol(filePath, name, kind, rangeNode),
@@ -468,10 +458,7 @@ const RUBY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['module', 'module'],
 ])
 
-// Shared walk for languages whose symbol extraction needs no function-local-scope tracking
-// (unlike Go/Rust, which thread `insideFunction` to exclude locals). `nameFor` defaults to
-// the common `name`-field lookup; callers with an irregular name location (e.g. C/C++
-// function declarators) override it.
+// Shared walk for languages whose symbol extraction needs no function-local-scope tracking (unlike Go/Rust, which thread `insideFunction` to exclude locals). `nameFor` defaults to the common `name`-field lookup; callers with an irregular name location (e.g. C/C++ function declarators) override it.
 function extractSimpleSymbols(
   root: TsNode,
   filePath: string,
@@ -647,14 +634,7 @@ const REF_NOISE_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
       'super',
     ]),
   ],
-  // go/rust/c/cpp/ruby below cover only genuinely bare-identifier builtins (Go's predeclared
-  // functions, Rust macros, C/POSIX libc, Ruby's Kernel methods) -- the same restriction the
-  // comment above REF_NOISE_BY_LANG already documents for every language. java is deliberately
-  // left unpopulated: Java has no unqualified global builtin equivalent to these (stdout access
-  // always goes through System.out.*, a member call captured by its property name, not a bare
-  // identifier), so a bare `name` field from method_invocation is far more likely to be a real
-  // same-class helper call than a builtin -- adding entries here would risk false-negative
-  // "unreferenced" callers reports for real user methods that happen to share a common name.
+  // go/rust/c/cpp/ruby below cover only genuinely bare-identifier builtins (Go's predeclared functions, Rust macros, C/POSIX libc, Ruby's Kernel methods) -- the same restriction the comment above REF_NOISE_BY_LANG already documents for every language. java is deliberately left unpopulated: Java has no unqualified global builtin equivalent to these (stdout access always goes through System.out.*, a member call captured by its property name, not a bare identifier), so a bare `name` field from method_invocation is far more likely to be a real same-class helper call than a builtin -- adding entries here would risk false-negative "unreferenced" callers reports for real user methods that happen to share a common name.
   [
     'go',
     new Set([
@@ -920,10 +900,7 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     }
   }
 
-  // Assignment of an existing binding to a variable: const x = myHelperFunction /
-  // x = myHelperFunction. Arrow/function-expression values are handled separately by
-  // scopeName() as a new scope, not a reference to an existing one, so they're excluded here
-  // by only matching a plain `identifier` value.
+  // Assignment of an existing binding to a variable: const x = myHelperFunction / x = myHelperFunction. Arrow/function-expression values are handled separately by scopeName() as a new scope, not a reference to an existing one, so they're excluded here by only matching a plain `identifier` value.
   if (isJs && (node.type === 'variable_declarator' || node.type === 'assignment_expression')) {
     const value = node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right')
     if (value !== null && value.type === 'identifier') result.push(value)
@@ -1123,12 +1100,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
-// Mirrors ini_idx.ts's _detectOpenQuote: a value only opens a (possibly multi-line) quoted
-// scalar when its leading non-whitespace char is a quote. A quote appearing later in the value
-// - an apostrophe in a plain scalar (`title: It's working`), or a stray quote inside a trailing
-// `#` comment - is never a delimiter and must not be scanned for parity, or a plain scalar with
-// an interior apostrophe silently swallows every key after it until a matching quote happens to
-// appear somewhere downstream.
+// Mirrors ini_idx.ts's _detectOpenQuote: a value only opens a (possibly multi-line) quoted scalar when its leading non-whitespace char is a quote. A quote appearing later in the value - an apostrophe in a plain scalar (`title: It's working`), or a stray quote inside a trailing `#` comment - is never a delimiter and must not be scanned for parity, or a plain scalar with an interior apostrophe silently swallows every key after it until a matching quote happens to appear somewhere downstream.
 export function yamlOpenQuoteAfter(line: string, startIdx: number): '"' | "'" | null {
   const value = line.slice(startIdx)
   const trimmed = value.replace(/^\s+/, '')
@@ -1171,10 +1143,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
-  // A top-level key's double/single-quoted value can wrap across multiple lines (YAML folds
-  // the embedded newline into a space). Without tracking that, a continuation line that
-  // happens to contain its own `word:` -shaped text (e.g. wrapped prose mentioning "ratio:
-  // 16:9", or any string content resembling a key) was read as a brand new top-level key.
+  // A top-level key's double/single-quoted value can wrap across multiple lines (YAML folds the embedded newline into a space). Without tracking that, a continuation line that happens to contain its own `word:` -shaped text (e.g. wrapped prose mentioning "ratio: 16:9", or any string content resembling a key) was read as a brand new top-level key.
   let openQuote: '"' | "'" | null = null
 
   for (let i = 0; i < lines.length; i++) {
@@ -1186,12 +1155,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
-    // A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false
-    // `https` key - the colon there is a URL scheme separator immediately followed by `//`,
-    // not a key/value split. The key charset includes `.` so a flat/dotted top-level key
-    // (e.g. `server.host:`) is captured whole rather than silently dropped. Mirrors the same
-    // guard and charset the live section reader's KEYVALUE_HEADER_RE already applies
-    // (section_reader.ts).
+    // A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false `https` key - the colon there is a URL scheme separator immediately followed by `//`, not a key/value split. The key charset includes `.` so a flat/dotted top-level key (e.g. `server.host:`) is captured whole rather than silently dropped. Mirrors the same guard and charset the live section reader's KEYVALUE_HEADER_RE already applies (section_reader.ts).
     const match = /^([a-zA-Z_][\w.-]*)\s*:(?!\/\/)/.exec(line)
     if (match !== null && match[1] !== undefined) {
       out.push({
@@ -1210,23 +1174,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
-// Multi-line TOML strings (`"""..."""` or `'''...'''`) can span many lines; text inside
-// them (e.g. a description field quoting example TOML) must never be scanned for
-// key/section syntax. Track whether a triple-quote span opened on an earlier line is still
-// open across the loop, keyed by which delimiter opened it.
-//
-// The two delimiter styles' run counts cannot be tallied independently per line (e.g. via
-// separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string
-// whose body happens to contain a ''' sequence (e.g. a description quoting example TOML
-// syntax) must treat that ''' as inert text, not as its own independent open/close toggle.
-// Counting each style's occurrences separately loses that positional relationship: an ODD
-// number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly
-// read as opening a real multi-line literal string, desyncing every line after it until an
-// unrelated ''' happened to appear later in the file. Scan the line once, left to right,
-// tracking a single open-delimiter slot instead.
-//
-// Exported so the live section reader's TOML table finder (section_reader.ts) can share this
-// exact state machine instead of re-implementing it and drifting out of sync with the indexer.
+// Multi-line TOML strings (`"""..."""` or `'''...'''`) can span many lines; text inside them (e.g. a description field quoting example TOML) must never be scanned for key/section syntax. Track whether a triple-quote span opened on an earlier line is still open across the loop, keyed by which delimiter opened it. The two delimiter styles' run counts cannot be tallied independently per line (e.g. via separate regex-match counts) -- only ONE style can be "open" at a time, so a """ string whose body happens to contain a ''' sequence (e.g. a description quoting example TOML syntax) must treat that ''' as inert text, not as its own independent open/close toggle. Counting each style's occurrences separately loses that positional relationship: an ODD number of ''' sequences sitting inertly inside an already-closed """..." span was wrongly read as opening a real multi-line literal string, desyncing every line after it until an unrelated ''' happened to appear later in the file. Scan the line once, left to right, tracking a single open-delimiter slot instead. Exported so the live section reader's TOML table finder (section_reader.ts) can share this exact state machine instead of re-implementing it and drifting out of sync with the indexer.
 export function lineOpenDelimiterAfter(line: string, startIdx: number): string | null {
   let pos = startIdx
   let open: string | null = null
@@ -1251,15 +1199,7 @@ export function lineOpenDelimiterAfter(line: string, startIdx: number): string |
   }
 }
 
-// TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of
-// arrays, one row per line). A continuation row of such an array - especially a nested
-// array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be
-// misread by the section regex as a new table header. Track the net bracket depth opened
-// by an unclosed array so continuation lines are skipped from key/section matching
-// entirely until the array actually closes. Brackets inside string literals are ignored
-// (a quoted value like "a[b]" must never affect array depth).
-//
-// Exported for the same reason as lineOpenDelimiterAfter above.
+// TOML arrays may legally span multiple physical lines (e.g. a matrix as an array of arrays, one row per line). A continuation row of such an array - especially a nested array-of-arrays row like `[1, 0, 0],` - starts with `[` and would otherwise be misread by the section regex as a new table header. Track the net bracket depth opened by an unclosed array so continuation lines are skipped from key/section matching entirely until the array actually closes. Brackets inside string literals are ignored (a quoted value like "a[b]" must never affect array depth). Exported for the same reason as lineOpenDelimiterAfter above.
 export function tomlBracketDelta(line: string): number {
   const stripped = stripStringLiterals(line)
   let delta = 0
@@ -1332,14 +1272,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
   return out
 }
 
-// Splits a CSS selector-list capture on top-level commas only, skipping commas nested inside
-// parentheses (`:is(.foo, .bar)`, `:not()`, `:nth-child(An+B of S)`) or, thanks to the caller
-// already passing a string-literal-stripped `strippedCapture`, commas inside a quoted attribute
-// value (`[data-x="a,b"]`). A plain `rawCapture.split(',')` treats every comma as a selector-list
-// separator, which shreds any selector containing one of those constructs into multiple bogus
-// selector fragments. Scanning happens over `strippedCapture` (so string interiors can't skew
-// paren-depth tracking), but each segment is sliced back out of `rawCapture` at the same offsets
-// so the indexed selector text stays verbatim.
+// Splits a CSS selector-list capture on top-level commas only, skipping commas nested inside parentheses (`:is(.foo, .bar)`, `:not()`, `:nth-child(An+B of S)`) or, thanks to the caller already passing a string-literal-stripped `strippedCapture`, commas inside a quoted attribute value (`[data-x="a,b"]`). A plain `rawCapture.split(',')` treats every comma as a selector-list separator, which shreds any selector containing one of those constructs into multiple bogus selector fragments. Scanning happens over `strippedCapture` (so string interiors can't skew paren-depth tracking), but each segment is sliced back out of `rawCapture` at the same offsets so the indexed selector text stays verbatim.
 function splitTopLevelSelectors(rawCapture: string, strippedCapture: string): string[] {
   const parts: string[] = []
   let depth = 0
@@ -1357,10 +1290,7 @@ function splitTopLevelSelectors(rawCapture: string, strippedCapture: string): st
   return parts
 }
 
-// True when the next non-blank line after `i` opens a bare Allman-style rule brace (`{` alone on
-// its own line, e.g. `body\n{\n...`). Used to start selector-fragment accumulation for the FIRST
-// fragment of a rule, which - unlike every later fragment of a multi-line comma list - has no
-// trailing comma of its own to signal "more of this selector is still coming".
+// True when the next non-blank line after `i` opens a bare Allman-style rule brace (`{` alone on its own line, e.g. `body\n{\n...`). Used to start selector-fragment accumulation for the FIRST fragment of a rule, which - unlike every later fragment of a multi-line comma list - has no trailing comma of its own to signal "more of this selector is still coming".
 function nextContentLineOpensBrace(lines: readonly string[], i: number): boolean {
   for (let j = i + 1; j < lines.length; j++) {
     const next = lines[j]?.trim() ?? ''
@@ -1372,18 +1302,13 @@ function nextContentLineOpensBrace(lines: readonly string[], i: number): boolean
 
 function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
-  // Strip /* */ block comments (newlines preserved so line numbers stay correct) before
-  // scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block)
-  // is indexed as if it were live CSS.
+  // Strip /* */ block comments (newlines preserved so line numbers stay correct) before scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block) is indexed as if it were live CSS.
   const lines = stripCstyleComments(content).split(/\r?\n/)
   // Raw (pre-strip) lines, kept only to distinguish "blanked by comment stripping" from
   // "genuinely blank in the source" below -- see the check at the top of the loop.
   const rawLines = content.split(/\r?\n/)
 
-  // Selector fragments accumulated from preceding comma-continuation lines -- the common
-  // multi-line selector-list idiom (`.btn,\n.btn-primary,\n.btn-secondary {`). Each entry keeps
-  // its own line number/body so a fragment is indexed at the line it actually appears on, not
-  // the brace line, matching how a same-line comma list is already indexed per-fragment below.
+  // Selector fragments accumulated from preceding comma-continuation lines -- the common multi-line selector-list idiom (`.btn,\n.btn-primary,\n.btn-secondary {`). Each entry keeps its own line number/body so a fragment is indexed at the line it actually appears on, not the brace line, matching how a same-line comma list is already indexed per-fragment below.
   let pending: Array<{ name: string; line: number; body: string }> = []
 
   for (let i = 0; i < lines.length; i++) {
@@ -1391,32 +1316,12 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
     if (line === undefined) continue
     const trimmed = line.trim()
 
-    // A line that became empty ONLY because stripCstyleComments blanked a `/* ... */` comment
-    // sitting on its own line (e.g. `/* primary button */` between selector fragments of a
-    // multi-line comma-separated list) must be a no-op, not a break in accumulation -- treating
-    // it like a genuinely blank line would silently drop every fragment gathered in `pending`
-    // so far (see the discard fallback at the bottom of the loop). A line that was already
-    // blank in the raw source still falls through to that discard below, unchanged.
+    // A line that became empty ONLY because stripCstyleComments blanked a `/* ... */` comment sitting on its own line (e.g. `/* primary button */` between selector fragments of a multi-line comma-separated list) must be a no-op, not a break in accumulation -- treating it like a genuinely blank line would silently drop every fragment gathered in `pending` so far (see the discard fallback at the bottom of the loop). A line that was already blank in the raw source still falls through to that discard below, unchanged.
     if (trimmed.length === 0 && (rawLines[i]?.trim().length ?? 0) > 0) {
       continue
     }
 
-    // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a
-    // comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element
-    // (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`),
-    // or any selector indented under a nested @media/@supports block (leading whitespace
-    // broke the `^` anchor) were all silently skipped. Match anything up to the opening
-    // brace instead - excluding lines that start with `@` (an at-rule header like
-    // `@media (...) {` is not itself a selector, though selectors nested inside its block
-    // are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and
-    // split a same-line comma-separated selector list into one symbol per selector.
-    // Match against a string-literal-stripped copy of the line so a `{` inside a quoted
-    // declaration value (e.g. `content: "{";`, a common pseudo-element glyph pattern) is never
-    // mistaken for a rule-opening brace. stripStringLiterals blanks string interiors to
-    // same-length spaces, so the match's character offsets line up with the original `line` -
-    // the actual (unblanked) selector text is then re-sliced from `line` at those offsets, so a
-    // real selector that legitimately contains a quoted value (e.g. `input[type="text"]`) is
-    // still captured verbatim rather than with its quoted portion blanked out.
+    // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`), or any selector indented under a nested @media/@supports block (leading whitespace broke the `^` anchor) were all silently skipped. Match anything up to the opening brace instead - excluding lines that start with `@` (an at-rule header like `@media (...) {` is not itself a selector, though selectors nested inside its block are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and split a same-line comma-separated selector list into one symbol per selector. Match against a string-literal-stripped copy of the line so a `{` inside a quoted declaration value (e.g. `content: "{";`, a common pseudo-element glyph pattern) is never mistaken for a rule-opening brace. stripStringLiterals blanks string interiors to same-length spaces, so the match's character offsets line up with the original `line` - the actual (unblanked) selector text is then re-sliced from `line` at those offsets, so a real selector that legitimately contains a quoted value (e.g. `input[type="text"]`) is still captured verbatim rather than with its quoted portion blanked out.
     const strippedLine = stripStringLiterals(line)
     const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/d.exec(strippedLine)
     if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
@@ -1455,12 +1360,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
-    // Brace-only line (nothing but `{`, possibly with surrounding whitespace) closing off a
-    // multi-line selector list whose fragments were accumulated via `pending` below (the
-    // idiom `.a,\n.b\n{\n...`). Flush those fragments as the selector list for this rule
-    // instead of falling through to the discard case at the bottom of the loop, which would
-    // otherwise silently drop every accumulated fragment because a bare `{` never matches
-    // `selectorLineMatch` above (it requires a non-`{`/`}`/`@` character before the brace).
+    // Brace-only line (nothing but `{`, possibly with surrounding whitespace) closing off a multi-line selector list whose fragments were accumulated via `pending` below (the idiom `.a,\n.b\n{\n...`). Flush those fragments as the selector list for this rule instead of falling through to the discard case at the bottom of the loop, which would otherwise silently drop every accumulated fragment because a bare `{` never matches `selectorLineMatch` above (it requires a non-`{`/`}`/`@` character before the brace).
     if (trimmed === '{') {
       for (const p of pending) {
         out.push({
@@ -1477,16 +1377,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
       continue
     }
 
-    // Continuation candidate: a bare selector-fragment line with no brace, not an at-rule
-    // header, and not a declaration (no `;`). Three shapes are accepted: a line ending in a
-    // trailing comma (starts or continues a comma list, e.g. `.a,`); once a comma-list is
-    // already underway (`pending.length > 0`), a bare trailing-fragment line with no comma at
-    // all (e.g. the final `.b` in `.a,\n.b\n{`); or a single Allman-brace selector whose `{`
-    // sits alone on the very next content line (e.g. `body\n{`) - this last shape has no
-    // trailing comma and starts with an empty `pending`, so without the forward-scan it fails
-    // both of the other two conditions and the selector is silently dropped. Either way the
-    // fragment is accumulated until the line that actually opens the brace (matched above) is
-    // reached, instead of being dropped.
+    // Continuation candidate: a bare selector-fragment line with no brace, not an at-rule header, and not a declaration (no `;`). Three shapes are accepted: a line ending in a trailing comma (starts or continues a comma list, e.g. `.a,`); once a comma-list is already underway (`pending.length > 0`), a bare trailing-fragment line with no comma at all (e.g. the final `.b` in `.a,\n.b\n{`); or a single Allman-brace selector whose `{` sits alone on the very next content line (e.g. `body\n{`) - this last shape has no trailing comma and starts with an empty `pending`, so without the forward-scan it fails both of the other two conditions and the selector is silently dropped. Either way the fragment is accumulated until the line that actually opens the brace (matched above) is reached, instead of being dropped.
     if (
       trimmed.length > 0 &&
       !trimmed.startsWith('@') &&
@@ -1514,12 +1405,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
-  // Dockerfile instructions may span multiple physical lines via a trailing backslash
-  // continuation (e.g. `RUN apt-get update && \`), and every non-first physical line of that
-  // logical instruction is shell text, not a new directive. Without tracking this, a
-  // continuation line that happens to start with a shell token colliding with a Dockerfile
-  // keyword under the case-insensitive match below (most commonly the `env VAR=val cmd` shell
-  // idiom, but also run/copy/add/user/label/arg/from) is misread as a standalone directive.
+  // Dockerfile instructions may span multiple physical lines via a trailing backslash continuation (e.g. `RUN apt-get update && \`), and every non-first physical line of that logical instruction is shell text, not a new directive. Without tracking this, a continuation line that happens to start with a shell token colliding with a Dockerfile keyword under the case-insensitive match below (most commonly the `env VAR=val cmd` shell idiom, but also run/copy/add/user/label/arg/from) is misread as a standalone directive.
   let continuing = false
 
   for (let i = 0; i < lines.length; i++) {
@@ -1531,9 +1417,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
       continue
     }
 
-    // A whole-line `#` comment never starts or continues a directive: Docker does not extend
-    // comments across lines via continuation, so a trailing backslash on a comment is just part
-    // of the comment text, not a real line-continuation marker.
+    // A whole-line `#` comment never starts or continues a directive: Docker does not extend comments across lines via continuation, so a trailing backslash on a comment is just part of the comment text, not a real line-continuation marker.
     const isComment = line.trim().startsWith('#')
     const match = isComment
       ? null
@@ -1683,10 +1567,7 @@ function mergeParseResults(...results: readonly ParseContentResult[]): ParseCont
 
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
 function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix.
-  // Both entry points (parseFile, indexFileSync) funnel through here, so this is the
-  // single place BOM stripping needs to happen. Sha/hash computation elsewhere stays
-  // on the raw original bytes — only this decoded copy is affected.
+  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix. Both entry points (parseFile, indexFileSync) funnel through here, so this is the single place BOM stripping needs to happen. Sha/hash computation elsewhere stays on the raw original bytes — only this decoded copy is affected.
   if (content.charCodeAt(0) === 0xfeff) {
     content = content.slice(1)
   }
@@ -1874,16 +1755,7 @@ function writeParseResult(
 ): void {
   const db = getDb(dbPath)
 
-  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file
-  // changes between the parse read and this write, a re-read here would record a SHA that does
-  // not match the symbols/refs actually written below, and the worker's SHA-gated incremental
-  // drain would skip reindexing a file whose stored SHA happens to match a later version,
-  // leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded
-  // string used for parsing) so this SHA is computed over the same bytes worker.ts's gate
-  // hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8
-  // content would otherwise produce a different digest than hashing the raw bytes directly,
-  // permanently defeating the gate for any such file. content is null only when the file could
-  // not be read at all, in which case there is nothing to fingerprint from memory.
+  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file changes between the parse read and this write, a re-read here would record a SHA that does not match the symbols/refs actually written below, and the worker's SHA-gated incremental drain would skip reindexing a file whose stored SHA happens to match a later version, leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded string used for parsing) so this SHA is computed over the same bytes worker.ts's gate hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8 content would otherwise produce a different digest than hashing the raw bytes directly, permanently defeating the gate for any such file. content is null only when the file could not be read at all, in which case there is nothing to fingerprint from memory.
   const sha = content === null ? safeSha(filePath) : fingerprintContent(content)
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
@@ -1933,10 +1805,7 @@ function writeParseResult(
 export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
   const ixCfg = loadConfig().indexing
   if (ixCfg !== undefined && isParseSkipEligible(filePath, ixCfg)) {
-    // Purge stale rows AND the files row (sha) so the file settles into a stable
-    // not-indexed state instead of being re-selected as "changed" on every drain;
-    // also drop any embedding rows it held before becoming skip-eligible
-    // (indexFileSync is called directly from read_commands' --force-refresh path).
+    // Purge stale rows AND the files row (sha) so the file settles into a stable not-indexed state instead of being re-selected as "changed" on every drain; also drop any embedding rows it held before becoming skip-eligible (indexFileSync is called directly from read_commands' --force-refresh path).
     const db = getDb(dbPath)
     deleteFileRows(db, filePath)
     deleteFileEmbeddings(db, filePath)
@@ -1974,9 +1843,7 @@ function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: str
     const headings = extractMarkdownHeadings(content, Infinity)
     return headings.map((h, i) => ({
       start: h.lineNumber,
-      // Runs to just before the next heading, or to end-of-file for the last one.
-      // chunkFile clips end values to the file's actual line count, so this sentinel
-      // is safe without re-deriving the file's line count here.
+      // Runs to just before the next heading, or to end-of-file for the last one. chunkFile clips end values to the file's actual line count, so this sentinel is safe without re-deriving the file's line count here.
       end: headings[i + 1] !== undefined ? headings[i + 1]!.lineNumber - 1 : Number.MAX_SAFE_INTEGER,
       kind: 'section' as const,
     }))
@@ -2065,13 +1932,7 @@ export async function indexFileEmbeddings(
 ): Promise<void> {
   const ixCfg = loadConfig().indexing
   if (!ixCfg.embeddings_enabled) {
-    // Stamp a disabled-marker embed_sha even though no embedding actually ran, so
-    // makeIndexer's embedUnchanged gate (worker.ts) can hold for this content the next time
-    // it's touched while STILL disabled -- otherwise every re-touch of an unchanged file
-    // re-enters indexFileEmbeddings just to hit this same early-return again, on every drain,
-    // for as long as embeddings stay disabled. Deliberately NOT the real sha (see
-    // disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for
-    // "already embedded, unchanged".
+    // Stamp a disabled-marker embed_sha even though no embedding actually ran, so makeIndexer's embedUnchanged gate (worker.ts) can hold for this content the next time it's touched while STILL disabled -- otherwise every re-touch of an unchanged file re-enters indexFileEmbeddings just to hit this same early-return again, on every drain, for as long as embeddings stay disabled. Deliberately NOT the real sha (see disabledEmbedSha's doc comment): re-enabling embeddings later must not be mistaken for "already embedded, unchanged".
     stampEmbedSha(getDb(dbPath), filePath, sha, disabledEmbedSha)
     return
   }
@@ -2079,9 +1940,7 @@ export async function indexFileEmbeddings(
     // Profiles are frequently multi-megabyte, highly repetitive permission dumps. Embedding them creates thousands of low-signal vectors; exact symbol/read/grep access remains.
     const db = getDb(dbPath)
     deleteFileEmbeddings(db, filePath)
-    // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate
-    // (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte
-    // content into indexFileEmbeddings on every worker drain / index run.
+    // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte content into indexFileEmbeddings on every worker drain / index run.
     stampEmbedSha(db, filePath, sha, (s) => s)
     return
   }
@@ -2092,11 +1951,7 @@ export async function indexFileEmbeddings(
     return
   }
   if (content.length > ixCfg.large_file_symbol_only_kb * 1024) {
-    // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already
-    // indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a
-    // moderately-large file is comparatively expensive for comparatively little retrieval
-    // value -- deliberately never embed it, mirroring the profile-meta.xml /
-    // salesforce_metadata terminal-skip pattern below.
+    // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a moderately-large file is comparatively expensive for comparatively little retrieval value -- deliberately never embed it, mirroring the profile-meta.xml / salesforce_metadata terminal-skip pattern below.
     const db = getDb(dbPath)
     deleteFileEmbeddings(db, filePath)
     stampEmbedSha(db, filePath, sha, (s) => s)
@@ -2115,16 +1970,10 @@ export async function indexFileEmbeddings(
     const db = getDb(dbPath)
     const boundaries = buildEmbeddingBoundaries(filePath, content, dbPath)
     const outcome = await embedIndexFile(db, filePath, content, boundaries)
-    // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no
-    // vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this
-    // file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
+    // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
     stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
   } catch (err) {
-    // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is
-    // deliberately left unstamped here (see doc comment above). `onError`, when provided, lets a
-    // caller (worker.ts's embedFileSerialized) record this failure somewhere discoverable --
-    // this function itself never throws, matching its documented best-effort contract for
-    // callers like cli.ts's foreground bulk-index loop that await it directly with no try/catch.
+    // Best-effort: never fail the overall index over an embeddings-only error. embed_sha is deliberately left unstamped here (see doc comment above). `onError`, when provided, lets a caller (worker.ts's embedFileSerialized) record this failure somewhere discoverable -- this function itself never throws, matching its documented best-effort contract for callers like cli.ts's foreground bulk-index loop that await it directly with no try/catch.
     onError?.(err)
   }
 }
@@ -2143,15 +1992,7 @@ function stampEmbedSha(
   makeValue: (sha: string) => string,
 ): void {
   if (sha === undefined) return
-  // Optimistic-concurrency guard: also require files.sha to still equal the sha this embed run
-  // started from. inFlightEmbeddings (worker.ts) only serializes concurrent embed calls WITHIN a
-  // single process -- it cannot see a second process (e.g. a slow foreground `token-goat index`
-  // racing the background daemon) embedding the same file at the same time. Without this WHERE
-  // clause, a slow writer that started against an older `sha` can still commit its stamp AFTER a
-  // faster writer already reindexed and re-embedded a newer version, overwriting the fresher
-  // embed_sha with a stale one and leaving embeddings silently out of sync with no way to detect
-  // it. Requiring sha = ? makes a stale writer's stamp a no-op instead: the row's `sha` will have
-  // already moved on to the newer value by the time the stale writer's UPDATE runs.
+  // Optimistic-concurrency guard: also require files.sha to still equal the sha this embed run started from. inFlightEmbeddings (worker.ts) only serializes concurrent embed calls WITHIN a single process -- it cannot see a second process (e.g. a slow foreground `token-goat index` racing the background daemon) embedding the same file at the same time. Without this WHERE clause, a slow writer that started against an older `sha` can still commit its stamp AFTER a faster writer already reindexed and re-embedded a newer version, overwriting the fresher embed_sha with a stale one and leaving embeddings silently out of sync with no way to detect it. Requiring sha = ? makes a stale writer's stamp a no-op instead: the row's `sha` will have already moved on to the newer value by the time the stale writer's UPDATE runs.
   db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')} AND sha = ?`).run(
     makeValue(sha),
     foldPath(filePath),
