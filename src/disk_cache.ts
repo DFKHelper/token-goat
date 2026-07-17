@@ -69,12 +69,6 @@ export function blobPath(subdir: string, id: string): string | null {
 }
 
 /**
- * Atomically write `value` as JSON to `<home>/<subdir>/<id>.json`, then prune.
- *
- * Fail-soft: returns false on any error (never throws). A prune failure never
- * undoes the store. The parent dir is created on demand.
- */
-/**
  * Resolve the maxCount/maxBytes/maxBytesPerItem eviction budget for a subdir from
  * its matching config section (bash_compress for bash outputs, webfetch for web
  * outputs), falling back to the generic defaults for subdirs with no dedicated
@@ -96,6 +90,12 @@ function subdirCacheDefaults(subdir: string): { maxCount: number; maxBytes: numb
   return { maxCount: DEFAULT_MAX_COUNT, maxBytes: Number.POSITIVE_INFINITY, maxBytesPerItem: Number.POSITIVE_INFINITY }
 }
 
+/**
+ * Atomically write `value` as JSON to `<home>/<subdir>/<id>.json`, then prune.
+ *
+ * Fail-soft: returns false on any error (never throws). A prune failure never
+ * undoes the store. The parent dir is created on demand.
+ */
 export function storeBlob(
   subdir: string,
   id: string,
