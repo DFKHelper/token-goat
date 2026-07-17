@@ -1324,7 +1324,7 @@ export const tailTruncFilter = new TailTruncFilter()
 // ===========================================================================
 // MISC_FILTERS registry
 // ===========================================================================
-// NOTE: PlaywrightFilter and CypressFilter are NOT in this array — they are registered individually in dispatch.ts BEFORE BunFilter. TailTruncFilter is LAST: its matches() returns true for every command.
+// NOTE: PlaywrightFilter and CypressFilter are NOT in this array — they are registered individually in dispatch.ts BEFORE BunFilter. TailTruncFilter is LAST: its matches() always returns false — it's content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command.
 export const MISC_FILTERS: ToolFilter[] = [
   psqlFilter,
   mySQLFilter,
