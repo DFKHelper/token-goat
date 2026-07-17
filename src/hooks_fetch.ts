@@ -43,13 +43,7 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     }
     const { toolInput, url } = ctx;
 
-    // Dedup key includes the prompt: WebFetch answers are prompt-specific, so a
-    // repeat fetch of the same URL with a different question must not be redirected
-    // to a stale answer for the WRONG question. Deriving the cache id directly (a
-    // pure function of url+prompt, mirroring cacheIdForUrl in web_cache.ts) instead
-    // of going through the session-scoped webFetches map also makes the lookup work
-    // across processes/sessions via getWebOutput's disk fallback - the same
-    // cross-process approach getWebOutputByUrlFromDisk uses for gdrive.ts.
+    // Dedup key includes the prompt: WebFetch answers are prompt-specific, so a repeat fetch of the same URL with a different question must not be redirected to a stale answer for the WRONG question. Deriving the cache id directly (a pure function of url+prompt, mirroring cacheIdForUrl in web_cache.ts) instead of going through the session-scoped webFetches map also makes the lookup work across processes/sessions via getWebOutput's disk fallback - the same cross-process approach getWebOutputByUrlFromDisk uses for gdrive.ts.
     const prompt = typeof toolInput['prompt'] === 'string' ? (toolInput['prompt'] as string) : '';
     const cacheId = shortFingerprint(`${url}\x00${prompt}`);
     // Guard on the content blob (in-memory or on disk), not just the session index, so a pruned or evicted entry never yields a web-output hint that would error - mirrors the curl-GET recall guard in hooks_bash.
@@ -84,13 +78,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
 
     const body = extractToolResponse(event.raw);
 
-    // Prompt-injection scan: README's documented contract ("every fetched page is
-    // scanned for attack patterns") is unconditional, so this runs ahead of the
-    // caching-size gate below rather than being folded into it. A match anywhere
-    // in the response wraps the whole response in an untrusted-content fence
-    // before it reaches the model; the matched pattern names are written to the
-    // stats ledger's `detail` column (README's "matched pattern name written to
-    // the log"). `injection.enabled` is the documented one-line opt-out.
+    // Prompt-injection scan: README's documented contract ("every fetched page is scanned for attack patterns") is unconditional, so this runs ahead of the caching-size gate below rather than being folded into it. A match anywhere in the response wraps the whole response in an untrusted-content fence before it reaches the model; the matched pattern names are written to the stats ledger's `detail` column. `injection.enabled` is the documented one-line opt-out.
     const injCfg = loadConfig().injection;
     const injectionMatches = injCfg.enabled && body ? scanForInjectionPatterns(body) : [];
     if (injectionMatches.length > 0) {
@@ -104,17 +92,10 @@ export function postFetchHandler(event: HookEvent): HookOutput {
       return passOutput();
     }
 
-    // Store under a (url, prompt) dedup key - see preFetchHandler - while keeping
-    // the persisted blob's displayed url clean for `token-goat web-history`. Also
-    // record it in the session (url-keyed) for the compact-manifest "fetched this
-    // session" listing.
+    // Store under a (url, prompt) dedup key - see preFetchHandler - while keeping the persisted blob's displayed url clean for `token-goat web-history`. Also record it in the session (url-keyed) for the compact-manifest "fetched this session" listing.
     const prompt = typeof toolInput['prompt'] === 'string' ? (toolInput['prompt'] as string) : '';
 
-    // A raw HTML body is the same unshrunk-payload problem image_shrink.ts already
-    // solves for images: extract clean text before caching, so a later recall (web-output,
-    // or a repeat fetch caught by preFetchHandler's dedup) never re-surfaces raw markup.
-    // webfetch.compress_bodies/compress_min_bytes already existed as persisted, validated,
-    // env-overridable config with zero consumers until now.
+    // A raw HTML body is the same unshrunk-payload problem image_shrink.ts already solves for images: extract clean text before caching, so a later recall (web-output, or a repeat fetch caught by preFetchHandler's dedup) never re-surfaces raw markup. webfetch.compress_bodies/compress_min_bytes already existed as persisted, validated, env-overridable config with zero consumers until now.
     let storedBody = body;
     const wfCfg = loadConfig().webfetch;
     if (wfCfg.compress_bodies && body.length >= wfCfg.compress_min_bytes && looksLikeHtml(body)) {
@@ -129,10 +110,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     recordWebFetch(url, prompt, cacheId);
 
     if (injectionMatches.length > 0) {
-      // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing
-      // the raw body here would both defeat compress_bodies' token savings specifically on the
-      // injection-detected path and return content that disagrees with what a later
-      // `token-goat web-output <id>` recall of the same cache entry would return.
+      // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings specifically on the injection-detected path and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return.
       return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedBody, injectionMatches) };
     }
 

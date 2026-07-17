@@ -98,8 +98,6 @@ export function preGrepDedupHandler(event: HookEvent): HookOutput {
   }
 }
 
-// Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a
-// correctness-relevant deny there (node_modules, oversized file) always takes priority over
-// this purely advisory recall hint.
+// Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
 registerHook('pre_tool_use', preGrepDedupHandler, { toolName: 'Grep' })
 registerHook('post_tool_use', postGrepHandler, { toolName: 'Grep' })
