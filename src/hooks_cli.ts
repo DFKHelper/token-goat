@@ -176,6 +176,20 @@ const GROK_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
  * first string-valued field other than 'type' is used as a best-effort
  * 'content' value.
  */
+/**
+ * Rename `tool_input`'s keys per `keyMap` (unmapped keys pass through
+ * unchanged). Shared by the grok and gemini branches of
+ * {@link normalizePayload}, which both remap select keys the same way once a
+ * tool name has matched.
+ */
+function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, string>): Record<string, unknown> {
+  const newInput: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    newInput[keyMap[k] || k] = v
+  }
+  return newInput
+}
+
 function grokToCanonicalWire(obj: Record<string, unknown>): Record<string, unknown> {
   const wire = { ...obj }
   if (typeof wire['toolName'] === 'string' && wire['tool_name'] === undefined) {
@@ -242,12 +256,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
       if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
         const keyMap = GROK_INPUT_KEY_MAP[mapped]
         if (keyMap) {
-          const input = rawInput as Record<string, unknown>
-          const newInput: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(input)) {
-            newInput[keyMap[k] || k] = v
-          }
-          result['tool_input'] = newInput
+          result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
         }
       }
     }
@@ -274,12 +283,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
       if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
         const keyMap = GEMINI_INPUT_KEY_MAP[mapped]
         if (keyMap) {
-          const input = rawInput as Record<string, unknown>
-          const newInput: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(input)) {
-            newInput[keyMap[k] || k] = v
-          }
-          result['tool_input'] = newInput
+          result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
         }
       }
     }
