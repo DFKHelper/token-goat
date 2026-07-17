@@ -179,7 +179,13 @@ export function buildInjection(projectHash: string): string | null {
     let total = header.length;
     let skipped = 0;
 
-    const entries_list = Object.entries(entries).slice(0, MAX_ENTRIES);
+    // Explicit localeCompare sort, not raw Object.entries() order: JS engines enumerate
+    // canonical-integer-string keys (e.g. "9", "10") in ascending numeric order regardless of
+    // insertion order, which would silently diverge from the alphabetical order setEntry's
+    // eviction logic above assumes this function iterates in.
+    const entries_list = Object.entries(entries)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, MAX_ENTRIES);
     for (const [key, val] of entries_list) {
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
       const line = `- **${key}**: ${display}`;

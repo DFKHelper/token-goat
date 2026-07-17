@@ -243,6 +243,18 @@ describe('project_memory', () => {
       expect(mangoIdx).toBeLessThan(zebraIdx);
     });
 
+    it('sorts numeric-string keys alphabetically, not by JS numeric-key enumeration order (regression: buildInjection relied on raw Object.entries() order, which JS reorders "9"/"10" ascending numerically regardless of insertion order, diverging from setEntry\'s eviction logic which assumes alphabetical iteration)', () => {
+      setEntry('test', '10', 'ten');
+      setEntry('test', '9', 'nine');
+      const result = buildInjection('test');
+      const tenIdx = result?.indexOf('**10**') ?? -1;
+      const nineIdx = result?.indexOf('**9**') ?? -1;
+      expect(tenIdx).toBeGreaterThanOrEqual(0);
+      expect(nineIdx).toBeGreaterThanOrEqual(0);
+      // Alphabetical: "10" < "9" (lexical comparison of '1' vs '9')
+      expect(tenIdx).toBeLessThan(nineIdx);
+    });
+
     it('should report skipped entries', () => {
       for (let i = 0; i < 50; i++) {
         setEntry('test', `key${i}`, 'value'.repeat(50));
