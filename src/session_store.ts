@@ -185,6 +185,9 @@ function coerce(raw: unknown): SerializedSession {
   const cliReads = Array.isArray(o['cliReads'])
     ? o['cliReads'].filter((h): h is string => typeof h === 'string')
     : []
+  const bashReruns = Array.isArray(o['bashReruns'])
+    ? o['bashReruns'].filter((h): h is string => typeof h === 'string')
+    : []
   const pendingLargeFileHints: Array<[string, number]> = Array.isArray(o['pendingLargeFileHints'])
     ? (o['pendingLargeFileHints'] as unknown[]).filter(
         (p): p is [string, number] =>
@@ -205,6 +208,7 @@ function coerce(raw: unknown): SerializedSession {
     curlDownloads: asStringPairs(o['curlDownloads']),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
     cliReads,
+    bashReruns,
     pendingLargeFileHints,
     grepQueries,
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
@@ -309,6 +313,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     curlDownloads: mergePairs(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
+    bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     // Prefer the value already on disk: it marks the original creation time, and

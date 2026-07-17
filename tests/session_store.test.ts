@@ -73,6 +73,17 @@ describe('save/load round-trip', () => {
     expect(got.grepQueries).toEqual([['["useEffect","/src","content",""]', 12]])
     expect(got.files.find((f) => f.path === '/b.ts')?.wasTruncated).toBe(true)
   })
+
+  it('persists and restores bashReruns across a save/load round-trip (regression: coerce() and mergeSessionState() both omitted bashReruns entirely, so it never survived the disk round-trip even though exportSessionState/importSessionState carry it in-process -- silently making hooks_compact.ts\'s cross-process SAFE_TO_DISCARD rerun detection inert)', () => {
+    importSessionState({ ...empty(), bashReruns: ['cmdhash-1', 'cmdhash-2'] })
+    saveSessionState('sid-bashreruns')
+
+    importSessionState(empty())
+    expect(exportSessionState().bashReruns).toEqual([])
+
+    loadSessionState('sid-bashreruns')
+    expect(exportSessionState().bashReruns?.sort()).toEqual(['cmdhash-1', 'cmdhash-2'])
+  })
 })
 
 describe('grepQueries merge-on-save (concurrent writer not clobbered)', () => {
