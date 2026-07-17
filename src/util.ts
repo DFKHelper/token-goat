@@ -593,6 +593,17 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   return true
 }
 
+/**
+ * Shared by install.ts, bridges/gemini_install.ts, and bridges/openclaw_install.ts: persist a
+ * settings object as pretty-printed JSON with a trailing newline, backing up the prior file
+ * first and creating `p`'s parent directory if needed.
+ */
+export function writeJsonSettings(p: string, settings: unknown): void {
+  ensureDirSync(path.dirname(p))
+  backupFile(p)
+  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)

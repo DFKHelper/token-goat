@@ -69,7 +69,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, stripOwnHooksFromMap } from '../util.js'
+import { extractErrorMessage, stripOwnHooksFromMap, writeJsonSettings } from '../util.js'
 
 /**
  * Marker substring identifying a legacy (pre exec-path-hardening) bare
@@ -375,9 +375,7 @@ export function installGemini(): GeminiInstallResult {
   }
 
   settings.hooks = hooks
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+  writeJsonSettings(p, settings)
   return { settingsPath: p, alreadyInstalled: false }
 }
 
@@ -403,9 +401,7 @@ export function uninstallGemini(): boolean {
     settings.hooks = hooks
   }
 
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+  writeJsonSettings(p, settings)
   return true
 }
 

@@ -32,7 +32,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath, writeJsonSettings } from '../util.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
 
 interface OpenclawPluginEntry {
@@ -175,9 +175,7 @@ export function installOpenclaw(): OpenclawInstallResult {
 
   if (configChanged) {
     settings.plugins = { ...plugins, load: { ...plugins.load, paths: loadPaths }, entries }
-    ensureDirSync(path.dirname(configPath))
-    backupFile(configPath)
-    atomicWriteText(configPath, `${JSON.stringify(settings, null, 2)}\n`)
+    writeJsonSettings(configPath, settings)
   }
 
   return { configPath, pluginPath, alreadyInstalled: false }
@@ -235,9 +233,7 @@ export function uninstallOpenclaw(): boolean {
       } else {
         settings.plugins = plugins
       }
-      ensureDirSync(path.dirname(configPath))
-      backupFile(configPath)
-      atomicWriteText(configPath, `${JSON.stringify(settings, null, 2)}\n`)
+      writeJsonSettings(configPath, settings)
     }
   }
 
