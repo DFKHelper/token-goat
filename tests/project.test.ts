@@ -130,6 +130,19 @@ describe('project', () => {
         expect(result).not.toBe('c:/foo/bar');
         expect(result).toContain('mnt');
       });
+
+      // Regression: project.ts used to maintain its own copy of paths.ts's WSL_PATH_RE without
+      // the `s` (dotAll) flag paths.ts's own comment says is required for a WSL path containing
+      // an embedded newline byte to normalize fully. Without the flag, `(.*)$` can't cross the
+      // newline, so the whole match fails and the path is left un-rewritten -- producing two
+      // different canonical strings (`c:/foo\nbar` via paths.ts::normalizePath vs. an unrewritten
+      // `/mnt/c/foo\nbar` via project.ts::canonicalize) for what should be the same location.
+      // project.ts now imports and reuses paths.ts's WSL_PATH_RE directly instead of a second copy.
+      it('rewrites a WSL path containing an embedded newline byte, matching paths.ts::normalizePath', () => {
+        setPlatform('win32');
+        const result = canonicalize('/mnt/c/foo\nbar');
+        expect(result).toBe('c:/foo\nbar');
+      });
     });
   });
 

@@ -7,13 +7,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { shortFingerprint } from './fingerprint.js';
 import { extractErrorMessage, foldPath, runGit } from './util.js';
-import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias } from './paths.js';
+import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_PATH_RE } from './paths.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
  * Cross-shell normalization (Git Bash, WSL, Cygwin, cmd.exe/PowerShell).
  */
-const WSL_PREFIX_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/;
 const CYGWIN_PREFIX_RE = /^\/cygdrive\/([a-zA-Z])\/(.*)$/;
 const MSYS_PREFIX_RE = /^\/([a-zA-Z])\/(.*)$/;
 
@@ -45,7 +44,7 @@ export interface Project {
  * Called after path.resolve + forward-slash conversion.
  */
 function normalizeShellDrivePrefix(posixStr: string): string {
-  let m = WSL_PREFIX_RE.exec(posixStr);
+  let m = WSL_PATH_RE.exec(posixStr);
   if (m) {
     return `${m[1]!.toLowerCase()}:/${m[2]}`;
   }
