@@ -24,13 +24,6 @@ export function writeRaw(text: string): void {
   process.stdout.write(ensureNewline(payload))
 }
 
-/**
- * Return a plain-text summary of the top N most-read files in the current
- * session.  Uses the in-memory session state (``getSessionFiles``).
- *
- * Returns an empty string when no file has been read more than once — single-
- * access sessions produce no actionable nudge.  Fail-soft: errors return "".
- */
 /** Format ranked (path, count) entries as the "Top files this session:" block, or "" if empty. */
 function formatTopFiles(ranked: Array<{ path: string; count: number }>): string {
   if (ranked.length === 0) return ''
@@ -42,6 +35,13 @@ function formatTopFiles(ranked: Array<{ path: string; count: number }>): string 
   return lines.join('\n')
 }
 
+/**
+ * Return a plain-text summary of the top N most-read files in the current
+ * session.  Uses the in-memory session state (``getSessionFiles``).
+ *
+ * Returns an empty string when no file has been read more than once — single-
+ * access sessions produce no actionable nudge.  Fail-soft: errors return "".
+ */
 export function renderTopSessionFiles(topN: number = 5): string {
   try {
     const sessionFiles = getSessionFiles()
