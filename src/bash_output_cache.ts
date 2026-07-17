@@ -181,7 +181,6 @@ function dirStateFingerprintSync(path: string): string | null {
   }
 }
 
-/** Fingerprint a single file's mtime + size (used for `cat <file>`). */
 /** Files at/under this size are fingerprinted by content hash (exact, immune to the
  *  same-mtime-tick/same-size race a fast successive write can trigger); larger files fall
  *  back to mtime+size to avoid a full read on every staleness check. */
