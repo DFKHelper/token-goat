@@ -67,7 +67,6 @@ const NOISE_SEGMENTS = [
   '/site-packages/', '.egg-info/',
   '/target/',
   '/__snapshots__/',
-  '/dist/', '/.turbo/',
 ]
 
 // Per-harness auto-trigger multiplier defaults for getAutoTriggerMultiplier().
@@ -786,15 +785,7 @@ export function buildManifestWithCount(
     return ['', 0]
   }
 
-  const files = cache.files ?? []
-  const editedCount = files.filter((f) => f.wasEdited).length
-  const readCount = files.length
-  const bashCount = (cache.bashOutputs ?? []).length
-  const webCount = (cache.webFetches ?? []).length
-  const skillCount = Object.keys(cache.skillHistory ?? {}).length
-
-  const eventCount = editedCount + readCount + bashCount + webCount + skillCount
-
+  const evCount = eventCount(cache)
   const manifest = buildManifest(sessionId, opts)
-  return [manifest, eventCount]
+  return [manifest, evCount]
 }
