@@ -18,7 +18,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
-import { statSize } from './util.js'
+import { statSize, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -233,7 +233,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   const dataUrl = `data:image/${result.format};base64,${result.data.toString('base64')}`
   const summary =
     `token-goat shrank ${path.basename(filePath)}: ` +
-    `${Math.round(result.originalBytes / 1024)}kb -> ${Math.round(result.shrunkBytes / 1024)}kb ` +
+    `${toKB(result.originalBytes)}kb -> ${toKB(result.shrunkBytes)}kb ` +
     `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
 
   // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact
