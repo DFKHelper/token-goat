@@ -65,17 +65,9 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
   replace: 'Edit',
   glob: 'Glob',
   grep_search: 'Grep',
-  // 'search_file_content' was GREP_TOOL_NAME's value before gemini-cli
-  // renamed it to 'grep_search' (confirmed against gemini-cli's current
-  // base-declarations.ts, which now defines GREP_TOOL_NAME = 'grep_search';
-  // some of gemini-cli's own docs pages still lag the rename). Kept as a
-  // backward-compat entry for older installed gemini-cli versions that still
-  // emit the pre-rename name -- not dead/hallucinated, just legacy.
+  // 'search_file_content' was GREP_TOOL_NAME's value before gemini-cli renamed it to 'grep_search' (confirmed against gemini-cli's current base-declarations.ts, which now defines GREP_TOOL_NAME = 'grep_search'; some of gemini-cli's own docs pages still lag the rename). Kept as a backward-compat entry for older installed gemini-cli versions that still emit the pre-rename name -- not dead/hallucinated, just legacy.
   search_file_content: 'Grep',
-  // Gemini's real web-search tool is registered as 'google_web_search'
-  // (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is
-  // not a tool name Gemini CLI ever emits, so the old entry here silently
-  // never matched a real invocation.
+  // Gemini's real web-search tool is registered as 'google_web_search' (WEB_SEARCH_TOOL_NAME in gemini-cli's tool-names.ts) -- 'web_search' is not a tool name Gemini CLI ever emits, so the old entry here silently never matched a real invocation.
   google_web_search: 'WebFetch',
   web_fetch: 'WebFetch',
 }
@@ -85,36 +77,10 @@ export const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
  * Only keys that differ between Gemini and token-goat need to appear here.
  */
 const GEMINI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  // Gemini's real write_file/replace tool schemas already use 'file_path'
-  // (and replace's 'old_string'/'new_string') verbatim -- identical to
-  // token-goat's own canonical keys (see getFilePath() in hooks_common.ts,
-  // which reads event.toolInput['file_path']) -- confirmed against
-  // gemini-cli's own EditToolParams/WriteFileToolParams interfaces. No remap
-  // is needed for Write/Edit; the previous entries here actively renamed a
-  // key that was already correct (file_path -> path), which would have
-  // silently corrupted the path argument on every real Gemini Write/Edit call.
-  //
-  // 'Read' covers THREE distinct raw Gemini tools (see GEMINI_TOOL_NAME_MAP
-  // above), and they do NOT share one schema:
-  //   - read_file: already uses 'file_path' verbatim, no remap needed.
-  //   - list_directory: uses 'dir_path' (confirmed against gemini-cli's
-  //     LSToolParams) -- remapped to 'file_path' below, exactly mirroring
-  //     Grep's existing dir_path->path fix.
-  //   - read_many_files: uses 'include' (confirmed against gemini-cli's
-  //     ReadManyFilesParams), an ARRAY of glob patterns, not a single file
-  //     path -- there is no single string to remap it to, so it is
-  //     deliberately left unmapped. getFilePath() (hooks_common.ts) will
-  //     return undefined for this call, and preReadHandler/postReadHandler
-  //     already fall back to passOutput() on an undefined path (see
-  //     preReadHandler's `if (filePath === undefined) return passOutput()`),
-  //     so a real read_many_files call still succeeds normally; it just
-  //     doesn't get session-dedup tracking or read-count hints. Accepted
-  //     limitation, not a bug to force-fit.
+  // Gemini's real write_file/replace tool schemas already use 'file_path' (and replace's 'old_string'/'new_string') verbatim -- identical to token-goat's own canonical keys (see getFilePath() in hooks_common.ts, which reads event.toolInput['file_path']) -- confirmed against gemini-cli's own EditToolParams/WriteFileToolParams interfaces. No remap is needed for Write/Edit; the previous entries here actively renamed a key that was already correct (file_path -> path), which would have silently corrupted the path argument on every real Gemini Write/Edit call.
+  // 'Read' covers THREE distinct raw Gemini tools (see GEMINI_TOOL_NAME_MAP above), and they do NOT share one schema: read_file already uses 'file_path' verbatim, no remap needed; list_directory uses 'dir_path' (confirmed against gemini-cli's LSToolParams) -- remapped to 'file_path' below, exactly mirroring Grep's existing dir_path->path fix; read_many_files uses 'include' (confirmed against gemini-cli's ReadManyFilesParams), an ARRAY of glob patterns, not a single file path -- there is no single string to remap it to, so it is deliberately left unmapped. getFilePath() (hooks_common.ts) will return undefined for this call, and preReadHandler/postReadHandler already fall back to passOutput() on an undefined path (see preReadHandler's `if (filePath === undefined) return passOutput()`), so a real read_many_files call still succeeds normally; it just doesn't get session-dedup tracking or read-count hints. Accepted limitation, not a bug to force-fit.
   Read: { dir_path: 'file_path' },
-  //
-  // Grep's real tool (grep_search) calls its target-directory argument
-  // 'dir_path', which preReadHandler's Grep fallback
-  // (event.toolInput['path']) doesn't recognize, so that one remains remapped.
+  // Grep's real tool (grep_search) calls its target-directory argument 'dir_path', which preReadHandler's Grep fallback (event.toolInput['path']) doesn't recognize, so that one remains remapped.
   Grep: { dir_path: 'path' },
 }
 
@@ -190,6 +156,28 @@ function remapInputKeys(input: Record<string, unknown>, keyMap: Record<string, s
   return newInput
 }
 
+// Shared by the grok/gemini normalizePayload branches: both rename tool_name via a per-harness map, then remap tool_input's keys via a second per-harness map keyed off the mapped (canonical) tool name.
+function remapToolName(
+  obj: Record<string, unknown>,
+  toolName: string,
+  nameMap: Record<string, string>,
+  inputKeyMap: Record<string, Record<string, string>>,
+): Record<string, unknown> {
+  const mapped = nameMap[toolName]
+  const result = { ...obj }
+  if (mapped) {
+    result['tool_name'] = mapped
+    const rawInput = obj['tool_input']
+    if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
+      const keyMap = inputKeyMap[mapped]
+      if (keyMap) {
+        result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
+      }
+    }
+  }
+  return result
+}
+
 function grokToCanonicalWire(obj: Record<string, unknown>): Record<string, unknown> {
   const wire = { ...obj }
   if (typeof wire['toolName'] === 'string' && wire['tool_name'] === undefined) {
@@ -248,18 +236,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   if (harness === 'grok') {
-    const mapped = GROK_TOOL_NAME_MAP[toolName]
-    const result = { ...obj }
-    if (mapped) {
-      result['tool_name'] = mapped
-      const rawInput = obj['tool_input']
-      if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
-        const keyMap = GROK_INPUT_KEY_MAP[mapped]
-        if (keyMap) {
-          result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
-        }
-      }
-    }
+    const result = remapToolName(obj, toolName, GROK_TOOL_NAME_MAP, GROK_INPUT_KEY_MAP)
     result['_tg_harness'] = harness
     return result
   }
@@ -275,18 +252,7 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
   }
 
   if (harness === 'gemini') {
-    const mapped = GEMINI_TOOL_NAME_MAP[toolName]
-    const result = { ...obj }
-    if (mapped) {
-      result['tool_name'] = mapped
-      const rawInput = obj['tool_input']
-      if (typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)) {
-        const keyMap = GEMINI_INPUT_KEY_MAP[mapped]
-        if (keyMap) {
-          result['tool_input'] = remapInputKeys(rawInput as Record<string, unknown>, keyMap)
-        }
-      }
-    }
+    const result = remapToolName(obj, toolName, GEMINI_TOOL_NAME_MAP, GEMINI_INPUT_KEY_MAP)
     if ('functionCallId' in result && !('toolUseId' in result)) {
       result['toolUseId'] = result['functionCallId']
       delete result['functionCallId']
