@@ -20,7 +20,6 @@ export interface SnapshotResult {
 const KIND_READ = 'read'
 const KIND_PREDICTIVE = 'predictive'
 const VALID_KINDS = new Set([KIND_READ, KIND_PREDICTIVE])
-const _TRUNCATED_MARKER = Buffer.from('\n<snapshot truncated at ')
 const SESSION_DIR_RE = /[^a-zA-Z0-9_-]/g
 
 function sessionDir(sessionId: string): string | null {
