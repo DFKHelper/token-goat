@@ -384,3 +384,26 @@ describe('stats --window-days validation', () => {
     expect(stderr.join('')).toContain('--window-days')
   })
 })
+
+// Regression guard: cmdWaste's --top flag was the only --top-style flag in the CLI parsed via
+// requirePositiveInt instead of requireNonNegativeInt, contradicting the documented convention
+// (cli.ts's requireNonNegativeInt comment: "Zero is fine ... so only strictly-negative is
+// rejected") that every other --top/--limit/--head/--tail flag follows, and that
+// waste.ts::topExpensiveCalls's own `.slice(0, n)` call handles correctly for n=0. So
+// `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls
+// like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
+describe('waste --top 0 validation', () => {
+  it('accepts --top 0 like every other --top flag instead of requiring a strictly-positive value', async () => {
+    captureStderr()
+    await runCli(['waste', '--top', '0'])
+    // Pre-fix this exits 1 with "--top must be a positive number, got: \"0\"".
+    expect(stderr.join('')).not.toContain('must be a positive number')
+  })
+
+  it('still rejects a negative --top with a clean error', async () => {
+    captureStderr()
+    const code = await runCli(['waste', '--top', '-1'])
+    expect(code).toBe(1)
+    expect(stderr.join('')).toContain('--top')
+  })
+})
