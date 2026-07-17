@@ -143,6 +143,17 @@ describe('project', () => {
         const result = canonicalize('/mnt/c/foo\nbar');
         expect(result).toBe('c:/foo\nbar');
       });
+
+      // Regression: project.ts's local MSYS_PREFIX_RE required a mandatory trailing /rest group,
+      // unlike paths.ts's step-2b regex (comment there: "bare /c becomes c:/"), so a bare drive
+      // root like /c matched paths.ts::normalizePath but fell through unrewritten here -- the
+      // same divergence class as the WSL_PATH_RE bug above, this time on the MSYS branch.
+      // project.ts now imports paths.ts's exported MSYS_PATH_RE directly instead of a second,
+      // stricter copy.
+      it('rewrites a bare MSYS drive root (/c) to c:/, matching paths.ts::normalizePath', () => {
+        setPlatform('win32');
+        expect(canonicalize('/c')).toBe('c:/');
+      });
     });
   });
 
