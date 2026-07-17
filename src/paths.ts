@@ -11,19 +11,10 @@ import * as path from 'node:path'
 // Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization reuses this exact pattern instead of maintaining a second, flag-divergent copy.
 export const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 
-// Compiled once: matches a Git Bash / MSYS mount path /<drive>/rest, with the trailing
-// /rest optional so a bare drive root (`/c`) still matches and becomes `c:/` instead of
-// falling through unrewritten. The `s` flag makes `.` match newlines so paths containing
-// newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization
-// reuses this exact pattern instead of maintaining a second, mandatory-trailing-slash copy.
+// Compiled once: matches a Git Bash / MSYS mount path /<drive>/rest, with the trailing /rest optional so a bare drive root (`/c`) still matches and becomes `c:/` instead of falling through unrewritten. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization reuses this exact pattern instead of maintaining a second, mandatory-trailing-slash copy.
 export const MSYS_PATH_RE = /^\/([a-zA-Z])(\/.*)?$/s
 
-// Matches a UNC path's host+share segment once backslashes have already been converted to
-// forward slashes (e.g. `\\FileServer\Dev\...` -> `//FileServer/Dev/...`). Host and share names
-// are case-insensitive on Windows, exactly like a drive letter, so two differently-cased
-// references to the same network share must normalize to the same string. Only the host/share
-// segment is captured; everything beyond it is left untouched, matching how the drive-letter
-// fold below only lowercases the drive letter itself.
+// Matches a UNC path's host+share segment once backslashes have already been converted to forward slashes (e.g. `\\FileServer\Dev\...` -> `//FileServer/Dev/...`). Host and share names are case-insensitive on Windows, exactly like a drive letter, so two differently-cased references to the same network share must normalize to the same string. Only the host/share segment is captured; everything beyond it is left untouched, matching how the drive-letter fold below only lowercases the drive letter itself.
 const UNC_HOST_SHARE_RE = /^\/\/([^/]+)\/([^/]+)/
 
 // Cheap heuristic for a Windows 8.3 short-name path segment (e.g. `JOHNDO~1.ACM`): a tilde followed by a digit. Used to skip the syscall in expandShortPath for the overwhelming majority of paths that don't contain one.
@@ -95,14 +86,7 @@ const EXTENDED_PREFIX_RE = /^\\\\\?\\/
 export function normalizePath(p: string): string {
   let s = p
 
-  // Step 0: strip a `\\?\` extended-length-path prefix so it normalizes
-  // identically to its non-extended equivalent. `\\?\UNC\server\share\...`
-  // rewrites to the standard `\\server\share\...` UNC form first; a plain
-  // `\\?\C:\...` just drops the `\\?\` marker. Must run before the
-  // backslash->forward-slash conversion below, since the prefix is expressed
-  // in backslash form and (for the UNC case) `//?/...` would otherwise
-  // incorrectly match UNC_HOST_SHARE_RE with `?` as the host and `c:` as the
-  // "share".
+  // Step 0: strip a `\\?\` extended-length-path prefix so it normalizes identically to its non-extended equivalent. `\\?\UNC\server\share\...` rewrites to the standard `\\server\share\...` UNC form first; a plain `\\?\C:\...` just drops the `\\?\` marker. Must run before the backslash->forward-slash conversion below, since the prefix is expressed in backslash form and (for the UNC case) `//?/...` would otherwise incorrectly match UNC_HOST_SHARE_RE with `?` as the host and `c:` as the "share".
   if (EXTENDED_UNC_PREFIX_RE.test(s)) {
     s = '\\\\' + s.slice(8)
   } else if (EXTENDED_PREFIX_RE.test(s)) {
@@ -174,13 +158,7 @@ export function normalizeDarwinSystemAlias(p: string): string {
  *              working directory; `changed` passes its own repo root.
  */
 export function resolveIndexPath(file: string, base: string = process.cwd()): string {
-  // A Windows-drive-absolute file or base (C:/foo, from a WSL-Windows-interop process, a
-  // Windows caller, or a cwd carried over from a Windows session) must resolve using Windows
-  // semantics regardless of host: the ambient path.resolve is POSIX on a non-Windows host and
-  // doesn't recognize a drive letter as absolute in either argument, so it would join a
-  // drive-letter file onto base (or a relative file onto a drive-letter base) as if neither
-  // were absolute, corrupting the index key. path.win32.resolve recognizes drive letters on
-  // any host; when neither argument is Windows-absolute this still behaves like plain resolve.
+  // A Windows-drive-absolute file or base (C:/foo, from a WSL-Windows-interop process, a Windows caller, or a cwd carried over from a Windows session) must resolve using Windows semantics regardless of host: the ambient path.resolve is POSIX on a non-Windows host and doesn't recognize a drive letter as absolute in either argument, so it would join a drive-letter file onto base (or a relative file onto a drive-letter base) as if neither were absolute, corrupting the index key. path.win32.resolve recognizes drive letters on any host; when neither argument is Windows-absolute this still behaves like plain resolve.
   const isWindowsAbsolute = (s: string): boolean => /^[a-zA-Z]:[/\\]/.test(s)
   const resolve = isWindowsAbsolute(file) || isWindowsAbsolute(base) ? path.win32.resolve : path.resolve
   return normalizePath(resolve(base, file))
