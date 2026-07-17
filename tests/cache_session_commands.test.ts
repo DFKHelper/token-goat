@@ -163,6 +163,18 @@ describe('cmdBashHistory', () => {
     expect(parsed).toHaveLength(1)
   })
 
+  it('collapses a multi-line command onto one table row (regression: a heredoc/multi-line command\'s embedded newlines split the row across multiple printed lines, breaking the one-row-per-entry table structure)', () => {
+    const multilineCommand = "cat <<'EOF'\nfoo\nEOF"
+    const entry = { id: 'ml1', command: multilineCommand, output: 'foo\n', exitCode: 0, storedAt: Date.now(), sizeBytes: 3 }
+    storeBlob(BASH_OUTPUT_SUBDIR, 'ml1', entry)
+    cmdBashHistory({})
+    const lines = capturedOutput().split('\n').filter((l) => l.trim().length > 0)
+    // Header + exactly one row for the single stored entry — not split across extra lines.
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain('ml1')
+    expect(lines[1]).toContain('cat')
+  })
+
   it('respects --limit', () => {
     for (let i = 0; i < 5; i++) {
       const e = { id: `id${i}`, command: `cmd${i}`, output: '', exitCode: 0, storedAt: Date.now() - i * 1000, sizeBytes: 0 }

@@ -110,7 +110,12 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  ${pad('exit', 4)}  command\n`)
   for (const item of items) {
-    const preview = item.command.length > 80 ? item.command.slice(0, 77) + '...' : item.command
+    // A multi-line command (heredoc, chained script) embeds literal newlines/tabs into
+    // item.command; printed raw, each embedded line would break this fixed-width table's
+    // one-row-per-entry structure. Same defect class already fixed in mcp_compress.ts's
+    // cellText and resume.ts's bash-command line.
+    const flatCommand = item.command.replace(/[\t\r\n]+/g, ' ')
+    const preview = flatCommand.length > 80 ? flatCommand.slice(0, 77) + '...' : flatCommand
     process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${pad(String(item.exitCode), 4)}  ${preview}\n`)
   }
 }
@@ -145,7 +150,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  url\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${item.url}\n`)
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.bytes), 8)}  ${item.url.replace(/[\t\r\n]+/g, ' ')}\n`)
   }
 }
 
@@ -186,7 +191,7 @@ export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
   }
   process.stdout.write(`${pad('id', 18)}  ${pad('bytes', 8)}  tool\n`)
   for (const item of items) {
-    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${item.toolName}\n`)
+    process.stdout.write(`${pad(item.id, 18)}  ${pad(String(item.sizeBytes), 8)}  ${item.toolName.replace(/[\t\r\n]+/g, ' ')}\n`)
   }
 }
 
