@@ -39,21 +39,6 @@ export function envBool(key: string, defaultVal: boolean): boolean {
 }
 
 /**
- * Read a float env var, falling back to `defaultVal` on any parse failure.
- *
- * Guards `!Number.isFinite()` so an overflowing literal like `1e400`
- * (which `parseFloat` returns as `Infinity`) falls back to the default rather
- * than poisoning downstream arithmetic.
- */
-export function envFloat(key: string, defaultVal: number): number {
-  const raw = process.env[key]
-  if (raw === undefined || raw === '') return defaultVal
-  const val = parseFloat(raw)
-  if (isNaN(val) || !Number.isFinite(val)) return defaultVal
-  return val
-}
-
-/**
  * Read an integer env var, falling back to `defaultVal` on any parse failure.
  *
  * Uses a strict `^[+-]?\d+$` regex so floats (`1.5`) and scientific notation
