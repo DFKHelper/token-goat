@@ -468,13 +468,22 @@ const RUBY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['module', 'module'],
 ])
 
-function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
+// Shared walk for languages whose symbol extraction needs no function-local-scope tracking
+// (unlike Go/Rust, which thread `insideFunction` to exclude locals). `nameFor` defaults to
+// the common `name`-field lookup; callers with an irregular name location (e.g. C/C++
+// function declarators) override it.
+function extractSimpleSymbols(
+  root: TsNode,
+  filePath: string,
+  kindByType: ReadonlyMap<string, string>,
+  nameFor: (node: TsNode) => string | null = nodeName,
+): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   const visit = (node: TsNode): void => {
-    const kind = RUBY_KIND_BY_TYPE.get(node.type)
+    const kind = kindByType.get(node.type)
     if (kind !== undefined) {
-      const name = nodeName(node)
+      const name = nameFor(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
       }
@@ -487,6 +496,10 @@ function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
 
   visit(root)
   return out
+}
+
+function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  return extractSimpleSymbols(root, filePath, RUBY_KIND_BY_TYPE)
 }
 
 const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
@@ -500,24 +513,7 @@ const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
 ])
 
 function extractJavaSymbols(root: TsNode, filePath: string): SymbolEntry[] {
-  const out: SymbolEntry[] = []
-
-  const visit = (node: TsNode): void => {
-    const kind = JAVA_KIND_BY_TYPE.get(node.type)
-    if (kind !== undefined) {
-      const name = nodeName(node)
-      if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
-      }
-    }
-
-    for (const child of node.namedChildren) {
-      visit(child)
-    }
-  }
-
-  visit(root)
-  return out
+  return extractSimpleSymbols(root, filePath, JAVA_KIND_BY_TYPE)
 }
 
 const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
@@ -528,25 +524,10 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
 ])
 
 function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
-  const out: SymbolEntry[] = []
-
-  const visit = (node: TsNode): void => {
-    const kind = CPP_KIND_BY_TYPE.get(node.type)
-    if (kind !== undefined) {
-      // C/C++ function names live in a nested `declarator` chain, not a `name` field, so reuse the refs helper that descends it; other specifiers (class/struct/enum) do expose a `name` field.
-      const name = node.type === 'function_definition' ? cFunctionName(node) : nodeName(node)
-      if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
-      }
-    }
-
-    for (const child of node.namedChildren) {
-      visit(child)
-    }
-  }
-
-  visit(root)
-  return out
+  // C/C++ function names live in a nested `declarator` chain, not a `name` field, so reuse the refs helper that descends it; other specifiers (class/struct/enum) do expose a `name` field.
+  return extractSimpleSymbols(root, filePath, CPP_KIND_BY_TYPE, (node) =>
+    node.type === 'function_definition' ? cFunctionName(node) : nodeName(node),
+  )
 }
 
 // --- Reference (call-site) extraction via tree-sitter ----------------------
