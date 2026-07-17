@@ -235,7 +235,7 @@ export function getFileEntry(
 // exact/narrow searches want this for precision. 'OR' relaxes that to "any term", used as a
 // widen-on-empty fallback by searchSymbolsFts below for realistic multi-word natural-language
 // queries where requiring every word to co-occur is unrealistically strict.
-function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): string {
+export function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): string {
   const terms = query
     .split(/\s+/)
     .filter((t) => t.length > 0)
