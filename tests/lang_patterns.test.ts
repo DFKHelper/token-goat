@@ -378,4 +378,48 @@ describe('getMonitoringRecallHint', () => {
   it('does not fire for bare powershell without -Command', () => {
     expect(getMonitoringRecallHint('powershell -NoProfile')).toBeNull()
   })
+
+  // Regression guard: the destructive-cmdlet exclusion regex in isPsMultilineSystemQuery
+  // required a literal trailing "-" after the whole alternation, but the Invoke-(?:Expression|Command)
+  // and Clear-(?:Content|EventLog|Item) branches already end in their own suffix (e.g. "Invoke-Expression"),
+  // so the combined pattern could only match a nonexistent "Invoke-Expression-" / "Clear-Content-" string
+  // and never actually excluded those cmdlets from a multiline PS query block.
+  it('excludes multiline PS blocks containing Invoke-Expression', () => {
+    const cmd = 'powershell -Command "Invoke-Expression $x\nGet-Process"'
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('excludes multiline PS blocks containing Clear-Content', () => {
+    const cmd = 'powershell -Command "Clear-Content log.txt\nGet-Service"'
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('still excludes multiline PS blocks containing Stop-Process', () => {
+    const cmd = 'powershell -Command "Stop-Process -Name foo\nGet-Process"'
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('still returns a hint for a clean multiline Get-Process query', () => {
+    const cmd = 'powershell -Command "Write-Host hi\nGet-Process\nGet-Service"'
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  // Regression guard: the vite pattern's trailing `$` anchor required the command to end
+  // exactly at "vite"/"vite dev"/"vite build"/"vite preview" with nothing after, so any
+  // trailing flag (e.g. `vite build --watch`) fell through and got no recall hint at all,
+  // unlike every sibling framework dev-server pattern (next/nuxt/remix/astro) which are bare
+  // prefix matches. Fixed with a `\b` word-boundary anchor instead, which also must not
+  // collide with the separate `vitest` pattern declared later in the same array (`vite` is a
+  // literal string prefix of `vitest`, and MONITORING_COMMAND_PATTERNS is first-match-wins).
+  it('returns a hint for vite build with trailing flags', () => {
+    expect(getMonitoringRecallHint('vite build --watch')).not.toBeNull()
+  })
+
+  it('returns a hint for bare vite with trailing flags', () => {
+    expect(getMonitoringRecallHint('vite --host')).not.toBeNull()
+  })
+
+  it('matches vitest commands via the vitest pattern, not the vite pattern', () => {
+    expect(getMonitoringRecallHint('vitest run')).toBe('--grep "FAIL|PASS|Error|✓|✗"')
+  })
 })

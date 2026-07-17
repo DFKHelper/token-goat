@@ -152,14 +152,7 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^\s*(?:gradle|\.\/gradlew|gradlew)\b/i,
   // Python / pip
   /^\s*pip\s+(install|freeze)\b/i,
-  // npm audit / npm outdated — read-only reporting commands with no side
-  // effects, safe to cache/recall. Each resolves a `lockfile`-scoped
-  // fingerprint via bash_output_cache.ts's isNpmAuditCommand/
-  // isNpmOutdatedCommand, but that fingerprinting never actually ran outside
-  // their own unit tests until this entry, since neither subcommand was
-  // recognized by isBuildCommand (the generic cache-reachability gate in
-  // hooks_bash.ts). `npm install`/`npm ci`/`npm list`/`npm ls` are
-  // deliberately left out — see the negative-case test in lang_patterns.test.ts.
+  // npm audit / npm outdated — read-only reporting commands with no side effects, safe to cache/recall. Each resolves a `lockfile`-scoped fingerprint via bash_output_cache.ts's isNpmAuditCommand/isNpmOutdatedCommand, but that fingerprinting never actually ran outside their own unit tests until this entry, since neither subcommand was recognized by isBuildCommand (the generic cache-reachability gate in hooks_bash.ts). `npm install`/`npm ci`/`npm list`/`npm ls` are deliberately left out — see the negative-case test in lang_patterns.test.ts.
   /^\s*npm\s+(audit|outdated)\b/i,
   // Poetry
   /^\s*poetry\s+(install|update)\b/i,
@@ -314,7 +307,7 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   // Dev servers (Next, Vite, Nuxt, Remix, Astro)
   { pattern: /^(?:npx\s+)?next dev/, recallHint: '--tail 30 --grep "error|warn|ready|compiled"' },
   { pattern: /^(?:npx\s+)?next build/, recallHint: '--grep "error|warn|Failed|✓"' },
-  { pattern: /^(?:npx\s+)?vite(?:\s+dev|\s+build|\s+preview)?$/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?vite\b(?:\s+dev|\s+build|\s+preview)?/, recallHint: '--tail 20 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?nuxt dev/, recallHint: '--tail 30 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
   { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
@@ -398,8 +391,8 @@ function isPsMultilineSystemQuery(cmd: string): boolean {
   if (!body.includes('\n')) return false // single-line form is already covered by MONITORING_COMMAND_PATTERNS
   if (!/\bGet-(?:CimInstance|Process|Counter|Service|PSDrive|WmiObject)\b/i.test(body)) return false
   // Exclude blocks containing destructive or state-changing PS cmdlets
-  if (/\b(?:Remove|Set|New|Restart|Install|Uninstall|Enable|Disable|Grant|Revoke|Invoke-(?:Expression|Command)|Register|Unregister|Clear-(?:Content|EventLog|Item))-/i.test(body)) return false
-  if (/\bStop-(?:Process|Service|Computer)\b/i.test(body)) return false
+  if (/\b(?:Remove|Set|New|Restart|Install|Uninstall|Enable|Disable|Grant|Revoke|Register|Unregister)-/i.test(body)) return false
+  if (/\b(?:Stop-(?:Process|Service|Computer)|Invoke-(?:Expression|Command)|Clear-(?:Content|EventLog|Item))\b/i.test(body)) return false
   return true
 }
 
