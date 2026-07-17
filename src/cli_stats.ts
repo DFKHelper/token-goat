@@ -31,6 +31,17 @@ export function writeRaw(text: string): void {
  * Returns an empty string when no file has been read more than once — single-
  * access sessions produce no actionable nudge.  Fail-soft: errors return "".
  */
+/** Format ranked (path, count) entries as the "Top files this session:" block, or "" if empty. */
+function formatTopFiles(ranked: Array<{ path: string; count: number }>): string {
+  if (ranked.length === 0) return ''
+  const lines = ['Top files this session:']
+  for (const { path: filePath, count } of ranked) {
+    const basename = path.basename(filePath)
+    lines.push(`  ${count.toString().padStart(3)}x  ${basename}  (${filePath})`)
+  }
+  return lines.join('\n')
+}
+
 export function renderTopSessionFiles(topN: number = 5): string {
   try {
     const sessionFiles = getSessionFiles()
@@ -40,15 +51,9 @@ export function renderTopSessionFiles(topN: number = 5): string {
       .filter((e) => e.readCount > 1)
       .sort((a, b) => b.readCount - a.readCount)
       .slice(0, topN)
+      .map((e) => ({ path: e.path, count: e.readCount }))
 
-    if (ranked.length === 0) return ''
-
-    const lines = ['Top files this session:']
-    for (const entry of ranked) {
-      const basename = path.basename(entry.path)
-      lines.push(`  ${entry.readCount.toString().padStart(3)}x  ${basename}  (${entry.path})`)
-    }
-    return lines.join('\n')
+    return formatTopFiles(ranked)
   } catch {
     return ''
   }
@@ -85,14 +90,9 @@ export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessions
           .sort((a, b) => b.count - a.count)
           .slice(0, topN)
 
-        if (ranked.length === 0) continue
-
-        const lines = ['Top files this session:']
-        for (const { path: filePath, count } of ranked) {
-          const basename = path.basename(filePath)
-          lines.push(`  ${count.toString().padStart(3)}x  ${basename}  (${filePath})`)
-        }
-        return lines.join('\n')
+        const rendered = formatTopFiles(ranked)
+        if (rendered === '') continue
+        return rendered
       } catch {
         continue
       }

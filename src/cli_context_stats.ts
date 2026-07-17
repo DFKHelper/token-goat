@@ -26,12 +26,6 @@ export function tok(filePath: string): number {
   }
 }
 
-/** Format a fraction as a percentage string, e.g. "12.3%". */
-export function pct(a: number, b: number): string {
-  if (b === 0) return '0.0%'
-  return `${((a / b) * 100).toFixed(1)}%`
-}
-
 /**
  * Return CLAUDE.md files that Claude Code will load for the given project root.
  *
