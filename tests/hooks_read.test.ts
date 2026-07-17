@@ -2589,6 +2589,26 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     }
   })
 
+  function makeToolResultsFile(content = 'tool result data'): string {
+    const sessionDir = path.join(os.tmpdir(), `tg-session-${process.pid}-${Math.random().toString(36).slice(2)}`)
+    const toolResultsDir = path.join(sessionDir, 'tool-results')
+    fs.mkdirSync(toolResultsDir, { recursive: true })
+    const p = path.join(toolResultsDir, 'b36vfnpr3.txt')
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+    return p
+  }
+
+  it('denies (does not pass) a large first read of tool-results/*.txt instead of falling through to the lenient generic threshold with no advisory (regression: a 33,261-byte first read of tool-results/*.txt produced zero hint or redirect, unlike the equivalent-sized tasks/*.output case just above)', () => {
+    const p = makeToolResultsFile('x'.repeat(25 * 1024)) // above TASK_OUTPUT_DENY_BYTES (20KB), well under the 100KB generic threshold
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
+      expect(result.message).toContain('--tail 50')
+    }
+  })
+
   it('denies re-read of tasks/*.output when content unchanged since last read', () => {
     const content = 'task output data\nline two\n'
     const p = makeTasksOutputFile(content)
