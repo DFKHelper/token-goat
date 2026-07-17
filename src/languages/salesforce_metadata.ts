@@ -243,6 +243,27 @@ function emit(symbols: SymbolEntry[], seen: Set<string>, symbol: SymbolEntry): v
   symbols.push(symbol)
 }
 
+// Shared by the .field-meta.xml and .validationrule-meta.xml branches below: both emit an
+// object-scoped metadata symbol (plus an `Object.Name`-qualified duplicate when the object
+// name is resolvable) -- identical shape, differing only in the metadata suffix (used for
+// name resolution, case-sensitive per Salesforce's own file-naming convention) and kind.
+function emitObjectScopedMetadata(
+  symbols: SymbolEntry[],
+  seen: Set<string>,
+  filePath: string,
+  content: string,
+  whole: AdapterSpan,
+  metadataSuffix: string,
+  kind: string,
+): void {
+  const name = metadataName(filePath, content, metadataSuffix)
+  const objectName = objectNameFromPath(filePath) ?? ''
+  emit(symbols, seen, makeSpanSymbol(filePath, name, kind, whole, objectName))
+  if (objectName !== '') {
+    emit(symbols, seen, makeSpanSymbol(filePath, `${objectName}.${name}`, kind, whole, objectName))
+  }
+}
+
 export function extractSalesforceMetadata(
   rawContent: string,
   filePath: string,
@@ -267,22 +288,12 @@ export function extractSalesforceMetadata(
   }
 
   if (base.endsWith('.field-meta.xml')) {
-    const name = metadataName(filePath, content, '.field-meta.xml')
-    const objectName = objectNameFromPath(filePath) ?? ''
-    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_custom_field', whole, objectName))
-    if (objectName !== '') {
-      emit(symbols, seen, makeSpanSymbol(filePath, `${objectName}.${name}`, 'sf_custom_field', whole, objectName))
-    }
+    emitObjectScopedMetadata(symbols, seen, filePath, content, whole, '.field-meta.xml', 'sf_custom_field')
     return { symbols, refs }
   }
 
   if (base.endsWith('.validationrule-meta.xml')) {
-    const name = metadataName(filePath, content, '.validationRule-meta.xml')
-    const objectName = objectNameFromPath(filePath) ?? ''
-    emit(symbols, seen, makeSpanSymbol(filePath, name, 'sf_validation_rule', whole, objectName))
-    if (objectName !== '') {
-      emit(symbols, seen, makeSpanSymbol(filePath, `${objectName}.${name}`, 'sf_validation_rule', whole, objectName))
-    }
+    emitObjectScopedMetadata(symbols, seen, filePath, content, whole, '.validationRule-meta.xml', 'sf_validation_rule')
     return { symbols, refs }
   }
 
