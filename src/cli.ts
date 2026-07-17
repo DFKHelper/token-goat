@@ -15,9 +15,7 @@ import { Command } from 'commander'
 import * as fs from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
-// Type-only imports: erased at compile time, so referencing them here does not
-// eagerly load mcp_server.js (and transitively @modelcontextprotocol/sdk) at CLI
-// startup. The runtime values are lazy-imported only inside cmdMcpServe.
+// Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively @modelcontextprotocol/sdk) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
@@ -157,9 +155,7 @@ function err(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
-// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean
-// CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3
-// rejects with an opaque "datatype mismatch" error).
+// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3 rejects with an opaque "datatype mismatch" error).
 function requireInt(flag: string, raw: string): number {
   // Only accept exact integer literals (optional leading minus, followed by digits)
   if (!/^-?\d+$/.test(raw)) {
@@ -172,12 +168,7 @@ function requireInt(flag: string, raw: string): number {
   return n
 }
 
-// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds
-// either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the
-// opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit"
-// (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as
-// "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both
-// SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
+// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
 function requireNonNegativeInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n < 0) {
@@ -196,9 +187,7 @@ function requirePositiveInt(flag: string, raw: string): number {
 
 // --- Command handlers -------------------------------------------------------
 
-// Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in
-// read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic
-// in-process without going through the CLI/commander layer.
+// Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
 async function cmdSemantic(query: string, opts: { limit?: string }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   const { text, code } = await runSemantic(query, { limit })
@@ -232,34 +221,18 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
-    // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below.
-    // Without this pre-filter, indexFileSync's internal purge would run and then the
-    // unconditional indexFileEmbeddings call below would immediately re-embed a file meant
-    // to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
+    // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below. Without this pre-filter, indexFileSync's internal purge would run and then the unconditional indexFileEmbeddings call below would immediately re-embed a file meant to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
     if (isParseSkipEligible(key, ixCfg)) {
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
-    // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously
-    // called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally
-    // for every tracked file on every invocation, even ones byte-identical to what was already
-    // indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not
-    // unchanged" so the file still gets a normal reindex attempt below. Parse and embed
-    // freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file
-    // whose embedding previously failed still gets re-embedded even when its parse is current.
+    // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current.
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
     const parseUnchanged = sha !== null && entry?.sha === sha
-    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's
-    // makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this
-    // sha counts as fresh; while enabled, a bare sha match is fresh (the file was really
-    // embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized
-    // salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and
-    // an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
+    // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
-    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped
-    // only because the optional model/sqlite-vec deps were absent) treated as stale so it is
-    // re-embedded once the deps are installed, instead of looking permanently fresh.
+    // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
     const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
     const embedUnchanged =
       parseUnchanged &&
@@ -274,22 +247,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
       try {
         indexFileSync(key, dbPath)
       } catch (e) {
-        // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all
-        // common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only
-        // fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and
-        // rethrows everything else so callers can report it -- worker.ts's makeIndexer already
-        // catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop
-        // had no try/catch at all, so the same rethrow aborted the whole command uncaught.
+        // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and rethrows everything else so callers can report it -- worker.ts's makeIndexer already catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop had no try/catch at all, so the same rethrow aborted the whole command uncaught.
         failed += 1
         err(`token-goat: index: failed to index '${key}': ${extractErrorMessage(e)}`)
         continue
       }
     }
     if (!embedUnchanged) {
-      // Best-effort semantic-embeddings step for the same file, run right after its syntactic
-      // parse; awaited here because this is a one-shot foreground command the caller waits on,
-      // unlike the worker's incremental drain which fires this and forgets it. Passing sha lets
-      // it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
+      // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
       await indexFileEmbeddings(key, dbPath, sha ?? undefined)
     }
     indexed += 1
@@ -314,11 +279,7 @@ function cmdMap(opts: { compact?: boolean }): void {
   out(formatProjectMap(map, compact))
 }
 
-// Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The
-// returned promise only resolves once the underlying Server reports its connection closed (via
-// the Protocol-level `onclose` hook, set after `connect()` so it's not clobbered by the wiring
-// `connect()` itself does to the transport's own `onclose`) -- resolving early here would let
-// `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
+// Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The returned promise only resolves once the underlying Server reports its connection closed (via the Protocol-level `onclose` hook, set after `connect()` so it's not clobbered by the wiring `connect()` itself does to the transport's own `onclose`) -- resolving early here would let `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
 async function cmdMcpServe(): Promise<void> {
   let createMcpServer: typeof CreateMcpServerFn
   let StdioServerTransport: typeof StdioServerTransportClass
@@ -360,9 +321,7 @@ async function cmdInstall(opts: {
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
 
-  // Base install (unconditional, not gated behind any --<harness> flag): the
-  // CLAUDE.md routing block and the token-goat skill, per README's "What
-  // gets installed?" table.
+  // Base install (unconditional, not gated behind any --<harness> flag): the CLAUDE.md routing block and the token-goat skill, per README's "What gets installed?" table.
   const claudeMdResult = installClaudeMd()
   out(
     claudeMdResult.alreadyInstalled
@@ -396,11 +355,7 @@ async function cmdInstall(opts: {
     }
   }
 
-  // --pi is additive on both install and uninstall, exactly like --codex.
-  // --local only has meaning combined with --pi; passed alone it is silently
-  // ignored (no dedicated validation), matching this CLI's existing
-  // convention of independently-parsed boolean flags (e.g. -p/--project has
-  // no combination guard with anything else either).
+  // --pi is additive on both install and uninstall, exactly like --codex. --local only has meaning combined with --pi; passed alone it is silently ignored (no dedicated validation), matching this CLI's existing convention of independently-parsed boolean flags (e.g. -p/--project has no combination guard with anything else either).
   if (opts.pi === true) {
     const piResult = installPi({ local: opts.local === true })
     if (piResult.alreadyInstalled) {
@@ -440,11 +395,7 @@ async function cmdInstall(opts: {
     }
   }
 
-  // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`,
-  // which loads the same Claude Code settings.json installHooks() just
-  // wrote. There is no separate Hermes config file to patch, so this is a
-  // verification-only flag -- run the same isInstalled() check `doctor`
-  // uses and report whether the hooks Hermes will inherit are really there.
+  // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
       isInstalled(scope)
@@ -512,9 +463,7 @@ function cmdUninstall(opts: {
   const skillRemoved = uninstallSkill()
   out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
 
-  // --codex is additive on both install and uninstall (README: "Add --codex ...
-  // to also strip those integrations"), so it runs on top of the base uninstall
-  // above rather than replacing it.
+  // --codex is additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so it runs on top of the base uninstall above rather than replacing it.
   if (opts.codex === true) {
     const codexRemoved = uninstallCodex()
     out(
@@ -534,10 +483,7 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --pi is additive, exactly like --codex above. --local narrows removal to the
-  // project-local scope only; without it, uninstallPi cleans up wherever the
-  // extension actually is (global and/or local) instead of requiring the caller
-  // to remember which scope --pi was originally installed with.
+  // --pi is additive, exactly like --codex above. --local narrows removal to the project-local scope only; without it, uninstallPi cleans up wherever the extension actually is (global and/or local) instead of requiring the caller to remember which scope --pi was originally installed with.
   if (opts.pi === true) {
     const piRemoved = opts.local === true ? uninstallPi({ local: true }) : uninstallPi()
     out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
@@ -553,9 +499,7 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --copilot is additive, exactly like --codex above. Same auto-detect-both-scopes
-  // reasoning as --pi above: --local narrows removal to the project scope only;
-  // without it, uninstallCopilotCli cleans up wherever the hook config actually is.
+  // --copilot is additive, exactly like --codex above. Same auto-detect-both-scopes reasoning as --pi above: --local narrows removal to the project scope only; without it, uninstallCopilotCli cleans up wherever the hook config actually is.
   if (opts.copilot === true) {
     const copilotRemoved = opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()
     out(
@@ -575,10 +519,7 @@ function cmdUninstall(opts: {
     )
   }
 
-  // --hermes removes no files: Hermes shares the Claude Code hook entries
-  // uninstallHooks() above already stripped, so this only exists for CLI
-  // symmetry with the other harness flags (README's uninstall table lists
-  // --hermes alongside the rest).
+  // --hermes removes no files: Hermes shares the Claude Code hook entries uninstallHooks() above already stripped, so this only exists for CLI symmetry with the other harness flags (README's uninstall table lists --hermes alongside the rest).
   if (opts.hermes === true) {
     out('No separate Hermes integration to remove (it shares the Claude Code hook entries).')
   }
@@ -589,11 +530,7 @@ function cmdWorkerStart(): void {
     out('Worker already running.')
     return
   }
-  // startDetachedWorker's own atomic pid-file claim (see worker.ts::claimWorkerPidFile) is the
-  // real guard against the TOCTOU race above: two near-simultaneous `worker start` invocations
-  // can both pass the isWorkerRunning() check above, but only one of them can win the exclusive
-  // pid-file create that follows, so the loser reports this cleanly instead of orphaning a
-  // second, unstoppable daemon.
+  // startDetachedWorker's own atomic pid-file claim (see worker.ts::claimWorkerPidFile) is the real guard against the TOCTOU race above: two near-simultaneous `worker start` invocations can both pass the isWorkerRunning() check above, but only one of them can win the exclusive pid-file create that follows, so the loser reports this cleanly instead of orphaning a second, unstoppable daemon.
   try {
     const pid = startDetachedWorker()
     out(`Worker started (pid ${pid}).`)
@@ -674,7 +611,7 @@ function cmdRecall(query: string, opts: { type?: string; limit?: string; json?: 
   }
   runRecallCommand(query, {
     ...(type !== undefined ? { type } : {}),
-    ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
+    ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
     ...(opts.json === true ? { json: true } : {}),
   })
 }
@@ -742,11 +679,7 @@ function _applyFiltersAndPrint(
 
   let result = lines
   if (opts.head === undefined && opts.tail === undefined) {
-    // Covers both "no filters at all" and "--grep alone" -- the latter is the
-    // single most common recall pattern this CLI's own hint text pushes users
-    // toward (bash-output/web-output --grep with no --head/--tail), and left
-    // unbounded here it could return an arbitrarily large number of matching
-    // lines with no truncation at all.
+    // Covers both "no filters at all" and "--grep alone" -- the latter is the single most common recall pattern this CLI's own hint text pushes users toward (bash-output/web-output --grep with no --head/--tail), and left unbounded here it could return an arbitrarily large number of matching lines with no truncation at all.
     result = applyElision(lines, headN, tailN)
   } else if (opts.head !== undefined && opts.tail !== undefined) {
     result = applyElision(lines, headN, tailN)
@@ -811,12 +744,7 @@ function cmdWebOutput(
   _applyFiltersAndPrint(content, opts)
 }
 
-// MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed
-// ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already
-// resolves one — this command exists for discoverability (the id printed in a
-// `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail
-// clearly on a non-MCP id rather than silently serving whatever bash-output happens
-// to be stored under it.
+// MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
 function cmdMcpOutput(
   id: string | undefined,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
@@ -1158,9 +1086,7 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
     try {
       body = fs.readFileSync(opts.path, 'utf-8')
     } catch (e) {
-      // TOCTOU: the file can vanish between the existsSync check above and this read (race,
-      // or a symlink target disappearing). Re-throw as the same friendly CliError the
-      // existsSync guard exists to produce, rather than letting a raw ENOENT reach the user.
+      // TOCTOU: the file can vanish between the existsSync check above and this read (race, or a symlink target disappearing). Re-throw as the same friendly CliError the existsSync guard exists to produce, rather than letting a raw ENOENT reach the user.
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new CliError(`skill file not found: ${opts.path}`)
       }
@@ -1360,18 +1286,14 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
     // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.
     fs.writeFileSync(tmp, data, { mode: 0o600 })
-    // Preserve dest's existing file mode (e.g. the exec bit on a committed script) across
-    // the rewrite -- see atomicWriteCore in util.ts for the same fix and full rationale.
-    // A brand-new dest has no mode to inherit, so the tmp file keeps its 0o600 default.
+    // Preserve dest's existing file mode (e.g. the exec bit on a committed script) across the rewrite -- see atomicWriteCore in util.ts for the same fix and full rationale. A brand-new dest has no mode to inherit, so the tmp file keeps its 0o600 default.
     try {
       const destMode = fs.statSync(dest).mode
       fs.chmodSync(tmp, destMode)
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
     }
-    // Retries the rename on the same transient Windows lock errno (EPERM/EBUSY/ETXTBSY)
-    // that atomicWriteCore retries, so a briefly-locked destination behaves the same way
-    // here as it does for every other atomic write path in the codebase.
+    // Retries the rename on the same transient Windows lock errno (EPERM/EBUSY/ETXTBSY) that atomicWriteCore retries, so a briefly-locked destination behaves the same way here as it does for every other atomic write path in the codebase.
     withRetryOnLock(() => {
       try {
         fs.renameSync(tmp, dest)
@@ -1642,11 +1564,7 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   validateWritablePath(file, 'target file')
 
   const targetBuf = readFileBoundedRaw(file, 'target file', true)
-  // Optimistic-concurrency guard: the snippet match above only protects the matched region --
-  // a concurrent write to any OTHER part of the file between this read and the final rename
-  // would otherwise be silently lost (atomicWriteBuffer rewrites the whole file, last-writer-wins).
-  // Best-effort, not a lock: a race between the re-stat below and the rename itself is accepted
-  // residual risk, consistent with this codebase's other lock patterns.
+  // Optimistic-concurrency guard: the snippet match above only protects the matched region -- a concurrent write to any OTHER part of the file between this read and the final rename would otherwise be silently lost (atomicWriteBuffer rewrites the whole file, last-writer-wins). Best-effort, not a lock: a race between the re-stat below and the rename itself is accepted residual risk, consistent with this codebase's other lock patterns.
   let preWriteStat: fs.Stats | undefined
   try {
     preWriteStat = fs.statSync(file)
@@ -1683,10 +1601,7 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
     throw new CliError('old string cannot be empty')
   }
 
-  // Byte-exact match/replace: the target file (and the --old-from/--new-from/--old-b64/--new-b64
-  // inputs themselves) may contain bytes that are not valid UTF-8. Decoding any of them to a string
-  // and re-encoding would silently replace every such byte with U+FFFD (ef bf bd) on write. Reading
-  // and matching everything as raw Buffers leaves every byte — valid UTF-8 or not — untouched.
+  // Byte-exact match/replace: the target file (and the --old-from/--new-from/--old-b64/--new-b64 inputs themselves) may contain bytes that are not valid UTF-8. Decoding any of them to a string and re-encoding would silently replace every such byte with U+FFFD (ef bf bd) on write. Reading and matching everything as raw Buffers leaves every byte — valid UTF-8 or not — untouched.
 
   const matches: number[] = []
   let cursor = 0
@@ -1717,14 +1632,10 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   const replacedBuf = Buffer.concat(parts)
 
   if (preWriteStat !== undefined) {
-    // Test-only seam: widens the read->re-stat window so a regression test can deterministically
-    // force a concurrent modification to land inside it, instead of relying on OS timing jitter.
-    // No-op unless a test explicitly sets this env var; never set in normal operation.
+    // Test-only seam: widens the read->re-stat window so a regression test can deterministically force a concurrent modification to land inside it, instead of relying on OS timing jitter. No-op unless a test explicitly sets this env var; never set in normal operation.
     const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
     if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
-      // Deterministic readiness signal for the regression test: emitted only under the same
-      // test-only env var, right as the delay window opens, so the test can land its concurrent
-      // write inside the window instead of guessing at CLI startup latency.
+      // Deterministic readiness signal for the regression test: emitted only under the same test-only env var, right as the delay window opens, so the test can land its concurrent write inside the window instead of guessing at CLI startup latency.
       process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
       sleepSync(testDelayMs)
     }
@@ -1951,9 +1862,7 @@ export function buildProgram(): Command {
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
       process.exitCode = undefined
-      // loadConfig() silently falls back to defaults on a config.toml parse failure, same as
-      // when the file is simply missing -- surface the distinction here, once per invocation,
-      // so a corrupt config doesn't look identical to "no config yet" for every command.
+      // loadConfig() silently falls back to defaults on a config.toml parse failure, same as when the file is simply missing -- surface the distinction here, once per invocation, so a corrupt config doesn't look identical to "no config yet" for every command.
       loadConfig()
       const parseErr = getLastConfigParseError()
       if (parseErr !== null) {
@@ -2983,14 +2892,7 @@ export function buildProgram(): Command {
  * let the process exit naturally so buffered stdout flushes first.
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
-  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts):
-  // `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered
-  // commander option or command anywhere in buildProgram, so it must be intercepted here, before
-  // parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the
-  // freshly-spawned daemon child exits immediately, silently disabling the entire detached
-  // background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than
-  // "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal
-  // string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
+  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts): `spawn(node, [thisModule, '--worker-daemon'])`, i.e. always argv[2]. It is not a registered commander option or command anywhere in buildProgram, so it must be intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an unknown option and the freshly-spawned daemon child exits immediately, silently disabling the entire detached background-indexing feature (`token-goat worker start`). Checking only argv[2] (rather than "anywhere in argv") avoids hijacking an unrelated command that merely carries that literal string as one of its own arguments, e.g. `token-goat grep -- --worker-daemon`.
   if (argv[2] === '--worker-daemon') {
     runDetachedWorkerDaemon()
     return
