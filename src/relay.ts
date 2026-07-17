@@ -151,17 +151,11 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
       ? (rawInput as Record<string, unknown>)
       : {}
 
-  // Prefer snake_case `session_id` (Claude Code wire format); fall back to
-  // camelCase `sessionId` for harnesses that emit camelCase payloads (e.g. Grok,
-  // which inherits claudecode's 7-event hook wiring but sends `sessionId`). Without
-  // this, non-tool events (stop/pre_compact/notification/...) load and save session
-  // state under an empty string.
+  // Prefer snake_case `session_id` (Claude Code wire format); fall back to camelCase `sessionId` for harnesses that emit camelCase payloads (e.g. Grok, which inherits claudecode's 7-event hook wiring but sends `sessionId`). Without this, non-tool events (stop/pre_compact/notification/...) load and save session state under an empty string.
   const rawSession = obj['session_id'] ?? obj['sessionId']
   const sessionId = typeof rawSession === 'string' ? rawSession : ''
 
-  // agent_id (Claude Code's subagent-invocation id) is present only when this hook
-  // fired inside a subagent call; undefined on the main thread. camelCase fallback
-  // mirrors sessionId's harness-tolerance above.
+  // agent_id (Claude Code's subagent-invocation id) is present only when this hook fired inside a subagent call; undefined on the main thread. camelCase fallback mirrors sessionId's harness-tolerance above.
   const rawAgentId = obj['agent_id'] ?? obj['agentId']
   const agentId = typeof rawAgentId === 'string' && rawAgentId !== '' ? rawAgentId : undefined
 
@@ -197,17 +191,7 @@ function sessionStateKey(event: HookEvent): string {
  * there is no benefit to memoizing and no stale-cache risk to worry about.
  */
 function harnessForNormalization(): Harness {
-  // detectHarness() (bridges/registry.ts) can return 'gemini' (or 'hermes' /
-  // 'openclaw') via env-var detection -- it is the single canonical
-  // implementation, unioned with the harness set compact.ts used to detect
-  // separately. installGemini() (bridges/gemini_install.ts) wires
-  // `token-goat hook <event>` directly into ~/.gemini/settings.json (no shim
-  // process like Codex's, so no other layer sets a harness flag) -- the child
-  // process inherits Gemini CLI's own environment (GEMINI_API_KEY /
-  // GOOGLE_API_KEY), so detectHarness() resolving to 'gemini' here is what
-  // makes normalizePayload()'s 'gemini' branch in hooks_cli.ts reachable for
-  // a real Gemini CLI install. hermes/openclaw still have no bridge/
-  // payload-writer, so they fall through to 'claude' unchanged for now.
+  // detectHarness() (bridges/registry.ts) can return 'gemini' (or 'hermes' / 'openclaw') via env-var detection -- it is the single canonical implementation, unioned with the harness set compact.ts used to detect separately. installGemini() (bridges/gemini_install.ts) wires `token-goat hook <event>` directly into ~/.gemini/settings.json (no shim process like Codex's, so no other layer sets a harness flag) -- the child process inherits Gemini CLI's own environment (GEMINI_API_KEY / GOOGLE_API_KEY), so detectHarness() resolving to 'gemini' here is what makes normalizePayload()'s 'gemini' branch in hooks_cli.ts reachable for a real Gemini CLI install. hermes/openclaw still have no bridge/payload-writer, so they fall through to 'claude' unchanged for now.
   const detected = detectHarness()
   if (detected === 'codex') return 'codex'
   if (detected === 'gemini') return 'gemini'
@@ -233,26 +217,13 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
     if (!isHookEventName(eventName)) {
       return '{}'
     }
-    // Codex and Gemini send harness-native
-    // tool names (e.g. `bash`, `read_file`) that never match the canonical names
-    // (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }).
-    // Normalization is scoped to the two tool-scoped events: normalizePayload()
-    // treats a payload with no tool_name as invalid and returns {}, which would
-    // silently drop session_id off pre_compact/stop/notification payloads if run
-    // unconditionally.
+    // Codex and Gemini send harness-native tool names (e.g. `bash`, `read_file`) that never match the canonical names (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }). Normalization is scoped to the two tool-scoped events: normalizePayload() treats a payload with no tool_name as invalid and returns {}, which would silently drop session_id off pre_compact/stop/notification payloads if run unconditionally.
     const payload =
       eventName === 'pre_tool_use' || eventName === 'post_tool_use'
         ? normalizePayload(rawPayload, harnessForNormalization())
         : rawPayload
     const event = buildEvent(eventName, payload)
-    // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the
-    // environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi,
-    // Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only
-    // on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived
-    // process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a
-    // brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing,
-    // context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once,
-    // before any handler runs, rather than patching each getSessionId() call site individually.
+    // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually.
     if (!process.env['CLAUDE_CODE_SESSION_ID'] && event.sessionId) {
       process.env['CLAUDE_CODE_SESSION_ID'] = event.sessionId
     }
