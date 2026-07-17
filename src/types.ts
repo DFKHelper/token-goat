@@ -54,23 +54,6 @@ export const HOOK_EVENTS = [
 
 export type HookEventName = (typeof HOOK_EVENTS)[number]
 
-/**
- * Canonical tool names token-goat intercepts.
- *
- * Harness-specific aliases are normalized to these before lookup. Kept as a
- * `ReadonlySet` so membership checks are O(1) and the set cannot be mutated.
- */
-export const CANONICAL_TOOLS: ReadonlySet<string> = new Set([
-  'Read',
-  'Edit',
-  'Write',
-  'Bash',
-  'Glob',
-  'Grep',
-  'WebFetch',
-  'Agent',
-])
-
 /** Result of spawning git via `runGit`. */
 export interface GitResult {
   readonly stdout: string

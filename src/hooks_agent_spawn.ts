@@ -91,7 +91,7 @@ function buildSubagentBriefing(): string {
 }
 
 function preAgentHandler(event: HookEvent): HookOutput {
-  // Only fire on Agent tool (matching the exact tool name in CANONICAL_TOOLS)
+  // Only fire on Agent tool
   if (event.toolName !== 'Agent') return passOutput()
 
   const toolInput = event.toolInput
