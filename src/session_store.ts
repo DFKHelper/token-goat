@@ -135,14 +135,6 @@ function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
   return { path: p, readCount, lastReadAt: lastReadTs * 1000, wasEdited, sizeBytes }
 }
 
-/** Coerce an untrusted parsed-JSON value into a valid (possibly empty)
- * {@link SerializedSession}, dropping anything malformed. Never throws.
- *
- * Handles both the TS array format (`files: FileEntry[]`) and the legacy Python
- * dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`).
- * Python-format files are transparently migrated to the TS shape on load; the
- * next {@link saveSessionState} call then writes the file in the TS format so
- * subsequent loads use the fast path automatically. */
 /** Coerce an untrusted value into the persisted line-ranges shape, dropping anything malformed. Never throws. */
 function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
   if (!Array.isArray(raw)) return []
@@ -161,6 +153,14 @@ function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
   return out
 }
 
+/** Coerce an untrusted parsed-JSON value into a valid (possibly empty)
+ * {@link SerializedSession}, dropping anything malformed. Never throws.
+ *
+ * Handles both the TS array format (`files: FileEntry[]`) and the legacy Python
+ * dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`).
+ * Python-format files are transparently migrated to the TS shape on load; the
+ * next {@link saveSessionState} call then writes the file in the TS format so
+ * subsequent loads use the fast path automatically. */
 function coerce(raw: unknown): SerializedSession {
   const o = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const files: FileEntry[] = []
