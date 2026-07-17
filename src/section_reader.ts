@@ -40,12 +40,7 @@ interface SectionHeader {
 }
 
 /** Kind of header finder that produced the headers. */
-// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the
-// current section if it is NOT a strict dotted descendant, matching TOML's real nesting
-// convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and
-// the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or
-// [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end
-// strictly at the next header line regardless of dotted-prefix overlap.
+// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap.
 type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python'
 
 /**
@@ -61,9 +56,7 @@ function parseHeadingSpec(
 ): { base: string; ordinal: number | null } {
   const m = /^(.*?)#(\d+)$/.exec(spec)
   if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-    // A trailing #<digits> is normally an ordinal disambiguator (e.g. "Install#2"). But if a real
-    // heading text matches the full spec verbatim, the digits are part of the heading itself
-    // (e.g. "Issue #42") -- use the spec as-is rather than splitting off an ordinal.
+    // A trailing #<digits> is normally an ordinal disambiguator (e.g. "Install#2"). But if a real heading text matches the full spec verbatim, the digits are part of the heading itself (e.g. "Issue #42") -- use the spec as-is rather than splitting off an ordinal.
     const specLower = spec.trim().toLowerCase()
     const isLiteralHeading = headers?.some((h) => h.heading.trim().toLowerCase() === specLower) ?? false
     if (isLiteralHeading) {
@@ -115,18 +108,11 @@ function normalizeHeadingStrip(s: string): string {
 }
 
 const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
-// TOML permits a trailing `# comment` after a table header, and INI files very commonly write
-// `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s)
-// without treating the header line as anything other than a table header. Deliberately NOT fully
-// unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the
-// unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be
-// misread as a table header, which the comment-only relaxation avoids.
+// TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids.
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
-// A generic `key = value` or `key:` block header at column zero. A bare URL on its own line
-// (e.g. "https://example.com") must NOT match as a false "https" heading -- the colon there
-// is a URL scheme separator immediately followed by "//", not a key/value split.
+// A generic `key = value` or `key:` block header at column zero. A bare URL on its own line (e.g. "https://example.com") must NOT match as a false "https" heading -- the colon there is a URL scheme separator immediately followed by "//", not a key/value split.
 const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 // Mirrors ENV_KEY_RE in languages/ini_idx.ts - .env/.envrc files commonly prefix an exported
 // key with `export `, which the plain KEYVALUE_HEADER_RE above does not tolerate.
@@ -221,11 +207,7 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
 function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   const indentStack: number[] = []
-  // Tracks a `"""`/`'''` triple-quoted string left open across lines, shared with the toml
-  // table finder's state machine (lineOpenDelimiterAfter, in parser.ts) so a `def`/`class` line
-  // that lives entirely inside a docstring/template string body is not mistaken for a real
-  // header - matching what the tree-sitter Python indexer already sees, since a string node
-  // never yields symbols.
+  // Tracks a `"""`/`'''` triple-quoted string left open across lines, shared with the toml table finder's state machine (lineOpenDelimiterAfter, in parser.ts) so a `def`/`class` line that lives entirely inside a docstring/template string body is not mistaken for a real header - matching what the tree-sitter Python indexer already sees, since a string node never yields symbols.
   let openDelim: string | null = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -291,12 +273,7 @@ function findKeyValueHeaders(lines: readonly string[], language: string): Sectio
   return headers
 }
 
-// Uses the same masked, dotall, whole-text heading scan (findHtmlHeadingMatches, in
-// src/languages/common.ts) that the indexer's html.ts/liquid.ts extractors use, so a heading
-// indexed as a symbol is always reachable via the live `section` command and vice versa: a
-// heading formatted across multiple lines is found here too, and a commented-out (or
-// <script>-body / CDATA) heading is excluded here too, instead of two regex implementations
-// that can silently drift apart.
+// Uses the same masked, dotall, whole-text heading scan (findHtmlHeadingMatches, in src/languages/common.ts) that the indexer's html.ts/liquid.ts extractors use, so a heading indexed as a symbol is always reachable via the live `section` command and vice versa: a heading formatted across multiple lines is found here too, and a commented-out (or <script>-body / CDATA) heading is excluded here too, instead of two regex implementations that can silently drift apart.
 function findHtmlHeaders(text: string): SectionHeader[] {
   const lineIndex = buildLineIndex(text)
   const headers: SectionHeader[] = []
@@ -326,9 +303,7 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'html' || language === 'liquid') return { headers: findHtmlHeaders(text), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines, true), kind: 'table-toml' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
-  // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI
-  // section name is never a nesting operator (see the HeaderKind doc comment above), so this is
-  // 'table-flat', not 'table-toml'.
+  // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI section name is never a nesting operator (see the HeaderKind doc comment above), so this is 'table-flat', not 'table-toml'.
   if (language === 'ini') return { headers: findTableHeaders(lines, false), kind: 'table-flat' }
   // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
   if (language === 'yaml' || language === 'env_file')
@@ -337,10 +312,7 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
-  // The sniffer cannot tell TOML from INI syntactically (both use bare `[header]` lines) when
-  // there is no file extension to consult, so it keeps the pre-existing dotted-nesting behavior
-  // here for the ambiguous case - only the language==='ini' branch above, where the file
-  // extension makes the language unambiguous, uses the flat (non-nesting) kind.
+  // The sniffer cannot tell TOML from INI syntactically (both use bare `[header]` lines) when there is no file extension to consult, so it keeps the pre-existing dotted-nesting behavior here for the ambiguous case - only the language==='ini' branch above, where the file extension makes the language unambiguous, uses the flat (non-nesting) kind.
   const tbl = findTableHeaders(lines, false)
   if (tbl.length > 0) return { headers: tbl, kind: 'table-toml' }
   return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
@@ -407,11 +379,7 @@ function resolveHeaderPos(
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
   const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
-  // Tiered matching: exact equality wins over normalized equality, which wins over
-  // stripped equality. Sibling headings that only differ by a parenthetical or
-  // subtitle (e.g. "Setup (Windows)" / "Setup (Linux)") both normalize to the same
-  // text, so an exact-text query must never fall back to an earlier normalized-tier
-  // match — each header is assigned to the single best tier it qualifies for.
+  // Tiered matching: exact equality wins over normalized equality, which wins over stripped equality. Sibling headings that only differ by a parenthetical or subtitle (e.g. "Setup (Windows)" / "Setup (Linux)") both normalize to the same text, so an exact-text query must never fall back to an earlier normalized-tier match — each header is assigned to the single best tier it qualifies for.
   const exactMatches: number[] = []
   const normalizedMatches: number[] = []
   const strippedMatches: number[] = []
@@ -547,11 +515,7 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   return resolveSectionFromText(text, headingSpec, detectLanguage(filePath))
 }
 
-// Finds the tightest (innermost) heading section whose line range contains a symbol's
-// [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break
-// approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null
-// when the file has no heading structure enclosing the symbol, which is the common case for
-// source files without markdown-style doc comments.
+// Finds the tightest (innermost) heading section whose line range contains a symbol's [lineStart, lineEnd] (1-based, inclusive) -- mirrors enclosingSymbol's containment/tie-break approach in graph_commands.ts, but over heading ranges instead of symbol ranges. Returns null when the file has no heading structure enclosing the symbol, which is the common case for source files without markdown-style doc comments.
 export function findContainingSection(
   filePath: string,
   lineStart: number,

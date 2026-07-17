@@ -43,11 +43,7 @@ async function fetchDocFromApi(url: string): Promise<string> {
   if (!response.ok) {
     throw new Error(`Failed to fetch Google Doc: HTTP ${response.status} ${response.statusText}`)
   }
-  // A private/unshared doc's export URL 302-redirects to Google's sign-in page, which
-  // resolves as a 200 with content-type text/html. fetch() follows that redirect
-  // transparently, so without this check the sign-in page HTML would be treated as real
-  // doc content and cached, leaving a misleading "No sections found." result pinned for
-  // DEFAULT_MAX_AGE_MS even after the doc is later shared.
+  // A private/unshared doc's export URL 302-redirects to Google's sign-in page, which resolves as a 200 with content-type text/html. fetch() follows that redirect transparently, so without this check the sign-in page HTML would be treated as real doc content and cached, leaving a misleading "No sections found." result pinned for DEFAULT_MAX_AGE_MS even after the doc is later shared.
   const contentType = response.headers?.get?.('content-type') ?? ''
   if (contentType.includes('text/html')) {
     throw new Error(
@@ -85,10 +81,7 @@ function parseDocSections(text: string): GdriveSection[] {
   let currentSection: GdriveSection | null = null
   let byteOffset = 0
   let i = 0
-  // Fence state mirrors eachUnfencedLine (markdown_lines.ts): a `#` line inside a fenced code
-  // block (Google Docs' markdown export renders code-formatted text as ```/~~~ fences, and a
-  // shell/Python comment starting with `#` is extremely common inside one) must never be
-  // mistaken for a real heading.
+  // Fence state mirrors eachUnfencedLine (markdown_lines.ts): a `#` line inside a fenced code block (Google Docs' markdown export renders code-formatted text as ```/~~~ fences, and a shell/Python comment starting with `#` is extremely common inside one) must never be mistaken for a real heading.
   let fence: { ch: string; len: number } | null = null
 
   while (i < text.length) {
@@ -121,9 +114,7 @@ function parseDocSections(text: string): GdriveSection[] {
         sections.push(currentSection)
       }
       const level = match[1]!.length as 1 | 2 | 3 | 4 | 5 | 6
-      // Google Docs' markdown export renders a heading like "# **Introduction** {#introduction}":
-      // the text wrapped in bold markers, followed by a trailing anchor-slug suffix. Strip both
-      // so the extracted heading matches the doc's actual visible heading text.
+      // Google Docs' markdown export renders a heading like "# **Introduction** {#introduction}": the text wrapped in bold markers, followed by a trailing anchor-slug suffix. Strip both so the extracted heading matches the doc's actual visible heading text.
       const heading = match[2]!
         .trim()
         .replace(/\s*\{#[^}]*\}\s*$/, '')
