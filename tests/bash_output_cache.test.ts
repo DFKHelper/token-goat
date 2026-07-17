@@ -28,6 +28,7 @@ import {
   type BashOutputEntry,
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
 
 beforeEach(() => {
   clearModuleCaches()
@@ -195,6 +196,21 @@ describe('retrieval', () => {
   it('captures a non-zero exit code', async () => {
     const id = await storeBashOutput('false', '', 1)
     expect(getBashOutput(id)?.exitCode).toBe(1)
+  })
+})
+
+describe('TTL expiry (regression: getBashOutput had no read-time staleness check, unlike getWebOutput)', () => {
+  it('getBashOutput returns null for stale disk entries beyond DEFAULT_MAX_AGE_MS', async () => {
+    const id = await storeBashOutput('echo stale-check', 'stale-content', 0)
+
+    const blobPath = path.join(tokenGoatHome(), 'bash_outputs', `${id}.json`)
+    const expiredTime = (Date.now() - DEFAULT_MAX_AGE_MS - 1000) / 1000
+    fs.utimesSync(blobPath, expiredTime, expiredTime)
+
+    // Clear the in-memory cache so the next read must hit disk and re-check age.
+    clearModuleCaches()
+
+    expect(getBashOutput(id)).toBeNull()
   })
 })
 
