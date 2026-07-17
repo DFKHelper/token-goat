@@ -74,6 +74,11 @@ let _bashOutputs = new Map<string, string>()
 // `${pattern}::${path}::${outputMode}::${glob}` signature -> match count, for Grep dedup-hint
 // recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
 let _grepQueries = new Map<string, number>()
+
+// Last-seen "Tab Context:" block text from a browser-automation MCP tool result this
+// session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a
+// placeholder instead of resending the full open-tab list.
+let _lastTabContext: string | null = null
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command
 // hash used by recordBashOutput/getBashOutputId) for which a store call
 // overwrote an already-present entry this session -- i.e. an older cached
@@ -380,6 +385,16 @@ export function getGrepMatchCount(signature: string): number | null {
   return _grepQueries.get(signature) ?? null
 }
 
+/** Record the most recent "Tab Context:" block text seen this session, for hooks_browser_image.ts's dedup. */
+export function setLastTabContext(text: string): void {
+  _lastTabContext = text
+}
+
+/** Return the last-recorded "Tab Context:" block text this session, or null if none seen yet. */
+export function getLastTabContext(): string | null {
+  return _lastTabContext
+}
+
 /** Record that a curl -o download saved `url` to `savedPath` this session. */
 export function recordCurlDownload(url: string, savedPath: string): void {
   _curlDownloads.set(url, savedPath)
@@ -489,6 +504,7 @@ export interface SerializedSession {
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
   grepQueries?: Array<[string, number]>
+  lastTabContext?: string
   /**
    * Unix time in *seconds* at which this session's on-disk cache was first
    * written. Set exactly once by `session_store.ts::saveSessionState` and
@@ -511,6 +527,7 @@ export function exportSessionState(): SerializedSession {
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
     grepQueries: Array.from(_grepQueries.entries()),
+    ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
   }
 }
 
@@ -538,6 +555,7 @@ export function importSessionState(s: SerializedSession): void {
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
   _grepQueries = new Map(s.grepQueries ?? [])
+  _lastTabContext = s.lastTabContext ?? null
 }
 
 registerReset(() => {
@@ -553,5 +571,6 @@ registerReset(() => {
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()
   _grepQueries = new Map()
+  _lastTabContext = null
   _sessionId = null
 })

@@ -126,9 +126,10 @@ export function compressGithubMcpResult(toolName: string, resultText: string): s
  * `claude-in-chrome` extension (`mcp__claude-in-chrome__*`), Google's
  * `chrome-devtools-mcp` (`mcp__chrome-devtools-mcp_chrome-devtools__*` /
  * `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*`), and Microsoft's
- * `@playwright/mcp` (`mcp__plugin_playwright_playwright__*`).
+ * `@playwright/mcp` (`mcp__plugin_playwright_playwright__*`). Exported so
+ * `hooks_browser_image.ts` reuses this exact pattern instead of a second copy.
  */
-const BROWSER_TOOL_RE = /^mcp__.*(?:chrome-devtools|claude-in-chrome|playwright).*__/i
+export const BROWSER_TOOL_RE = /^mcp__.*(?:chrome-devtools|claude-in-chrome|playwright).*__/i
 
 /** Matches the method segment for both servers' console-message list tools: `read_console_messages` (claude-in-chrome) and `list_console_messages` (chrome-devtools-mcp). */
 const BROWSER_CONSOLE_METHOD_RE = /(?:^|_)(?:read|list)_console_messages$/i

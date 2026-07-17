@@ -210,6 +210,7 @@ function coerce(raw: unknown): SerializedSession {
     bashReruns,
     pendingLargeFileHints,
     grepQueries,
+    ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
 }
@@ -315,6 +316,13 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
+    // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's
+    // freshest observation) over disk's, since a newer write always supersedes an older one.
+    ...(mem.lastTabContext !== undefined
+      ? { lastTabContext: mem.lastTabContext }
+      : disk.lastTabContext !== undefined
+        ? { lastTabContext: disk.lastTabContext }
+        : {}),
     // Prefer the value already on disk: it marks the original creation time, and
     // must never be bumped forward to the merge's "now". `mem` never carries one
     // (it is not tracked in memory), so this is really "keep whatever disk has".

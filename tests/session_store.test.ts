@@ -84,6 +84,17 @@ describe('save/load round-trip', () => {
     loadSessionState('sid-bashreruns')
     expect(exportSessionState().bashReruns?.sort()).toEqual(['cmdhash-1', 'cmdhash-2'])
   })
+
+  it('persists and restores lastTabContext across a save/load round-trip (regression: coerce() and mergeSessionState() both omitted lastTabContext entirely, so it never survived the disk round-trip even though exportSessionState/importSessionState carry it in-process -- silently making hooks_browser_image.ts\'s cross-process Tab Context dedup inert)', () => {
+    importSessionState({ ...empty(), lastTabContext: 'Tab Context: tab 1' })
+    saveSessionState('sid-tabcontext')
+
+    importSessionState(empty())
+    expect(exportSessionState().lastTabContext).toBeUndefined()
+
+    loadSessionState('sid-tabcontext')
+    expect(exportSessionState().lastTabContext).toBe('Tab Context: tab 1')
+  })
 })
 
 describe('grepQueries merge-on-save (concurrent writer not clobbered)', () => {
