@@ -16,7 +16,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput } from './hooks_common.js'
 import { listSiblingSessionStates } from './session_store.js'
-import { foldPath } from './util.js'
+import { foldPath, toKB } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
 
@@ -28,7 +28,7 @@ const MAX_ROWS = 40
 
 /** Render one read-file row: `path (Xkb, N reads[, edited])`. */
 function renderReadRow(entry: FileEntry): string {
-  const kb = Math.max(1, Math.round(entry.sizeBytes / 1024))
+  const kb = Math.max(1, toKB(entry.sizeBytes))
   const plural = entry.readCount === 1 ? 'read' : 'reads'
   const edited = entry.wasEdited ? ', edited' : ''
   return `- ${entry.path} (${kb}kb, ${entry.readCount} ${plural}${edited})`

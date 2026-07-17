@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isWithinQuietHours, statSize } from './util.js'
+import { foldPath, isWithinQuietHours, statSize, toKB } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -254,7 +254,7 @@ function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
   }
   if (slice.kind === 'bytes') {
     return (
-      `The requested offset/limit range is still ~${Math.round(slice.bytes / 1024)}KB — ` +
+      `The requested offset/limit range is still ~${toKB(slice.bytes)}KB — ` +
       'narrow the range further (a smaller limit) rather than reading the whole file.'
     )
   }
@@ -804,7 +804,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
         recordStat('session_hint', outputSize, Math.round(outputSize / 4))
         return denyOutput(
-          'Session transcript is large (' + Math.round(outputSize / 1024) + 'KB). ' + sessionArtifactRecall(normalized),
+          'Session transcript is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
         )
       }
       return quietContextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
@@ -1014,7 +1014,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return passOutput()
     }
 
-    const kb = Math.round(size / 1024)
+    const kb = toKB(size)
     const config = loadConfig()
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
