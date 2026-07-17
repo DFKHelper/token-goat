@@ -754,7 +754,6 @@ const MIX_TEST_DOTS_RE = /^[.EF*]+\s*$/
 const MIX_TEST_SUMMARY_RE = /^\d+ tests?, \d+ failure/
 const MIX_TEST_FINISHED_RE = /^Finished in \d/
 const MIX_TEST_FAILURE_HEADER_RE = /^\s+\d+\)/
-const MIX_MIGRATION_RE = /== (?:Running|Migrated)/
 
 export class MixFilter extends ToolFilter {
   readonly name = 'mix'
@@ -845,12 +844,9 @@ export class MixFilter extends ToolFilter {
     return this.finalize(kept)
   }
 
+  // Deliberate passthrough: mix ecto.* output is already terse (no per-line noise pattern
+  // to collapse), so nothing is filtered here.
   private _compressEcto(lines: string[]): string {
-    for (const line of lines) {
-      if (!MIX_MIGRATION_RE.test(line) && !ERROR_SIGNAL_RE.test(line) && line.trim()) {
-        // fall through to full output for simple ecto commands
-      }
-    }
     return this.finalize(lines)
   }
 }

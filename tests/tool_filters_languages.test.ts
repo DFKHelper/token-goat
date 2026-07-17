@@ -456,6 +456,18 @@ describe('MixFilter compress: compile', () => {
   })
 })
 
+describe('MixFilter compress: ecto', () => {
+  it('passes ecto.migrate output through unfiltered', () => {
+    const stdout = [
+      '== Running 20240101000000 MyApp.Repo.Migrations.CreateUsers.change/0 forward',
+      'create table users',
+      '== Migrated 20240101000000 in 0.0s',
+    ].join('\n')
+    const out = compress(mixFilter, stdout, ['mix', 'ecto.migrate'])
+    expect(out).toBe(stdout)
+  })
+})
+
 // ===========================================================================
 // ZigFilter
 // ===========================================================================
