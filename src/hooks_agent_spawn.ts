@@ -17,6 +17,7 @@ import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { getSessionBashOutputs } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
+import { toKB } from './util.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder).
@@ -59,7 +60,7 @@ function buildSubagentBriefing(): string {
         const idsList = recent
           .map(([_hash, id]) => {
             const entry = getBashOutput(id)
-            const label = entry ? ` (~${Math.round(entry.output.length / 1024)}KB)` : ''
+            const label = entry ? ` (~${toKB(entry.output.length)}KB)` : ''
             return '`token-goat bash-output ' + id + '`' + label
           })
           .join(', ')

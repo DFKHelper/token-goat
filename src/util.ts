@@ -455,6 +455,11 @@ export function stripLower(s: string): string {
   return s.trim().toLowerCase()
 }
 
+/** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
+export function toKB(bytes: number): number {
+  return Math.round(bytes / 1024)
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
