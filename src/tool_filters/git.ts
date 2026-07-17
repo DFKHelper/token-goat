@@ -148,8 +148,6 @@ const _GIT_DIFF_FILE_RE = /^diff --(?:git|cc) /
 // large-hunk truncation never engages on a combined diff's hunks -- they're indistinguishable
 // from plain content and the whole (potentially huge) hunk passes through untouched.
 const _GIT_DIFF_HUNK_RE = /^@{2,}\s/
-const _GIT_STATUS_HEADER_RE =
-  /^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|Unmerged paths|Changes to be committed|nothing to commit)/
 
 // ---------------------------------------------------------------------------
 // GitLogFilter — "git log"
@@ -163,25 +161,6 @@ const _GIT_LOG_ONELINE_GRAPH_RE = /^[|\\/* ]*[0-9a-f]{7,}\s/
 const _GIT_LOG_MERGE_RE = /^Merge:/
 const _GIT_LOG_AUTHOR_RE = /^Author:\s+(.+)/
 const _GIT_LOG_DATE_RE = /^Date:\s+(.+)/
-
-/** Simple log compression: keep first max_commits in full, summarise rest. */
-function _compressGitLogSimple(stdout: string, stderr: string, maxCommits = 10): string {
-  const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
-  if (!blocks.length) return stdout
-  const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
-  const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
-  if (commits.length <= maxCommits) return stdout
-  const kept = commits.slice(0, maxCommits)
-  const elided = commits.slice(maxCommits)
-  const firstElided = (elided[0]!.split('\n', 1)[0] ?? '').slice(0, 80)
-  const lastElided = (elided[elided.length - 1]!.split('\n', 1)[0] ?? '').slice(0, 80)
-  const summary =
-    `\n[token-goat: +${elided.length} earlier commits elided; ` +
-    `oldest: ${lastElided}; first elided: ${firstElided}]`
-  let text = (prelude ? prelude + '\n' : '') + kept.join('\n') + summary
-  if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
-  return text
-}
 
 /** Collapse commits to one-liner summaries when there are more than 10. */
 function _compressGitLogFull(stdout: string, stderr: string): string {
@@ -1269,51 +1248,6 @@ export class GitPushFilter extends GitBaseFilter {
 // GitFilter — generic catch-all for all other git subcommands
 // ---------------------------------------------------------------------------
 
-/** Simple git status truncation: keep first 30 file lines, summarise rest. */
-function _compressGitStatus(stdout: string, stderr: string): string {
-  const lines = stdout.split('\n')
-  const out: string[] = []
-  let keptFiles = 0
-  const bucket: Record<string, number> = {}
-  for (const line of lines) {
-    if (_GIT_STATUS_HEADER_RE.test(line) || !line.trim() || line.startsWith('\t(')) {
-      out.push(line)
-      continue
-    }
-    if (line.startsWith('\t') || line.startsWith('        ')) {
-      keptFiles++
-      if (keptFiles <= 30) {
-        out.push(line)
-      } else {
-        const kind = _gitStatusKind(line)
-        bucket[kind] = (bucket[kind] ?? 0) + 1
-      }
-      continue
-    }
-    out.push(line)
-  }
-  if (Object.keys(bucket).length) {
-    const total = Object.values(bucket).reduce((a, b) => a + b, 0)
-    const summary = Object.entries(bucket)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([kind, count]) => `${count} ${kind}`)
-      .join(', ')
-    out.push(`[token-goat: +${total} more files: ${summary}]`)
-  }
-  if (stderr.trim()) out.push('---', stderr.replace(/\s+$/, ''))
-  return out.join('\n')
-}
-
-function _gitStatusKind(line: string): string {
-  const stripped = line.trim()
-  if (stripped.startsWith('modified:')) return 'modified'
-  if (stripped.startsWith('new file:')) return 'new'
-  if (stripped.startsWith('deleted:')) return 'deleted'
-  if (stripped.startsWith('renamed:')) return 'renamed'
-  if (stripped.startsWith('typechange:')) return 'typechange'
-  return 'other'
-}
-
 /** Truncate a listing (ls-files, ls-tree) to first N lines. */
 function _truncateListing(stdout: string, stderr: string, head = 100): string {
   const lines = stdout.split('\n')
@@ -1364,8 +1298,6 @@ export class GitFilter extends GitBaseFilter {
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
     const positionals = gitPositionalArgs(argv.slice(1))
     const subcommand = positionals[0] ?? ''
-    if (subcommand === 'status') return _compressGitStatus(stdout, stderr)
-    if (subcommand === 'log') return _compressGitLogSimple(stdout, stderr)
     if (subcommand === 'diff' || subcommand === 'show') {
       // [bash_diff] max_hunks_per_file (default 10); falls back to this
       // function's own built-in default (3) on config load failure.
