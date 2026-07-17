@@ -41,10 +41,7 @@ export interface WorkerOptions {
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
 
-// Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see
-// runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness
-// window doesn't need finer-grained sweeping than hourly, and a full directory scan on every
-// 2s poll tick would be wasteful.
+// Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 
 /**
@@ -138,14 +135,7 @@ const MAX_TRANSIENT_RETRIES = 5
  */
 function bumpRetryCount(dbPath: string, absPath: string): number {
   const db = getDb(dbPath)
-  // The files.path column stores paths normalized by normalizePath() (forward slashes) --
-  // every real writer (hooks_edit.ts's postEditHandler, cli.ts's cmdIndex via
-  // resolveIndexPath) normalizes before the path ever reaches the queue or the indexer; see
-  // sql_path.ts's projectScopeClause doc for the same invariant stated from the SQL side.
-  // Normalize defensively here too so correctness doesn't silently depend on every future
-  // caller remembering to pre-normalize -- a caller that passed a native backslash path
-  // straight through used to always miss the SELECT and fall into the INSERT branch below
-  // instead of matching the existing row (see the regression test in worker.test.ts).
+  // The files.path column stores paths normalized by normalizePath() (forward slashes) -- every real writer (hooks_edit.ts's postEditHandler, cli.ts's cmdIndex via resolveIndexPath) normalizes before the path ever reaches the queue or the indexer; see sql_path.ts's projectScopeClause doc for the same invariant stated from the SQL side. Normalize defensively here too so correctness doesn't silently depend on every future caller remembering to pre-normalize -- a caller that passed a native backslash path straight through used to always miss the SELECT and fall into the INSERT branch below instead of matching the existing row (see the regression test in worker.test.ts).
   const normalized = normalizePath(absPath)
   const folded = foldPath(normalized)
   const tx = db.transaction((): number => {
@@ -382,12 +372,7 @@ function releaseEmbedSlot(): void {
   if (next) next()
 }
 
-// This counter is intentionally a single process-wide value (not scoped per-file or per-dir like
-// inFlightEmbeddings/lastKnownProjectRoots above) since the concurrency cap it enforces is a
-// real, global daemon-lifetime resource limit. That also means it can leak across test cases
-// that dispatch a real (unresolved-by-test-end) embed call without awaiting it to settle --
-// register it with the shared reset registry so tests can restore a clean slate via
-// clearModuleCaches() rather than each test needing its own bespoke workaround.
+// This counter is intentionally a single process-wide value (not scoped per-file or per-dir like inFlightEmbeddings/lastKnownProjectRoots above) since the concurrency cap it enforces is a real, global daemon-lifetime resource limit. That also means it can leak across test cases that dispatch a real (unresolved-by-test-end) embed call without awaiting it to settle -- register it with the shared reset registry so tests can restore a clean slate via clearModuleCaches() rather than each test needing its own bespoke workaround.
 registerReset(() => {
   activeEmbedSlots = 0
   embedSlotWaiters.length = 0
@@ -404,33 +389,14 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
   const key = foldPath(absPath)
   const prior = inFlightEmbeddings.get(key)
   const dir = path.dirname(dbPath)
-  // Unlike a parse failure (logged via logIndexFailure/INDEX_FAILED above), indexFileEmbeddings
-  // swallows its own errors internally with no log path at all -- and the background daemon runs
-  // with stdio: 'ignore' (see startDetachedWorker), so a thrown embedding error previously
-  // produced zero observable trace anywhere. Route it through the same worker-errors.log
-  // appendWorkerErrorLog uses for indexing failures so it is at least discoverable after the
-  // fact, instead of vanishing silently.
+  // Unlike a parse failure (logged via logIndexFailure/INDEX_FAILED above), indexFileEmbeddings swallows its own errors internally with no log path at all -- and the background daemon runs with stdio: 'ignore' (see startDetachedWorker), so a thrown embedding error previously produced zero observable trace anywhere. Route it through the same worker-errors.log appendWorkerErrorLog uses for indexing failures so it is at least discoverable after the fact, instead of vanishing silently.
   const onEmbedError = (err: unknown): void => {
     const message = extractErrorMessage(err)
     appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
   }
-  // Defensive fallback (matches config.ts's own default of 4): several existing tests in this
-  // file mock loadConfig() with only a partial `{ worker: { blocked_roots: [...] } }` shape (see
-  // makeIndexer's embeddingsEnabled comment above for the same pattern), so a bare
-  // `.max_pool_workers` here would be `undefined` for those and silently block every embed call
-  // forever (0 < undefined is false, so nothing would ever dispatch or queue). loadConfig()
-  // always returns a fully-populated, schema-validated config object in production.
+  // Defensive fallback (matches config.ts's own default of 4): several existing tests in this file mock loadConfig() with only a partial `{ worker: { blocked_roots: [...] } }` shape (see makeIndexer's embeddingsEnabled comment above for the same pattern), so a bare `.max_pool_workers` here would be `undefined` for those and silently block every embed call forever (0 < undefined is false, so nothing would ever dispatch or queue). loadConfig() always returns a fully-populated, schema-validated config object in production.
   const limit = loadConfig().worker.max_pool_workers ?? 4
-  // Dispatches the actual embed call once a global slot is available, releasing it as soon as
-  // that call settles (success or failure) so it frees up for the next queued file regardless of
-  // outcome. Release is attached as a sibling `.then(release, release)` on the SAME promise
-  // `indexFileEmbeddings` returns (rather than wrapped via `.finally()` into a new promise that
-  // `runEmbed` then returns) so it costs no extra microtask hop on the chain the rest of this
-  // function builds on top of `runEmbed()`'s return value -- preserving indexFileEmbeddings'
-  // previous direct-call timing (including for tests that assert on it without awaiting extra
-  // ticks) for the common case where a slot is immediately free. Only when the global cap is
-  // already saturated does this queue in embedSlotWaiters, deferring dispatch until a running
-  // embed elsewhere finishes and calls releaseEmbedSlot.
+  // Dispatches the actual embed call once a global slot is available, releasing it as soon as that call settles (success or failure) so it frees up for the next queued file regardless of outcome. Release is attached as a sibling `.then(release, release)` on the SAME promise `indexFileEmbeddings` returns (rather than wrapped via `.finally()` into a new promise that `runEmbed` then returns) so it costs no extra microtask hop on the chain the rest of this function builds on top of `runEmbed()`'s return value -- preserving indexFileEmbeddings' previous direct-call timing (including for tests that assert on it without awaiting extra ticks) for the common case where a slot is immediately free. Only when the global cap is already saturated does this queue in embedSlotWaiters, deferring dispatch until a running embed elsewhere finishes and calls releaseEmbedSlot.
   const dispatchEmbed = (): Promise<unknown> => {
     const result = indexFileEmbeddings(absPath, dbPath, sha, onEmbedError)
     result.then(releaseEmbedSlot, releaseEmbedSlot)
@@ -451,9 +417,7 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
   const chained = (prior === undefined ? runEmbed() : prior.then(runEmbed)).catch(() => undefined)
   inFlightEmbeddings.set(key, chained)
   void chained.finally(() => {
-    // Only clear the slot if nothing newer has been chained onto it since -- otherwise this
-    // `finally` (from an OLDER call resolving after a NEWER one already replaced the map entry)
-    // would delete the newer call's still-in-flight tracking.
+    // Only clear the slot if nothing newer has been chained onto it since -- otherwise this `finally` (from an OLDER call resolving after a NEWER one already replaced the map entry) would delete the newer call's still-in-flight tracking.
     if (inFlightEmbeddings.get(key) === chained) inFlightEmbeddings.delete(key)
   })
   return chained
@@ -476,14 +440,7 @@ function logIndexFailure(dir: string, absPath: string, err: unknown): void {
   appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`)
 }
 
-// A dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null is
-// a transient read failure -- a lock held by an AV scanner/editor/OneDrive sync, a permission
-// error, or a race with an external writer -- not a permanent parse/index error. Before this
-// fix, processDirtyBatch silently `continue`d past it: the path was dropped from this batch and,
-// once drainOnce unconditionally clears the .draining marker right after processDirtyBatch
-// returns, it was gone for good with no log entry and no way to retry it short of the file being
-// touched again. Log it distinctly from an indexing failure and requeue it so the next drain
-// cycle gets another chance once the lock clears.
+// A dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null is a transient read failure -- a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- not a permanent parse/index error. Before this fix, processDirtyBatch silently `continue`d past it: the path was dropped from this batch and, once drainOnce unconditionally clears the .draining marker right after processDirtyBatch returns, it was gone for good with no log entry and no way to retry it short of the file being touched again. Log it distinctly from an indexing failure and requeue it so the next drain cycle gets another chance once the lock clears.
 function logTransientReadFailure(dir: string, absPath: string): void {
   appendWorkerErrorLog(
     dir,
@@ -491,22 +448,12 @@ function logTransientReadFailure(dir: string, absPath: string): void {
   )
 }
 
-// Bumps the transient-retry count for `absPath` and decides whether it is still within its
-// retry budget. Returns true when the caller should go on to actually requeue the path (append
-// it to a dirty queue); false once MAX_TRANSIENT_RETRIES has been exceeded (logging the give-up
-// message exactly once, on the cycle the cap is first exceeded). Split out of the old
-// requeueDirtyPath so drainOnce can bump the retry counter immediately (once per real failure)
-// while deferring the actual queue-file append -- see drainOnce's stage (a)/(b) doc comment for
-// why the append must not land in the SAME cycle's live queue.
+// Bumps the transient-retry count for `absPath` and decides whether it is still within its retry budget. Returns true when the caller should go on to actually requeue the path (append it to a dirty queue); false once MAX_TRANSIENT_RETRIES has been exceeded (logging the give-up message exactly once, on the cycle the cap is first exceeded). Split out of the old requeueDirtyPath so drainOnce can bump the retry counter immediately (once per real failure) while deferring the actual queue-file append -- see drainOnce's stage (a)/(b) doc comment for why the append must not land in the SAME cycle's live queue.
 function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   const dbPath = path.join(dir, 'global.db')
   const attempts = bumpRetryCount(dbPath, absPath)
   if (attempts > MAX_TRANSIENT_RETRIES) {
-    // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path
-    // doesn't get hammered every single drain cycle forever. Log exactly once -- on the
-    // cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is
-    // visible without spamming the log. A future edit to this path re-dirties it through
-    // the normal queue-append path (not this function), which gives it a fresh retry budget.
+    // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path doesn't get hammered every single drain cycle forever. Log exactly once -- on the cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is visible without spamming the log. A future edit to this path re-dirties it through the normal queue-append path (not this function), which gives it a fresh retry budget.
     if (attempts === MAX_TRANSIENT_RETRIES + 1) {
       appendWorkerErrorLog(
         dir,
@@ -518,11 +465,7 @@ function bumpAndCheckRetry(dir: string, absPath: string): boolean {
   return true
 }
 
-// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir +
-// torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding
-// dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an
-// isolated dir under test. Best-effort: if the write itself fails, the path is lost for this
-// cycle, but the failure is still captured via logTransientReadFailure above.
+// Appends `absPath` to the live dirty queue. Mirrors appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort: if the write itself fails, the path is lost for this cycle, but the failure is still captured via logTransientReadFailure above.
 function appendToDirtyQueue(dir: string, absPath: string): void {
   const queuePath = dirtyQueuePathFor(dir)
   try {
@@ -540,10 +483,7 @@ function appendToDirtyQueue(dir: string, absPath: string): void {
   }
 }
 
-// Re-adds `absPath` to the live dirty queue after a transient read failure. This is the default
-// `requeue` callback processDirtyBatch uses outside of drainOnce (e.g. direct callers/tests);
-// drainOnce itself injects a callback that defers the appendToDirtyQueue half -- see its doc
-// comment for why.
+// Re-adds `absPath` to the live dirty queue after a transient read failure. This is the default `requeue` callback processDirtyBatch uses outside of drainOnce (e.g. direct callers/tests); drainOnce itself injects a callback that defers the appendToDirtyQueue half -- see its doc comment for why.
 function requeueDirtyPath(dir: string, absPath: string): void {
   if (bumpAndCheckRetry(dir, absPath)) appendToDirtyQueue(dir, absPath)
 }
@@ -562,11 +502,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
   const dir = path.dirname(dbPath)
   return (absPath, sha) => {
     try {
-      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate:
-      // a file that becomes skip-eligible purely from a config change (same sha) would
-      // otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows
-      // stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with
-      // a partial { worker: {...} } shape.
+      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
       const ixCfgForSkip = loadConfig().indexing
       if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {
         // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must
@@ -581,31 +517,9 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       if (!parseUnchanged) {
         indexFileSync(absPath, dbPath)
       }
-      // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set
-      // only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts).
-      // If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha
-      // gate above would otherwise mask that forever: identical content would keep skipping
-      // the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check
-      // embed_sha against the current sha every time, even when the parse gate above skipped.
-      //
-      // While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with
-      // disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can
-      // still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged
-      // file -- but a bare-sha match must never satisfy the gate while disabled, or a file
-      // that was only ever marker-stamped (never actually embedded) would look "unchanged"
-      // the instant embeddings are re-enabled, permanently skipping its real first embed.
-      // Optional chaining/fallback here is a defensive test-mock safety net, not a real
-      // production path: loadConfig() always returns a fully-populated, schema-validated
-      // config object in production. Several existing tests in this file mock loadConfig()
-      // with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a
-      // bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled
-      // (true), matching config.ts's own default, so this new gate check is a no-op for tests
-      // that never cared about embeddings.
+      // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings.
       const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
-      // depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the
-      // optional embedding deps were absent (stamped an `unavailable:` marker) from one that was
-      // really embedded: the marker stays "fresh" while deps are still missing, but forces a
-      // re-embed the moment the model + sqlite-vec become usable.
+      // depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable.
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
       const embedUnchanged =
         parseUnchanged && isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
@@ -613,16 +527,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         // Nothing to do at all: parse and embeddings are both already current for this content.
         return false
       }
-      // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is
-      // synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty
-      // queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol
-      // freshness since semantic search tolerates staleness in a way exact symbol lookups do
-      // not. indexFileEmbeddings already swallows its own errors internally and this .catch is
-      // a defensive backstop against a future regression there ever rejecting; returning the
-      // promise (rather than voiding it) lets a caller that wants to - such as a test - await
-      // it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping
-      // drains of the same rapidly re-edited file chain onto one another instead of racing --
-      // see its doc comment for the stale-overwrite bug this closes.
+      // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol freshness since semantic search tolerates staleness in a way exact symbol lookups do not. indexFileEmbeddings already swallows its own errors internally and this .catch is a defensive backstop against a future regression there ever rejecting; returning the promise (rather than voiding it) lets a caller that wants to - such as a test - await it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping drains of the same rapidly re-edited file chain onto one another instead of racing -- see its doc comment for the stale-overwrite bug this closes.
       return embedFileSerialized(absPath, dbPath, sha)
     } catch (err) {
       // One bad file must not abort the rest of the batch -- but a swallowed failure must not be
@@ -666,20 +571,12 @@ export function processDirtyBatch(
   requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
-  // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker
-  // probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every
-  // call, and a batch routinely contains many dirty paths under the same directory (or same
-  // project tree) that would otherwise repeat that walk once per path for a result
-  // (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped
-  // to this function call (not module-level) since a project root learned from one batch's
-  // traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
+  // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every call, and a batch routinely contains many dirty paths under the same directory (or same project tree) that would otherwise repeat that walk once per path for a result (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped to this function call (not module-level) since a project root learned from one batch's traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
   const projectRootCache = new Map<string, string | null>()
   let indexed = 0
   for (const p of paths) {
     if (!p) continue
-    // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from
-    // reindexing entirely -- skip before the existence/sha checks so a blocked path is never
-    // touched, not even pruned from the index if it happens to have been deleted underneath it.
+    // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from reindexing entirely -- skip before the existence/sha checks so a blocked path is never touched, not even pruned from the index if it happens to have been deleted underneath it.
     if (isUnderBlockedRoot(p, blockedRoots)) continue
     // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever.
     if (!fs.existsSync(p)) {
@@ -694,13 +591,9 @@ export function processDirtyBatch(
       requeue(dir, p)
       continue
     }
-    // The read succeeded -- clear any transient-retry count from a prior failure streak so a
-    // later failure on this same path (e.g. after a fresh edit) starts from a full budget
-    // instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount).
+    // The read succeeded -- clear any transient-retry count from a prior failure streak so a later failure on this same path (e.g. after a fresh edit) starts from a full budget instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount).
     clearRetryCount(path.join(dir, 'global.db'), p)
-    // Opportunistically learn the active project root from this batch's traffic -- see
-    // lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other
-    // standing notion of "the current project" for drainOnce's periodic prune sweep to target.
+    // Opportunistically learn the active project root from this batch's traffic -- see lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other standing notion of "the current project" for drainOnce's periodic prune sweep to target.
     try {
       const dirname = path.dirname(p)
       let root: string | null
@@ -715,10 +608,7 @@ export function processDirtyBatch(
     } catch {
       // best-effort signal only -- never let project-root discovery abort a real index.
     }
-    // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
-    // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
-    // other return value (including void/undefined from callers that don't bother returning
-    // anything) counts as indexed.
+    // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any other return value (including void/undefined from callers that don't bother returning anything) counts as indexed.
     const result = index(p, sha)
     if (result !== false && result !== INDEX_FAILED) indexed += 1
   }
@@ -770,26 +660,13 @@ export function drainOnce(
   const removeFn = remove ?? makeRemover(dbPath)
   let processed = 0
 
-  // A transient read failure in stage (a) (recovering an abandoned .draining file) must not be
-  // requeued straight onto the live dirty.txt: stage (b) below claims that same live queue microseconds
-  // later, in this SAME drainOnce call, and would immediately reprocess the path while the
-  // lock/condition that caused the original failure has almost certainly not cleared yet --
-  // double-bumping its retry count once per cycle instead of once, roughly halving the effective
-  // MAX_TRANSIENT_RETRIES budget. Collect this cycle's requeues here and only write them to the
-  // live queue once BOTH stages have finished claiming/processing their batches, so a requeued
-  // path is guaranteed to wait for the NEXT drainOnce cycle. bumpAndCheckRetry (which increments
-  // the retry counter and enforces MAX_TRANSIENT_RETRIES) still runs immediately, at the point of
-  // failure -- only the disk append is deferred.
+  // A transient read failure in stage (a) (recovering an abandoned .draining file) must not be requeued straight onto the live dirty.txt: stage (b) below claims that same live queue microseconds later, in this SAME drainOnce call, and would immediately reprocess the path while the lock/condition that caused the original failure has almost certainly not cleared yet -- double-bumping its retry count once per cycle instead of once, roughly halving the effective MAX_TRANSIENT_RETRIES budget. Collect this cycle's requeues here and only write them to the live queue once BOTH stages have finished claiming/processing their batches, so a requeued path is guaranteed to wait for the NEXT drainOnce cycle. bumpAndCheckRetry (which increments the retry counter and enforces MAX_TRANSIENT_RETRIES) still runs immediately, at the point of failure -- only the disk append is deferred.
   const deferredRequeues: string[] = []
   const requeueFn = (requeueDir: string, absPath: string): void => {
     if (bumpAndCheckRetry(requeueDir, absPath)) deferredRequeues.push(absPath)
   }
 
-  // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files
-  // abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a
-  // Windows sharing violation keeps the primary `.draining` name locked across cycles (see
-  // stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so
-  // a single stuck file can never starve the rest of the queue from ever draining.
+  // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a Windows sharing violation keeps the primary `.draining` name locked across cycles (see stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so a single stuck file can never starve the rest of the queue from ever draining.
   for (const drainingFile of listDrainingFiles(queuePath)) {
     let drainingContent: string
     try {
@@ -803,17 +680,11 @@ export function drainOnce(
       }
       continue
     }
-    // Only process this content if it was not already folded into a batch on a prior cycle
-    // (see unclearedDrainingSnapshots below). Without this guard, a draining file that
-    // outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be
-    // re-read and its paths reprocessed on every cycle.
+    // Only process this content if it was not already folded into a batch on a prior cycle (see unclearedDrainingSnapshots below). Without this guard, a draining file that outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be re-read and its paths reprocessed on every cycle.
     if (unclearedDrainingSnapshots.get(drainingFile) !== drainingContent) {
       processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn)
     }
-    // Only clear the recovered file now that its batch has been durably processed (or
-    // recognized above as already processed) -- never before -- so a crash partway through
-    // processDirtyBatch leaves the file in place for the next startup to recover, instead of
-    // deleting it up front and losing every path it named.
+    // Only clear the recovered file now that its batch has been durably processed (or recognized above as already processed) -- never before -- so a crash partway through processDirtyBatch leaves the file in place for the next startup to recover, instead of deleting it up front and losing every path it named.
     try {
       fs.rmSync(drainingFile, { force: true })
       unclearedDrainingSnapshots.delete(drainingFile)
@@ -822,9 +693,7 @@ export function drainOnce(
         fs.renameSync(drainingFile, `${drainingFile}.corrupt-${Date.now()}`)
         unclearedDrainingSnapshots.delete(drainingFile)
       } catch {
-        // Both cleanup attempts failed and the file is still stuck: remember exactly what we
-        // already folded into this cycle's batch so the next cycle can retry cleanup without
-        // reprocessing the same paths again.
+        // Both cleanup attempts failed and the file is still stuck: remember exactly what we already folded into this cycle's batch so the next cycle can retry cleanup without reprocessing the same paths again.
         unclearedDrainingSnapshots.set(drainingFile, drainingContent)
       }
     }
@@ -832,11 +701,7 @@ export function drainOnce(
 
   // (b) Atomically claim the live queue. A concurrent appendDirtyPath either landed before the rename (its line travels in .draining) or recreates a fresh dirty.txt after it (next cycle) — it can never be deleted unindexed. On Windows a concurrent open-for-append can make rename fail with EPERM/ EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
   if (fs.existsSync(queuePath)) {
-    // If the primary `.draining` name is still occupied by a file the loop above could not
-    // clean up (both rmSync and rename-to-corrupt failed -- typically a Windows sharing
-    // violation from something else holding it open), claiming into that same name would
-    // collide forever and starve the live queue indefinitely. Claim into a distinct
-    // `.alt-<ts>` name instead; listDrainingFiles recovers it on a future cycle.
+    // If the primary `.draining` name is still occupied by a file the loop above could not clean up (both rmSync and rename-to-corrupt failed -- typically a Windows sharing violation from something else holding it open), claiming into that same name would collide forever and starve the live queue indefinitely. Claim into a distinct `.alt-<ts>` name instead; listDrainingFiles recovers it on a future cycle.
     const claimTarget = fs.existsSync(draining) ? `${draining}.alt-${Date.now()}` : draining
     let claimed = false
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -859,20 +724,9 @@ export function drainOnce(
         // (a) crash recovery will pick it up.
       }
       if (readOk) {
-        // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the
-        // process crashing mid-batch) must propagate to the caller, not be swallowed as a
-        // "read failure", so the cleanup below never runs and the claimed file survives.
+        // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the process crashing mid-batch) must propagate to the caller, not be swallowed as a "read failure", so the cleanup below never runs and the claimed file survives.
         processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)
-        // Re-read the claimed file ONE more time, right before deleting it, to catch a path
-        // appended by a writer that raced the claim-rename above. The rename-to-claim pattern
-        // assumes no other writer can touch the live queue's underlying file once it has been
-        // renamed to the claim target -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE
-        // lets a concurrent open-for-append follow the same underlying file object across the
-        // rename) or on POSIX (a narrow rename/open race exists there too). A dirty path
-        // appended during that window would otherwise be silently deleted along with the rest
-        // of this cycle's already-processed content and never reindexed. Forward anything found
-        // beyond what was already processed back into the live queue so the next drain cycle
-        // picks it up.
+        // Re-read the claimed file ONE more time, right before deleting it, to catch a path appended by a writer that raced the claim-rename above. The rename-to-claim pattern assumes no other writer can touch the live queue's underlying file once it has been renamed to the claim target -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE lets a concurrent open-for-append follow the same underlying file object across the rename) or on POSIX (a narrow rename/open race exists there too). A dirty path appended during that window would otherwise be silently deleted along with the rest of this cycle's already-processed content and never reindexed. Forward anything found beyond what was already processed back into the live queue so the next drain cycle picks it up.
         try {
           const recheck = fs.readFileSync(claimTarget, 'utf8')
           if (recheck !== claimedContent) {
@@ -883,18 +737,14 @@ export function drainOnce(
           // best-effort recheck -- if the claimed file vanished or became unreadable between
           // the read above and now, there is nothing more we can safely recover here.
         }
-        // Only clear the claimed file now that its batch has been durably processed -- never
-        // before -- so a crash partway through processDirtyBatch leaves it in place for stage
-        // (a) to recover on the next startup instead of losing the paths it named.
+        // Only clear the claimed file now that its batch has been durably processed -- never before -- so a crash partway through processDirtyBatch leaves it in place for stage (a) to recover on the next startup instead of losing the paths it named.
         try {
           fs.rmSync(claimTarget, { force: true })
         } catch {
           try {
             fs.renameSync(claimTarget, `${claimTarget}.corrupt-${Date.now()}`)
           } catch {
-            // Both cleanup attempts failed: record it the same way stage (a) does, so a
-            // leftover file here is recognized as already-processed (and not silently
-            // reprocessed) by stage (a)'s crash recovery on the next cycle.
+            // Both cleanup attempts failed: record it the same way stage (a) does, so a leftover file here is recognized as already-processed (and not silently reprocessed) by stage (a)'s crash recovery on the next cycle.
             unclearedDrainingSnapshots.set(claimTarget, claimedContent)
           }
         }
@@ -904,11 +754,7 @@ export function drainOnce(
     // and will be retried on the next poll cycle.
   }
 
-  // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit
-  // hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above,
-  // on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the
-  // queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not
-  // this cycle's already-completed dirty-queue work.
+  // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above, on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not this cycle's already-completed dirty-queue work.
   const cycle = (drainCycleCounts.get(dir) ?? 0) + 1
   drainCycleCounts.set(dir, cycle)
   if (cycle % PRUNE_EVERY_N_DRAINS === 0) {
@@ -922,9 +768,7 @@ export function drainOnce(
     }
   }
 
-  // Now that both stages above have finished claiming/processing their batches for this cycle,
-  // it is safe to actually append this cycle's transient-failure requeues to the live queue --
-  // see deferredRequeues' doc comment above for why this must happen last.
+  // Now that both stages above have finished claiming/processing their batches for this cycle, it is safe to actually append this cycle's transient-failure requeues to the live queue -- see deferredRequeues' doc comment above for why this must happen last.
   for (const p of deferredRequeues) appendToDirtyQueue(dir, p)
 
   return processed
@@ -1044,13 +888,7 @@ export function stopWorker(dir: string = dataDir()): boolean {
       // Race: process exited between the check and the kill. Fall through to pid-file cleanup; report whatever liveness we observed.
     }
   }
-  // Only remove the pid file when it still names the pid we just killed -- never unconditionally.
-  // A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via
-  // claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an
-  // unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning
-  // it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would
-  // then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard
-  // style as the exit handler in runDetachedWorkerDaemon.
+  // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
     try {
       fs.rmSync(workerPidPath(dir), { force: true })
@@ -1185,11 +1023,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
  * loop deterministically; in the worker-thread case it is wired to a message
  * from the parent.
  */
-// How often the worker loop auto-prunes dead file rows across every known project root (see
-// sweepKnownRoots in index_prune.ts). Deliberately much longer than SNAPSHOT_CLEANUP_INTERVAL_MS
-// -- a full existence-check pass over every indexed file under every known root is heavier than
-// the snapshot sweep, and dead-row accumulation is a slow-moving problem that doesn't need a
-// tight cadence to stay bounded.
+// How often the worker loop auto-prunes dead file rows across every known project root (see sweepKnownRoots in index_prune.ts). Deliberately much longer than SNAPSHOT_CLEANUP_INTERVAL_MS -- a full existence-check pass over every indexed file under every known root is heavier than the snapshot sweep, and dead-row accumulation is a slow-moving problem that doesn't need a tight cadence to stay bounded.
 const KNOWN_ROOTS_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 export async function runWorkerLoop(
@@ -1197,9 +1031,7 @@ export async function runWorkerLoop(
   pollIntervalMs: number,
   shouldStop: () => boolean = () => false,
 ): Promise<void> {
-  // Local to this loop invocation (not module-level) so each call starts its own fresh
-  // throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across
-  // tests in the same process).
+  // Local to this loop invocation (not module-level) so each call starts its own fresh throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across tests in the same process).
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0
   while (!shouldStop()) {
@@ -1208,18 +1040,14 @@ export async function runWorkerLoop(
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
     }
-    // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue
-    // drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a
-    // schedule instead of growing unbounded for the life of the daemon.
+    // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a schedule instead of growing unbounded for the life of the daemon.
     if (Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
       try {
         cleanup_stale()
       } catch {
         // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
       }
-      // Rotate/prune the worker's own accumulating state files (worker-errors.log,
-      // .corrupt-* quarantine files) on the same periodic cadence -- see
-      // cleanupWorkerStateFiles' doc comment.
+      // Rotate/prune the worker's own accumulating state files (worker-errors.log, .corrupt-* quarantine files) on the same periodic cadence -- see cleanupWorkerStateFiles' doc comment.
       try {
         cleanupWorkerStateFiles(dir)
       } catch {
@@ -1227,11 +1055,7 @@ export async function runWorkerLoop(
       }
       lastSnapshotCleanupMs = Date.now()
     }
-    // Auto-prune dead file rows across every known project root -- see sweepKnownRoots'
-    // docstring for the safety guarantees (grace period before treating an unreachable root as
-    // gone, anomaly-ratio guard against a mount-point outage under a live root). This is what
-    // keeps the shared global.db from silently accumulating dead rows indefinitely the way it
-    // used to, when pruning only ever ran via a manually-invoked `token-goat index`.
+    // Auto-prune dead file rows across every known project root -- see sweepKnownRoots' docstring for the safety guarantees (grace period before treating an unreachable root as gone, anomaly-ratio guard against a mount-point outage under a live root). This is what keeps the shared global.db from silently accumulating dead rows indefinitely the way it used to, when pruning only ever ran via a manually-invoked `token-goat index`.
     if (Date.now() - lastKnownRootsSweepMs >= KNOWN_ROOTS_SWEEP_INTERVAL_MS) {
       try {
         const result = sweepKnownRoots(path.join(dir, 'global.db'))
