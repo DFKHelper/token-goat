@@ -23,6 +23,7 @@ import { applyHintTracking, classifyEditHint, meetsSavingsFloor } from './hint_s
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './index_prune.js'
 import { normalizePath } from './paths.js'
+import { extractErrorMessage } from './util.js'
 import { recordFileEdit } from './session.js'
 import { isUnderSystemTemp } from './project.js'
 import { recordStat } from './stats.js'
@@ -59,7 +60,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
       // must not crash the whole handler — recordFileEdit above already succeeded,
       // and the rest of this handler's work (the markdown hint below) should still
       // run rather than the exception propagating out of postEditHandler.
-      recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+      recordStat('dirty_queue_append_failed', 0, 0, undefined, extractErrorMessage(e))
     }
 
     // Work was just queued above for the background worker to drain -- nudge it back to life if
@@ -68,7 +69,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
     try {
       ensureWorkerAlive()
     } catch (e) {
-      recordStat('worker_healthcheck_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+      recordStat('worker_healthcheck_failed', 0, 0, undefined, extractErrorMessage(e))
     }
 
     // Record this file's project root as known-alive so the worker's periodic sweep
@@ -77,7 +78,7 @@ function postEditHandlerInner(event: HookEvent): HookOutput {
     try {
       recordKnownRootThrottled(normalized)
     } catch (e) {
-      recordStat('known_root_record_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+      recordStat('known_root_record_failed', 0, 0, undefined, extractErrorMessage(e))
     }
   }
 

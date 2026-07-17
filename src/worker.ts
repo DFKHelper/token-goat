@@ -22,7 +22,7 @@ import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible }
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isUnderBlockedRoot } from './util.js'
+import { foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
@@ -411,7 +411,7 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string): Prom
   // appendWorkerErrorLog uses for indexing failures so it is at least discoverable after the
   // fact, instead of vanishing silently.
   const onEmbedError = (err: unknown): void => {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = extractErrorMessage(err)
     appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileEmbeddings failed for ${absPath}: ${message}\n`)
   }
   // Defensive fallback (matches config.ts's own default of 4): several existing tests in this
@@ -472,7 +472,7 @@ function appendWorkerErrorLog(dir: string, line: string): void {
 }
 
 function logIndexFailure(dir: string, absPath: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err)
+  const message = extractErrorMessage(err)
   appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`)
 }
 
@@ -1018,7 +1018,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     try {
       appendWorkerErrorLog(
         dir,
-        `${new Date().toISOString()} ensureWorkerAlive: auto-restart failed: ${e instanceof Error ? e.message : String(e)}\n`,
+        `${new Date().toISOString()} ensureWorkerAlive: auto-restart failed: ${extractErrorMessage(e)}\n`,
       )
     } catch {
       // best-effort

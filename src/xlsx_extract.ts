@@ -5,6 +5,7 @@
  */
 
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
+import { extractErrorMessage } from './util.js'
 
 interface ExcelCell {
   value: unknown
@@ -72,7 +73,7 @@ async function loadWorkbook(filePath: string): Promise<ExcelWorkbook> {
     // which leaks library internals and a docs URL straight to the CLI user instead of a clear
     // message. Shared by every xlsx-* command (listSheets, headSheet, rangeSheet, querySheet
     // all call loadWorkbook), so this one fix covers all four.
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg = extractErrorMessage(err)
     if (msg.startsWith('File not found:')) throw err
     throw new Error(`not a valid .xlsx file: ${filePath}`, { cause: err })
   }
