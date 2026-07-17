@@ -183,11 +183,15 @@ function extractCatSourceFile(cmd: string): string | null {
 // per-path flags used by the deny/hint logic, or null if the path is a temp scratch
 // file or lacks a known source/doc/config extension. Shared by the single-path
 // extractCatFile and the multi-path extractCatFilesMulti so both apply identical rules.
-function classifyCatPath(
-  filePath: string,
-  cmd0: string,
-): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
-  if (isTempPath(filePath)) return null
+/**
+ * Classify a file path's extension into the doc/env/config/sql flags shared by every
+ * cat-family extractor below. Returns null when the path has neither a known source/doc/
+ * config extension nor an `.env`-shaped basename (the "not a file we care about" case).
+ * Does NOT apply temp-path filtering -- callers differ on that (some exclude temp paths
+ * outright, `extractPowerShellWrappedGetContent` instead size-gates them), so that check
+ * stays with each caller.
+ */
+function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
   const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
@@ -196,7 +200,17 @@ function classifyCatPath(
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig, isSql, cmd0 }
+  return { isDoc, isEnv, isConfig, isSql }
+}
+
+function classifyCatPath(
+  filePath: string,
+  cmd0: string,
+): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
+  if (isTempPath(filePath)) return null
+  const flags = classifyFileExtensions(filePath)
+  if (flags === null) return null
+  return { filePath, ...flags, cmd0 }
 }
 
 export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
@@ -257,17 +271,11 @@ export function extractPowerShellWrappedGetContent(cmd: string): { filePath: str
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
   if (filePath === undefined) return null
-  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
-  const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
-  if (!hasKnownExt && !isEnvFile) return null
+  const flags = classifyFileExtensions(filePath)
+  if (flags === null) return null
   // Temp reads are normally scratch and skipped, but a large one still floods context; gate on size rather than excluding unconditionally.
   if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
-  const isSql = /\.sql$/i.test(filePath)
-  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-  const isEnv = isEnvFile || /\.env$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig, isSql }
+  return { filePath, ...flags }
 }
 
 /**
@@ -322,15 +330,9 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   if (!drive || !pathRest) return null
   const filePath = drive + ':/' + pathRest
   if (isTempPath(filePath)) return null
-  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
-  const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
-  if (!hasKnownExt && !isEnvFile) return null
-  const isSql = /\.sql$/i.test(filePath)
-  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-  const isEnv = isEnvFile || /\.env$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig, isSql }
+  const flags = classifyFileExtensions(filePath)
+  if (flags === null) return null
+  return { filePath, ...flags }
 }
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
