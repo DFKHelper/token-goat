@@ -6,7 +6,7 @@ import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath } from './constants.js'
 import { envBool, envInt, envStr } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, extractErrorMessage } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Section interfaces
@@ -685,7 +685,7 @@ function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: 
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { raw: {}, parseError: null }
-    return { raw: {}, parseError: e instanceof Error ? e.message : String(e) }
+    return { raw: {}, parseError: extractErrorMessage(e) }
   }
 }
 
@@ -708,7 +708,7 @@ export function loadConfig(): Config {
     text = fs.readFileSync(p, 'utf8')
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') readError = e instanceof Error ? e.message : String(e)
+    if (code !== 'ENOENT') readError = extractErrorMessage(e)
   }
   const contentFp = text !== null ? shortFingerprint(text) : ''
 
@@ -723,7 +723,7 @@ export function loadConfig(): Config {
       raw = parse(text) as Record<string, unknown>
       _lastConfigParseError = null
     } catch (e) {
-      _lastConfigParseError = e instanceof Error ? e.message : String(e)
+      _lastConfigParseError = extractErrorMessage(e)
     }
   } else {
     _lastConfigParseError = readError

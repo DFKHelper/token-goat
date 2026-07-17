@@ -22,7 +22,7 @@ import { findSystemTempFiles, pruneSystemTempFiles } from './index_prune.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath } from './util.js'
+import { ensureNewline, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage } from './util.js'
 import { normalizePath } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
@@ -333,7 +333,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') {
-        parseErr = e instanceof Error ? e.message : String(e)
+        parseErr = extractErrorMessage(e)
       }
     }
 
@@ -645,7 +645,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
   try {
     fetched = await fetchBuffer(opts.url)
   } catch (e) {
-    emitErr(`fetch-image: network error — ${e instanceof Error ? e.message : String(e)}`)
+    emitErr(`fetch-image: network error — ${extractErrorMessage(e)}`)
     throw new Error(`fetch failed: ${opts.url}`, { cause: e })
   }
   const buf = fetched.body

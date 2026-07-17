@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -1031,7 +1031,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(e instanceof Error ? e.message : String(e))
+    emitErr(extractErrorMessage(e))
     return 1
   }
 
@@ -1057,7 +1057,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(e instanceof Error ? e.message : String(e))
+    emitErr(extractErrorMessage(e))
     return 1
   }
 }
@@ -1086,7 +1086,7 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
     emit(formatCsvProfile(profiles))
     return 0
   } catch (e) {
-    emitErr(e instanceof Error ? e.message : String(e))
+    emitErr(extractErrorMessage(e))
     return 1
   }
 }

@@ -21,7 +21,7 @@ import { resolveProjectRoot } from './project.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
@@ -1064,7 +1064,7 @@ export function runBlame(opts: BlameOptions): number {
     }
     raw = result.stdout
   } catch (e) {
-    emitErr(`git blame failed: ${e instanceof Error ? e.message : String(e)}`)
+    emitErr(`git blame failed: ${extractErrorMessage(e)}`)
     return 1
   }
 
