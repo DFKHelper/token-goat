@@ -327,4 +327,34 @@ describe('hooks_session', () => {
       );
     });
   });
+
+  describe('non-string raw.cwd (regression: both handlers previously cast `event.raw[\'cwd\'] as string | undefined` with no runtime check, so a malformed/harness-divergent payload where cwd is present but not a string -- e.g. a number -- would pass the truthy check and be handed straight to runGit as its cwd option)', () => {
+    it('userPromptSubmitHandler never calls runGit when raw.cwd is not a string', () => {
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: 12345 },
+      };
+
+      userPromptSubmitHandler(event);
+
+      expect(util.runGit).not.toHaveBeenCalled();
+    });
+
+    it('subagentStopHandler never calls runGit when raw.cwd is not a string', () => {
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: { cwd: 12345 },
+      };
+
+      subagentStopHandler(event);
+
+      expect(util.runGit).not.toHaveBeenCalled();
+    });
+  });
 });

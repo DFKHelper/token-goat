@@ -8,7 +8,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, denyOutput, passOutput, extractToolResponseField } from './hooks_common.js'
+import { contextOutput, denyOutput, passOutput, extractToolResponseField, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
@@ -1224,7 +1224,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell
   // itself would — hoisted here (rather than computed right before its first use) so every
   // path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
-  const preHookCwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+  const preHookCwd = getCwd(event) ?? null
   // When a cd prefix was stripped, path-based hints below resolve their filePath against the
   // directory that cd would actually leave the shell in, not this hook's own cwd.
   const hintCwd = preHookCwd ?? process.cwd()
@@ -1731,7 +1731,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cmd = stripCdPrefix(rawCmd)
     const output = extractBashOutput(event.raw)
     const exitCode = extractExitCode(event.raw)
-    const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+    const cwd = getCwd(event) ?? null
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an
     // untouched install sees identical behavior; a configured cache_min_bytes now
     // actually moves the floor instead of being silently ignored.

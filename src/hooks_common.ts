@@ -37,6 +37,24 @@ export function getFilePath(event: HookEvent): string | undefined {
 }
 
 /**
+ * Extract the working directory a hook event's wire payload carries, validated as a string.
+ *
+ * `event.raw['cwd']` was previously read at six independent call sites across
+ * hooks_bash.ts/hooks_session.ts/hooks_read.ts with three different levels of validation --
+ * two sites in hooks_session.ts used an unchecked `as string | undefined` cast, so a
+ * malformed/harness-divergent payload where `cwd` is present but not a string would pass a
+ * non-string value into runGit()'s `cwd` option, throwing at runtime and being silently
+ * swallowed by that handler's own try/catch (inert, not crashing -- the same
+ * hidden-failure shape as the mergeSessionState/coerce touch-point gap found earlier).
+ * Returns `undefined` (never a baked-in fallback) so each caller keeps its own default --
+ * hooks_bash.ts wants `null`, hooks_read.ts wants `process.cwd()`.
+ */
+export function getCwd(event: HookEvent): string | undefined {
+  const value = event.raw && typeof event.raw === 'object' ? event.raw['cwd'] : undefined
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/**
  * Extract a string body from a raw hook event's `tool_response`, trying
  * `keys` in order and returning the first string value found.
  *

@@ -15,7 +15,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { getFilePath } from './hooks_common.js'
+import { getCwd, getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
@@ -886,7 +886,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const config = loadConfig()
   if (config.hints.cross_session_read_dedup && !wasFileReadThisSession(normalized)) {
     try {
-      const cwd = (event.raw && typeof event.raw === 'object' && 'cwd' in event.raw && typeof event.raw['cwd'] === 'string') ? event.raw['cwd'] : process.cwd()
+      const cwd = getCwd(event) ?? process.cwd()
       let project = findProject(cwd)
       if (!project) {
         project = makeProjectAt(cwd)
@@ -1173,7 +1173,7 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
   // Cross-session manifest recording: write this session's reads for other sessions to discover
   if (loadConfig().hints.cross_session_read_dedup) {
     try {
-      const cwd = (event.raw && typeof event.raw === 'object' && 'cwd' in event.raw && typeof event.raw['cwd'] === 'string') ? event.raw['cwd'] : process.cwd()
+      const cwd = getCwd(event) ?? process.cwd()
       let project = findProject(cwd)
       if (!project) {
         project = makeProjectAt(cwd)
