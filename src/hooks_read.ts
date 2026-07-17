@@ -824,22 +824,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // hints.truncated_read_min_lines so a small file that happened to trip the token-based
     // truncation marker doesn't get denied for a redirect that wouldn't help it.
     if (wasFileTruncatedThisSession(normalized)) {
-      let truncatedLineCount = Infinity
-      try {
-        const sz = statSize(normalized)
-        if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-          truncatedLineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
-        }
-      } catch {
-        // best-effort — treat as eligible for the deny below on read/stat failure
-      }
-      if (truncatedLineCount >= loadConfig().hints.truncated_read_min_lines) {
+      if (estimateTruncatedLineCount(normalized) >= loadConfig().hints.truncated_read_min_lines) {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
-        return denyOutput(
-          'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-        )
+        return denyOutput(truncatedReadDenyMessage(normalized))
       }
     }
 
@@ -958,21 +946,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // above) so a small file that happened to trip the token-based truncation marker
       // doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
-        let truncatedLineCount2 = Infinity
-        try {
-          const sz2 = statSize(normalized)
-          if (sz2 !== null && sz2 <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-            truncatedLineCount2 = countTextLines(fs.readFileSync(normalized, 'utf8'))
-          }
-        } catch {
-          // best-effort — treat as eligible for the deny below on read/stat failure
-        }
-        if (truncatedLineCount2 >= config.hints.truncated_read_min_lines) {
+        if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
           recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
-          return denyOutput(
-            'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-            ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
-          )
+          return denyOutput(truncatedReadDenyMessage(normalized))
         }
       }
 
@@ -1144,6 +1120,27 @@ function countTextLines(content: string): number {
   const parts = content.split(/\r\n|\r|\n/)
   if (parts[parts.length - 1] === '') parts.pop()
   return parts.length
+}
+
+/** Line count of `normalized`, capped by SLICE_ESTIMATE_SCAN_CAP_BYTES; Infinity when the
+ *  file is too large to scan or unreadable (fail open toward the truncated-read deny). */
+function estimateTruncatedLineCount(normalized: string): number {
+  try {
+    const sz = statSize(normalized)
+    if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      return countTextLines(fs.readFileSync(normalized, 'utf8'))
+    }
+  } catch {
+    // best-effort — treat as eligible for the deny below on read/stat failure
+  }
+  return Infinity
+}
+
+function truncatedReadDenyMessage(normalized: string): string {
+  return (
+    'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+    ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+  )
 }
 
 function postReadHandlerInner(event: HookEvent): HookOutput {
