@@ -596,17 +596,8 @@ export function findContainingSection(
  * sections.
  */
 export function listSections(filePath: string): string[] {
-  let text: string
-  try {
-    text = readFileSync(filePath, 'utf-8')
-  } catch {
-    return []
-  }
-
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
-  if (text.charCodeAt(0) === 0xfeff) {
-    text = text.slice(1)
-  }
+  const text = readTextForSections(filePath)
+  if (text === null) return []
 
   const language = detectLanguage(filePath)
   const { headers } = findHeaders(text, language)
