@@ -11,7 +11,7 @@ const MODIFIER =
 // is a common, legal Apex idiom) - without it, an annotated type declaration line fails to match
 // at all, silently dropping the type and misattributing every member inside it.
 const TYPE_DECL_RE = new RegExp(
-  `^[ \\t]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
+  `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
   'gm',
 )
 const TRIGGER_RE = new RegExp(
@@ -32,7 +32,7 @@ const TRIGGER_RE = new RegExp(
 const RETURN_TYPE = '(?:[A-Za-z_][A-Za-z0-9_.<>?,\\[\\] ]*[ \\t]+)'
 const STATEMENT_KEYWORD_GUARD = '(?!(?:return|throw|new|yield|else|do|try|finally|break|continue)\\b)'
 const METHOD_RE = new RegExp(
-  `^[ \\t]*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\\([^\\n)]*\\))?[ \\t]+)*` +
+  `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*` +
     `(?:(?:${MODIFIER}[ \\t]+)+${RETURN_TYPE}?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}${RETURN_TYPE})` +
     `(${IDENT})[ \\t]*\\([\\s\\S]*?\\)[ \\t]*(?:\\{|;)`,
   'gm',
@@ -62,7 +62,7 @@ function lineEndOffset(content: string, lineIndex: readonly number[], line: numb
 // (`@IsTest private class MyTestClass {`), and that line must never be mistaken for one of the
 // preceding pure-annotation lines a method/constructor's own span walks back through - doing so
 // swallows the class's own header line into the member's span instead of the class's.
-const PURE_ANNOTATION_LINE_RE = /^(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?[ \t]*)+$/
+const PURE_ANNOTATION_LINE_RE = new RegExp(`^(?:@${IDENT}(?:\\([^)]*\\))?[ \\t]*)+$`)
 
 function annotationStartLine(lines: readonly string[], line: number): number {
   let start = line
