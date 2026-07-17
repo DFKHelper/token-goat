@@ -76,4 +76,20 @@ describe('compressMcpResult', () => {
       expect(offendingLine).toBe('3\tline1 line2 line3\thttps://example.com/item-3')
     }
   })
+
+  it('sanitizes an embedded tab/newline in a JSON object key, not just cell values (regression: variableCols.join and the constant: line rendered key names raw, so a key containing a literal tab/newline would misalign the header the same way an unsanitized value did)', () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      'na\tme': `item-${i}`,
+      'sta\nus': 'active',
+      url: `https://example.com/item-${i}`,
+    }))
+    const compressed = compressMcpResult(JSON.stringify(rows))
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const lines = compressed.split('\n')
+      expect(lines[0]).toBe('constant: sta us=active')
+      expect(lines[1]).toBe('na me\turl')
+      expect(lines.length).toBe(rows.length + 2)
+    }
+  })
 })

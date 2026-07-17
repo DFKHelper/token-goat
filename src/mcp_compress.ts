@@ -56,6 +56,11 @@ function cellText(value: unknown): string {
   }
 }
 
+/** Same tab/newline sanitization as {@link cellText}, but for a JSON object key rendered into the header row or `constant:` line -- a key containing a literal tab/newline (legal JSON, however unlikely) would otherwise misalign the header the same way an unsanitized value would. */
+function cellKey(key: string): string {
+  return key.replace(/[\t\r\n]+/g, ' ')
+}
+
 /**
  * Compress `resultText` when it is a JSON array of at least {@link MIN_ROWS}
  * homogeneous plain objects and doing so saves at least
@@ -86,16 +91,15 @@ export function compressMcpResult(resultText: string): string | null {
     if (isConstant) constantCols.push(key)
     else variableCols.push(key)
   }
-  // Every row identical on every field: naming the fields once already says
-  // everything the table would, so let the caller fall back to raw text.
+  // Every row identical on every field: naming the fields once already says everything the table would, so let the caller fall back to raw text.
   if (variableCols.length === 0) return null
 
   const lines: string[] = []
   if (constantCols.length > 0) {
-    const constantParts = constantCols.map((k) => `${k}=${cellText(rows[0]?.[k])}`)
+    const constantParts = constantCols.map((k) => `${cellKey(k)}=${cellText(rows[0]?.[k])}`)
     lines.push(`constant: ${constantParts.join(', ')}`)
   }
-  lines.push(variableCols.join('\t'))
+  lines.push(variableCols.map(cellKey).join('\t'))
   for (const row of rows) {
     lines.push(variableCols.map((k) => cellText(row[k])).join('\t'))
   }
