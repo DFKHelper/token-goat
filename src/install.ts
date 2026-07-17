@@ -96,10 +96,7 @@ function hookCommand(eventArg: string): string {
 
 /** Return the `~/.claude` or `<cwd>/.claude` settings path for `scope`. */
 export function settingsPath(scope: HookScope): string {
-  // Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd()
-  // disagree on this after chdir) — not the full resolveIndexPath pipeline, whose
-  // unconditional drive-letter lowercasing would otherwise leak into this
-  // user-visible, printed-to-the-console path on Windows.
+  // Only fix the macOS /var vs /private/var alias split (os.tmpdir() vs process.cwd() disagree on this after chdir) — not the full resolveIndexPath pipeline, whose unconditional drive-letter lowercasing would otherwise leak into this user-visible, printed-to-the-console path on Windows.
   const root = scope === 'user' ? os.homedir() : normalizeDarwinSystemAlias(process.cwd())
   const base = path.join(root, '.claude')
   return path.join(base, 'settings.json')
@@ -201,9 +198,7 @@ function groupHasTokenGoat(
  */
 export function installHooks(scope: HookScope = 'user'): InstallResult {
   const p = settingsPath(scope)
-  // strict: true -- a settings file that exists but fails to parse must abort
-  // before any write (see SettingsParseError), not silently proceed as if it
-  // were empty and get clobbered below.
+  // strict: true -- a settings file that exists but fails to parse must abort before any write (see SettingsParseError), not silently proceed as if it were empty and get clobbered below.
   const settings = readSettings(p, { strict: true })
   const hooks = settings.hooks ?? {}
 
@@ -211,11 +206,7 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const existingGroups = hooks[eventKey] ?? []
 
-    // Strip any legacy-marked token-goat entries first, regardless of whether
-    // a current-format entry is also already present -- a legacy command is
-    // dead on this build, so leaving it coexisting with a current entry would
-    // violate "exactly one, working, entry per event key" just as much as
-    // leaving it in place of a missing current entry would.
+    // Strip any legacy-marked token-goat entries first, regardless of whether a current-format entry is also already present -- a legacy command is dead on this build, so leaving it coexisting with a current entry would violate "exactly one, working, entry per event key" just as much as leaving it in place of a missing current entry would.
     const groups: HookMatcherGroup[] = []
     let strippedLegacy = false
     for (const group of existingGroups) {
@@ -301,13 +292,7 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
 }
 
 // --- CLAUDE.md delimited-block writer ---
-//
-// README documents this as part of the BASE Claude Code install (unconditional,
-// not gated behind any --<harness> flag): a delimited block in the user's own
-// ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over
-// Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same
-// idempotent merge-or-append pattern, same "preserve everything outside the
-// markers" guarantee for a file the user edits directly.
+// README documents this as part of the BASE Claude Code install (unconditional, not gated behind any --<harness> flag): a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.
 
 const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
 const CLAUDE_MD_END = '<!-- token-goat-end -->'
@@ -370,12 +355,7 @@ export function uninstallClaudeMd(): boolean {
 }
 
 // --- token-goat skill writer ---
-//
-// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base
-// install too -- "the same routing guidance in skill form". Unlike CLAUDE.md,
-// this directory belongs entirely to token-goat (nothing else writes into
-// it), so install/uninstall can write/remove the whole file rather than
-// patching a delimited region.
+// README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form". Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 
 const SKILL_MD_CONTENT = `---
 name: token-goat
