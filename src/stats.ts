@@ -60,7 +60,6 @@ export interface StatsSummary {
 export const SOURCE_IMAGE = 'image'
 export const SOURCE_HINT = 'hint'
 export const SOURCE_READ = 'read'
-export const SOURCE_COMPACT = 'compact'
 export const SOURCE_BASH = 'bash'
 export const SOURCE_WEB = 'web'
 export const SOURCE_MCP = 'mcp'
