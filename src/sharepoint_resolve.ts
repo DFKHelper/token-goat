@@ -94,6 +94,28 @@ export interface ResolveResult {
   triedPaths: string[]
 }
 
+/** Tries `root` joined with `libSegments` as-is, then with the default document
+ * library's local alias applied to the first segment ("Shared Documents" syncs
+ * locally as "Documents"). Shared by both the sync-root loop and the site-subfolder
+ * loop in {@link resolveLocalPath}, which try this same raw-then-aliased sequence
+ * rooted at different directories. Appends every path it tries to `triedPaths`. */
+function tryLibraryPaths(root: string, libSegments: string[], triedPaths: string[]): string | null {
+  const rawJoined = path.join(root, ...libSegments)
+  triedPaths.push(rawJoined)
+  if (fs.existsSync(rawJoined)) return rawJoined
+
+  if (libSegments.length > 0) {
+    const aliasedFirst = normalizeLibrarySegment(libSegments[0] as string)
+    if (aliasedFirst !== libSegments[0]) {
+      const aliasedJoined = path.join(root, aliasedFirst, ...libSegments.slice(1))
+      triedPaths.push(aliasedJoined)
+      if (fs.existsSync(aliasedJoined)) return aliasedJoined
+    }
+  }
+
+  return null
+}
+
 /** Best-effort match of a parsed share URL against locally-synced OneDrive/SharePoint
  * folders. Tries each candidate sync root with the library path joined as-is, then
  * with the default document library's local alias ("Shared Documents" syncs locally
@@ -111,18 +133,8 @@ export function resolveLocalPath(
   const triedPaths: string[] = []
 
   for (const root of roots) {
-    const rawJoined = path.join(root, ...libSegments)
-    triedPaths.push(rawJoined)
-    if (fs.existsSync(rawJoined)) return { resolvedPath: rawJoined, triedPaths }
-
-    if (libSegments.length > 0) {
-      const aliasedFirst = normalizeLibrarySegment(libSegments[0] as string)
-      if (aliasedFirst !== libSegments[0]) {
-        const aliasedJoined = path.join(root, aliasedFirst, ...libSegments.slice(1))
-        triedPaths.push(aliasedJoined)
-        if (fs.existsSync(aliasedJoined)) return { resolvedPath: aliasedJoined, triedPaths }
-      }
-    }
+    const found = tryLibraryPaths(root, libSegments, triedPaths)
+    if (found !== null) return { resolvedPath: found, triedPaths }
 
     if (parsed.siteType === 'site' && parsed.siteName.length > 0) {
       try {
@@ -130,18 +142,8 @@ export function resolveLocalPath(
           if (!entry.isDirectory() || !entry.name.toLowerCase().includes(parsed.siteName.toLowerCase())) continue
           const siteRoot = path.join(root, entry.name)
 
-          const siteJoined = path.join(siteRoot, ...libSegments)
-          triedPaths.push(siteJoined)
-          if (fs.existsSync(siteJoined)) return { resolvedPath: siteJoined, triedPaths }
-
-          if (libSegments.length > 0) {
-            const aliasedFirst = normalizeLibrarySegment(libSegments[0] as string)
-            if (aliasedFirst !== libSegments[0]) {
-              const siteAliasedJoined = path.join(siteRoot, aliasedFirst, ...libSegments.slice(1))
-              triedPaths.push(siteAliasedJoined)
-              if (fs.existsSync(siteAliasedJoined)) return { resolvedPath: siteAliasedJoined, triedPaths }
-            }
-          }
+          const siteFound = tryLibraryPaths(siteRoot, libSegments, triedPaths)
+          if (siteFound !== null) return { resolvedPath: siteFound, triedPaths }
         }
       } catch {
         // best-effort; an unreadable root just means no site-subfolder candidates
