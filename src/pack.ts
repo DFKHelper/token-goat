@@ -179,6 +179,59 @@ function openWithinRoot(rootReal: string, p: string): { fd: number; stat: fs.Sta
   }
 }
 
+interface OpenCandidate {
+  readonly p: string
+  readonly rel: string
+  readonly fd: number
+  readonly stat: fs.Stats
+}
+
+/**
+ * Shared by {@link collectFiles} and {@link estimateBudget}: resolve each pattern to its
+ * candidate path under `projectRoot`, skip already-`seen` or ignore-matched paths, and
+ * validate the survivor doesn't escape the project root via a symlink ({@link openWithinRoot}).
+ * Yields an open fd + stat for each valid candidate -- the caller owns the size-limit check
+ * (thresholds and skip-message wording differ between the two callers), reading the body, and
+ * closing the fd (including via the ignore-match path here, which closes before continuing).
+ * `seen` is read-only here; callers add to it themselves once a candidate is fully processed,
+ * matching each caller's own "only mark seen on success" contract.
+ */
+function* resolveOpenCandidates(
+  projectRoot: string,
+  patterns: string[],
+  rootReal: string,
+  ignorePatterns: string[] | undefined,
+  seen: ReadonlySet<string>,
+  skipped: string[],
+): Generator<OpenCandidate> {
+  for (const pattern of patterns) {
+    const p = path.isAbsolute(pattern) ? pattern : path.join(projectRoot, pattern)
+    if (seen.has(p)) continue
+
+    let rel: string
+    try {
+      rel = path.relative(projectRoot, p).replace(/\\/g, '/')
+    } catch {
+      skipped.push(`${p} (outside project root)`)
+      continue
+    }
+
+    const opened = openWithinRoot(rootReal, p)
+    if (opened === null) continue
+    if (opened === 'outside-root') {
+      skipped.push(`${rel} (symlink points outside project root)`)
+      continue
+    }
+
+    if (ignorePatterns && matches(rel, ignorePatterns)) {
+      fs.closeSync(opened.fd)
+      continue
+    }
+
+    yield { p, rel, fd: opened.fd, stat: opened.stat }
+  }
+}
+
 // Comment stripping patterns
 const PY_LINE_COMMENT_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 const CSTYLE_BLOCK_RE = /\/\*.*?\*\//gs
@@ -370,73 +423,41 @@ export function collectFiles(
   }
   const maxFileBytes = opts.max_file_bytes ?? 2 * 1024 * 1024
 
-  for (const pattern of patterns) {
-    const candidates: string[] = []
+  for (const { p, rel, fd, stat } of resolveOpenCandidates(projectRoot, patterns, rootReal, opts.ignore_patterns, seen, result.skipped)) {
+    try {
+      const size = stat.size
+      if (size > maxFileBytes) {
+        result.skipped.push(`${rel} (too large: ${Math.floor(size / 1024)}KB)`)
+        continue
+      }
 
-    if (path.isAbsolute(pattern)) {
-      candidates.push(pattern)
-    } else {
-      candidates.push(path.join(projectRoot, pattern))
-    }
-
-    for (const p of candidates) {
-      if (seen.has(p)) continue
-
-      let rel: string
+      let content: string
       try {
-        rel = path.relative(projectRoot, p).replace(/\\/g, '/')
+        content = fs.readFileSync(fd, 'utf8')
       } catch {
-        result.skipped.push(`${p} (outside project root)`)
+        result.skipped.push(`${rel} (unreadable)`)
         continue
       }
 
-      const opened = openWithinRoot(rootReal, p)
-      if (opened === null) continue
-      if (opened === 'outside-root') {
-        result.skipped.push(`${rel} (symlink points outside project root)`)
-        continue
+      if (opts.do_strip_comments) {
+        content = stripComments(content, p)
       }
 
-      const { fd, stat } = opened
-      try {
-        if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
-          continue
-        }
-
-        const size = stat.size
-        if (size > maxFileBytes) {
-          result.skipped.push(`${rel} (too large: ${Math.floor(size / 1024)}KB)`)
-          continue
-        }
-
-        let content: string
-        try {
-          content = fs.readFileSync(fd, 'utf8')
-        } catch {
-          result.skipped.push(`${rel} (unreadable)`)
-          continue
-        }
-
-        if (opts.do_strip_comments) {
-          content = stripComments(content, p)
-        }
-
-        seen.add(p)
-        const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
-        const tokens = estimateTokens(content)
-        const pf: PackFile = {
-          path: p,
-          rel_path: rel,
-          content,
-          lines,
-          tokens,
-        }
-        result.files.push(pf)
-        result.total_lines += lines
-        result.total_tokens += tokens
-      } finally {
-        fs.closeSync(fd)
+      seen.add(p)
+      const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
+      const tokens = estimateTokens(content)
+      const pf: PackFile = {
+        path: p,
+        rel_path: rel,
+        content,
+        lines,
+        tokens,
       }
+      result.files.push(pf)
+      result.total_lines += lines
+      result.total_tokens += tokens
+    } finally {
+      fs.closeSync(fd)
     }
   }
 
@@ -619,67 +640,35 @@ export function estimateBudget(
   }
   const maxFileBytes = opts.max_file_bytes ?? 10 * 1024 * 1024
 
-  for (const pattern of patterns) {
-    const candidates: string[] = []
+  for (const { p, rel, fd, stat } of resolveOpenCandidates(projectRoot, patterns, rootReal, opts.ignore_patterns, seen, result.skipped)) {
+    try {
+      const size = stat.size
+      if (size > maxFileBytes) {
+        result.skipped.push(`${rel} (>${Math.floor(maxFileBytes / 1024 / 1024)}MB)`)
+        continue
+      }
 
-    if (path.isAbsolute(pattern)) {
-      candidates.push(pattern)
-    } else {
-      candidates.push(path.join(projectRoot, pattern))
-    }
-
-    for (const p of candidates) {
-      if (seen.has(p)) continue
-
-      let rel: string
+      let lines: number
+      let tokens: number
       try {
-        rel = path.relative(projectRoot, p).replace(/\\/g, '/')
+        const data = fs.readFileSync(fd)
+        const sampleSize = Math.min(1000, data.length)
+        const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
+        lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
+        const text = data.toString('utf8', 0, Math.min(100000, data.length))
+        tokens = estimateTokens(text)
       } catch {
-        result.skipped.push(`${p} (outside project root)`)
+        result.skipped.push(`${rel} (unreadable)`)
         continue
       }
 
-      const opened = openWithinRoot(rootReal, p)
-      if (opened === null) continue
-      if (opened === 'outside-root') {
-        result.skipped.push(`${rel} (symlink points outside project root)`)
-        continue
-      }
-
-      const { fd, stat } = opened
-      try {
-        if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
-          continue
-        }
-
-        const size = stat.size
-        if (size > maxFileBytes) {
-          result.skipped.push(`${rel} (>${Math.floor(maxFileBytes / 1024 / 1024)}MB)`)
-          continue
-        }
-
-        let lines: number
-        let tokens: number
-        try {
-          const data = fs.readFileSync(fd)
-          const sampleSize = Math.min(1000, data.length)
-          const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
-          lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
-          const text = data.toString('utf8', 0, Math.min(100000, data.length))
-          tokens = estimateTokens(text)
-        } catch {
-          result.skipped.push(`${rel} (unreadable)`)
-          continue
-        }
-
-        seen.add(p)
-        const entry: BudgetEntry = { rel_path: rel, lines, tokens, size_bytes: size }
-        result.entries.push(entry)
-        result.total_lines += lines
-        result.total_tokens += tokens
-      } finally {
-        fs.closeSync(fd)
-      }
+      seen.add(p)
+      const entry: BudgetEntry = { rel_path: rel, lines, tokens, size_bytes: size }
+      result.entries.push(entry)
+      result.total_lines += lines
+      result.total_tokens += tokens
+    } finally {
+      fs.closeSync(fd)
     }
   }
 
