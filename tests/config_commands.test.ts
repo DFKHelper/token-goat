@@ -220,6 +220,11 @@ describe('cmdConfig set', () => {
     expect(() => cmdConfig({ action: 'set', key: 'indexing.skip_dirs', value: '[1,2,3]' })).toThrow(/expected a JSON array of strings/)
   })
 
+  it('rejects malformed JSON array syntax with a friendly "expected a JSON array" message instead of a raw JSON.parse SyntaxError (regression: the JSON.parse(raw) call in coerce()\'s array branch had no try/catch, unlike every other rejection path in the same function)', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '[1,2,' })).toThrow(/expected a JSON array/)
+    expect(() => cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '[1,2,' })).not.toThrow(/Unexpected/)
+  })
+
   it('still accepts a JSON array of strings for a string-list field', () => {
     cmdConfig({ action: 'set', key: 'indexing.skip_dirs', value: '["node_modules","dist"]' })
     invalidateConfigCache()
