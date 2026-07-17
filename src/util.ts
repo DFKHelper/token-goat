@@ -522,6 +522,41 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
   return removed
 }
 
+/**
+ * Shared by install.ts's `stripClaudeMdBlock` and codex_install.ts's `stripAgentsBlock`:
+ * remove a delimited block (everything from `beginMarker` through the end of `endMarker`,
+ * inclusive) from the file at `p`. Returns false without writing when the file can't be read
+ * or the markers aren't found in order. Collapses the surrounding whitespace so removing the
+ * block doesn't leave a run of blank lines behind.
+ */
+export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: string): boolean {
+  let existing: string
+  try {
+    existing = readFileSync(p, 'utf8')
+  } catch {
+    return false
+  }
+
+  const beginIdx = existing.indexOf(beginMarker)
+  const endIdx = existing.indexOf(endMarker)
+  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return false
+
+  const before = existing.slice(0, beginIdx).replace(/\s+$/, '')
+  const after = existing.slice(endIdx + endMarker.length).replace(/^\s+/, '')
+
+  let next: string
+  if (before.length > 0 && after.length > 0) {
+    next = `${before}\n\n${after}`
+  } else if (before.length > 0) {
+    next = `${before}\n`
+  } else {
+    next = after
+  }
+
+  atomicWriteText(p, next)
+  return true
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
