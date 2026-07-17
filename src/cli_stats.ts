@@ -24,6 +24,16 @@ export function writeRaw(text: string): void {
   process.stdout.write(ensureNewline(payload))
 }
 
+/** Filter to entries read more than once, sort by count descending, and take the top N.
+ * Shared by {@link renderTopSessionFiles} and {@link renderTopSessionFilesFromDisk}, which
+ * each do their own source-specific extraction into {path, count} pairs before ranking. */
+function rankByReadCount(entries: Array<{ path: string; count: number }>, topN: number): Array<{ path: string; count: number }> {
+  return entries
+    .filter((e) => e.count > 1)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, topN)
+}
+
 /** Format ranked (path, count) entries as the "Top files this session:" block, or "" if empty. */
 function formatTopFiles(ranked: Array<{ path: string; count: number }>): string {
   if (ranked.length === 0) return ''
@@ -47,13 +57,8 @@ export function renderTopSessionFiles(topN: number = 5): string {
     const sessionFiles = getSessionFiles()
     if (sessionFiles.size === 0) return ''
 
-    const ranked = [...sessionFiles.values()]
-      .filter((e) => e.readCount > 1)
-      .sort((a, b) => b.readCount - a.readCount)
-      .slice(0, topN)
-      .map((e) => ({ path: e.path, count: e.readCount }))
-
-    return formatTopFiles(ranked)
+    const entries = [...sessionFiles.values()].map((e) => ({ path: e.path, count: e.readCount }))
+    return formatTopFiles(rankByReadCount(entries, topN))
   } catch {
     return ''
   }
@@ -83,14 +88,12 @@ export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessions
         const filesList = data['files']
         if (!Array.isArray(filesList)) continue
 
-        const ranked = (filesList as Array<Record<string, unknown>>)
+        const entries = (filesList as Array<Record<string, unknown>>)
           .filter((f): f is Record<string, unknown> => typeof f === 'object' && f !== null)
-          .filter((f) => typeof f['readCount'] === 'number' && f['readCount'] > 1)
-          .map((f) => ({ path: String(f['path'] ?? ''), count: Number(f['readCount'] ?? 0) }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, topN)
+          .filter((f) => typeof f['readCount'] === 'number')
+          .map((f) => ({ path: String(f['path'] ?? ''), count: Number(f['readCount']) }))
 
-        const rendered = formatTopFiles(ranked)
+        const rendered = formatTopFiles(rankByReadCount(entries, topN))
         if (rendered === '') continue
         return rendered
       } catch {
