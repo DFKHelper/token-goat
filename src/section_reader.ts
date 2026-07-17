@@ -160,9 +160,6 @@ function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
  * every table is level 1 and a section ends at the very next table header. The
  * full dotted name is kept as the heading so `extractSection("tool.ruff")`
  * works.
- */
-/**
- * Locate every TOML-table / INI-section header in `lines`.
  *
  * A TOML `"""`/`'''` multi-line string or a multi-line array can legally contain text that
  * looks like a `[section]` header (a description quoting example TOML, an array-of-arrays row
