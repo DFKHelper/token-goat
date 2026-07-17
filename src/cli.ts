@@ -1402,12 +1402,12 @@ function enqueueDirtyPathSafe(filePath: string): void {
   }
 }
 
-function mapFsError(e: unknown, src?: string, dest?: string): never {
+function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'): never {
   const fe = e as NodeJS.ErrnoException
   if (fe.code === 'ENOENT') {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
-    if (isSource) throw new CliError(`source file not found: ${src}`)
+    if (isSource) throw new CliError(`${srcLabel} file not found: ${src}`)
     // Always show the destination directory, never the internal .tmp path
     const destDir = dest ? path.dirname(path.resolve(dest)) : path.dirname(path.resolve(errPath || '.'))
     throw new CliError(`destination directory does not exist: ${destDir}`)
@@ -1515,7 +1515,7 @@ function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false)
     return fs.readFileSync(filePath)
   } catch (e) {
     if (e instanceof CliError) throw e
-    mapFsError(e, filePath)
+    mapFsError(e, filePath, undefined, label)
   }
 }
 
