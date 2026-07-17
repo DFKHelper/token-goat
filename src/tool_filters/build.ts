@@ -41,6 +41,76 @@ const GO_VET_PROGRESS_RE = /^go: vet /
 const GO_GENERATE_TRIGGER_RE = /^go:generate /
 const GO_GET_DOWNLOADING_RE = /^go: (?:downloading|extracting|finding|fetching)\s/
 
+// Shared by MakeFilter (routes 'go' as a catch-all binary) and GoFilter (dedicated go
+// dispatch) -- both filter go build/get/mod/vet output identically; only the notes-emission
+// and finalize() call differ per-instance (protected methods on ToolFilter), so these
+// helpers return the computed {kept, notes} for each caller's own this.emitNotes/finalize.
+function goBuildLikeCompress(lines: string[]): { kept: string[]; notes: string[] } {
+  const kept: string[] = []
+  let droppedHeaders = 0
+  let droppedDownloads = 0
+  for (const line of lines) {
+    if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
+      droppedDownloads++
+      continue
+    }
+    if (GO_BUILD_PKG_HEADER_RE.test(line)) {
+      droppedHeaders++
+      continue
+    }
+    kept.push(line)
+  }
+  const notes: string[] = []
+  maybeNote(notes, droppedHeaders, `dropped ${droppedHeaders} '# pkg/path' header lines`)
+  maybeNote(notes, droppedDownloads, `collapsed ${droppedDownloads} 'go: downloading' lines`)
+  return { kept, notes }
+}
+
+function goGetCompress(lines: string[]): { kept: string[]; notes: string[] } {
+  const kept: string[] = []
+  let collapsed = 0
+  for (const line of lines) {
+    if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
+      collapsed++
+      continue
+    }
+    kept.push(line)
+  }
+  const notes: string[] = []
+  maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading/extracting' lines`)
+  return { kept, notes }
+}
+
+function goModTidyCompress(lines: string[]): { kept: string[]; notes: string[] } {
+  const kept: string[] = []
+  let collapsed = 0
+  for (const line of lines) {
+    if (GO_MOD_DOWNLOADING_RE.test(line)) {
+      collapsed++
+      continue
+    }
+    kept.push(line)
+  }
+  const notes: string[] = []
+  maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading' lines`)
+  return { kept, notes }
+}
+
+function goVetLikeCompress(lines: string[]): { kept: string[]; notes: string[] } {
+  const kept: string[] = []
+  let dropped = 0
+  for (const line of lines) {
+    if (GO_VET_PROGRESS_RE.test(line) || GO_GENERATE_TRIGGER_RE.test(line)) {
+      dropped++
+      continue
+    }
+    kept.push(line)
+  }
+  const notes: string[] = []
+  maybeNote(notes, dropped, `dropped ${dropped} go vet/generate progress lines`)
+  return { kept, notes }
+}
+
 export class MakeFilter extends ToolFilter {
   name = 'make'
   override binaries = new Set([
@@ -91,71 +161,25 @@ export class MakeFilter extends ToolFilter {
   }
 
   private _compressGoBuildLike(lines: string[]): string {
-    const kept: string[] = []
-    let droppedHeaders = 0
-    let droppedDownloads = 0
-    for (const line of lines) {
-      if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
-        droppedDownloads++
-        continue
-      }
-      if (GO_BUILD_PKG_HEADER_RE.test(line)) {
-        droppedHeaders++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, droppedHeaders, `dropped ${droppedHeaders} '# pkg/path' header lines`)
-    maybeNote(notes, droppedDownloads, `collapsed ${droppedDownloads} 'go: downloading' lines`)
+    const { kept, notes } = goBuildLikeCompress(lines)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoGet(lines: string[]): string {
-    const kept: string[] = []
-    let collapsed = 0
-    for (const line of lines) {
-      if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
-        collapsed++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading/extracting' lines`)
+    const { kept, notes } = goGetCompress(lines)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoModTidy(lines: string[]): string {
-    const kept: string[] = []
-    let collapsed = 0
-    for (const line of lines) {
-      if (GO_MOD_DOWNLOADING_RE.test(line)) {
-        collapsed++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading' lines`)
+    const { kept, notes } = goModTidyCompress(lines)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoVetLike(lines: string[]): string {
-    const kept: string[] = []
-    let dropped = 0
-    for (const line of lines) {
-      if (GO_VET_PROGRESS_RE.test(line) || GO_GENERATE_TRIGGER_RE.test(line)) {
-        dropped++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, dropped, `dropped ${dropped} go vet/generate progress lines`)
+    const { kept, notes } = goVetLikeCompress(lines)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -1402,75 +1426,25 @@ export class GoFilter extends ToolFilter {
   }
 
   private _compressGoBuildLike(merged: string): string {
-    const lines = merged.split('\n')
-    const kept: string[] = []
-    let droppedHeaders = 0
-    let droppedDownloads = 0
-    for (const line of lines) {
-      if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
-        droppedDownloads++
-        continue
-      }
-      if (GO_BUILD_PKG_HEADER_RE.test(line)) {
-        droppedHeaders++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, droppedHeaders, `dropped ${droppedHeaders} '# pkg/path' header lines`)
-    maybeNote(notes, droppedDownloads, `collapsed ${droppedDownloads} 'go: downloading' lines`)
+    const { kept, notes } = goBuildLikeCompress(merged.split('\n'))
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoGet(merged: string): string {
-    const lines = merged.split('\n')
-    const kept: string[] = []
-    let collapsed = 0
-    for (const line of lines) {
-      if (GO_GET_DOWNLOADING_RE.test(line) || GO_MOD_DOWNLOADING_RE.test(line)) {
-        collapsed++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading/extracting' lines`)
+    const { kept, notes } = goGetCompress(merged.split('\n'))
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoModTidy(merged: string): string {
-    const lines = merged.split('\n')
-    const kept: string[] = []
-    let collapsed = 0
-    for (const line of lines) {
-      if (GO_MOD_DOWNLOADING_RE.test(line)) {
-        collapsed++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, collapsed, `collapsed ${collapsed} 'go: downloading' lines`)
+    const { kept, notes } = goModTidyCompress(merged.split('\n'))
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
 
   private _compressGoVetLike(merged: string): string {
-    const lines = merged.split('\n')
-    const kept: string[] = []
-    let dropped = 0
-    for (const line of lines) {
-      if (GO_VET_PROGRESS_RE.test(line) || GO_GENERATE_TRIGGER_RE.test(line)) {
-        dropped++
-        continue
-      }
-      kept.push(line)
-    }
-    const notes: string[] = []
-    maybeNote(notes, dropped, `dropped ${dropped} go vet/generate progress lines`)
+    const { kept, notes } = goVetLikeCompress(merged.split('\n'))
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
