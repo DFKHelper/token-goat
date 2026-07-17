@@ -137,6 +137,22 @@ export interface RecallSearchOptions {
   limit?: number
 }
 
+/** Filter to known cache types and map raw query rows to {@link RecallHit}s. Shared by ftsSearch and likeSearch, which produce identically-shaped rows from different queries. */
+function mapRowsToHits(
+  rows: Array<{ id: string; cacheType: string; label: string | null; content: string | null; storedAt: number | null }>,
+  snippetQuery: string,
+): RecallHit[] {
+  return rows
+    .filter((r): r is typeof r & { cacheType: RecallCacheType } => isRecallCacheType(r.cacheType))
+    .map((r) => ({
+      id: r.id,
+      cacheType: r.cacheType,
+      label: r.label ?? '',
+      snippet: buildSnippet(r.content ?? '', snippetQuery),
+      storedAt: r.storedAt ?? 0,
+    }))
+}
+
 function ftsSearch(query: string, type: RecallCacheType | undefined, limit: number): RecallHit[] {
   const matchExpr = toFtsMatchExpr(query)
   if (matchExpr === null) return []
@@ -166,15 +182,7 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
           .all(matchExpr, limit)
   ) as Array<{ id: string; cacheType: string; label: string | null; content: string | null; storedAt: number | null }>
 
-  return rows
-    .filter((r): r is typeof r & { cacheType: RecallCacheType } => isRecallCacheType(r.cacheType))
-    .map((r) => ({
-      id: r.id,
-      cacheType: r.cacheType,
-      label: r.label ?? '',
-      snippet: buildSnippet(r.content ?? '', query),
-      storedAt: r.storedAt ?? 0,
-    }))
+  return mapRowsToHits(rows, query)
 }
 
 /** Substring fallback used when `cache_recall_fts` is unavailable (see {@link hasFtsTable}'s doc comment). No relevance ranking -- results are ordered most-recently-stored first. */
@@ -206,15 +214,7 @@ function likeSearch(query: string, type: RecallCacheType | undefined, limit: num
           .all(needle, needle, limit)
   ) as Array<{ id: string; cacheType: string; label: string | null; content: string | null; storedAt: number | null }>
 
-  return rows
-    .filter((r): r is typeof r & { cacheType: RecallCacheType } => isRecallCacheType(r.cacheType))
-    .map((r) => ({
-      id: r.id,
-      cacheType: r.cacheType,
-      label: r.label ?? '',
-      snippet: buildSnippet(r.content ?? '', trimmed),
-      storedAt: r.storedAt ?? 0,
-    }))
+  return mapRowsToHits(rows, trimmed)
 }
 
 /** Test-only: exercises the LIKE fallback directly, without needing to disable the real `cache_recall_fts` schema (dropping/rebuilding an FTS5 virtual table mid-suite corrupts the shared test db). */
