@@ -98,6 +98,15 @@ describe('postBrowserImageHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('preserves an unrecognized content-block type (e.g. an MCP resource block) instead of silently dropping it when an image in the same result triggers a rewrite (regression: the loop only pushed image/text blocks to parts, so any other block type vanished from updatedOutput once anyChanged fired)', async () => {
+    const resourceBlock = { type: 'resource', resource: { uri: 'file:///tmp/report.pdf', mimeType: 'application/pdf' } }
+    const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [resourceBlock]))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toContain('file:///tmp/report.pdf')
+    }
+  })
+
   it('ignores a non-browser MCP tool name', async () => {
     const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__plugin_github_github__search_issues'))
     expect(result.hookType).toBe('pass')

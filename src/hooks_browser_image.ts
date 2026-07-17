@@ -117,6 +117,13 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
         const { text, changed } = dedupTabContext(block.text)
         if (changed) anyChanged = true
         parts.push(text)
+      } else {
+        // Any block type this loop doesn't shrink/dedup (MCP resource/audio blocks, or a text block with a non-string .text) must still round-trip through rewriteOutput once anyChanged fires elsewhere in the same result, or it silently vanishes from what the model sees.
+        try {
+          parts.push(JSON.stringify(block))
+        } catch {
+          parts.push(String(block))
+        }
       }
     }
 
