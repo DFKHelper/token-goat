@@ -341,11 +341,6 @@ function _totalsLines(summary: StatsSummary): string[] {
 }
 
 /**
- * Print only the totals block plus hints pointing at ``--full`` for the
- * fuller breakdowns. This is the bare ``token-goat stats`` default (both TTY
- * and non-TTY use this -- the short output needs no rich-TUI treatment).
- */
-/**
  * Whether stats output should use the rich, ANSI-colored renderer.
  * `isTTY === true` is an explicit, unambiguous terminal -- always rich. When
  * `isTTY` is `undefined` (Claude Code's own terminal, which sets no isTTY at
@@ -417,11 +412,6 @@ function _plainTextStats(summary: StatsSummary): void {
   console.log(lines.join('\n'))
 }
 
-/**
- * Bare ``token-goat stats`` default: totals + hints only, no by-source/
- * by-command/by-day breakdown and no rich TTY rendering. Same output on a
- * TTY or a pipe -- the short block needs no sparklines/KPI treatment.
- */
 /** Build the StatsData payload consumed by the rich TTY renderer from a StatsSummary. */
 function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
   const now = new Date()
