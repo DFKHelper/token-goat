@@ -100,13 +100,25 @@ function reconstructLayout(items: LayoutTextItem[]): string {
   return lines.join('\n')
 }
 
+/**
+ * Loads `data` as a pdfjs document, runs `fn` against it, and always destroys the
+ * loading task afterward -- centralizes the getDocument options and try/finally
+ * teardown shared by extractPdfText/extractPdfOutline/extractPdfMeta.
+ */
+async function withPdfDocument<T>(pdfjs: PdfjsModule, data: Uint8Array, fn: (doc: pdfjsTypes.PDFDocumentProxy) => Promise<T>): Promise<T> {
+  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
+  try {
+    return await fn(await loadingTask.promise)
+  } finally {
+    await loadingTask.destroy()
+  }
+}
+
 export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layout = false): Promise<PdfExtractResult> {
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-extract')
 
-  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
-  try {
-    const doc = await loadingTask.promise
+  return withPdfDocument(pdfjs, data, async (doc) => {
     const range = parsePageRange(pagesSpec, doc.numPages)
     const start = range ? range.start : 1
     const end = range ? range.end : doc.numPages
@@ -121,9 +133,7 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
     }
 
     return { text: pages.join('\n\n'), pageCount: doc.numPages, pagesExtracted: end - start + 1 }
-  } finally {
-    await loadingTask.destroy()
-  }
+  })
 }
 
 export interface PdfOutlineEntry {
@@ -150,9 +160,7 @@ export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEnt
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-outline')
 
-  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
-  try {
-    const doc = await loadingTask.promise
+  return withPdfDocument(pdfjs, data, async (doc) => {
     const outline = await doc.getOutline()
     if (!outline) return []
 
@@ -172,9 +180,7 @@ export async function extractPdfOutline(data: Uint8Array): Promise<PdfOutlineEnt
     }
     await walk(outline, 0)
     return entries
-  } finally {
-    await loadingTask.destroy()
-  }
+  })
 }
 
 export interface PdfMeta {
@@ -194,9 +200,7 @@ export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
   const pdfjs = await loadPdfjs()
   if (!pdfjs) throw new Error('pdfjs-dist is not installed; run `npm install pdfjs-dist` to enable pdf-meta')
 
-  const loadingTask = pdfjs.getDocument({ data, useWorkerFetch: false, disableFontFace: true, verbosity: 0 })
-  try {
-    const doc = await loadingTask.promise
+  return withPdfDocument(pdfjs, data, async (doc) => {
     const { info } = await doc.getMetadata()
     const infoDict = info as Record<string, unknown>
 
@@ -219,7 +223,5 @@ export async function extractPdfMeta(data: Uint8Array): Promise<PdfMeta> {
       author: typeof infoDict['Author'] === 'string' && infoDict['Author'].trim().length > 0 ? infoDict['Author'] : null,
       hasTextLayer,
     }
-  } finally {
-    await loadingTask.destroy()
-  }
+  })
 }
