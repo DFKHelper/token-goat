@@ -224,19 +224,16 @@ describe('getDirtyPathsFor', () => {
     expect(getDirtyPathsFor(DIR)).toEqual(['/a/one.ts', '/a/two.ts'])
   })
 
-  it('deduplicates paths with different case on case-insensitive systems', () => {
-    // Regression: on Windows/macOS, queue entries that differ only in case should be deduplicated since NTFS and HFS+ are case-insensitive. Before the fix, getDirtyPathsFor would return both "c:/projects/File.ts" and "C:/PROJECTS/file.ts" as separate entries. Test with paths that will normalize but differ in case after normalization.
-    const isCaseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
-    if (!isCaseInsensitive) {
-      // On case-sensitive filesystems, paths with different case are different. Skip this test on non-Windows, non-macOS systems.
-      expect(true).toBe(true)
-      return
-    }
-    writeQueue(DIR, ['c:/projects/File.ts', 'C:/PROJECTS/file.ts'])
-    const result = getDirtyPathsFor(DIR)
-    // Should be deduplicated to 1 entry (the first one encountered, normalized)
-    expect(result.length).toBe(1)
-  })
+  it.skipIf(process.platform !== 'win32' && process.platform !== 'darwin')(
+    'deduplicates paths with different case on case-insensitive systems',
+    () => {
+      // Regression: on Windows/macOS, queue entries that differ only in case should be deduplicated since NTFS and HFS+ are case-insensitive. Before the fix, getDirtyPathsFor would return both "c:/projects/File.ts" and "C:/PROJECTS/file.ts" as separate entries. Test with paths that will normalize but differ in case after normalization.
+      writeQueue(DIR, ['c:/projects/File.ts', 'C:/PROJECTS/file.ts'])
+      const result = getDirtyPathsFor(DIR)
+      // Should be deduplicated to 1 entry (the first one encountered, normalized)
+      expect(result.length).toBe(1)
+    },
+  )
 })
 
 describe('processDirtyBatch', () => {

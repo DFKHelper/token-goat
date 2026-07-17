@@ -1155,12 +1155,8 @@ describe('preReadHandler', () => {
     }
   })
 
-  it('blocks node_modules paths case-insensitively on Windows', () => {
-    if (process.platform !== 'win32') {
-      // Covered regardless of platform by the case-insensitive-fs test below (#isNodeModulesPath foldPath fix)
-      expect(true).toBe(true)
-      return
-    }
+  // Covered regardless of platform by the case-insensitive-fs test below (#isNodeModulesPath foldPath fix)
+  it.skipIf(process.platform !== 'win32')('blocks node_modules paths case-insensitively on Windows', () => {
     const result = preReadHandler(readEvent('C:\\PROJECT\\NODE_MODULES\\foo.js'))
     expect(result.hookType).toBe('deny')
   })
