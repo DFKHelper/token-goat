@@ -18,7 +18,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripOwnHooksFromMap } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -270,31 +270,7 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
   const hooks = settings.hooks
   if (hooks === undefined) return false
 
-  let removed = false
-  for (const eventKey of Object.keys(hooks)) {
-    const groups = hooks[eventKey]
-    if (groups === undefined) continue
-    const keptGroups: HookMatcherGroup[] = []
-    for (const group of groups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOurs = typeof h.command === 'string' && isTokenGoatHookCommand(h.command)
-        if (isOurs) removed = true
-        return !isOurs
-      })
-      if (keptHooks.length > 0) {
-        keptGroups.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
-        // A group that had no hooks to begin with is user data; preserve it.
-        keptGroups.push(group)
-      }
-    }
-    if (keptGroups.length > 0) {
-      hooks[eventKey] = keptGroups
-    } else {
-      delete hooks[eventKey]
-    }
-  }
-
+  const removed = stripOwnHooksFromMap(hooks, isTokenGoatHookCommand)
   if (!removed) return false
 
   if (Object.keys(hooks).length === 0) {
