@@ -27,6 +27,16 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
 
+/** Reference-query cap shared by every {@link queryRefs} call in this file (existence checks,
+ * caller resolution, dead-symbol detection) -- keeping this as one constant instead of a
+ * hardcoded 500 at each site means a future cap change can't miss a site and silently
+ * reintroduce the "existence check stops too early" bug this value was raised to fix. */
+const DEFAULT_REF_QUERY_LIMIT = 500
+
+/** Symbol-query cap for "every symbol in one file" lookups -- large enough that no real file
+ * gets truncated, shared so every call site stays in sync. */
+const ALL_SYMBOLS_IN_FILE_LIMIT = 10000
+
 function emit(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
@@ -120,7 +130,7 @@ function buildFileSymCache(): (fp: string) => SymbolEntry[] {
   return (fp: string): SymbolEntry[] => {
     let syms = cache.get(fp)
     if (syms === undefined) {
-      syms = querySymbols({ filePath: fp, limit: 10000 }, undefined)
+      syms = querySymbols({ filePath: fp, limit: ALL_SYMBOLS_IN_FILE_LIMIT }, undefined)
       cache.set(fp, syms)
     }
     return syms
@@ -249,7 +259,7 @@ export function runCallChain(opts: CallChainOptions): number {
   const getSyms = buildFileSymCache()
 
   const callersOf: CallersOfFn = (name: string): string[] => {
-    const refs = queryRefs({ name, limit: 500, rootDir })
+    const refs = queryRefs({ name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     if (refs.length === 0) return []
     const names = new Set<string>()
     for (const ref of refs) {
@@ -320,7 +330,7 @@ export function runImpact(opts: ImpactOptions): number {
     if (item === undefined) break
     const [name, depth] = item
     if (depth >= DEPTH_CAP) continue
-    const refs = queryRefs({ name, limit: 500, rootDir })
+    const refs = queryRefs({ name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     for (const ref of refs) {
       const newHop = depth + 1
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
@@ -391,7 +401,7 @@ export function runDead(opts: DeadOptions): number {
     // limit raised from 1 to 500 (matching resolveCallers' default cap): a bare-name existence
     // check can no longer stop at the first match, since that match might be filtered out below
     // as belonging to a different, same-named symbol elsewhere in the project.
-    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
+    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     const scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
     if (isDeadSymbol(sym.name, scoped.length)) {
       results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
@@ -591,7 +601,7 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   const filePath = resolveIndexPath(file)
-  const syms = querySymbols({ filePath, limit: 10000 })
+  const syms = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
   const enclosing = syms
     .filter((s) => s.lineStart <= line && line <= s.lineEnd)
@@ -836,7 +846,7 @@ interface TestForEntry { testFile: string; testFunctions: string[] }
 
 export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveIndexPath(opts.file)
-  const symbols = querySymbols({ filePath, limit: 10000 })
+  const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope each ref lookup to the current project root so a same-named symbol's
@@ -847,7 +857,7 @@ export function runTestFor(opts: TestForOptions): number {
   const getSyms = buildFileSymCache()
 
   for (const sym of symbols) {
-    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
+    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())
@@ -864,7 +874,7 @@ export function runTestFor(opts: TestForOptions): number {
   const results: TestForEntry[] = []
 
   for (const [tf, referencingFns] of testFileMap) {
-    const testSyms = querySymbols({ filePath: tf, limit: 10000 })
+    const testSyms = querySymbols({ filePath: tf, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
     // A bare prefix match with no boundary after the alternation would also match any ordinary
     // identifier that happens to start with the same letters as a test-framework keyword --
     // 'it' alone matches 'itemsToJson'/'iterateOverTargetHelper'/'italicize', and 'test' alone
@@ -916,7 +926,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   for (const sym of candidates) {
     if (!opts.includePrivate && sym.name.startsWith('_')) continue
     if (ENTRY_NAMES.has(sym.name)) continue
-    const refs = queryRefs({ name: sym.name, limit: 500, rootDir })
+    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     const hasTestRef = refs.some((r) => isTestFile(r.filePath))
     if (!hasTestRef) gaps.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
