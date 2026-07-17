@@ -18,7 +18,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock } from './util.js'
+import { atomicWriteText, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -250,9 +250,7 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   }
 
   settings.hooks = hooks
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+  writeJsonSettings(p, settings)
   return { scope, settingsPath: p, alreadyInstalled: false }
 }
 
@@ -279,9 +277,7 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
     settings.hooks = hooks
   }
 
-  ensureDirSync(path.dirname(p))
-  backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+  writeJsonSettings(p, settings)
   return true
 }
 
