@@ -8,7 +8,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
-import { extractErrorMessage } from './util.js'
+import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning } from './worker.js'
 import { getDb } from './db.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
@@ -69,7 +69,7 @@ export function checkDbExists(dataDir: string): DoctorResult {
   return {
     name: 'Database',
     status: 'ok',
-    message: `global.db exists (${Math.round(sizeBytes / 1024)} KB)`,
+    message: `global.db exists (${toKB(sizeBytes)} KB)`,
   }
 }
 
