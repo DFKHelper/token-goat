@@ -13,7 +13,7 @@ vi.mock('node:os', async (importOriginal) => {
   }
 })
 
-import { tok, pct, findClaudeMdFiles, findMemoryMd, runContextStats } from '../src/cli_context_stats.js'
+import { tok, findClaudeMdFiles, findMemoryMd, runContextStats } from '../src/cli_context_stats.js'
 import { canonicalize } from '../src/project.js'
 
 describe('cli_context_stats', () => {
@@ -50,26 +50,6 @@ describe('cli_context_stats', () => {
       const f = path.join(tempDir, 'empty.txt')
       fs.writeFileSync(f, '')
       expect(tok(f)).toBe(0)
-    })
-  })
-
-  // ---- pct ----------------------------------------------------------------
-
-  describe('pct', () => {
-    it('formats 50% correctly', () => {
-      expect(pct(50, 100)).toBe('50.0%')
-    })
-
-    it('handles zero denominator', () => {
-      expect(pct(10, 0)).toBe('0.0%')
-    })
-
-    it('formats fractional values', () => {
-      expect(pct(1, 3)).toBe('33.3%')
-    })
-
-    it('formats 100%', () => {
-      expect(pct(7, 7)).toBe('100.0%')
     })
   })
 
