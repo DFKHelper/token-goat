@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // (so blob ids never collide across tests in the shared in-memory map).
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
-import { extractMcpResultText } from '../src/hooks_mcp.js'
+import { extractToolResultText as extractMcpResultText } from '../src/hooks_common.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 
 let tmpHome: string

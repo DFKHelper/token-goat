@@ -12,12 +12,14 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput } from './hooks_common.js'
+import { passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { getSessionBashOutputs } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
+import { storeMcpOutput } from './mcp_cache.js'
+import { recordStat } from './stats.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder).
@@ -121,4 +123,24 @@ function preAgentHandler(event: HookEvent): HookOutput {
   }
 }
 
+// Well above the ~2,220 char/call average measured from real claude-skills session transcripts, so only genuine outlier reports get cached -- typical subagent reports are completely untouched. Deliberately conservative: unlike MCP JSON (lossless structural re-encoding) or Tab Context (verified byte-identical dedup), a subagent's own report is already-distilled prose with no safe way to shrink it losslessly, so this handler never hides or truncates what the parent sees -- it only appends a recall pointer to the full text for a later turn, via contextOutput (never rewriteOutput).
+const AGENT_RESULT_CACHE_MIN_BYTES = 8000
+
+function postAgentHandler(event: HookEvent): HookOutput {
+  try {
+    if (event.toolName !== 'Agent' || !event.sessionId) return passOutput()
+    const resultText = extractToolResultText(event.raw)
+    if (!resultText || resultText.length < AGENT_RESULT_CACHE_MIN_BYTES) return passOutput()
+    const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
+    if (id === null) return passOutput()
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: token-goat mcp-output ${id}`,
+    )
+  } catch {
+    return passOutput()
+  }
+}
+
 registerHook('pre_tool_use', preAgentHandler, { toolName: 'Agent' })
+registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })

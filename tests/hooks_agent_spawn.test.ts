@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput } from '../src/session.js'
-import { storeBashOutput } from '../src/bash_output_cache.js'
+import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -141,5 +141,52 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     // Both are acceptable outcomes — the important thing is no exception is thrown.
     const result = await runHook(buildEvent('pre_tool_use', payload))
     expect(result.hookType === 'pass' || result.hookType === 'rewriteInput').toBe(true)
+  })
+})
+
+describe('postAgentHandler — outlier-large subagent report caching (real runHook dispatch)', () => {
+  const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+
+  function postPayload(toolResponse: unknown): Record<string, unknown> {
+    return { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: toolResponse }
+  }
+
+  it('passes through an Agent report under the cache threshold untouched (regression: the average real report is ~2,220 chars, well under the 8000-char floor -- this must never fire on a typical report)', async () => {
+    const smallReport = 'Found and fixed the bug.'.repeat(50) // well under 8000 chars
+    const result = await runHook(buildEvent('post_tool_use', postPayload(smallReport)))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('caches an outlier-large Agent report and appends a recall pointer without altering the original result (regression: a subagent report must never be truncated or hidden -- this handler only ever appends via contextOutput, never rewriteOutput)', async () => {
+    const largeReport = 'Detailed finding line.\n'.repeat(400) // > 8000 chars
+    const result = await runHook(buildEvent('post_tool_use', postPayload(largeReport)))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.context)
+      expect(m).not.toBeNull()
+      // The recalled id resolves to the exact original report -- lossless recall is the
+      // whole point of the conservative design (never truncate what the parent sees now).
+      const entry = getBashOutput(m![1] as string)
+      expect(entry?.output).toBe(largeReport)
+    }
+  })
+
+  it('passes through when sessionId is missing, even for an outlier-large report', async () => {
+    const largeReport = 'x'.repeat(9000)
+    const payload = { tool_name: 'Agent', tool_input: toolInput, tool_response: largeReport }
+    const result = await runHook(buildEvent('post_tool_use', payload))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through when tool_response is missing or empty', async () => {
+    const result = await runHook(buildEvent('post_tool_use', postPayload(undefined)))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through non-Agent tool calls unchanged, even with an oversized result', async () => {
+    const largeReport = 'x'.repeat(9000)
+    const payload = { tool_name: 'Bash', tool_input: { command: 'echo hi' }, session_id: sessionId, tool_response: largeReport }
+    const result = await runHook(buildEvent('post_tool_use', payload))
+    expect(result.hookType).toBe('pass')
   })
 })
