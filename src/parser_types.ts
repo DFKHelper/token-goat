@@ -172,7 +172,6 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['pyproject.toml', 'toml'],
   ['package.json', 'json'],
   ['tsconfig.json', 'json'],
-  ['.env', 'env_file'],
   ['.envrc', 'env_file'],
 ])
 
