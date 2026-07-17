@@ -154,8 +154,11 @@ describe('installHooks', () => {
 
     expect(result.alreadyInstalled).toBe(false)
     expect(fs.existsSync(p)).toBe(true)
-    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as { hooks: Record<string, unknown> }
-    expect(settings.hooks['PreToolUse']).toBeDefined()
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
+    }
+    const preCommands = settings.hooks['PreToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
+    expect(preCommands).toContain('token-goat hook pre_tool_use')
   })
 
   it('throws on an existing settings.json with invalid JSON, and leaves the file byte-for-byte untouched', () => {
