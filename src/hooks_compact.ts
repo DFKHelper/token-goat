@@ -177,7 +177,8 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
     if (id === undefined) continue
     const entry = getBashOutput(id)
     if (entry === null) continue
-    rerunRows.push('- `' + entry.command + '` — an older run of this exact command was superseded; recall the surviving copy with `bash-output ' + id + '`')
+    const flatCommand = entry.command.replace(/[\t\r\n]+/g, ' ')
+    rerunRows.push('- `' + flatCommand + '` — an older run of this exact command was superseded; recall the surviving copy with `bash-output ' + id + '`')
   }
 
   const supersededReadRows: string[] = []
@@ -193,7 +194,8 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
     if (rerunHashSet.has(hash)) continue
     const entry = getBashOutput(id)
     if (entry === null) continue
-    cachedOutputRows.push('- `' + entry.command + '` — recallable via `bash-output ' + id + '`')
+    const flatCommand = entry.command.replace(/[\t\r\n]+/g, ' ')
+    cachedOutputRows.push('- `' + flatCommand + '` — recallable via `bash-output ' + id + '`')
   }
 
   const total = rerunRows.length + supersededReadRows.length + cachedOutputRows.length

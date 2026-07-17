@@ -202,6 +202,31 @@ describe('SAFE_TO_DISCARD section', () => {
     expect(manifest).not.toContain('Superseded file reads')
   })
 
+  it('collapses an embedded newline in a rerun command so the row stays on one line', async () => {
+    const multiline = 'echo one\necho two'
+    const rerunId = await storeBashOutput(multiline, 'one\ntwo', 0)
+    recordBashOutput('multiline-hash', rerunId, 20)
+    recordBashRerun('multiline-hash')
+
+    const manifest = buildManifest()
+    const lines = manifest.split('\n')
+    const rerunLine = lines.find((l) => l.includes('echo one'))
+    expect(rerunLine).toBeDefined()
+    expect(rerunLine).toContain('echo two')
+  })
+
+  it('collapses an embedded newline in a non-rerun cached command so the row stays on one line', async () => {
+    const multiline = 'echo a\necho b'
+    const id = await storeBashOutput(multiline, 'a\nb', 0)
+    recordBashOutput('multiline-hash2', id, 5)
+
+    const manifest = buildManifest()
+    const lines = manifest.split('\n')
+    const row = lines.find((l) => l.includes('echo a'))
+    expect(row).toBeDefined()
+    expect(row).toContain('echo b')
+  })
+
   it('includes an explicit total item count in the section header', async () => {
     const p = makeTmpFile('hello')
     recordFileRead(p)
