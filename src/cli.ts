@@ -653,7 +653,7 @@ function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean;
     ...(opts.project !== undefined ? { project: opts.project } : {}),
     ...(opts.transcript !== undefined ? { transcript: opts.transcript } : {}),
     ...(opts.json === true ? { json: true } : {}),
-    ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
+    ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
   })
 }
 
