@@ -132,11 +132,7 @@ export async function shrinkImage(
   const maxDimension = opts?.maxDimension ?? DEFAULT_MAX_DIMENSION
   const quality = opts?.quality ?? cfg.jpeg_quality
   const sizeThreshold = opts?.sizeThresholdBytes ?? DEFAULT_SIZE_THRESHOLD_BYTES
-  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors
-  // Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge
-  // is always DEFAULT_MAX_DIMENSION (Claude Vision's fixed optimum, never
-  // configurable in the original Python port either). 0 means "no cap",
-  // matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
+  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge is always DEFAULT_MAX_DIMENSION (Claude Vision's fixed optimum, never configurable in the original Python port either). 0 means "no cap", matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
   const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
 
   const originalBytes = input.length
@@ -146,20 +142,11 @@ export async function shrinkImage(
   if (sharp === null) return null
 
   try {
-    // Multi-frame formats (animated GIF/WEBP, multi-page TIFF) decode only page 0
-    // by default — sharp's `animated: true` decodes every frame instead, stacked
-    // into one "toilet roll" image that resize()/encode calls handle per-frame.
-    // `pages` is populated by a cheap header-only metadata read regardless of the
-    // animated option, so this detects multi-frame input before either full
-    // decode below without paying for a second full decode.
+    // Multi-frame formats (animated GIF/WEBP, multi-page TIFF) decode only page 0 by default — sharp's `animated: true` decodes every frame instead, stacked into one "toilet roll" image that resize()/encode calls handle per-frame. `pages` is populated by a cheap header-only metadata read regardless of the animated option, so this detects multi-frame input before either full decode below without paying for a second full decode.
     const inputMeta = await sharp(input, { limitInputPixels }).metadata()
     const isAnimated = (inputMeta.pages ?? 1) > 1
 
-    // Encode candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output.
-    // JPEG has no multi-frame container: encoding an animated decode to JPEG would
-    // either silently drop every frame but the first, or — once decoded with every
-    // frame via animated:true — emit a corrupted vertical stack of all of them. So
-    // an animated input only ever gets the WEBP candidate, which does preserve it.
+    // Encode candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output. JPEG has no multi-frame container: encoding an animated decode to JPEG would either silently drop every frame but the first, or — once decoded with every frame via animated:true — emit a corrupted vertical stack of all of them. So an animated input only ever gets the WEBP candidate, which does preserve it.
     const webpBuf = await sharp(input, { limitInputPixels, animated: isAnimated })
       .rotate()
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
@@ -236,14 +223,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     `${toKB(result.originalBytes)}kb -> ${toKB(result.shrunkBytes)}kb ` +
     `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
 
-  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact
-  // vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that
-  // formula was never ported to shrinkImage's return shape, so this uses the same
-  // bytes/4 token-cost approximation the rest of this TS codebase already applies to
-  // savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls).
-  // This call was dropped entirely during the Python->TS port -- restoring it is what
-  // makes 'image_shrink' rows (and the flagship image-shrink savings figure derived
-  // from them) appear in `token-goat stats --full` again.
+  // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that formula was never ported to shrinkImage's return shape, so this uses the same bytes/4 token-cost approximation the rest of this TS codebase already applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls). This call was dropped entirely during the Python->TS port -- restoring it is what makes 'image_shrink' rows (and the flagship image-shrink savings figure derived from them) appear in `token-goat stats --full` again.
   recordStat('image_shrink', saved, Math.round(saved / 4), undefined, path.basename(filePath))
 
   return contextOutput(`${summary}\n${dataUrl}`)
