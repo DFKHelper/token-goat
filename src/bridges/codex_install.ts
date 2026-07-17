@@ -49,7 +49,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -177,25 +177,7 @@ function groupHasTokenGoat(
   return false
 }
 
-/**
- * Build the shell command Codex should run for one hook entry.
- *
- * Uses the absolute Node binary path (`process.execPath`), not a bare `node`, since a
- * bare `node` depends on PATH resolution in whatever environment Codex spawns the hook
- * subprocess with -- the same github/copilot-cli#4001-class single point of failure
- * already fixed for the Copilot CLI bridge's outer hook command. `process.argv[1]`
- * (the absolute path to whichever token-goat entry launched this install run) is baked
- * in as a third CLI arg so the shim's own inner `token-goat hook <event>` call
- * (codex.ts) can invoke it directly via `process.execPath` too, instead of depending on
- * PATH for that inner call as well. Omitted when unavailable (should never happen under
- * a real `node <script>` invocation) rather than baking in something wrong; the shim's
- * inner call falls back to its old PATH-based lookup in that case.
- */
-function hookCommandFor(scriptPath: string, eventArg: string): string {
-  const entryPath = process.argv[1]
-  const entryArg = entryPath ? ` "${entryPath}"` : ''
-  return `"${process.execPath}" "${scriptPath}" ${eventArg}${entryArg}`
-}
+// hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
 /** Outcome of an {@link installCodex} call. */
 export interface CodexInstallResult {

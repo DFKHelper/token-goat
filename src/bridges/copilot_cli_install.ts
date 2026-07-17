@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, hookCommandFor } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
@@ -100,19 +100,7 @@ export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string 
 // PATH, the hook process never launches, Copilot sees a failed process, and
 // denies unconditionally. Quoted the same way as scriptPath below since the
 // Node install path can also contain spaces (e.g. `C:\Program Files\nodejs\node.exe`).
-function hookCommandFor(scriptPath: string, event: CopilotCliHookEvent): string {
-  // process.argv[1] is the absolute path to whichever token-goat entry point launched this
-  // install run (dist/token-goat.mjs when installed via npm, the dev entry under tsx
-  // otherwise). Baked in here as a third CLI arg so the shim's own inner `token-goat hook
-  // <event>` call (copilot_cli.ts) can invoke it directly via process.execPath instead of
-  // depending on PATH/cmd.exe resolution -- same rationale, and same #4001 fail-closed
-  // deny-all class, as process.execPath two lines up. Omitted when unavailable (should never
-  // happen under a real `node <script>` invocation) rather than baking in something wrong;
-  // the shim's inner call falls back to its old PATH-based lookup in that case.
-  const entryPath = process.argv[1]
-  const entryArg = entryPath ? ` "${entryPath}"` : ''
-  return `"${process.execPath}" "${scriptPath}" ${event}${entryArg}`
-}
+// hookCommandFor is shared with codex_install.ts -- see util.ts.
 
 // The hooks reference doc (https://docs.github.com/en/copilot/reference/hooks-reference)
 // confirms 'command' is only a cross-platform *fallback*: it's copied verbatim to 'bash' and
