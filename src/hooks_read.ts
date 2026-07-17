@@ -25,7 +25,7 @@ import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
-import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
+import { contextOutput, passOutput, denyOutput, extractToolResponseField } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
@@ -1126,15 +1126,7 @@ registerHook('pre_tool_use', preReadHandler, { toolName: 'Grep' })
 
 /** Extract tool response text from a post_tool_use Read event. */
 function extractReadOutput(raw: Record<string, unknown>): string {
-  const resp = raw['tool_response']
-  if (typeof resp === 'string') return resp
-  if (resp !== null && typeof resp === 'object') {
-    const r = resp as Record<string, unknown>
-    for (const key of ['output', 'content', 'text', 'body']) {
-      if (typeof r[key] === 'string') return r[key] as string
-    }
-  }
-  return ''
+  return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
 }
 
 /**
