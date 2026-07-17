@@ -31,23 +31,34 @@ function extractSkillBody(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, ['output', 'body', 'text', 'content']);
 }
 
+/** Shared prologue for {@link preSkillHandler}/{@link postSkillHandler}: only a Skill call with
+ * an extractable skill name and a session id is in scope; everything else passes through. */
+function resolveSkillContext(event: HookEvent): { skillName: string } | null {
+  const toolName = getToolName(event);
+  if (toolName !== 'Skill') {
+    return null;
+  }
+
+  const toolInput = getToolInput(event);
+  const skillName = extractSkillName(toolInput);
+  if (!skillName) {
+    return null;
+  }
+
+  if (!event.sessionId) {
+    return null;
+  }
+
+  return { skillName };
+}
+
 export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
   try {
-    const toolName = getToolName(event);
-
-    if (toolName !== 'Skill') {
+    const ctx = resolveSkillContext(event);
+    if (ctx === null) {
       return passOutput();
     }
-
-    const toolInput = getToolInput(event);
-    const skillName = extractSkillName(toolInput);
-    if (!skillName) {
-      return passOutput();
-    }
-
-    if (!event.sessionId) {
-      return passOutput();
-    }
+    const { skillName } = ctx;
 
     if (!loadConfig().hints.pre_skill_advisory) {
       return passOutput();
@@ -90,21 +101,11 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
 
 export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
   try {
-    const toolName = getToolName(event);
-
-    if (toolName !== 'Skill') {
+    const ctx = resolveSkillContext(event);
+    if (ctx === null) {
       return passOutput();
     }
-
-    const toolInput = getToolInput(event);
-    const skillName = extractSkillName(toolInput);
-    if (!skillName) {
-      return passOutput();
-    }
-
-    if (!event.sessionId) {
-      return passOutput();
-    }
+    const { skillName } = ctx;
 
     recordStat('skill_load');
 
