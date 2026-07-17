@@ -20,7 +20,7 @@ import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
-import { storeBlob, loadBlob } from './disk_cache.js'
+import { storeBlob, loadBlob, blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 import { isBuildCommand } from './hints/lang_patterns.js'
 import { indexRecallEntry } from './recall_index.js'
 
@@ -568,10 +568,28 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
  *
  * Falls back to the disk store on an in-memory miss so a value cached by an
  * earlier hook process (or run) resolves; a disk hit is cached in-process.
+ * Returns null if the disk entry is older than DEFAULT_MAX_AGE_MS (stale
+ * cache) -- pruneBlobs only evicts stale entries when a *new* value is
+ * stored to the same subdir, so a quiet period with no new bash-cache
+ * writes would otherwise leave an arbitrarily old entry servable, matching
+ * the read-time TTL check web_cache.ts's getWebOutput already applies.
  */
 export function getBashOutput(id: string): BashOutputEntry | null {
   const hit = _byId.get(id)
   if (hit !== undefined) return hit
+
+  const p = blobPath(BASH_OUTPUT_SUBDIR, id)
+  if (p !== null) {
+    try {
+      const stat = statSync(p)
+      if (Date.now() - stat.mtimeMs > DEFAULT_MAX_AGE_MS) {
+        return null // Cache entry is stale
+      }
+    } catch {
+      // If we can't stat the file, fall through to loadBlob which will handle the error
+    }
+  }
+
   const entry = coerceBashEntry(loadBlob(BASH_OUTPUT_SUBDIR, id))
   if (entry === null) return null
   _byId.set(id, entry)
