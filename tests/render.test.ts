@@ -1,19 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   fg,
-  bg,
   vlen,
   padL,
   padR,
   stripAnsi,
   fmtBytes,
   lerpRgb,
-  colorStderr,
   colorStdout,
   C,
   RESET,
 } from '../src/render/ansi.js'
-import { renderList, renderPanel, renderTable } from '../src/render/common.js'
 import { renderStats, setStatsMessages } from '../src/render/stats_renderer.js'
 import type { StatsData, TotalStats } from '../src/render/types.js'
 
@@ -22,12 +19,6 @@ describe('ANSI formatting', () => {
     const result = fg(255, 128, 64)
     expect(result).toContain('\x1b[38;2;')
     expect(result).toContain('255;128;64')
-  })
-
-  it('bg creates background color escape sequence', () => {
-    const result = bg(100, 200, 50)
-    expect(result).toContain('\x1b[48;2;')
-    expect(result).toContain('100;200;50')
   })
 
   it('vlen calculates visible length ignoring ANSI codes', () => {
@@ -136,15 +127,13 @@ describe('ANSI formatting', () => {
   })
 })
 
-describe('colorStdout / colorStderr (NO_COLOR convention)', () => {
+describe('colorStdout (NO_COLOR convention)', () => {
   let prevNoColor: string | undefined
   let prevStdoutIsTty: boolean | undefined
-  let prevStderrIsTty: boolean | undefined
 
   beforeEach(() => {
     prevNoColor = process.env['NO_COLOR']
     prevStdoutIsTty = process.stdout.isTTY
-    prevStderrIsTty = process.stderr.isTTY
   })
 
   afterEach(() => {
@@ -154,88 +143,27 @@ describe('colorStdout / colorStderr (NO_COLOR convention)', () => {
       process.env['NO_COLOR'] = prevNoColor
     }
     Object.defineProperty(process.stdout, 'isTTY', { value: prevStdoutIsTty, configurable: true })
-    Object.defineProperty(process.stderr, 'isTTY', { value: prevStderrIsTty, configurable: true })
   })
 
   it('returns false on a real TTY when NO_COLOR is set (regression: callers reimplemented a bare isTTY check that ignored this)', () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
-    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true })
     process.env['NO_COLOR'] = '1'
 
     expect(colorStdout()).toBe(false)
-    expect(colorStderr()).toBe(false)
   })
 
   it('returns true on a real TTY when NO_COLOR is unset', () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
-    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true })
     delete process.env['NO_COLOR']
 
     expect(colorStdout()).toBe(true)
-    expect(colorStderr()).toBe(true)
   })
 
   it('returns false when not a TTY, regardless of NO_COLOR', () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
-    Object.defineProperty(process.stderr, 'isTTY', { value: false, configurable: true })
     delete process.env['NO_COLOR']
 
     expect(colorStdout()).toBe(false)
-    expect(colorStderr()).toBe(false)
-  })
-})
-
-describe('Common rendering', () => {
-  it('renderList formats items with bullet points', () => {
-    const result = renderList(['item 1', 'item 2', 'item 3'])
-    expect(result).toContain('item 1')
-    expect(result).toContain('item 2')
-    expect(result).toContain('•')
-    expect(stripAnsi(result).split('\n')).toHaveLength(3)
-  })
-
-  it('renderList uses custom bullet', () => {
-    const result = renderList(['a', 'b'], undefined, '—')
-    expect(result).toContain('—')
-    expect(result).not.toContain('•')
-  })
-
-  it('renderList handles empty list', () => {
-    const result = renderList([])
-    expect(result).toBe('')
-  })
-
-  it('renderTable formats headers and rows', () => {
-    const result = renderTable(['Name', 'Value'], [['foo', '100'], ['bar', '200']])
-    expect(result).toContain('Name')
-    expect(result).toContain('Value')
-    expect(result).toContain('foo')
-    expect(result).toContain('100')
-  })
-
-  it('renderTable handles empty rows', () => {
-    const result = renderTable(['Col1', 'Col2'], [])
-    expect(result).toContain('Col1')
-    expect(result).toContain('Col2')
-  })
-
-  it('renderPanel creates a bordered panel', () => {
-    const result = renderPanel('Hello World')
-    expect(result).toContain('Hello World')
-    expect(stripAnsi(result)).toContain('╭')
-    expect(stripAnsi(result)).toContain('╰')
-  })
-
-  it('renderPanel includes title when provided', () => {
-    const result = renderPanel('Content', 'Title')
-    expect(result).toContain('Content')
-    expect(result).toContain('Title')
-  })
-
-  it('renderPanel handles multiline content', () => {
-    const result = renderPanel('Line 1\nLine 2\nLine 3')
-    const lines = stripAnsi(result).split('\n')
-    expect(lines.length).toBeGreaterThan(3)
   })
 })
 

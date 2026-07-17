@@ -2,14 +2,13 @@
  * ANSI 24-bit colour primitives and text-alignment helpers for terminal rendering.
  *
  * Exports:
- * - ``fg`` / ``bg``: Set 24-bit foreground/background colour escape sequences.
+ * - ``fg``: Set 24-bit foreground colour escape sequences.
  * - ``vlen``: Visible (non-ANSI) length of a string.
  * - ``pad_r`` / ``pad_l``: Pad ANSI-coded strings to a fixed visible width.
  * - ``lerp_rgb``: Linear interpolation between two RGB colours.
  * - ``C``: Shared colour palette (GitHub dark-inspired, green accent).
- * - ``colorStdout`` / ``colorStderr``: whether the given stream supports 24-bit
- *   colour and ``NO_COLOR`` is not set. Callers should check one of these before
- *   building ANSI sequences.
+ * - ``colorStdout``: whether stdout supports 24-bit colour and ``NO_COLOR``
+ *   is not set. Callers should check this before building ANSI sequences.
  */
 
 /**
@@ -28,15 +27,6 @@ function _colorStream(isatty: boolean): boolean {
  */
 export function colorStdout(): boolean {
   return _colorStream(process.stdout.isTTY === true)
-}
-
-/**
- * Return True when stderr supports ANSI colour.
- * Same logic as colorStdout but tests process.stderr.isTTY.
- * Use for progress indicators, spinners, and diagnostic output written to stderr.
- */
-export function colorStderr(): boolean {
-  return _colorStream(process.stderr.isTTY === true)
 }
 
 export type RGB = [number, number, number]
@@ -111,13 +101,6 @@ export function fmtBytes(n: number): string {
  */
 export function fg(r: number, g: number, b: number): string {
   return `${_E}[38;2;${r};${g};${b}m`
-}
-
-/**
- * Set 24-bit background colour.
- */
-export function bg(r: number, g: number, b: number): string {
-  return `${_E}[48;2;${r};${g};${b}m`
 }
 
 /**
