@@ -22,6 +22,7 @@
 
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
+import { sanitizeFtsQuery } from './index_reader.js'
 
 export type RecallCacheType = 'bash' | 'web' | 'mcp'
 
@@ -121,11 +122,14 @@ function buildSnippet(content: string, query: string, maxLen = 160): string {
   return prefix + flat.slice(start, end) + suffix
 }
 
-/** Quote each whitespace-separated token of `query` as an FTS5 string literal (doubling embedded quotes) and join with implicit AND, so arbitrary user input -- including FTS5 operators like `-`, `*`, `:`, `(` -- is always treated as literal text to match rather than risking a MATCH syntax error. */
+/** Quote each whitespace-separated token of `query` as an FTS5 string literal via the shared
+ * {@link sanitizeFtsQuery} (index_reader.ts), so arbitrary user input -- including FTS5
+ * operators like `-`, `*`, `:`, `(` -- is always treated as literal text to match rather than
+ * risking a MATCH syntax error. Returns null for an all-whitespace/empty query so callers can
+ * skip the search instead of running a MATCH against an empty string. */
 function toFtsMatchExpr(query: string): string | null {
-  const tokens = query.split(/\s+/).filter(Boolean)
-  if (tokens.length === 0) return null
-  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(' ')
+  if (query.trim().length === 0) return null
+  return sanitizeFtsQuery(query)
 }
 
 export interface RecallSearchOptions {
