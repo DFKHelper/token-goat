@@ -62,4 +62,18 @@ describe('compressMcpResult', () => {
   it('exports a positive minimum-byte threshold for callers to gate on', () => {
     expect(MCP_COMPRESS_MIN_BYTES).toBeGreaterThan(0)
   })
+
+  it('sanitizes embedded tabs/newlines in a cell value so the row count stays one-per-element (regression: cellText used to pass string values through unescaped, so a literal \\t shifted later columns out of alignment with the header and a literal \\n split into extra unindexed lines that read as additional table rows with no data in the other columns)', () => {
+    const rows = homogeneousRows(50).map((r, i) => (i === 3 ? { ...r, name: 'line1\nline2\tline3' } : r))
+    const compressed = compressMcpResult(JSON.stringify(rows))
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const lines = compressed.split('\n')
+      // constant line + header + one line per row, no extra lines from the embedded newline.
+      expect(lines.length).toBe(rows.length + 2)
+      // The offending row's cell no longer contains a raw tab or newline.
+      const offendingLine = lines.find((l) => l.includes('line1'))
+      expect(offendingLine).toBe('3\tline1 line2 line3\thttps://example.com/item-3')
+    }
+  })
 })

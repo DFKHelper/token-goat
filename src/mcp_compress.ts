@@ -39,10 +39,16 @@ function sameKeySet(a: readonly string[], b: readonly string[]): boolean {
   return b.every((k) => setA.has(k))
 }
 
-/** Render a cell value as a single line of text; objects/arrays fall back to compact JSON. */
+/**
+ * Render a cell value as a single line of text; objects/arrays fall back to compact JSON.
+ * Embedded tabs/newlines/CRs are replaced with spaces -- otherwise a value containing one
+ * would silently shift later columns out of alignment with the header (a literal tab) or
+ * split into extra unindexed lines that read as additional table rows (a literal newline),
+ * corrupting the one-row-per-array-element structure a reader of the table assumes.
+ */
 function cellText(value: unknown): string {
   if (value === undefined) return ''
-  if (typeof value === 'string') return value
+  if (typeof value === 'string') return value.replace(/[\t\r\n]+/g, ' ')
   try {
     return JSON.stringify(value)
   } catch {
