@@ -3,14 +3,17 @@ import * as path from 'node:path';
 import type * as NodeFs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// vi.mock is hoisted — wrap renameSync (still delegating to the real implementation) so the
-// #M27 test below can observe the temp filename each write used without touching Node's
-// non-configurable fs module properties directly (vi.spyOn on a builtin fails at runtime).
+// vi.mock is hoisted — wrap renameSync/writeFileSync (still delegating to the real
+// implementation) so the #M27 test below can observe the temp filename each write used, and
+// the file-lock regression test below can observe the `.lock` file being created, without
+// touching Node's non-configurable fs module properties directly (vi.spyOn on a builtin fails
+// at runtime).
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>();
   return {
     ...original,
     renameSync: vi.fn((...args: Parameters<typeof original.renameSync>) => original.renameSync(...args)),
+    writeFileSync: vi.fn((...args: Parameters<typeof original.writeFileSync>) => original.writeFileSync(...args)),
   };
 });
 
@@ -275,6 +278,27 @@ describe('project_memory', () => {
       // name, so two concurrent writers to the same project's memory file could collide on it.
       expect(renamedFrom).toHaveLength(2);
       expect(renamedFrom[0]).not.toBe(renamedFrom[1]);
+    });
+  });
+
+  describe('setEntry/unsetEntry/clearAll serialize their load-modify-save section with a file lock (regression: these previously had no lock at all, unlike the analogous session_store.ts::saveSessionState and config_commands.ts::config-set critical sections -- two concurrent writers to the same project could each read the same pre-write state and the second save() would silently clobber the first entry)', () => {
+    it('acquires and releases a .lock file around setEntry', () => {
+      const writeMock = fs.writeFileSync as unknown as ReturnType<typeof vi.fn>;
+      writeMock.mockClear();
+      setEntry('proj-lock', 'k1', 'v1');
+      const lockWrites = writeMock.mock.calls.filter((args: unknown[]) => String(args[0]).endsWith('.lock'));
+      expect(lockWrites.length).toBeGreaterThan(0);
+      // The lock must be released (unlinked) once the write completes, or a later call under a
+      // fresh process would find a live-looking lock file it can never acquire.
+      const lockPath = String(lockWrites[0]?.[0]);
+      expect(fs.existsSync(lockPath)).toBe(false);
+    });
+
+    it('does not double-write on a successful lock acquisition (regression: fn returning void made a successful withFileLock run indistinguishable from a failed lock acquire, causing the fallback branch to re-run the write a second time)', () => {
+      const renameMock = fs.renameSync as unknown as ReturnType<typeof vi.fn>;
+      renameMock.mockClear();
+      setEntry('proj-lock-single', 'k1', 'v1');
+      expect(renameMock.mock.calls).toHaveLength(1);
     });
   });
 
