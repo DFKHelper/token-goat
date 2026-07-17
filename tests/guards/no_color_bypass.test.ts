@@ -2,7 +2,7 @@
  * Guard against the "NO_COLOR-aware helper exists but callers reimplement a
  * simpler, non-compliant check" class.
  *
- * src/render/ansi.ts exports colorStdout()/colorStderr() specifically to
+ * src/render/ansi.ts exports colorStdout() specifically to
  * respect the NO_COLOR env-var convention (no-color.org) before emitting
  * ANSI escape codes. Every actual stdout-writing helper across the CLI
  * (out() in cli.ts, writeRaw() in cli_stats.ts, emit() in config_commands.ts,
