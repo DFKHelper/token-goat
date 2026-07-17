@@ -395,11 +395,6 @@ export class EzaFilter extends ToolFilter {
   readonly name = 'eza'
   override readonly binaries = new Set(['eza', 'exa', 'ls'])
 
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
-
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -535,11 +530,6 @@ export class FdFilter extends ToolFilter {
   readonly name = 'fd'
   override readonly binaries = new Set(['fd', 'fdfind', 'find'])
 
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
-
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -600,11 +590,6 @@ export class BatFilter extends ToolFilter {
   readonly name = 'bat'
   override readonly binaries = new Set(['bat', 'batcat'])
 
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
-
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -636,11 +621,6 @@ function _stripDeltaSeparators(lines: string[]): string[] {
 export class DeltaFilter extends ToolFilter {
   readonly name = 'delta'
   override readonly binaries = new Set(['delta'])
-
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
 
   protected override compressBody(
     stdout: string,
@@ -712,11 +692,6 @@ export class JqFilter extends ToolFilter {
   readonly name = 'jq'
   override readonly binaries = new Set(['jq'])
 
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
-
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -739,11 +714,6 @@ export class JqFilter extends ToolFilter {
 export class YqFilter extends ToolFilter {
   readonly name = 'yq'
   override readonly binaries = new Set(['yq'])
-
-  override matches(argv: string[]): boolean {
-    if (!argv.length) return false
-    return this.binaries.has(pathStem(argv[0] ?? '').toLowerCase())
-  }
 
   protected override compressBody(
     stdout: string,
