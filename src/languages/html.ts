@@ -81,8 +81,11 @@ export function extractHtml(
       const line = offsetToLine(lineIndex, hm.offset)
       sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })
     }
-    // Check for id anchor inside the tag
-    const idM = /(?<![\w-])id=(["'])((?:(?!\1).)+)\1/i.exec(hm.tag)
+    // Check for id anchor inside the tag. [\s\S] (not a bare `.`) for the same reason as
+    // ID_RE above -- hm.tag's opening-tag segment can span a literal newline (HTML_HEADING_RE's
+    // `[^>]*` attributes match already permits it), so an id value wrapped across lines must
+    // still match instead of silently dropping the heading's anchor-id section.
+    const idM = /(?<![\w-])id=(["'])((?:(?!\1)[\s\S])+)\1/i.exec(hm.tag)
     if (idM) {
       const anchorId = idM[2] ?? ''
       if (anchorId && !isNoise(anchorId)) {
