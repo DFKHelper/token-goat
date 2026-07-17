@@ -557,6 +557,42 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
   return true
 }
 
+/**
+ * Shared by install.ts's `writeClaudeMdBlock` and codex_install.ts's `writeAgentsBlock`:
+ * insert or update a delimited block in the file at `p`. If `beginMarker`/`endMarker` are
+ * already present (in order), the span between them is replaced with `block` verbatim
+ * (returning false without writing when it's already exactly `block`). Otherwise `block` is
+ * appended after a blank line, trimming trailing whitespace first so re-runs don't accumulate
+ * blank lines. Creates `p`'s parent directory and treats a missing file as empty content.
+ */
+export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, block: string): boolean {
+  let existing: string
+  try {
+    existing = readFileSync(p, 'utf8')
+  } catch {
+    existing = ''
+  }
+
+  const beginIdx = existing.indexOf(beginMarker)
+  const endIdx = existing.indexOf(endMarker)
+
+  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+    const before = existing.slice(0, beginIdx)
+    const after = existing.slice(endIdx + endMarker.length)
+    const current = existing.slice(beginIdx, endIdx + endMarker.length)
+    if (current === block) return false
+    ensureDirSync(path.dirname(p))
+    atomicWriteText(p, `${before}${block}${after}`)
+    return true
+  }
+
+  const trimmed = existing.replace(/\s+$/, '')
+  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
+  ensureDirSync(path.dirname(p))
+  atomicWriteText(p, next)
+  return true
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
