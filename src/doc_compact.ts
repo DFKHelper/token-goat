@@ -11,7 +11,7 @@ import * as path from 'path'
 
 import { dataDir } from './constants.js'
 import { fingerprintContent } from './fingerprint.js'
-import { atomicWriteText, foldPath } from './util.js'
+import { atomicWriteText, foldPath, sanitizeIdForFilename } from './util.js'
 import { resolveIndexPath } from './paths.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 
@@ -43,7 +43,7 @@ function _compactSlug(absPathStr: string): string {
 
   const ext = path.extname(absPathStr)
   const stem = path.basename(absPathStr, ext)
-  const safeStem = stem.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)
+  const safeStem = sanitizeIdForFilename(stem, 32)
 
   return `${h}_${safeStem}`
 }

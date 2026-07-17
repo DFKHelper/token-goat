@@ -455,6 +455,20 @@ export function stripLower(s: string): string {
   return s.trim().toLowerCase()
 }
 
+/**
+ * Sanitize an arbitrary id/string into a filesystem-safe stem: every character outside
+ * `[A-Za-z0-9_-]` becomes `_`, then the result is capped to `maxLen` chars (omit for no cap).
+ * Pass `fallback` to substitute a non-empty default when sanitization yields an empty string
+ * (e.g. an id made entirely of disallowed characters); omitted, an empty result is returned as-is.
+ * Shared by every call site that turns a session/content id into a safe directory or file name
+ * (compact.ts, snapshots.ts, session_store.ts, disk_cache.ts, doc_compact.ts) so the character
+ * class stays in exactly one place.
+ */
+export function sanitizeIdForFilename(id: string, maxLen?: number, fallback?: string): string {
+  const safe = id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, maxLen)
+  return safe.length > 0 ? safe : (fallback ?? safe)
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)

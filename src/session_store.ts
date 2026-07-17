@@ -24,11 +24,10 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, withFileLock } from './util.js'
+import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
-const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
 export const SESSIONS_SUBDIR = 'sessions'
@@ -36,13 +35,13 @@ export const SESSIONS_SUBDIR = 'sessions'
 /**
  * The sanitized form of relay.ts's `sessionStateKey` agent-salt separator
  * (`:agent:`), as it actually appears in an on-disk filename after
- * {@link sessionPath}'s `SAFE_RE` sanitization (`:` -> `_`). Exported so any
+ * {@link sessionPath}'s sanitization (`:` -> `_`). Exported so any
  * code that needs to recognize or exclude a subagent-scoped session blob by
  * filename (sibling-blob discovery for the pre_compact manifest, "latest
  * session" resolution) derives the marker from the same sanitization logic
  * rather than hardcoding a string that could drift out of sync with it.
  */
-export const AGENT_SALT_MARKER = ':agent:'.replace(SAFE_RE, '_')
+export const AGENT_SALT_MARKER = sanitizeIdForFilename(':agent:')
 
 /** Resolve the on-disk path for `sessionId`, or null when the id is empty,
  * sanitizes to empty, or would escape the sessions dir (traversal guard).
@@ -61,7 +60,7 @@ export const AGENT_SALT_MARKER = ':agent:'.replace(SAFE_RE, '_')
  * also addressing the human-readable-filename requirement above. */
 function sessionPath(sessionId: string): string | null {
   if (!sessionId) return null
-  const safe = sessionId.replace(SAFE_RE, '_').slice(0, 64)
+  const safe = sanitizeIdForFilename(sessionId, 64)
   if (!safe) return null
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)
   const candidate = path.join(dir, `${safe}.json`)
@@ -373,7 +372,7 @@ export function readSessionStateFile(sessionId: string): SerializedSession | nul
  */
 export function listSiblingSessionStates(sessionId: string): SerializedSession[] {
   if (!sessionId) return []
-  const safeSessionId = sessionId.replace(SAFE_RE, '_')
+  const safeSessionId = sanitizeIdForFilename(sessionId)
   if (!safeSessionId) return []
   const prefix = `${safeSessionId}${AGENT_SALT_MARKER}`
   const dir = path.join(tokenGoatHome(), SESSIONS_SUBDIR)

@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { fingerprintContent } from './fingerprint.js'
-import { foldPath, normalizePath, atomicWriteBytes } from './util.js'
+import { foldPath, normalizePath, atomicWriteBytes, sanitizeIdForFilename } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 
 export const MAX_SNAPSHOTS_PER_SESSION = 150
@@ -20,11 +20,10 @@ export interface SnapshotResult {
 const KIND_READ = 'read'
 const KIND_PREDICTIVE = 'predictive'
 const VALID_KINDS = new Set([KIND_READ, KIND_PREDICTIVE])
-const SESSION_DIR_RE = /[^a-zA-Z0-9_-]/g
 
 function sessionDir(sessionId: string): string | null {
   if (!sessionId) return null
-  const safe = sessionId.replace(SESSION_DIR_RE, '_').slice(0, 64) || 'anon'
+  const safe = sanitizeIdForFilename(sessionId, 64, 'anon')
   const base = path.join(tokenGoatHome(), 'session_snapshots')
   const candidate = path.join(base, safe)
 

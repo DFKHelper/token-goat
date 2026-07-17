@@ -20,14 +20,12 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, sanitizeIdForFilename } from './util.js'
 
 /** Default cap on blobs kept per subdir before the oldest are evicted. */
 export const DEFAULT_MAX_COUNT = 200
 /** Default max age (ms) before a blob is pruned. Mirrors snapshots' 24h stale window. */
 export const DEFAULT_MAX_AGE_MS = 24 * 3600 * 1000
-
-const ID_SANITIZE_RE = /[^a-zA-Z0-9_-]/g
 
 /**
  * Root for token-goat cross-process state, mirroring `snapshots.ts`.
@@ -45,7 +43,7 @@ export function tokenGoatHome(): string {
 /** Sanitize a content id to a filesystem-safe stem (ids are already hex; this is
  * defense in depth, never trust the key). Empty result means "unusable id". */
 function sanitizeId(id: string): string {
-  return id.replace(ID_SANITIZE_RE, '_').slice(0, 64)
+  return sanitizeIdForFilename(id, 64)
 }
 
 function blobDir(subdir: string): string {

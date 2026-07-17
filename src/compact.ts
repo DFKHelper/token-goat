@@ -11,7 +11,7 @@ import { detectHarness } from './bridges/index.js'
 import { loadConfig } from './config.js'
 import { configPath, dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { atomicWriteText, normalizePathForwardSlash } from './util.js'
+import { atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
 
@@ -470,10 +470,6 @@ export function normalizeForCache(manifestText: string): string {
   return manifestText
 }
 
-// Mirrors session_store.ts's module-private sessionPath sanitization: replace unsafe
-// chars and cap length so a session id can never be used to escape the sessions dir.
-const SESSION_ID_SAFE_RE = /[^a-zA-Z0-9_-]/g
-
 /**
  * Write per-session manifest JSON for cross-session deduplication.
  */
@@ -482,7 +478,7 @@ export function writeSessionManifest(
   sessionId: string,
   manifestJson: Record<string, unknown>
 ): void {
-  const safeSessionId = sessionId.replace(SESSION_ID_SAFE_RE, '_').slice(0, 64)
+  const safeSessionId = sanitizeIdForFilename(sessionId, 64)
   if (!safeSessionId) return
   const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
   if (!fs.existsSync(sessionsDir)) {
