@@ -195,6 +195,9 @@ function didYouMean(candidates: string[]): string {
   for (const c of candidates.slice(0, DIDYOUMEAN_LIMIT)) {
     lines.push(`  - ${c}`)
   }
+  if (candidates.length > DIDYOUMEAN_LIMIT) {
+    lines.push(`  (${candidates.length - DIDYOUMEAN_LIMIT} more not shown)`)
+  }
   return lines.join('\n')
 }
 
