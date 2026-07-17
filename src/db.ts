@@ -216,60 +216,29 @@ CREATE TRIGGER IF NOT EXISTS cache_recall_au AFTER UPDATE ON cache_recall BEGIN
 END;
 `
 
-// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an
-// already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add
-// the matching step to MIGRATIONS below. It represents the schema as it exists today.
-// v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive --
-// `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a
-// pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment
-// on MIGRATIONS below for a bump with no registered step).
-// v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive
-// -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so
-// no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above).
+// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above).
 export const SCHEMA_VERSION = 5 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 
-// Keyed by the FROM version: MIGRATIONS[1] upgrades a v1 database to v2, MIGRATIONS[2] upgrades
-// v2 to v3, and so on. A version with no registered step is a no-op, which also covers a
-// SCHEMA_VERSION bump for a purely additive change already handled by `CREATE TABLE IF NOT
-// EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
-const MIGRATIONS: Record<number, Migration> = {
-  // v1 -> v2: adds files.embed_sha, tracked separately from files.sha so embedding freshness
-  // can be gated independently of parse freshness (see makeIndexer in worker.ts). A pre-existing
-  // v1 database's `files` table predates the column, so it needs an explicit ALTER TABLE here;
-  // a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the
-  // ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and
-  // rethrow anything else, so a genuine ALTER TABLE failure is never silently lost.
-  1: (conn) => {
-    try {
-      conn.exec('ALTER TABLE files ADD COLUMN embed_sha TEXT')
-    } catch (err) {
-      if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
-    }
-  },
-  // v2 -> v3: adds files.retry_count, a durable per-path counter for consecutive
-  // transient-read-failure requeues (see MAX_TRANSIENT_RETRIES / requeueDirtyPath /
-  // resetTransientRetryCount in worker.ts). Previously this counter lived only in an
-  // in-memory Map inside worker.ts, which meant resetTransientRetryCount -- called from
-  // appendDirtyPath (hooks_index.ts) in the short-lived hook CLI process -- could never
-  // actually reach the long-lived detached daemon process's own copy of that Map: they are
-  // different Node processes with no shared memory, so the reset was a silent no-op in the
-  // real deployed topology. Persisting the counter in `files` makes it visible to both
-  // processes via the one thing they do share: the index DB. Same swallow-duplicate-column
-  // pattern as v1 -> v2 above.
-  2: (conn) => {
-    try {
-      conn.exec('ALTER TABLE files ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0')
-    } catch (err) {
-      if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
-    }
-  },
+/** Runs `sql` (expected to be an idempotent-in-intent `ALTER TABLE ... ADD COLUMN`), swallowing exactly a "duplicate column" failure -- the column already existing on a fresh database whose CREATE TABLE already includes it -- and rethrowing anything else, so a genuine ALTER TABLE failure is never silently lost. */
+function alterTableIdempotent(conn: BetterSqlite3Database, sql: string): void {
+  try {
+    conn.exec(sql)
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column/i.test(err.message)) throw err
+  }
 }
 
-// Walks a database from its stamped version up to (but not including) `toVersion`, applying each
-// registered migration step in order. Does not itself touch PRAGMA user_version -- the caller
-// stamps that once every step has run.
+// Keyed by the FROM version: MIGRATIONS[1] upgrades a v1 database to v2, MIGRATIONS[2] upgrades v2 to v3, and so on. A version with no registered step is a no-op, which also covers a SCHEMA_VERSION bump for a purely additive change already handled by `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
+const MIGRATIONS: Record<number, Migration> = {
+  // v1 -> v2: adds files.embed_sha, tracked separately from files.sha so embedding freshness can be gated independently of parse freshness (see makeIndexer in worker.ts). A pre-existing v1 database's `files` table predates the column, so it needs an explicit ALTER TABLE here; a brand-new database already has the column from SCHEMA_SQL's CREATE TABLE above, so the ALTER TABLE would fail with "duplicate column name" there -- swallow exactly that error and rethrow anything else, so a genuine ALTER TABLE failure is never silently lost.
+  1: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN embed_sha TEXT'),
+  // v2 -> v3: adds files.retry_count, a durable per-path counter for consecutive transient-read-failure requeues (see MAX_TRANSIENT_RETRIES / requeueDirtyPath / resetTransientRetryCount in worker.ts). Previously this counter lived only in an in-memory Map inside worker.ts, which meant resetTransientRetryCount -- called from appendDirtyPath (hooks_index.ts) in the short-lived hook CLI process -- could never actually reach the long-lived detached daemon process's own copy of that Map: they are different Node processes with no shared memory, so the reset was a silent no-op in the real deployed topology. Persisting the counter in `files` makes it visible to both processes via the one thing they do share: the index DB. Same swallow-duplicate-column pattern as v1 -> v2 above.
+  2: (conn) => alterTableIdempotent(conn, 'ALTER TABLE files ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0'),
+}
+
+// Walks a database from its stamped version up to (but not including) `toVersion`, applying each registered migration step in order. Does not itself touch PRAGMA user_version -- the caller stamps that once every step has run.
 function runMigrations(conn: BetterSqlite3Database, fromVersion: number, toVersion: number): void {
   for (let v = fromVersion; v < toVersion; v++) {
     MIGRATIONS[v]?.(conn)
@@ -293,22 +262,12 @@ function initConnection(conn: BetterSqlite3Database): void {
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
   conn.pragma('busy_timeout = 15000')
 
-  // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for
-  // case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds
-  // ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware
-  // toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same
-  // foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte
-  // consistent. Registered once per connection (not per-query) and marked deterministic
-  // so SQLite can use it in query planning the same way it would a built-in function.
+  // Custom Unicode-aware LOWER() replacement used by pathEqClause() (sql_path.ts) for case-insensitive-filesystem path comparisons. SQLite's built-in LOWER() only folds ASCII A-Z, which would silently diverge from foldPath()'s JS-side Unicode-aware toLowerCase() for non-ASCII casing (e.g. `Ä` vs `ä`). Wrapping the exact same foldCase() primitive here keeps SQL-side and JS-side folding byte-for-byte consistent. Registered once per connection (not per-query) and marked deterministic so SQLite can use it in query planning the same way it would a built-in function.
   conn.function('TG_LOWER', { deterministic: true }, (value: unknown) =>
     value === null ? null : foldCase(String(value)),
   )
 
-  // A single cheap read on every open -- this runs on the hot path (every hook call, every CLI
-  // invocation), so no schema work happens here beyond one PRAGMA read. Anything ABOVE
-  // SCHEMA_VERSION means an older binary opened a database written by a newer one (a downgrade,
-  // or two globally-installed versions pointed at the same project): refuse rather than risk an
-  // old binary misinterpreting or corrupting a schema shape it doesn't understand.
+  // A single cheap read on every open -- this runs on the hot path (every hook call, every CLI invocation), so no schema work happens here beyond one PRAGMA read. Anything ABOVE SCHEMA_VERSION means an older binary opened a database written by a newer one (a downgrade, or two globally-installed versions pointed at the same project): refuse rather than risk an old binary misinterpreting or corrupting a schema shape it doesn't understand.
   const storedVersion = Number(conn.pragma('user_version', { simple: true }))
   if (storedVersion > SCHEMA_VERSION) {
     throw new Error(
@@ -339,12 +298,7 @@ function initConnection(conn: BetterSqlite3Database): void {
     // sqlite-vec not installed or extension load failed — semantic search is disabled but every other index feature works.
   }
 
-  // BELOW SCHEMA_VERSION covers two cases identically: a brand-new DB (storedVersion 0, tables
-  // just created above) and an old DB from a pre-migration-mechanism release (also storedVersion
-  // 0, since older code never stamped it, but already schema-shape-compatible with version 1 --
-  // that constant IS today's schema). Both are stamped current with no real migration step to
-  // run. A genuine future gap -- SCHEMA_VERSION bumped for a change `CREATE TABLE IF NOT EXISTS`
-  // can't express, e.g. an ALTER TABLE on an existing table -- runs through MIGRATIONS above.
+  // BELOW SCHEMA_VERSION covers two cases identically: a brand-new DB (storedVersion 0, tables just created above) and an old DB from a pre-migration-mechanism release (also storedVersion 0, since older code never stamped it, but already schema-shape-compatible with version 1 -- that constant IS today's schema). Both are stamped current with no real migration step to run. A genuine future gap -- SCHEMA_VERSION bumped for a change `CREATE TABLE IF NOT EXISTS` can't express, e.g. an ALTER TABLE on an existing table -- runs through MIGRATIONS above.
   if (storedVersion < SCHEMA_VERSION) {
     runMigrations(conn, storedVersion, SCHEMA_VERSION)
     conn.pragma(`user_version = ${SCHEMA_VERSION}`)
@@ -364,6 +318,12 @@ function resolveDbPath(dbPath: string): string {
   return safeJoin(dataDir(), dbPath)
 }
 
+/** Resolves `dbPath` and derives its connection-cache key in one step -- shared by getDb and closeDb, which both need the same resolved-path-then-fold sequence to address the same cached handle. */
+function connectionKey(dbPath: string): { resolved: string; key: string } {
+  const resolved = resolveDbPath(dbPath)
+  return { resolved, key: foldPath(resolved) }
+}
+
 /**
  * Return the cached {@link BetterSqlite3Database} for `dbPath`, opening and
  * initializing it on first access.
@@ -373,11 +333,8 @@ function resolveDbPath(dbPath: string): string {
  * with the same resolved path return the same handle.
  */
 export function getDb(dbPath: string): BetterSqlite3Database {
-  const resolved = resolveDbPath(dbPath)
-  // Fold only the cache key, not `resolved` itself -- the real-case path is still what
-  // gets passed to fs/Database below, so the file is created/opened with whatever casing
-  // the caller (or an existing file on disk) actually used.
-  const key = foldPath(resolved)
+  // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
+  const { resolved, key } = connectionKey(dbPath)
   const existing = _connections.get(key)
   if (existing !== undefined) return existing
 
@@ -410,8 +367,7 @@ export function getDb(dbPath: string): BetterSqlite3Database {
  * Close the cached connection for `dbPath` if one is open. No-op otherwise.
  */
 export function closeDb(dbPath: string): void {
-  const resolved = resolveDbPath(dbPath)
-  const key = foldPath(resolved)
+  const { key } = connectionKey(dbPath)
   const conn = _connections.get(key)
   if (conn === undefined) return
   try {
