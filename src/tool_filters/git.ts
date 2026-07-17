@@ -223,18 +223,25 @@ function _capPatchLinesInBlock(block: string, maxLines: number): string {
   return [...headerLines, ...diffLines].join('\n')
 }
 
-function _compressGitLogPatch(stdout: string, stderr: string): string {
-  const MAX_PATCH_LINES = 30
+/** Shared by _compressGitLogPatch/_compressGitLogStat: split into commit blocks, cap each
+ *  block via `capBlock`, and rejoin with prelude/stderr -- identical shape, only the per-block
+ *  truncation differs (patch-line cap vs. stat-file cap). */
+function _compressGitLogCapped(stdout: string, stderr: string, capBlock: (block: string) => string): string {
   const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
   if (!blocks.length) return stdout
   const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
   const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
 
-  const outBlocks = commits.map((block) => _capPatchLinesInBlock(block, MAX_PATCH_LINES))
+  const outBlocks = commits.map(capBlock)
 
   let text = (prelude ? prelude + '\n' : '') + outBlocks.join('\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
   return text
+}
+
+function _compressGitLogPatch(stdout: string, stderr: string): string {
+  const MAX_PATCH_LINES = 30
+  return _compressGitLogCapped(stdout, stderr, (block) => _capPatchLinesInBlock(block, MAX_PATCH_LINES))
 }
 
 /** Compress --stat log: limit file list per commit block. */
@@ -268,16 +275,7 @@ function _capStatLinesInBlock(block: string, maxFiles: number): string {
 
 function _compressGitLogStat(stdout: string, stderr: string): string {
   const MAX_STAT_FILES = 20
-  const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
-  if (!blocks.length) return stdout
-  const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
-  const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
-
-  const outBlocks = commits.map((block) => _capStatLinesInBlock(block, MAX_STAT_FILES))
-
-  let text = (prelude ? prelude + '\n' : '') + outBlocks.join('\n')
-  if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
-  return text
+  return _compressGitLogCapped(stdout, stderr, (block) => _capStatLinesInBlock(block, MAX_STAT_FILES))
 }
 
 /** Format-aware log compression: dispatch to the right strategy. */
