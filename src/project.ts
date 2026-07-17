@@ -13,7 +13,7 @@ import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_
  * Windows drive prefixes that resolve to the same NTFS location.
  * Cross-shell normalization (Git Bash, WSL, Cygwin, cmd.exe/PowerShell).
  */
-const CYGWIN_PREFIX_RE = /^\/cygdrive\/([a-zA-Z])\/(.*)$/;
+const CYGWIN_PREFIX_RE = /^\/cygdrive\/([a-zA-Z])\/(.*)$/s;
 
 export const PROJECT_MARKERS = [
   '.git',
