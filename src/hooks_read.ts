@@ -380,6 +380,43 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
   return out.join('\n')
 }
 
+type SnapshotDiffResult =
+  | { readonly kind: 'unchanged'; readonly currentContent: string }
+  | { readonly kind: 'diff'; readonly diff: string; readonly savedBytes: number; readonly currentContent: string }
+  | { readonly kind: 'none' }
+
+/**
+ * Shared by the session-artifact and doc/source re-read paths below: load the prior snapshot
+ * for `normalized` under `sessionId`, strip its trailing `<snapshot truncated at ` marker if
+ * present, and compare to the file's current on-disk content. Size-gated at 256KB and fails
+ * soft to `{kind: 'none'}` on any missing snapshot, oversized file, or read/stat error --
+ * callers fall through to their own generic re-read handling in that case, exactly as before
+ * this was factored out of two independent ~25-line copies. `currentContent` is threaded back
+ * out on the non-'none' variants so callers that need it (e.g. for `countTextLines`) don't
+ * re-read the file a second time. Callers own their own messaging, stat name, and any
+ * additional savings-floor gate.
+ */
+function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
+  const oldSnap = snapshotLoad(sessionId, normalized)
+  if (oldSnap === null) return { kind: 'none' }
+  try {
+    const sz = statSize(normalized)
+    if (sz === null || sz > 256 * 1024) return { kind: 'none' }
+    const currentContent = fs.readFileSync(normalized, 'utf8')
+    const TRUNC_MARKER = '\n<snapshot truncated at '
+    const oldRaw = oldSnap.toString('utf8')
+    const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
+    const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
+    if (oldContent === currentContent) return { kind: 'unchanged', currentContent }
+    const diff = buildLineDiff(oldContent, currentContent, basename)
+    if (diff === '') return { kind: 'none' }
+    const savedBytes = Math.max(0, currentContent.length - diff.length)
+    return { kind: 'diff', diff, savedBytes, currentContent }
+  } catch {
+    return { kind: 'none' }
+  }
+}
+
 /**
  * True if a sibling session's manifest (see compact.ts) shows a recent read of filePath.
  * Delegates the directory walk / staleness / corrupt-JSON handling to readAllSessionManifests
@@ -755,37 +792,21 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
       const artifactSessionId = getSessionId()
-      const oldArtifactSnap = snapshotLoad(artifactSessionId, normalized)
-      if (oldArtifactSnap !== null) {
-        try {
-          const sz = statSize(normalized)
-          if (sz !== null && sz <= 256 * 1024) {
-            const currentContent = fs.readFileSync(normalized, 'utf8')
-            const TRUNC_MARKER = '\n<snapshot truncated at '
-            const oldRaw = oldArtifactSnap.toString('utf8')
-            const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
-            const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
-            if (oldContent === currentContent) {
-              recordActualRead(event, normalized)
-              recordStat('session_hint', 0, 0)
-              return denyOutput(
-                basename + ' is unchanged since last read. ' + sessionArtifactRecall(normalized),
-              )
-            }
-            const diff = buildLineDiff(oldContent, currentContent, basename)
-            if (diff !== '') {
-              recordActualRead(event, normalized)
-              const savedBytes = Math.max(0, currentContent.length - diff.length)
-              recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
-              return denyOutput(
-                'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-                '```diff\n' + diff + '\n```\n\n' + sessionArtifactRecall(normalized),
-              )
-            }
-          }
-        } catch {
-          // best-effort — fall through to generic deny
-        }
+      const snapDiff = loadSnapshotDiff(artifactSessionId, normalized, basename)
+      if (snapDiff.kind === 'unchanged') {
+        recordActualRead(event, normalized)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          basename + ' is unchanged since last read. ' + sessionArtifactRecall(normalized),
+        )
+      }
+      if (snapDiff.kind === 'diff') {
+        recordActualRead(event, normalized)
+        recordStat('session_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
+        return denyOutput(
+          'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+          '```diff\n' + snapDiff.diff + '\n```\n\n' + sessionArtifactRecall(normalized),
+        )
       }
       // No snapshot or file too large — generic re-read denial
       recordActualRead(event, normalized)
@@ -832,48 +853,30 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
 
     const sessionId = getSessionId()
-    const oldSnap = snapshotLoad(sessionId, normalized)
+    const snapDiff = loadSnapshotDiff(sessionId, normalized, basename)
 
-    if (oldSnap !== null) {
-      try {
-        const sz = statSize(normalized)
-        if (sz !== null && sz <= 256 * 1024) {
-          const currentContent = fs.readFileSync(normalized, 'utf8')
-          const TRUNC_MARKER = '\n<snapshot truncated at '
-          const oldRaw = oldSnap.toString('utf8')
-          const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
-          const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
+    if (snapDiff.kind === 'unchanged') {
+      recordActualRead(event, normalized)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        (basename + ' is unchanged since last read. ' +
+        surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+      )
+    }
 
-          if (oldContent === currentContent) {
-            recordActualRead(event, normalized)
-            recordStat('session_hint', 0, 0)
-            return denyOutput(
-              (basename + ' is unchanged since last read. ' +
-              surgicalHint(normalized, basename, countTextLines(currentContent))).trimEnd(),
-            )
-          }
-
-          const diff = buildLineDiff(oldContent, currentContent, basename)
-          if (diff !== '') {
-            const savedBytes = Math.max(0, currentContent.length - diff.length)
-            // Savings guard, uniform for doc and source files: only serve the diff if it
-            // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
-            if (Math.round(savedBytes / 4) < loadConfig().hints.diff_hint_min_tokens_saved) {
-              // Diff is not a good savings — fall through to generic deny block below
-            } else {
-              recordActualRead(event, normalized)
-              recordStat('diff_hint', savedBytes, Math.round(savedBytes / 4))
-              return denyOutput(
-                ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-                '```diff\n' + diff + '\n```\n\n' +
-                surgicalHint(normalized, basename, countTextLines(currentContent))).trimEnd(),
-              )
-            }
-          }
-        }
-      } catch {
-        // best-effort — fall through to generic wasFileReadThisSession logic
+    if (snapDiff.kind === 'diff') {
+      // Savings guard, uniform for doc and source files: only serve the diff if it
+      // clears the configured token-savings floor (hints.diff_hint_min_tokens_saved).
+      if (Math.round(snapDiff.savedBytes / 4) >= loadConfig().hints.diff_hint_min_tokens_saved) {
+        recordActualRead(event, normalized)
+        recordStat('diff_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
+        return denyOutput(
+          ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+          '```diff\n' + snapDiff.diff + '\n```\n\n' +
+          surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
+        )
       }
+      // Diff is not a good savings — fall through to generic deny block below
     }
 
     // No snapshot yet or file too large — fall through to generic wasFileReadThisSession logic below, which uses readCount and file size to pick context vs. deny.
