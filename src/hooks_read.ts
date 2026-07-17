@@ -1105,13 +1105,6 @@ function extractReadOutput(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
 }
 
-/**
- * post_tool_use handler for the Read tool.
- *
- * Detects truncation markers in the tool response and flags the file so the
- * next pre_tool_use for the same file returns an immediate deny with a
- * surgical-read hint instead of allowing another full (and expensive) read.
- */
 /** Count text lines the way `wc -l` does: newline count, plus one for a final non-empty
  *  line with no trailing newline. Empty content has zero lines. Used to gate the
  *  post-read structural-navigation hint against `post_read_code_compress.min_lines`. */
@@ -1143,6 +1136,13 @@ function truncatedReadDenyMessage(normalized: string): string {
   )
 }
 
+/**
+ * post_tool_use handler for the Read tool.
+ *
+ * Detects truncation markers in the tool response and flags the file so the
+ * next pre_tool_use for the same file returns an immediate deny with a
+ * surgical-read hint instead of allowing another full (and expensive) read.
+ */
 function postReadHandlerInner(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
