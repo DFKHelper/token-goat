@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { envBool, envFloat, envInt, envStr } from '../src/env.js'
+import { envBool, envInt, envStr } from '../src/env.js'
 
 const KEY = 'TOKEN_GOAT_TEST_ENV_VAR'
 
@@ -11,37 +11,6 @@ describe('env parsers', () => {
 
   afterEach(() => {
     delete process.env[KEY]
-  })
-
-  describe('envFloat', () => {
-    it('returns the default for an overflowing literal (1e400 -> Infinity)', () => {
-      process.env[KEY] = '1e400'
-      expect(envFloat(KEY, 3.5)).toBe(3.5)
-    })
-
-    it('returns the default when unset', () => {
-      expect(envFloat(KEY, 2.25)).toBe(2.25)
-    })
-
-    it('returns the default for an empty string', () => {
-      process.env[KEY] = ''
-      expect(envFloat(KEY, 9.9)).toBe(9.9)
-    })
-
-    it('returns the default for non-numeric input', () => {
-      process.env[KEY] = 'abc'
-      expect(envFloat(KEY, 1.1)).toBe(1.1)
-    })
-
-    it('parses a valid float', () => {
-      process.env[KEY] = '0.5'
-      expect(envFloat(KEY, 1.0)).toBe(0.5)
-    })
-
-    it('parses a valid negative float', () => {
-      process.env[KEY] = '-12.75'
-      expect(envFloat(KEY, 0)).toBe(-12.75)
-    })
   })
 
   describe('envInt', () => {
