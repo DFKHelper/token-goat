@@ -9,21 +9,13 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, contextOutput, getToolName, getToolInput } from './hooks_common.js'
+import { passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField } from './hooks_common.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 
 function extractToolResponse(raw: Record<string, unknown>): string {
-  const resp = raw['tool_response']
-  if (typeof resp === 'string') return resp
-  if (resp !== null && typeof resp === 'object') {
-    const r = resp as Record<string, unknown>
-    for (const key of ['output', 'content', 'text', 'body']) {
-      if (typeof r[key] === 'string') return r[key] as string
-    }
-  }
-  return ''
+  return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
 }
 
 /** Non-empty lines in `text`, used as a match-count proxy across every Grep output_mode

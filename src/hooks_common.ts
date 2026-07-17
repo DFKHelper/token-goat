@@ -36,6 +36,28 @@ export function getFilePath(event: HookEvent): string | undefined {
   return typeof notebookValue === 'string' && notebookValue !== '' ? notebookValue : undefined
 }
 
+/**
+ * Extract a string body from a raw hook event's `tool_response`, trying
+ * `keys` in order and returning the first string value found.
+ *
+ * `tool_response` shapes vary by tool and harness (`output`, `body`, `text`,
+ * `content` are all used by different tools) -- callers pass their own
+ * priority order rather than this helper guessing one, since a shared
+ * default order could silently change which field wins for a caller that
+ * genuinely depends on its own priority.
+ */
+export function extractToolResponseField(raw: Record<string, unknown>, keys: readonly string[]): string {
+  const resp = raw['tool_response']
+  if (typeof resp === 'string') return resp
+  if (resp !== null && typeof resp === 'object') {
+    const r = resp as Record<string, unknown>
+    for (const key of keys) {
+      if (typeof r[key] === 'string') return r[key] as string
+    }
+  }
+  return ''
+}
+
 /** Build a `pass` output — let the tool call proceed unchanged. */
 export function passOutput(): HookOutput {
   return { hookType: 'pass' }

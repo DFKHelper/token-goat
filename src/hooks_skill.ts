@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, denyOutput, getToolName, getToolInput } from './hooks_common.js';
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResponseField } from './hooks_common.js';
 import { loadConfig } from './config.js';
 import { recordStat } from './stats.js';
 import {
@@ -28,25 +28,7 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
 }
 
 function extractSkillBody(raw: Record<string, unknown>): string {
-  const toolResponse = raw['tool_response'];
-  if (typeof toolResponse === 'string') {
-    return toolResponse;
-  }
-  if (toolResponse && typeof toolResponse === 'object') {
-    const resp = toolResponse as Record<string, unknown>;
-    const text =
-      typeof resp['output'] === 'string'
-        ? resp['output']
-        : typeof resp['body'] === 'string'
-          ? resp['body']
-          : typeof resp['text'] === 'string'
-            ? resp['text']
-            : typeof resp['content'] === 'string'
-              ? resp['content']
-              : '';
-    return text;
-  }
-  return '';
+  return extractToolResponseField(raw, ['output', 'body', 'text', 'content']);
 }
 
 export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
