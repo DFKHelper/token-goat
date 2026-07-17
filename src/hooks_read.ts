@@ -815,22 +815,20 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         normalized + ' was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
-    // First read of tasks/*.output — size-gated like every other first-read intercept in
-    // this function. A small task output is a cheap advisory pass; at/above
-    // TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through
-    // bash-output --file/--tail instead of one free unsized full dump.
-    if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)) {
+    // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output.
+    {
+      const isTaskOutput = /[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)
+      const label = isTaskOutput ? 'Session transcript' : 'Tool-result file'
       const outputSize = statSize(normalized)
       recordActualRead(event, normalized)
       if (outputSize !== null && outputSize >= TASK_OUTPUT_DENY_BYTES) {
         recordStat('session_hint', outputSize, Math.round(outputSize / 4))
         return denyOutput(
-          'Session transcript is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
+          label + ' is large (' + toKB(outputSize) + 'KB). ' + sessionArtifactRecall(normalized),
         )
       }
-      return quietContextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
+      return quietContextOutput(label + ': ' + sessionArtifactRecall(normalized))
     }
-    // First read of tool-results/*.txt — fall through to normal handling
   }
 
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a snapshot was captured by postReadHandler on the first read. When serve_diff_on_reread is enabled, source/style/data files also get diffs. Falls through to the generic wasFileReadThisSession block when no snapshot exists, preserving existing context vs. deny behavior for un-snapshotted files.
