@@ -7,14 +7,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { shortFingerprint } from './fingerprint.js';
 import { extractErrorMessage, foldPath, runGit } from './util.js';
-import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_PATH_RE } from './paths.js';
+import { lowercaseDriveLetter, expandShortPath, normalizeDarwinSystemAlias, WSL_PATH_RE, MSYS_PATH_RE } from './paths.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
  * Cross-shell normalization (Git Bash, WSL, Cygwin, cmd.exe/PowerShell).
  */
 const CYGWIN_PREFIX_RE = /^\/cygdrive\/([a-zA-Z])\/(.*)$/;
-const MSYS_PREFIX_RE = /^\/([a-zA-Z])\/(.*)$/;
 
 export const PROJECT_MARKERS = [
   '.git',
@@ -52,9 +51,12 @@ function normalizeShellDrivePrefix(posixStr: string): string {
   if (m) {
     return `${m[1]!.toLowerCase()}:/${m[2]}`;
   }
-  m = MSYS_PREFIX_RE.exec(posixStr);
+  m = MSYS_PATH_RE.exec(posixStr);
   if (m) {
-    return `${m[1]!.toLowerCase()}:/${m[2]}`;
+    // MSYS_PATH_RE's trailing group already includes its own leading slash (or is absent for a
+    // bare drive root), unlike WSL/Cygwin's `rest` group above -- so this branch alone omits the
+    // hardcoded `:/` separator, matching paths.ts::normalizePath's step-2b formatting exactly.
+    return `${m[1]!.toLowerCase()}:${m[2] ?? '/'}`;
   }
   return posixStr;
 }
