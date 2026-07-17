@@ -56,10 +56,7 @@ export interface FileEntry {
 // path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
 let _files = new Map<string, FileEntry>()
 
-// Snapshot of each file's readCount at hydration time, so session_store.ts's merge can tell
-// "this process's own genuinely new reads since load" apart from "whatever was already on
-// disk" -- Math.max(disk, mem) silently drops a concurrent process's distinct increment
-// whenever the two values happen to coincide (see mergeFileEntry in session_store.ts).
+// Snapshot of each file's readCount at hydration time, so session_store.ts's merge can tell "this process's own genuinely new reads since load" apart from "whatever was already on disk" -- Math.max(disk, mem) silently drops a concurrent process's distinct increment whenever the two values happen to coincide (see mergeFileEntry in session_store.ts).
 let _filesAtLoad = new Map<string, number>()
 
 // Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
@@ -77,12 +74,7 @@ let _grepQueries = new Map<string, number>()
 
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null
-// Command hashes (same key space as _bashOutputs, i.e. the stripped-command
-// hash used by recordBashOutput/getBashOutputId) for which a store call
-// overwrote an already-present entry this session -- i.e. an older cached
-// run under this exact key was beaten by a newer one. Used only by
-// hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw
-// transcript copies that are provably superseded by the surviving cached id.
+// Command hashes (same key space as _bashOutputs, i.e. the stripped-command hash used by recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
 let _bashReruns = new Set<string>()
 
 // url -> saved file path for curl -o download dedup (Item 2).
@@ -97,9 +89,7 @@ let _cliReads = new Set<string>()
 // path -> size (bytes) for a large-file hint fired but not yet resolved as followed/ignored (opt-in outcome logging, consume-on-resolve).
 let _pendingLargeFileHints = new Map<string, number>()
 
-// Snapshot of `_pendingLargeFileHints` at hydration time, so `consumedPendingLargeFileHintKeys`
-// can tell "this process resolved it" apart from "this process never saw it" — session_store.ts's
-// merge needs that distinction to avoid resurrecting a resolved hint from a stale disk read.
+// Snapshot of `_pendingLargeFileHints` at hydration time, so `consumedPendingLargeFileHintKeys` can tell "this process resolved it" apart from "this process never saw it" — session_store.ts's merge needs that distinction to avoid resurrecting a resolved hint from a stale disk read.
 let _pendingLargeFileHintsAtLoad = new Map<string, number>()
 
 // Resolved once per process: env-provided session id or a generated one.
