@@ -59,11 +59,14 @@ export class GoTestFilter extends ToolFilter {
       let inGoroutine = false
       let goroutineFrameCount = 0
       let goroutineFramesDropped = 0
+      const flushDroppedNote = (): void => {
+        if (goroutineFramesDropped) {
+          kept.push(`    [token-goat: +${goroutineFramesDropped} goroutine frames omitted]`)
+        }
+      }
       for (const rline of raceBlockLines) {
         if (GOROUTINE_HEADER_RE.test(rline)) {
-          if (goroutineFramesDropped) {
-            kept.push(`    [token-goat: +${goroutineFramesDropped} goroutine frames omitted]`)
-          }
+          flushDroppedNote()
           inGoroutine = true
           goroutineFrameCount = 0
           goroutineFramesDropped = 0
@@ -79,18 +82,14 @@ export class GoTestFilter extends ToolFilter {
             continue
           }
           // Leaving the goroutine section.
-          if (goroutineFramesDropped) {
-            kept.push(`    [token-goat: +${goroutineFramesDropped} goroutine frames omitted]`)
-          }
+          flushDroppedNote()
           inGoroutine = false
           goroutineFrameCount = 0
           goroutineFramesDropped = 0
         }
         kept.push(rline)
       }
-      if (goroutineFramesDropped) {
-        kept.push(`    [token-goat: +${goroutineFramesDropped} goroutine frames omitted]`)
-      }
+      flushDroppedNote()
     }
 
     for (const line of lines) {
@@ -133,10 +132,7 @@ export class GoTestFilter extends ToolFilter {
           raceBlockLines = []
           racePendingFence = false
         } else if (raceBlockLines.length > RACE_PENDING_FENCE_MAX_LINES) {
-          // No WARNING/blank/second-fence within a bounded lookahead — this was
-          // never a race block (a stray `====...` line elsewhere in the output).
-          // Give up waiting so the rest of the stream isn't silently buffered
-          // out of every other compression rule for the remainder of the file.
+          // No WARNING/blank/second-fence within a bounded lookahead — this was never a race block (a stray `====...` line elsewhere in the output). Give up waiting so the rest of the stream isn't silently buffered out of every other compression rule for the remainder of the file.
           kept.push(...raceBlockLines)
           raceBlockLines = []
           racePendingFence = false
