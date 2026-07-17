@@ -9,11 +9,10 @@
 /**
  * The AI harnesses token-goat knows how to detect, plus a generic fallback.
  *
- * `gemini`, `hermes`, and `openclaw` have no install-writer yet (see
- * `bridges/registry.ts`'s module docstring) but are still real, detectable
- * identities: harness detection matters independently of which harnesses
- * have install support, since it also drives hook-payload translation and
- * compaction budget heuristics.
+ * `hermes` has no install-writer (see `bridges/registry.ts`'s module
+ * docstring) but is still a real, detectable identity: harness detection
+ * matters independently of which harnesses have install support, since it
+ * also drives hook-payload translation and compaction budget heuristics.
  */
 export type HarnessName =
   | 'claudecode'

@@ -14,8 +14,7 @@
  * (`CODEX_SESSION` vs `CODEX_SESSION_ID`, `OPENCODE_SESSION` vs
  * `OPENCODE_SESSION_ID`). Both spellings are unioned below so a real
  * Codex/opencode invocation setting either var is detected; `compact.ts` now
- * imports this function instead of keeping its own copy. `openclaw` has no
- * install-writer yet -- see the `OPENCLAW_SESSION_ID` note below.
+ * imports this function instead of keeping its own copy.
  */
 
 import { ENV_KEYS } from '../constants.js'
@@ -54,10 +53,9 @@ export const KNOWN_HARNESS_NAMES = new Set<string>([
  *  6. Grok CLI -- `GROK_SESSION_ID`, confirmed (not guessed) by capturing a
  *     real hook invocation from grok 0.2.93 -- see the note at that branch
  *     below for how it was verified.
- *  7. OpenClaw -- `OPENCLAW_SESSION_ID`. No install-writer exists for
- *     OpenClaw yet, and no OpenClaw env var turned up anywhere in this
- *     codebase or its docs, so this is a best-effort guess following the
- *     `*_SESSION_ID` convention the harnesses above use -- revisit if
+ *  7. OpenClaw -- `OPENCLAW_SESSION_ID`. No OpenClaw env var turned up
+ *     anywhere in this codebase or its docs, so this is a best-effort guess
+ *     following the `*_SESSION_ID` convention the harnesses above use -- revisit if
  *     OpenClaw's actual signal turns out to differ.
  *  8. Codex, API-key fallback -- `OPENAI_API_KEY` set and no
  *     `ANTHROPIC_API_KEY`.
