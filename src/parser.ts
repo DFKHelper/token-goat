@@ -219,11 +219,6 @@ function collectPatternBindings(node: TsNode): string[] {
   return names
 }
 
-/**
- * Walk a TS/JS tree collecting symbols. Descends into export statements (so
- * `export function f` is captured) and class bodies (for methods), and unwraps
- * `const`/`let`/`var` declarators whose initializer is a function/arrow.
- */
 /** Node types whose bodies introduce a new function scope — declarations
  * nested inside these are locals, excluded from the document-symbol index. */
 const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
@@ -231,6 +226,11 @@ const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'method_definition', 'generator_function', 'generator_function_declaration',
 ])
 
+/**
+ * Walk a TS/JS tree collecting symbols. Descends into export statements (so
+ * `export function f` is captured) and class bodies (for methods), and unwraps
+ * `const`/`let`/`var` declarators whose initializer is a function/arrow.
+ */
 function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
@@ -1732,10 +1732,6 @@ function parseContent(content: string, filePath: string, language: Language): Pa
 }
 
 /**
- * Symbol extraction for languages with no tree-sitter grammar: the regex and
- * structured-config adapters. Returns an empty list for `unknown`.
- */
-/**
  * Map an adapter's parsed `.sections` (heading, level, line, endLine) into indexable
  * SymbolEntry rows. HTML and Liquid compute headings into `.sections` for the section-outline
  * consumer but historically never surfaced them as symbols, so they never entered the index
@@ -1808,6 +1804,10 @@ function extractNoTreeSitter(
     : parsed
 }
 
+/**
+ * Symbol extraction for languages with no tree-sitter grammar: the regex and
+ * structured-config adapters. Returns an empty list for `unknown`.
+ */
 function extractSymbolsNoTreeSitter(
   content: string,
   filePath: string,
@@ -1817,14 +1817,6 @@ function extractSymbolsNoTreeSitter(
   return (NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)
 }
 
-/**
- * Write a parsed result's rows into the index DB, replacing any prior rows for
- * the file in a single transaction (DELETE + INSERT, matching the Python
- * bulk-replace strategy) so a re-index never leaves stale symbols behind.
- *
- * Called by {@link indexFileSync}, the worker drain loop's synchronous entry
- * point.
- */
 /**
  * Delete every index row (symbols, refs, files) for one file. On a
  * case-insensitive filesystem the path match folds case — mirroring
@@ -1866,6 +1858,14 @@ export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): bool
   return false
 }
 
+/**
+ * Write a parsed result's rows into the index DB, replacing any prior rows for
+ * the file in a single transaction (DELETE + INSERT, matching the Python
+ * bulk-replace strategy) so a re-index never leaves stale symbols behind.
+ *
+ * Called by {@link indexFileSync}, the worker drain loop's synchronous entry
+ * point.
+ */
 function writeParseResult(
   filePath: string,
   content: Buffer | null,
@@ -1955,27 +1955,6 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
   writeParseResult(filePath, raw, { symbols, refs, language, duration: 0 }, dbPath)
 }
 
-/**
- * Best-effort semantic-embeddings indexing for one file, run alongside (not instead of) the
- * syntactic parse in {@link indexFileSync}. Gated on `indexing.embeddings_enabled` (default
- * true); a no-op when disabled.
- *
- * Reads the file itself, independently of indexFileSync's own read, so callers never need to
- * thread file content through just for this optional step, then delegates to embeddings.ts's
- * `indexFile` (imported here as embedIndexFile), which chunks the content and upserts it into
- * `chunks`/`chunk_vectors`.
- *
- * Never throws: an unreadable file, a missing optional dependency (@xenova/transformers or
- * sqlite-vec — embeddings.ts's own isAvailable()/chunkVectorsTableExists() checks already
- * degrade gracefully for those), or a genuine embedding-pipeline error must never fail the
- * overall index — the syntactic symbols/refs indexFileSync already wrote stand on their own
- * regardless of what happens here.
- *
- * Callers that can afford to wait for embeddings (cmdIndex, a one-shot foreground command)
- * should await this. Callers on a latency-sensitive synchronous path (the worker's incremental
- * drain, which must return instantly per indexFileSync's own contract) should fire it and
- * forget instead of awaiting it.
- */
 /**
  * Structural cut points for this file's embedding chunks, derived from the same
  * indexing pass rather than re-parsed from scratch: markdown/doc files get one
