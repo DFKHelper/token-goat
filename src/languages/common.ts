@@ -946,10 +946,6 @@ export function makeSpanSymbol(
 }
 
 /**
- * Factory that returns a closure for emitting one (symbol + section) pair.
- * Deduplicates by (name, kind, line). Caps at maxSymbols (default 500).
- */
-/**
  * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`
  * and `parent` becomes `docstring` — the "parent lives in the docstring field" convention
  * several regex adapters share for single-line symbols that don't have a real docstring.
@@ -973,6 +969,10 @@ export function makeLineSymbol(
   }
 }
 
+/**
+ * Factory that returns a closure for emitting one (symbol + section) pair.
+ * Deduplicates by (name, kind, line). Caps at maxSymbols (default 500).
+ */
 export function makeSymbolEmitter(
   symbols: SymbolEntry[],
   sections: MiniSection[],
