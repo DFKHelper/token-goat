@@ -832,6 +832,9 @@ describe('read_commands', () => {
       // Only the first 5 candidates are shown — 'Contributing' and 'License' are suppressed.
       expect(stderr).not.toContain('Contributing')
       expect(stderr).not.toContain('License')
+      // Regression: the cap used to be silent, giving no indication that 2 more headings
+      // existed beyond the 5 shown.
+      expect(stderr).toContain('(2 more not shown)')
     })
 
     it('prints section content when found', () => {
