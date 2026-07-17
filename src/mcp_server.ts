@@ -58,13 +58,15 @@ function toCallToolResult(result: { text: string; code: number }): CallToolResul
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'token-goat', version: VERSION })
 
-  const projectRootField = z
-    .string()
-    .optional()
-    .describe(
-      "absolute path to the workspace root to scope this lookup to; defaults to the MCP server process's cwd, " +
-        'which is not always the actual workspace root for MCP clients -- pass this explicitly when it might differ',
-    )
+  const makeProjectRootField = (verb: string) =>
+    z
+      .string()
+      .optional()
+      .describe(
+        `absolute path to the workspace root to scope this ${verb} to; defaults to the MCP server process's cwd, ` +
+          'which is not always the actual workspace root for MCP clients -- pass this explicitly when it might differ',
+      )
+  const projectRootField = makeProjectRootField('lookup')
 
   server.registerTool(
     'symbol',
@@ -206,13 +208,7 @@ export function createMcpServer(): McpServer {
       inputSchema: {
         query: z.string().describe('natural-language search query'),
         limit: z.number().int().positive().optional().describe('max results (default: 20)'),
-        projectRoot: z
-          .string()
-          .optional()
-          .describe(
-            "absolute path to the workspace root to scope this search to; defaults to the MCP server process's cwd, " +
-              'which is not always the actual workspace root for MCP clients -- pass this explicitly when it might differ',
-          ),
+        projectRoot: makeProjectRootField('search'),
       },
     },
     async (args) => {
