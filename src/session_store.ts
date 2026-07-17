@@ -240,13 +240,9 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   return merged
 }
 
-function mergePairs(disk: Array<[string, string]>, mem: Array<[string, string]>): Array<[string, string]> {
-  // mem overlays disk: the current process's view is at least as fresh.
-  return Array.from(new Map([...disk, ...mem]).entries())
-}
-
-/** Same "mem overlays disk" merge as {@link mergePairs}, for number-valued pairs (grepQueries). */
-function mergeNumberPairs(disk: Array<[string, number]>, mem: Array<[string, number]>): Array<[string, number]> {
+/** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by
+ * every disk/mem pair-list field (webFetches, bashOutputs, curlDownloads, grepQueries). */
+function mergePairs<V>(disk: Array<[string, V]>, mem: Array<[string, V]>): Array<[string, V]> {
   return Array.from(new Map([...disk, ...mem]).entries())
 }
 
@@ -314,7 +310,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
-    grepQueries: mergeNumberPairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
+    grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     // Prefer the value already on disk: it marks the original creation time, and
     // must never be bumped forward to the merge's "now". `mem` never carries one
     // (it is not tracked in memory), so this is really "keep whatever disk has".
