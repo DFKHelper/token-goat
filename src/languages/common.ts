@@ -327,13 +327,24 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
         break
       }
       code += line.slice(j, open)
-      comment = true
-      j = open + 2
+      const close = line.indexOf('*/', open + 2)
+      if (close === -1) {
+        code += ' '.repeat(line.length - open)
+        comment = true
+        break
+      }
+      code += ' '.repeat(close + 2 - open)
+      j = close + 2
+      comment = false
     } else {
       const close = line.indexOf('*/', j)
-      if (close === -1) break
-      comment = false
+      if (close === -1) {
+        code += ' '.repeat(line.length - j)
+        break
+      }
+      code += ' '.repeat(close + 2 - j)
       j = close + 2
+      comment = false
     }
   }
   return { code, inComment: comment }

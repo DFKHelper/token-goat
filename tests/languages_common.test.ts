@@ -19,7 +19,8 @@ describe('stripBlockCommentSpan', () => {
     const line = `const msg = "don't panic"; /* real comment starts here`
     const result = stripBlockCommentSpan(line, false)
     expect(result.inComment).toBe(true)
-    expect(result.code).toBe(`const msg = "don't panic"; `)
+    expect(result.code.trimEnd()).toBe(`const msg = "don't panic";`)
+    expect(result.code.length).toBe(line.length)
   })
 
   it('strips the full body of a comment opened after an apostrophe-containing double-quoted string, across lines', () => {
@@ -77,6 +78,15 @@ describe('stripBlockCommentSpan', () => {
     expect(result.inComment).toBe(false)
     expect(result.code).not.toContain('another comment')
     expect(result.code.trim()).toBe('realCode();')
+  })
+
+  it('blank-pads a same-line comment span with spaces instead of deleting it (regression: unlike its sibling stripCstyleComments, this function used to splice the comment out entirely with no replacement, concatenating the tokens on either side when the comment had no surrounding whitespace)', () => {
+    const line = 'public/*x*/static void Foo()'
+    const result = stripBlockCommentSpan(line, false)
+    expect(result.inComment).toBe(false)
+    expect(result.code).not.toContain('publicstatic')
+    // '/*x*/' (5 chars) is replaced by 5 spaces, preserving column offsets like stripCstyleComments does.
+    expect(result.code).toBe('public     static void Foo()')
   })
 })
 
