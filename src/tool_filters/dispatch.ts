@@ -55,7 +55,7 @@ export const TOOL_FILTERS: ToolFilter[] = [
   ...SHELL_FILE_FILTERS,
   // Batch K1 — language runtimes and compilers.
   ...LANGUAGE_FILTERS,
-  // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers, and generic catch-alls (env dump, JSON array, severity-log, tail-trunc). PlaywrightFilter and CypressFilter from this family are registered above (before BunFilter) — they are NOT included in MISC_FILTERS. TailTruncFilter (matches() → true) MUST remain last in MISC_FILTERS.
+  // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers, and generic catch-alls (env dump, JSON array, severity-log, tail-trunc). PlaywrightFilter and CypressFilter from this family are registered above (before BunFilter) — they are NOT included in MISC_FILTERS. TailTruncFilter (content-based, matches() always false, applied explicitly rather than auto-dispatched) should remain last in MISC_FILTERS as a matter of convention.
   ...MISC_FILTERS,
 ]
 
