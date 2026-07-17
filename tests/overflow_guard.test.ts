@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimateTokens, checkOverflow, trimToBudget } from '../src/overflow_guard.js'
+import { estimateTokens, trimToBudget } from '../src/overflow_guard.js'
 
 describe('overflow_guard', () => {
   describe('estimateTokens', () => {
@@ -19,24 +19,6 @@ describe('overflow_guard', () => {
       const tokens = estimateTokens(textWithAnsi)
       expect(tokens).toBeGreaterThanOrEqual(100)
       expect(tokens).toBeLessThanOrEqual(105)
-    })
-  })
-
-  describe('checkOverflow', () => {
-    it('returns over: true when over budget', () => {
-      const result = checkOverflow('a'.repeat(300), 50)
-      expect(result.over).toBe(true)
-    })
-
-    it('returns over: false when within budget', () => {
-      const result = checkOverflow('hello', 10)
-      expect(result.over).toBe(false)
-    })
-
-    it('includes budget and used tokens', () => {
-      const result = checkOverflow('a'.repeat(100), 50)
-      expect(result.budget).toBe(50)
-      expect(result.used).toBeGreaterThan(0)
     })
   })
 

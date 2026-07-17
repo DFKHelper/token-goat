@@ -29,33 +29,6 @@ export function estimateTokens(text: string): number {
 }
 
 /**
- * Result of a guard check: whether text overflows budget and how many lines were kept.
- */
-export interface OverflowResult {
-  budget: number
-  used: number
-  over: boolean
-  trimmedLines: number
-}
-
-/**
- * Check if text exceeds a token budget.
- *
- * @param text The text to check.
- * @param budgetTokens The maximum allowed tokens.
- * @returns OverflowResult with budget info.
- */
-export function checkOverflow(text: string, budgetTokens: number): OverflowResult {
-  const used = estimateTokens(text)
-  return {
-    budget: budgetTokens,
-    used,
-    over: used > budgetTokens,
-    trimmedLines: 0,
-  }
-}
-
-/**
  * Trim text to fit within a token budget, keeping leading lines.
  *
  * Preserves as many leading whole lines as fit within the budget, appending
