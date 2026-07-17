@@ -182,7 +182,7 @@ export async function pptxSlideText(filePath: string, slideNumber: number, inclu
   const blocks = shapes.map(shapeText).filter((t) => t.length > 0)
   const lines = [`# Slide ${slideNumber}`, ...blocks]
   if (includeNotes) {
-    const notes = (await pptxNotesText(filePath, slideNumber)).replace(/^# Slide \d+ notes\n\n/, '')
+    const notes = await notesTextFor(entries, await notesPathFor(entries, path))
     if (notes.length > 0) lines.push('', '## Speaker notes', notes)
   }
   return lines.join('\n\n')
