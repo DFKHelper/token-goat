@@ -14,9 +14,6 @@ import { VERSION } from './version.js'
 
 export { VERSION }
 
-/** Config schema version (matches config.py CONFIG_SCHEMA_VERSION). */
-export const CONFIG_SCHEMA_VERSION = 1 as const
-
 /**
  * Validate an env-var directory value before using it as a data-dir base.
  *
@@ -176,5 +173,3 @@ export const ENV_KEYS = {
   OVERFLOW_MAX_TOKENS: 'TOKEN_GOAT_OVERFLOW_MAX_TOKENS',
   HARNESS_OVERRIDE: 'TOKEN_GOAT_HARNESS_OVERRIDE',
 } as const
-
-export type EnvKey = (typeof ENV_KEYS)[keyof typeof ENV_KEYS]
