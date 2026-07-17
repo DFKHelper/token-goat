@@ -823,20 +823,30 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
 }
 
 /**
+ * Returns true when `cmd` carries an explicit non-GET method, a request-body flag, or
+ * auth credentials -- the three curl-unsafe-to-cache conditions shared by
+ * {@link isCurlGetCommand} and {@link extractCurlDownload}. Callers still check `^curl\b`
+ * themselves since only they know whether to return `false` or `null` on mismatch.
+ */
+function curlHasUnsafeFlags(cmd: string): boolean {
+  // Explicit non-GET method
+  if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
+  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
+  // Request body (implies non-GET)
+  if (/(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return true
+  // Auth credentials — skip caching to avoid leaking tokens into the output store
+  if (/(?:^|\s)(?:-u|--user)\b/.test(cmd)) return true
+  if (/-H\s+['"]?Authorization/i.test(cmd)) return true
+  return false
+}
+
+/**
  * Returns true when the command is a `curl` GET request whose response is safe
  * to cache (no -X POST/PUT/PATCH/DELETE, no request body flags, no auth credentials).
  */
 function isCurlGetCommand(cmd: string): boolean {
   if (!/^curl\b/.test(cmd)) return false
-  // Explicit non-GET method
-  if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return false
-  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return false
-  // Request body (implies non-GET)
-  if (/\s(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return false
-  // Auth credentials — skip caching to avoid leaking tokens into the output store
-  if (/\s(?:-u|--user)\b/.test(cmd)) return false
-  if (/-H\s+['"]?Authorization/i.test(cmd)) return false
-  return true
+  return !curlHasUnsafeFlags(cmd)
 }
 
 /**
@@ -895,14 +905,7 @@ export function extractCurlDownload(cmd: string): { url: string; outputPath: str
   if (!outputMatch) return null
   const outputPath = outputMatch[1] ?? outputMatch[2] ?? outputMatch[3]
   if (!outputPath) return null
-  // Exclude explicit non-GET methods
-  if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return null
-  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return null
-  // Exclude request body flags
-  if (/(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return null
-  // Exclude auth credentials
-  if (/(?:^|\s)(?:-u|--user)\b/.test(cmd)) return null
-  if (/-H\s+['"]?Authorization/i.test(cmd)) return null
+  if (curlHasUnsafeFlags(cmd)) return null
   // Extract URL (first https?:// argument)
   const urlMatch = /(https?:\/\/[^\s'"]+)/.exec(cmd)
   if (!urlMatch?.[1]) return null
