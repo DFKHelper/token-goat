@@ -274,6 +274,58 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
+ * Greedy pairwise clustering shared by the embedding and Jaccard paths: seed a group with
+ * the next unused item, absorb later unused items that `matches` accepts, then emit a
+ * DupCluster once a group has more than one member. `matches` encodes each path's own
+ * grouping criterion (embedding compares only against the seed; Jaccard against any
+ * existing group member), so behavior is unchanged from the pre-extraction duplicated loops.
+ */
+function greedyCluster(
+  siblings: string[],
+  snippets: string[],
+  matches: (seedOrMemberIdx: number, candidateIdx: number, group: number[]) => boolean,
+  simFor: (a: number, b: number) => number,
+  method: 'embedding' | 'jaccard',
+): DupCluster[] {
+  const clusters: DupCluster[] = []
+  const used = new Set<number>()
+
+  for (let i = 0; i < siblings.length; i++) {
+    if (used.has(i)) continue
+
+    const group: number[] = [i]
+    for (let j = i + 1; j < siblings.length; j++) {
+      if (used.has(j)) continue
+      if (matches(i, j, group)) {
+        group.push(j)
+      }
+    }
+
+    if (group.length > 1) {
+      const members = group.map((k) => siblings[k]!)
+      const tok = group.reduce((sum, k) => sum + estimateTokens(snippets[k]!), 0)
+
+      let maxSim = 0
+      for (let a = 0; a < group.length; a++) {
+        for (let b = a + 1; b < group.length; b++) {
+          maxSim = Math.max(maxSim, simFor(group[a]!, group[b]!))
+        }
+      }
+
+      clusters.push({
+        members,
+        similarity: Math.round(maxSim * 1000) / 1000,
+        method,
+        tokens: tok,
+      })
+      for (const idx of group) used.add(idx)
+    }
+  }
+
+  return clusters
+}
+
+/**
  * Attempt embedding-based clustering. Returns null (never []) when embeddings are disabled,
  * unavailable, or fail, so the caller falls through to the Jaccard path -- an empty embedding
  * result (no clusters found) is a legitimate `[]`, distinct from "couldn't try".
@@ -294,42 +346,13 @@ async function tryEmbeddingClusters(
     return null
   }
 
-  const clusters: DupCluster[] = []
-  const used = new Set<number>()
-
-  for (let i = 0; i < siblings.length; i++) {
-    if (used.has(i)) continue
-
-    const group: number[] = [i]
-    for (let j = i + 1; j < siblings.length; j++) {
-      if (used.has(j)) continue
-      if (cosineSimilarity(vecs[i]!, vecs[j]!) >= threshold) {
-        group.push(j)
-      }
-    }
-
-    if (group.length > 1) {
-      const members = group.map((k) => siblings[k]!)
-      const tok = group.reduce((sum, k) => sum + estimateTokens(snippets[k]!), 0)
-
-      let maxSim = 0
-      for (let a = 0; a < group.length; a++) {
-        for (let b = a + 1; b < group.length; b++) {
-          maxSim = Math.max(maxSim, cosineSimilarity(vecs[group[a]!]!, vecs[group[b]!]!))
-        }
-      }
-
-      clusters.push({
-        members,
-        similarity: Math.round(maxSim * 1000) / 1000,
-        method: 'embedding',
-        tokens: tok,
-      })
-      for (const idx of group) used.add(idx)
-    }
-  }
-
-  return clusters
+  return greedyCluster(
+    siblings,
+    snippets,
+    (i, j) => cosineSimilarity(vecs[i]!, vecs[j]!) >= threshold,
+    (a, b) => cosineSimilarity(vecs[a]!, vecs[b]!),
+    'embedding',
+  )
 }
 
 /**
@@ -366,54 +389,14 @@ export async function findContentDuplicates(
 
   // Jaccard fallback (embeddings disabled/unavailable, or the embedding path errored).
   const JACCARD_THRESHOLD = 0.60
-  const clusters: DupCluster[] = []
-  const used = new Set<number>()
 
-  for (let i = 0; i < siblings.length; i++) {
-    if (used.has(i)) continue
-
-    const group: number[] = [i]
-    for (let j = i + 1; j < siblings.length; j++) {
-      if (used.has(j)) continue
-
-      let isSimilarToAny = false
-      for (const gi of group) {
-        const sim = jaccard(snippets[gi]!, snippets[j]!)
-        if (sim >= JACCARD_THRESHOLD) {
-          isSimilarToAny = true
-          break
-        }
-      }
-      if (isSimilarToAny) {
-        group.push(j)
-      }
-    }
-
-    if (group.length > 1) {
-      const members = group.map((k) => siblings[k]!)
-      const tok = group.reduce((sum, k) => sum + estimateTokens(snippets[k]!), 0)
-
-      let maxSim = 0
-      for (let a = 0; a < group.length; a++) {
-        for (let b = a + 1; b < group.length; b++) {
-          const sim = jaccard(snippets[group[a]!]!, snippets[group[b]!]!)
-          maxSim = Math.max(maxSim, sim)
-        }
-      }
-
-      clusters.push({
-        members,
-        similarity: Math.round(maxSim * 1000) / 1000,
-        method: 'jaccard',
-        tokens: tok,
-      })
-      for (const idx of group) {
-        used.add(idx)
-      }
-    }
-  }
-
-  return clusters
+  return greedyCluster(
+    siblings,
+    snippets,
+    (_seed, j, group) => group.some((gi) => jaccard(snippets[gi]!, snippets[j]!) >= JACCARD_THRESHOLD),
+    (a, b) => jaccard(snippets[a]!, snippets[b]!),
+    'jaccard',
+  )
 }
 
 /**
