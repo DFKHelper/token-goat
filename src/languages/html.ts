@@ -32,12 +32,16 @@ export interface HtmlSection {
 // characters unconditionally regardless of which one is actually delimiting this value. A
 // per-character negative lookahead against the captured opener (rather than a static
 // exclusion charclass) is required so the body can legally contain the non-delimiting quote.
-const ID_RE = /(?<![\w-])id=(["'])((?:(?!\1).)+)\1/gi
-const CLASS_RE = /(?<![\w-])class=(["'])((?:(?!\1).)+)\1/gi
+// [\s\S] (not a bare `.`) so an attribute value spanning a literal newline -- valid HTML,
+// produced by some auto-formatters wrapping long id/class/href/src lists -- still matches
+// instead of silently dropping the symbol/ref. Mirrors liquid.ts's INCLUDE_RE/SECTION_RE/
+// RENDER_RE, which already use this idiom for the same quoted-value-capture shape.
+const ID_RE = /(?<![\w-])id=(["'])((?:(?!\1)[\s\S])+)\1/gi
+const CLASS_RE = /(?<![\w-])class=(["'])((?:(?!\1)[\s\S])+)\1/gi
 
 // Link and script imports
-const LINK_RE = /<link[^>]*href=(["'])((?:(?!\1).)+)\1/gi
-const SCRIPT_RE = /<script[^>]*src=(["'])((?:(?!\1).)+)\1/gi
+const LINK_RE = /<link[^>]*href=(["'])((?:(?!\1)[\s\S])+)\1/gi
+const SCRIPT_RE = /<script[^>]*src=(["'])((?:(?!\1)[\s\S])+)\1/gi
 
 // Common/noisy ids and classes to suppress
 const NOISE_IDS_CLASSES = new Set([
