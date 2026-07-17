@@ -7,8 +7,9 @@ import * as path from 'path'
 import { runGit } from './util.js'
 
 /**
- * Get all tracked files from git, filtered to source files only.
- * Returns `path.join(cwd, rel)` for each tracked file -- absolute or
+ * Get all git-tracked files under cwd, unfiltered -- callers apply their own
+ * source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s
+ * `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or
  * relative depending on whether `cwd` itself is absolute, not on platform.
  */
 export function getTrackedFiles(cwd: string = process.cwd()): string[] {
