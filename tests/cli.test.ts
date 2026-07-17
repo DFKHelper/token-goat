@@ -455,6 +455,38 @@ describe('token-goat CLI', () => {
       }
     })
 
+    it('replace --old-from with a missing source file names the failing flag, not a bare "source"', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-missing-old-${Date.now()}.txt`)
+      const missingOld = path.join(os.tmpdir(), `tg-rpl-missing-old-src-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-missing-old-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
+      fs.writeFileSync(newFile, 'delta', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', missingOld, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('--old-from file not found')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace --new-from with a missing source file names the failing flag, not a bare "source"', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-missing-new-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-missing-new-src-${Date.now()}.txt`)
+      const missingNew = path.join(os.tmpdir(), `tg-rpl-missing-new-dest-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
+      fs.writeFileSync(oldFile, 'beta', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', missingNew])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('--new-from file not found')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+      }
+    })
+
     it('replace --old-b64/--new-b64 replaces a unique match', () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-b64-${Date.now()}.txt`)
       const oldText = 'needle'
