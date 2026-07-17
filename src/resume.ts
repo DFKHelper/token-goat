@@ -46,7 +46,11 @@ export function buildResumePacket(sessionId: string): string | null {
     for (const entry of recentBash) {
       if (Array.isArray(entry) && typeof entry[1] === 'string') {
         const bashEntry = getBashOutput(entry[1])
-        if (bashEntry !== null) lines.push(`- ${bashEntry.command}`)
+        // A multi-line command (heredoc, multi-line script) embeds literal newlines into
+        // bashEntry.command; pushed raw, each line becomes its own top-level markdown line
+        // with only the first prefixed `- `, breaking this list's structure for the model
+        // reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText.
+        if (bashEntry !== null) lines.push(`- ${bashEntry.command.replace(/[\t\r\n]+/g, ' ')}`)
       }
     }
     lines.push('')
