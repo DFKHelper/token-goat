@@ -8,8 +8,8 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-// Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully.
-const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
+// Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully. Exported so project.ts's cross-shell canonicalization reuses this exact pattern instead of maintaining a second, flag-divergent copy.
+export const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 
 // Matches a UNC path's host+share segment once backslashes have already been converted to
 // forward slashes (e.g. `\\FileServer\Dev\...` -> `//FileServer/Dev/...`). Host and share names
