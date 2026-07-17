@@ -436,6 +436,18 @@ function validatedIntList(raw: unknown, def: number[]): number[] {
   return raw.filter((x): x is number => typeof x === 'number' && Number.isFinite(x)).map(Math.trunc)
 }
 
+/**
+ * Like {@link validatedInt}, but a persisted value exactly equal to `sentinel` is treated as
+ * the stale pre-rewire default (see the three "Legacy-sentinel guard" call sites below) and
+ * falls through to `def` instead of being trusted, since a `config set` on any unrelated key
+ * used to resave every field including then-inert defaults that a later change wired up as a
+ * real gate. Any other persisted value, including one that happens to equal a *current*
+ * default, is validated and respected as-is.
+ */
+function validatedIntWithLegacySentinel(raw: unknown, def: number, sentinel: number, min: number, max: number): number {
+  return raw === sentinel ? def : validatedInt(raw, def, min, max)
+}
+
 function section(raw: Record<string, unknown>, key: string): Record<string, unknown> {
   const val = raw[key]
   return val !== null && typeof val === 'object' && !Array.isArray(val)
@@ -809,9 +821,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // upgrading) is respected as-is. Note: 0 is a more plausible value someone might
   // deliberately choose post-upgrade (cache everything with no minimum size) than the other
   // sentinel values were, so callers who really want 0 can work around this by setting 1 instead.
-  bc.cache_min_bytes = bc_raw['cache_min_bytes'] === 0
-    ? bc.cache_min_bytes
-    : validatedInt(bc_raw['cache_min_bytes'], bc.cache_min_bytes, ...boundsOf('bash_compress.cache_min_bytes'))
+  bc.cache_min_bytes = validatedIntWithLegacySentinel(bc_raw['cache_min_bytes'], bc.cache_min_bytes, 0, ...boundsOf('bash_compress.cache_min_bytes'))
   bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
   bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
@@ -921,9 +931,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale
   // default and fall through to the current default instead of trusting it; any other persisted
   // value (including a deliberate 45_000 set after upgrading) is respected as-is.
-  hi.large_read_redirect_bytes = hi_raw['large_read_redirect_bytes'] === 45_000
-    ? hi.large_read_redirect_bytes
-    : validatedInt(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, ...boundsOf('hints.large_read_redirect_bytes'))
+  hi.large_read_redirect_bytes = validatedIntWithLegacySentinel(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 45_000, ...boundsOf('hints.large_read_redirect_bytes'))
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all
   // round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated
@@ -934,9 +942,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   // aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall
   // through to the current default instead of trusting it; any other persisted value (including a
   // deliberate 2048 set after upgrading) is respected as-is.
-  hi.reread_deny_min_bytes = hi_raw['reread_deny_min_bytes'] === 2048
-    ? hi.reread_deny_min_bytes
-    : validatedInt(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, ...boundsOf('hints.reread_deny_min_bytes'))
+  hi.reread_deny_min_bytes = validatedIntWithLegacySentinel(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 2048, ...boundsOf('hints.reread_deny_min_bytes'))
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
