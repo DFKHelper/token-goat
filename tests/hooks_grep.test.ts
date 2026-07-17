@@ -133,6 +133,57 @@ describe('preGrepDedupHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('does not fire for the same pattern+path+output_mode+glob under a different -i case-sensitivity (distinct signature)', () => {
+    const insensitive = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Grep',
+      toolInput: { pattern: 'TODO', path: '/project/src', output_mode: 'files_with_matches', '-i': true },
+      raw: { tool_response: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n' },
+    })
+    postGrepHandler(insensitive)
+
+    const sensitive = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { pattern: 'TODO', path: '/project/src', output_mode: 'files_with_matches' },
+    })
+    const result = preGrepDedupHandler(sensitive)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire for the same pattern+path+output_mode+glob under a different -A context (distinct signature)', () => {
+    const withContext = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Grep',
+      toolInput: { pattern: 'useEffect', path: '/project/src', output_mode: 'content', '-A': 3 },
+      raw: { tool_response: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n' },
+    })
+    postGrepHandler(withContext)
+
+    const withoutContext = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { pattern: 'useEffect', path: '/project/src', output_mode: 'content' },
+    })
+    const result = preGrepDedupHandler(withoutContext)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire for the same pattern+path+output_mode+glob under a different head_limit (distinct signature)', () => {
+    const limited = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Grep',
+      toolInput: { pattern: 'useState', path: '/project/src', output_mode: 'content', head_limit: 10 },
+      raw: { tool_response: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n' },
+    })
+    postGrepHandler(limited)
+
+    const unlimited = makeHookEvent({
+      toolName: 'Grep',
+      toolInput: { pattern: 'useState', path: '/project/src', output_mode: 'content' },
+    })
+    const result = preGrepDedupHandler(unlimited)
+    expect(result.hookType).toBe('pass')
+  })
+
   // Mutation guard: a lowered grep_dedup_min_matches must actually change behavior, proving
   // the field drives this gate rather than a hardcoded literal happening to match the default.
   it('grep_dedup_min_matches wiring: a lowered threshold surfaces a hint 2 identical Greps would not otherwise clear', () => {

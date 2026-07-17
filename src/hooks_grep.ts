@@ -26,15 +26,42 @@ function countNonEmptyLines(text: string): number {
   return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length
 }
 
+/** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
+ *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
+function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
+  const value = toolInput[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return undefined
+}
+
 /** Session-scoped identity for a Grep call: two calls with the same signature searched the
- *  same thing the same way. Returns null when there is no pattern to key on. */
+ *  same thing the same way. Returns null when there is no pattern to key on. Keys on every
+ *  param that can change the output: two Greps with the same pattern/path/output_mode/glob but
+ *  different case-sensitivity, context lines, or head_limit are NOT the same call. */
 function grepSignature(toolInput: Record<string, unknown>): string | null {
   const pattern = toolInput['pattern']
   if (typeof pattern !== 'string' || pattern === '') return null
   const path = typeof toolInput['path'] === 'string' ? toolInput['path'] : ''
   const outputMode = typeof toolInput['output_mode'] === 'string' ? toolInput['output_mode'] : 'files_with_matches'
   const glob = typeof toolInput['glob'] === 'string' ? toolInput['glob'] : ''
-  return JSON.stringify([pattern, path, outputMode, glob])
+  const type = typeof toolInput['type'] === 'string' ? toolInput['type'] : ''
+  const caseInsensitive = toolInput['-i'] === true
+  const onlyMatching = toolInput['-o'] === true
+  const multiline = toolInput['multiline'] === true
+  const lineNumbers = toolInput['-n'] !== false
+  const contextA = grepIntInput(toolInput, '-A')
+  const contextB = grepIntInput(toolInput, '-B')
+  const contextC = grepIntInput(toolInput, '-C') ?? grepIntInput(toolInput, 'context')
+  const headLimit = grepIntInput(toolInput, 'head_limit')
+  const offset = grepIntInput(toolInput, 'offset')
+  return JSON.stringify([
+    pattern, path, outputMode, glob, type, caseInsensitive, onlyMatching, multiline,
+    lineNumbers, contextA, contextB, contextC, headLimit, offset,
+  ])
 }
 
 export function postGrepHandler(event: HookEvent): HookOutput {
