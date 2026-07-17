@@ -615,13 +615,3 @@ export function listSections(filePath: string): string[] {
   const { headers } = findHeaders(text, language)
   return headers.map((h) => h.heading)
 }
-
-/**
- * List every section heading in a file at all nesting levels, in document order.
- *
- * Returns an empty array when the file cannot be read or has no recognisable
- * sections. Alias for `listSections` — both return all heading levels.
- */
-export function listAllSections(filePath: string): string[] {
-  return listSections(filePath)
-}

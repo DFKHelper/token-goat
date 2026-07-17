@@ -7,7 +7,7 @@
 // machine-wide index.
 //
 // This mocks `../src/index_reader.js`'s `querySymbols` (and `../src/section_reader.js`'s
-// `readSection`/`listAllSections`) and drives each tool call through the REAL MCP protocol
+// `readSection`/`listSections`) and drives each tool call through the REAL MCP protocol
 // layer (Client <-> McpServer over InMemoryTransport, same pattern as mcp_server.test.ts and
 // mcp_server_semantic_scope.test.ts) to assert the `projectRoot` argument actually reaches the
 // underlying resolution, instead of being silently dropped.
@@ -26,7 +26,7 @@ import type * as SectionReaderModule from '../src/section_reader.js'
 
 const querySymbolsMock = vi.fn()
 const readSectionMock = vi.fn()
-const listAllSectionsMock = vi.fn()
+const listSectionsMock = vi.fn()
 
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
@@ -41,7 +41,7 @@ vi.mock('../src/section_reader.js', async (importOriginal) => {
   return {
     ...actual,
     readSection: (...args: Parameters<typeof actual.readSection>) => readSectionMock(...args) as ReturnType<typeof actual.readSection>,
-    listAllSections: (...args: Parameters<typeof actual.listAllSections>) => listAllSectionsMock(...args) as string[],
+    listSections: (...args: Parameters<typeof actual.listSections>) => listSectionsMock(...args) as string[],
   }
 })
 
@@ -73,7 +73,7 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
     scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-scope-'))
     querySymbolsMock.mockReturnValue([])
     readSectionMock.mockReturnValue(null)
-    listAllSectionsMock.mockReturnValue([])
+    listSectionsMock.mockReturnValue([])
   })
 
   it('symbol tool: scopes a bare name search to projectRoot via rootDir, not process.cwd()', async () => {

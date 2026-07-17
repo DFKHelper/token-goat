@@ -18,7 +18,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
-import { readSection, listSections, extractSection, listAllSections, findContainingSection } from './section_reader.js'
+import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
@@ -644,7 +644,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const specFilePath = opts.spec.slice(0, colonIdx)
   // Only resolve against projectRoot when explicitly given and the spec's file part is
   // relative -- an absolute path, or the no-projectRoot default, stays byte-identical to the
-  // pre-existing behavior (readSection/listAllSections resolve a relative path against
+  // pre-existing behavior (readSection/listSections resolve a relative path against
   // process.cwd() themselves, same as the CLI always has).
   const filePath =
     opts.projectRoot !== undefined && !path.isAbsolute(specFilePath)
@@ -655,7 +655,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const result = readSection(filePath, heading)
   if (result === null) {
     const messages = [`Section '${heading}' not found in '${filePath}'`]
-    const available = listAllSections(filePath)
+    const available = listSections(filePath)
     if (available.length > 0) messages.push(didYouMean(available))
     return { text: messages.join('\n'), code: 1 }
   }
@@ -2117,4 +2117,4 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   return { text, code: 0 }
 }
 
-export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections, runSemantic }
+export { querySymbols, queryRefs, readSection, listSections, extractSection, runSemantic }
