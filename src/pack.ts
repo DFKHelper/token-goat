@@ -521,6 +521,10 @@ export function formatMarkdown(
   return parts.join('\n')
 }
 
+function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 export function formatXml(result: PackResult, opts: { line_numbers?: boolean; instruction?: string } = {}): string {
   const parts: string[] = ['<documents>']
 
@@ -529,9 +533,9 @@ export function formatXml(result: PackResult, opts: { line_numbers?: boolean; in
     const pf = result.files[i]
     if (!pf) continue
     const body = opts.line_numbers ? addLineNumbers(pf.content) : pf.content
-    const escaped = body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const escaped = escapeXml(body)
     parts.push(`<document index="${docNum}">`)
-    const escSrc = pf.rel_path.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const escSrc = escapeXml(pf.rel_path)
     parts.push(`<source>${escSrc}</source>`)
     parts.push(`<document_content>\n${escaped}\n</document_content>`)
     parts.push('</document>')
@@ -541,7 +545,7 @@ export function formatXml(result: PackResult, opts: { line_numbers?: boolean; in
   if (opts.instruction) {
     parts.push(`<document index="${docNum}">`)
     parts.push('<source>instructions</source>')
-    const escInst = opts.instruction.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const escInst = escapeXml(opts.instruction)
     parts.push(`<document_content>\n${escInst}\n</document_content>`)
     parts.push('</document>')
   }
