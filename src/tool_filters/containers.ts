@@ -433,9 +433,6 @@ export class KubectlFilter extends ToolFilter {
 // KubectlLogsFilter helpers
 // ---------------------------------------------------------------------------
 
-// Timestamp prefix common in structured/k8s log lines
-const _KUBE_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/
-
 // HTTP access-log pattern: IP + HTTP method/path/status
 const _KUBE_ACCESS_LOG_RE =
   /(?:\d{1,3}\.){3}\d{1,3}.*?"(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s[^"]*"\s+(\d{3})\b/
@@ -634,9 +631,6 @@ const _HELM_RELEASE_DESC_RE =
   /^(NAME|LAST DEPLOYED|NAMESPACE|CHART|APP VERSION|REVISION|TEST SUITE|NOTES\.|RESOURCES:|==>|USER-SUPPLIED VALUES:|COMPUTED VALUES:|HOOKS:|MANIFEST:)\b/
 
 const _HELM_STATUS_RE = /^STATUS:\s*\S+/
-
-// Helm template section headers
-const _HELM_TEMPLATE_SECTION_RE = /^---\s*(?:#.*)?$/
 
 function _compressHelmInstall(text: string): string {
   const lines = text.split('\n')
