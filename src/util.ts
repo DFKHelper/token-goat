@@ -587,3 +587,19 @@ export function isWithinQuietHours(spec: string, now: Date = new Date()): boolea
   if (startMin < endMin) return nowMin >= startMin && nowMin < endMin
   return nowMin >= startMin || nowMin < endMin
 }
+
+/**
+ * Build a hook command line that invokes the shim via `process.execPath` directly rather
+ * than relying on PATH/cmd.exe resolution (root cause of a real fail-closed deny-all class
+ * of bugs on both Codex and Copilot CLI when `node` wasn't on the spawned hook's PATH).
+ * `entryPath` (process.argv[1], the token-goat entry point that ran this install) is baked
+ * in as a trailing arg so the shim's own inner `token-goat hook <event>` call can invoke it
+ * directly too, instead of depending on PATH for that inner call as well. Omitted when
+ * unavailable (should never happen under a real `node <script>` invocation) rather than
+ * baking in something wrong; the shim's inner call falls back to its old PATH-based lookup.
+ */
+export function hookCommandFor(scriptPath: string, event: string): string {
+  const entryPath = process.argv[1]
+  const entryArg = entryPath ? ` "${entryPath}"` : ''
+  return `"${process.execPath}" "${scriptPath}" ${event}${entryArg}`
+}
