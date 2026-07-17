@@ -640,9 +640,9 @@ async function acquireSkillHitLock(lockPath: string): Promise<boolean> {
 }
 
 // Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits. The
-// read-modify-write is guarded by acquireSkillHitLock; if the lock can't be acquired the
-// increment still happens unlocked rather than being skipped, matching this function's existing
-// fail-soft philosophy (the whole body is already wrapped in a swallowing catch below).
+// read-modify-write is guarded by acquireSkillHitLock; if the lock can't be acquired, the
+// increment is skipped rather than falling back to an unprotected read-modify-write -- see
+// acquireSkillHitLock's TOCTOU rationale below.
 export async function incrementSkillHit(skillName: string): Promise<void> {
   try {
     const name = safeSkillName(skillName)
