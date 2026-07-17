@@ -11,7 +11,7 @@ import { detectHarness } from './bridges/index.js'
 import { loadConfig } from './config.js'
 import { configPath, dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
+import { atomicWriteText, normalizePathForwardSlash } from './util.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
 
@@ -543,59 +543,6 @@ export function readAllSessionManifests(
   }
 
   return results
-}
-
-/**
- * Merge file entries from multiple sessions, deduplicating by rel_path.
- */
-export function mergeSessionManifests(
-  manifests: Record<string, unknown>[],
-  budgetTokens: number
-): Record<string, unknown>[] {
-  const merged = new Map<string, Record<string, unknown>>()
-
-  for (const manifest of manifests) {
-    const files = (manifest['files'] as Record<string, unknown>[]) ?? []
-    for (const entry of files) {
-      const rel = (entry['rel_path'] as string) ?? ''
-      if (!rel) continue
-
-      // rel_path is computed per-session from FileEntry.path (see hooks_read.ts::postReadHandler),
-      // which is case-preserved, not case-folded -- two sessions can read the same physical file
-      // via different literal casing (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive
-      // filesystem (Windows/macOS). Fold the merge key the same way session.ts folds its own
-      // read-dedup map key, or the two entries never merge and the manifest double-lists one file.
-      const dedupeKey = foldPath(rel)
-      const existing = merged.get(dedupeKey)
-      const entryHitCount = (entry['hit_count'] as number) ?? 0
-      const existingHitCount = (existing?.['hit_count'] as number) ?? 0
-
-      if (!existing || entryHitCount > existingHitCount) {
-        merged.set(dedupeKey, entry)
-      }
-    }
-  }
-
-  const sorted = Array.from(merged.values()).sort(
-    (a, b) => ((b['hit_count'] as number) ?? 0) - ((a['hit_count'] as number) ?? 0)
-  )
-
-  const result: Record<string, unknown>[] = []
-  let totalTokens = 0
-
-  for (const entry of sorted) {
-    const relPath = (entry['rel_path'] as string) ?? ''
-    const entryTokens = estimateTokens(relPath)
-
-    if (totalTokens + entryTokens > budgetTokens) {
-      break
-    }
-
-    result.push(entry)
-    totalTokens += entryTokens
-  }
-
-  return result
 }
 
 // ---------------------------------------------------------------------------
