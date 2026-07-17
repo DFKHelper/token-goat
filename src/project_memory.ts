@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
-import { atomicWriteText, ensureDirSync } from './util.js';
+import { atomicWriteText, ensureDirSync, withFileLock } from './util.js';
 
 const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -121,22 +121,36 @@ export function setEntry(projectHash: string, key: string, value: string): void 
   const p = memoryPath(projectHash);
   const dir = path.dirname(p);
   ensureDirSync(dir);
-  const entries = loadRaw(p);
 
-  // If this is a new key and we're at capacity, evict alphabetically-last entries to make room.
-  // This ensures that newly-added entries are never silently dropped by buildInjection's
-  // alphabetical truncation.
-  const isNewKey = !(key in entries);
-  if (isNewKey && Object.keys(entries).length >= MAX_ENTRIES) {
-    const keysToKeep = MAX_ENTRIES - 1;
-    const allKeys = Object.keys(entries).sort((a, b) => a.localeCompare(b));
-    for (const k of allKeys.slice(keysToKeep)) {
-      delete entries[k];
+  // load-modify-save is a read-modify-write race: two concurrent `token-goat note` calls for
+  // the same project could each read the same pre-write state and the second save() would
+  // silently clobber the first's entry. Lock the critical section, same as session_store.ts's
+  // saveSessionState and config_commands.ts's `config set`; fall back to unprotected on a
+  // failed acquire (e.g. missing dir) rather than blocking this low-frequency CLI path forever.
+  // withFileLock returns `undefined` both when fn() could not be run (lock unobtainable) and,
+  // indistinguishably, when fn() itself legitimately returns undefined -- so fn must return a
+  // non-undefined sentinel or a successful run is misread as a failed acquire and re-run a
+  // second time (doubling every write). Mirrors session_store.ts's writeMerged: (): true.
+  const doSet = (): true => {
+    const entries = loadRaw(p);
+
+    // If this is a new key and we're at capacity, evict alphabetically-last entries to make room.
+    // This ensures that newly-added entries are never silently dropped by buildInjection's
+    // alphabetical truncation.
+    const isNewKey = !(key in entries);
+    if (isNewKey && Object.keys(entries).length >= MAX_ENTRIES) {
+      const keysToKeep = MAX_ENTRIES - 1;
+      const allKeys = Object.keys(entries).sort((a, b) => a.localeCompare(b));
+      for (const k of allKeys.slice(keysToKeep)) {
+        delete entries[k];
+      }
     }
-  }
 
-  entries[key] = value;
-  save(p, entries);
+    entries[key] = value;
+    save(p, entries);
+    return true;
+  };
+  if (withFileLock(`${p}.lock`, doSet) === undefined) doSet();
 }
 
 /**
@@ -145,12 +159,15 @@ export function setEntry(projectHash: string, key: string, value: string): void 
 export function unsetEntry(projectHash: string, key: string): void {
   validateKey(key);
   const p = memoryPath(projectHash);
-  const entries = loadRaw(p);
-  if (!(key in entries)) {
-    return;
-  }
-  delete entries[key];
-  save(p, entries);
+  const doUnset = (): true => {
+    const entries = loadRaw(p);
+    if (key in entries) {
+      delete entries[key];
+      save(p, entries);
+    }
+    return true;
+  };
+  if (withFileLock(`${p}.lock`, doUnset) === undefined) doUnset();
 }
 
 /**
@@ -158,9 +175,13 @@ export function unsetEntry(projectHash: string, key: string): void {
  */
 export function clearAll(projectHash: string): void {
   const p = memoryPath(projectHash);
-  if (fs.existsSync(p)) {
-    save(p, {});
-  }
+  const doClear = (): true => {
+    if (fs.existsSync(p)) {
+      save(p, {});
+    }
+    return true;
+  };
+  if (withFileLock(`${p}.lock`, doClear) === undefined) doClear();
 }
 
 /**
