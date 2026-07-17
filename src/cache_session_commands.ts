@@ -21,6 +21,18 @@ function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
+/** Parses a `--limit` option to a non-negative int, defaulting to `dflt` when unset. Shared by
+ * cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way. */
+function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30): number {
+  if (limitStr === undefined) return dflt
+  try {
+    return requireNonNegativeStrictInt('--limit', limitStr)
+  } catch (e) {
+    emitErr(`${cmdName}: --limit must be a non-negative number, got: "${limitStr}"`)
+    throw new Error(`invalid --limit: ${limitStr}`, { cause: e })
+  }
+}
+
 // Confirmed storage subdirs operated on by clean-cache and prune-cache.
 const CACHE_SUBDIRS = [BASH_OUTPUT_SUBDIR, WEB_OUTPUT_SUBDIR, SESSIONS_SUBDIR, SKILLS_OUTPUT_SUBDIR] as const
 
@@ -71,15 +83,7 @@ function getNewestSessionFiles(): { id: string; sessionCount: number; filesArr: 
 // ── bash-history ─────────────────────────────────────────────────────────────
 
 export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
-  let limit = 30
-  if (opts.limit !== undefined) {
-    try {
-      limit = requireNonNegativeStrictInt('--limit', opts.limit)
-    } catch (e) {
-      emitErr(`bash-history: --limit must be a non-negative number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
-    }
-  }
+  const limit = parseLimitOpt('bash-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
   const items = blobs
     .map(({ id, mtime, value }) => {
@@ -115,15 +119,7 @@ export function cmdBashHistory(opts: { limit?: string; json?: boolean }): void {
 
 // Web blobs are stored as { url, content } — no status or storedAt field; mtime used for ordering.
 export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
-  let limit = 30
-  if (opts.limit !== undefined) {
-    try {
-      limit = requireNonNegativeStrictInt('--limit', opts.limit)
-    } catch (e) {
-      emitErr(`web-history: --limit must be a non-negative number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
-    }
-  }
+  const limit = parseLimitOpt('web-history', opts.limit)
   const blobs = listBlobs(WEB_OUTPUT_SUBDIR)
   const items = blobs
     .map(({ id, mtime, value }) => {
@@ -162,15 +158,7 @@ export function cmdWebHistory(opts: { limit?: string; json?: boolean }): void {
 // mcp_cache.ts's mcpInputPreview) — split off the `mcp:` marker and first space
 // to recover the tool name for its own column instead of the raw label.
 export function cmdMcpHistory(opts: { limit?: string; json?: boolean }): void {
-  let limit = 30
-  if (opts.limit !== undefined) {
-    try {
-      limit = requireNonNegativeStrictInt('--limit', opts.limit)
-    } catch (e) {
-      emitErr(`mcp-history: --limit must be a non-negative number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
-    }
-  }
+  const limit = parseLimitOpt('mcp-history', opts.limit)
   const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
   const items = blobs
     .map(({ id, mtime, value }) => {
