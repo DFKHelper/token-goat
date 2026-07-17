@@ -20,26 +20,11 @@ import { indexRecallEntry } from './recall_index.js'
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
 
-// Allowlist, not a blocklist: any method that doesn't match a known-safe read
-// verb defaults to NOT read-only. A blocklist of mutating verbs can never be
-// exhaustive (e.g. `finalize_plan`, `approve`, `cancel`, `deploy`, `toggle`,
-// `pin`, `grant`, `sync`, `commit`, `apply`, `trigger` are all state-changing
-// but contain none of the old blocklist's verbs), so an unclassified/unknown
-// method must fail safe as mutating rather than silently being cached/deduped.
+// Allowlist, not a blocklist: any method that doesn't match a known-safe read verb defaults to NOT read-only, since a blocklist of mutating verbs (e.g. `finalize_plan`, `approve`, `cancel`, `deploy`, `toggle`, `pin`, `grant`, `sync`, `commit`, `apply`, `trigger`) can never be exhaustive, so an unclassified/unknown method must fail safe as mutating rather than silently being cached/deduped.
 const READ_VERBS_RE =
   /(?:^|_)(?:get|list|search|read|view|fetch|describe|export|download|find|show|query|resolve|context)(?=_|$)/i
 
-// Second guard layer, not a return to blocklist-only: a compound method name can carry a
-// read-verb token (matching READ_VERBS_RE above) alongside a mutating-verb token, e.g.
-// `get_or_create`, `search_and_update`, `view_and_delete` -- READ_VERBS_RE alone only checks
-// that ONE token is a read verb, not that every token is read-safe, so those three would
-// otherwise be misclassified as read-only. A method is only read-only when it matches the
-// read-verb allowlist AND contains none of these mutating-verb tokens.
-// `request` is anchored to the START of the method only (not any underscore token), same as
-// the old blocklist: a leading `request_*` (e.g. `request_copilot_review`) is a mutating verb,
-// but `request` also shows up as a trailing noun in genuinely read-only names like
-// `get_network_request` / `get_console_message`'s siblings -- matching it as a normal token
-// would misclassify those as mutating.
+// Second guard layer, not a return to blocklist-only: a compound method name can carry a read-verb token (matching READ_VERBS_RE above) alongside a mutating-verb token, e.g. `get_or_create`, `search_and_update`, `view_and_delete` -- READ_VERBS_RE alone only checks that ONE token is a read verb, not that every token is read-safe, so those three would otherwise be misclassified as read-only. A method is only read-only when it matches the read-verb allowlist AND contains none of these mutating-verb tokens. `request` is anchored to the START of the method only (not any underscore token), same as the old blocklist: a leading `request_*` (e.g. `request_copilot_review`) is a mutating verb, but `request` also shows up as a trailing noun in genuinely read-only names like `get_network_request` / `get_console_message`'s siblings -- matching it as a normal token would misclassify those as mutating.
 const MUTATING_VERBS_RE =
   /^request(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit|apply|commit|grant|deploy|toggle|pin|trigger|finalize|approve|cancel|sync)(?=_|$)/i
 
@@ -68,8 +53,7 @@ export function isMcpReadOnly(toolName: string, toolInput: Record<string, unknow
     return false
   }
   const method = toolName.split('__').pop() || ''
-  // Screenshots are not idempotent: page content can change between calls,
-  // so they must never be cached/dedup'd.
+  // Screenshots are not idempotent: page content can change between calls, so they must never be cached/dedup'd.
   if (/screenshot/i.test(method)) return false
   if (READ_VERBS_RE.test(method) && !MUTATING_VERBS_RE.test(method)) {
     return !STATE_CHANGING_INPUT_KEYS.some((key) => toolInput[key])
