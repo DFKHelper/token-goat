@@ -96,9 +96,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     maxBuffer: 200 * 1024 * 1024, // 200 MB - allow large git outputs (ls-files, log, diff on large repos)
   })
 
-  // A timed-out spawnSync sets result.error (ETIMEDOUT) with a null status -- already handled
-  // by the existing error branch below, so a caller that opted into timeoutMs just sees a
-  // non-zero exitCode and fails soft, exactly like any other git failure.
+  // A timed-out spawnSync sets result.error (ETIMEDOUT) with a null status -- already handled by the existing error branch below, so a caller that opted into timeoutMs just sees a non-zero exitCode and fails soft, exactly like any other git failure.
   if (result.error) {
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1 }
   }
@@ -191,13 +189,7 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
-  // dest's parent directory is normally created as a side effect of an earlier operation
-  // (getDb() mkdir's DATA_DIR before opening global.db), but a genuinely first write into a
-  // fresh data dir -- a brand-new machine's very first `token-goat config set`, or a freshly
-  // isolated test DATA_DIR with no prior DB/session activity -- has no such earlier creator and
-  // openSync below throws ENOENT. ensureDirSync is the existing race-safe mkdir helper used
-  // elsewhere in this file; ENOENT here was reproduced for real via saveConfig() as the first
-  // write into a fresh isolated test data dir.
+  // dest's parent directory is normally created as a side effect of an earlier operation (getDb() mkdir's DATA_DIR before opening global.db), but a genuinely first write into a fresh data dir -- a brand-new machine's very first `token-goat config set`, or a freshly isolated test DATA_DIR with no prior DB/session activity -- has no such earlier creator and openSync below throws ENOENT. ensureDirSync is the existing race-safe mkdir helper used elsewhere in this file; ENOENT here was reproduced for real via saveConfig() as the first write into a fresh isolated test data dir.
   ensureDirSync(path.dirname(dest))
 
   try {
@@ -214,11 +206,7 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
       closeSync(fd)
     }
 
-    // Preserve the destination's existing file mode (e.g. the exec bit on a committed
-    // script) across the rewrite. On POSIX, renaming the 0o600 temp file over dest would
-    // otherwise silently drop dest's permissions -- git then reports a 100755->100644 mode
-    // change and the file stops being executable. A brand-new dest has no mode to inherit,
-    // so it keeps the 0o600 default. No-op on Windows (chmodSync has no effect there).
+    // Preserve the destination's existing file mode (e.g. the exec bit on a committed script) across the rewrite. On POSIX, renaming the 0o600 temp file over dest would otherwise silently drop dest's permissions -- git then reports a 100755->100644 mode change and the file stops being executable. A brand-new dest has no mode to inherit, so it keeps the 0o600 default. No-op on Windows (chmodSync has no effect there).
     try {
       const destMode = statSync(dest).mode
       chmodSync(tmp, destMode)
@@ -228,10 +216,7 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
 
     withRetryOnLock(() => renameSync(tmp, dest))
   } catch (err) {
-    // Clean up the orphaned temp file on ANY failure past this point, not just a failed
-    // rename: the temp file is created by openSync before the write attempt, so it exists
-    // (and leaks) whether the write or the rename is what failed. Best-effort: a failed
-    // cleanup-unlink must never mask the original error.
+    // Clean up the orphaned temp file on ANY failure past this point, not just a failed rename: the temp file is created by openSync before the write attempt, so it exists (and leaks) whether the write or the rename is what failed. Best-effort: a failed cleanup-unlink must never mask the original error.
     try {
       unlinkSync(tmp)
     } catch {
@@ -268,10 +253,7 @@ export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array)
  * overwrite, so a bad merge or corrupt rewrite has a recovery copy. No-op if `p`
  * doesn't exist yet (nothing to back up).
  */
-// Caps how many timestamped backups pile up per file. backupFile runs on every install/
-// uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts,
-// gemini_install.ts, openclaw_install.ts), so a config directory a user re-installs into
-// repeatedly would otherwise accumulate one .bak.<timestamp> file forever.
+// Caps how many timestamped backups pile up per file. backupFile runs on every install/ uninstall of a harness's hook config (install.ts, codex_install.ts, copilot_cli_install.ts, gemini_install.ts, openclaw_install.ts), so a config directory a user re-installs into repeatedly would otherwise accumulate one .bak.<timestamp> file forever.
 const MAX_BACKUPS_PER_FILE = 5
 
 export function backupFile(p: string): void {
@@ -302,33 +284,14 @@ function pruneOldBackups(p: string): void {
   }
 }
 
-// Bounds how long withFileLock waits behind another holder before giving up (never hangs
-// the caller indefinitely), and how old an unreleased lock file must be before a crashed
-// holder's lock is treated as abandoned and stolen.
+// Bounds how long withFileLock waits behind another holder before giving up (never hangs the caller indefinitely), and how old an unreleased lock file must be before a crashed holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
 
-// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's
-// saveSessionState, config_commands.ts's `config set`) where the default LOCK_WAIT_MS can
-// plausibly be missed under real machine load even though no lock holder is actually stuck.
-// Falling back to an unprotected write on that miss reintroduces the exact clobber the lock
-// exists to prevent, precisely when contention (and therefore risk) is highest -- so these
-// call sites wait much longer instead. An actually-wedged holder still gets its lock stolen
-// well before this via withFileLock's own staleMs abandonment check, so this only lengthens
-// the wait for genuine, resolving contention, not a real hang.
+// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's saveSessionState, config_commands.ts's `config set`) where the default LOCK_WAIT_MS can plausibly be missed under real machine load even though no lock holder is actually stuck. Falling back to an unprotected write on that miss reintroduces the exact clobber the lock exists to prevent, precisely when contention (and therefore risk) is highest -- so these call sites wait much longer instead. An actually-wedged holder still gets its lock stolen well before this via withFileLock's own staleMs abandonment check, so this only lengthens the wait for genuine, resolving contention, not a real hang.
 export const LOCK_WAIT_MS_HARDENED = 15_000
 
-// Heartbeat run in a separate OS process while the lock is held. fn() is synchronous and may
-// block the holder's own thread for its entire duration (slow sync disk I/O, a GC pause, a
-// long-running synchronous computation, ...) -- a setInterval/setTimeout in the holder's own
-// process cannot fire while fn() has the thread pinned in a blocking synchronous call, so it
-// can't refresh the lock file's mtime from there (verified empirically: a busy-spin inside the
-// holder starves its own timers completely). A separate process has its own event loop and
-// keeps ticking regardless of what the holder's thread is doing, so staleness detection then
-// reflects genuine liveness instead of a fixed timeout: a live holder's heartbeat keeps the file
-// newer than staleMs indefinitely, while a crashed holder (no clean shutdown, e.g. kill -9)
-// takes the heartbeat down with it, so the file goes quiet and a later caller still reclaims it
-// once staleMs has elapsed since the last tick.
+// Heartbeat run in a separate OS process while the lock is held. fn() is synchronous and may block the holder's own thread for its entire duration (slow sync disk I/O, a GC pause, a long-running synchronous computation, ...) -- a setInterval/setTimeout in the holder's own process cannot fire while fn() has the thread pinned in a blocking synchronous call, so it can't refresh the lock file's mtime from there (verified empirically: a busy-spin inside the holder starves its own timers completely). A separate process has its own event loop and keeps ticking regardless of what the holder's thread is doing, so staleness detection then reflects genuine liveness instead of a fixed timeout: a live holder's heartbeat keeps the file newer than staleMs indefinitely, while a crashed holder (no clean shutdown, e.g. kill -9) takes the heartbeat down with it, so the file goes quiet and a later caller still reclaims it once staleMs has elapsed since the last tick.
 const HEARTBEAT_SCRIPT = `
 const fs = require('fs')
 const [, lockPath, token, ms] = process.argv
@@ -337,18 +300,11 @@ function tick() {
   try {
     process.kill(ppid, 0)
   } catch {
-    // Parent is gone (crashed, killed, ...): stop ticking so a genuinely dead holder's lock
-    // still goes stale and gets reclaimed. Windows ties this child's lifetime to its parent's
-    // Job Object automatically, but POSIX does not -- without this check, a plain spawn()
-    // child outlives a crashed parent as an orphan and would refresh the lock file forever,
-    // permanently wedging it. This is the actual enforcement mechanism on POSIX (this
-    // project's CI runs on ubuntu-latest); on Windows it is a harmless backstop.
+    // Parent is gone (crashed, killed, ...): stop ticking so a genuinely dead holder's lock still goes stale and gets reclaimed. Windows ties this child's lifetime to its parent's Job Object automatically, but POSIX does not -- without this check, a plain spawn() child outlives a crashed parent as an orphan and would refresh the lock file forever, permanently wedging it. This is the actual enforcement mechanism on POSIX (this project's CI runs on ubuntu-latest); on Windows it is a harmless backstop.
     process.exit(0)
   }
   try {
-    // Only ever refresh the token already on disk; never (re)create the file. This preserves
-    // the ownership check in withFileLock's finally block unchanged -- the heartbeat never
-    // changes what makes a lock file "belong" to a holder, only how fresh its mtime looks.
+    // Only ever refresh the token already on disk; never (re)create the file. This preserves the ownership check in withFileLock's finally block unchanged -- the heartbeat never changes what makes a lock file "belong" to a holder, only how fresh its mtime looks.
     if (fs.readFileSync(lockPath, 'utf8') === token) fs.writeFileSync(lockPath, token)
   } catch {}
 }
@@ -394,9 +350,7 @@ export function withFileLock<T>(
 ): T | undefined {
   const waitMs = opts.waitMs ?? LOCK_WAIT_MS
   const staleMs = opts.staleMs ?? LOCK_STALE_MS
-  // Unique per acquisition attempt (not just per process) so release can confirm it still
-  // owns the lock file before deleting it -- the same pid+hrtime idiom atomicWriteCore uses
-  // for its temp-file name.
+  // Unique per acquisition attempt (not just per process) so release can confirm it still owns the lock file before deleting it -- the same pid+hrtime idiom atomicWriteCore uses for its temp-file name.
   const token = `${process.pid}:${process.hrtime.bigint().toString()}`
   const deadline = Date.now() + waitMs
   let attempt = 0
@@ -407,9 +361,7 @@ export function withFileLock<T>(
     } catch (err) {
       if (!isEExist(err)) return undefined // can't lock at all (e.g. missing dir); let the caller fall back
     }
-    // Someone else holds it. A holder that crashed without releasing it would otherwise
-    // wedge every future caller of this critical section forever, so treat a lock file
-    // older than staleMs as abandoned and steal it.
+    // Someone else holds it. A holder that crashed without releasing it would otherwise wedge every future caller of this critical section forever, so treat a lock file older than staleMs as abandoned and steal it.
     let stale: boolean
     try {
       const st = statSync(lockPath)
@@ -439,9 +391,7 @@ export function withFileLock<T>(
     } catch {
       // best-effort: a heartbeat that already exited on its own is not an error
     }
-    // Only remove the lock if it still carries our own token: if a stall let a waiter decide
-    // this lock was abandoned and steal it, that waiter's lock is now the live one and must
-    // not be deleted out from under it.
+    // Only remove the lock if it still carries our own token: if a stall let a waiter decide this lock was abandoned and steal it, that waiter's lock is now the live one and must not be deleted out from under it.
     try {
       if (readFileSync(lockPath, 'utf8') === token) unlinkSync(lockPath)
     } catch {
@@ -642,12 +592,7 @@ export function extractErrorMessage(err: unknown, fallback: string = ''): string
   return err instanceof Error ? err.message : (fallback || String(err))
 }
 
-// Parses a numeric CLI flag value, rejecting anything but an exact integer literal (optional
-// leading minus, followed by digits) instead of letting a bare Number.parseInt/parseFloat accept
-// trailing garbage ("30x" -> 30) or exponential notation ("1e3" -> 1). Mirrors cli.ts's
-// requireInt/requireNonNegativeInt/requirePositiveInt for command modules cli.ts itself imports
-// (config_commands.ts, cache_session_commands.ts) — those can't import cli.ts back without a
-// circular dependency, so this shared, dependency-free copy lives in util.ts instead.
+// Parses a numeric CLI flag value, rejecting anything but an exact integer literal (optional leading minus, followed by digits) instead of letting a bare Number.parseInt/parseFloat accept trailing garbage ("30x" -> 30) or exponential notation ("1e3" -> 1). Mirrors cli.ts's requireInt/requireNonNegativeInt/requirePositiveInt for command modules cli.ts itself imports (config_commands.ts, cache_session_commands.ts) — those can't import cli.ts back without a circular dependency, so this shared, dependency-free copy lives in util.ts instead.
 export function requireStrictInt(flag: string, raw: string): number {
   if (!/^-?\d+$/.test(raw)) {
     throw new Error(`${flag} must be a number, got: "${raw}"`)

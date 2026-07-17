@@ -38,12 +38,7 @@ function sessionDir(sessionId: string): string | null {
 }
 
 function pathKey(filePath: string): string {
-  // Case-insensitive filesystems (Windows, macOS) resolve two differently-cased paths to the
-  // same physical file. normalizePath only lowercases the drive letter, so fold the whole
-  // string through foldPath (util.ts) -- matching the established convention from session.ts's
-  // read-dedup map key -- or a file read under two casings in one session gets two different
-  // snapshot files on disk, and load() silently fails to find the prior
-  // snapshot under the new casing.
+  // Case-insensitive filesystems (Windows, macOS) resolve two differently-cased paths to the same physical file. normalizePath only lowercases the drive letter, so fold the whole string through foldPath (util.ts) -- matching the established convention from session.ts's read-dedup map key -- or a file read under two casings in one session gets two different snapshot files on disk, and load() silently fails to find the prior snapshot under the new casing.
   return fingerprintContent(foldPath(normalizePath(filePath))).slice(0, 32)
 }
 
@@ -171,9 +166,7 @@ export function store(
       evictOldest(dir, MAX_SNAPSHOTS_PER_SESSION - 1)
     }
 
-    // Write atomically via shared helper: uses pid + hrtime for unique temp names
-    // (avoiding collisions between concurrent writers) and wraps rename in
-    // withRetryOnLock for Windows file-lock resilience.
+    // Write atomically via shared helper: uses pid + hrtime for unique temp names (avoiding collisions between concurrent writers) and wraps rename in withRetryOnLock for Windows file-lock resilience.
     atomicWriteBytes(p, stored)
 
     const sidecar = kindSidecarPath(p)
@@ -223,6 +216,15 @@ export function load(sessionId: string, filePath: string, opts: { expected_sha?:
   }
 }
 
+/** Removes `fullPath` if it's eligible: not a symlink (belt-and-suspenders -- see sessionDir's traversal-guard rationale), and (when `cutoff` is given, as cleanup_stale does) older than it. Returns true when the file was removed and counted as a snapshot (its name ends in `.bin`), matching both callers' existing removed-count semantics. Shared by cleanup_session and cleanup_stale, which previously duplicated this exact lstat/skip-symlink/unlink/count sequence. */
+function removeEligibleSnapshotFile(fullPath: string, file: string, cutoff?: number): boolean {
+  const stat = fs.lstatSync(fullPath)
+  if ((stat.mode & 0o170000) === 0o120000) return false
+  if (cutoff !== undefined && stat.mtimeMs >= cutoff) return false
+  fs.unlinkSync(fullPath)
+  return file.endsWith('.bin')
+}
+
 export function cleanup_session(sessionId: string): number {
   const d = sessionDir(sessionId)
   if (!d || !fs.existsSync(d)) return 0
@@ -233,15 +235,7 @@ export function cleanup_session(sessionId: string): number {
     for (const file of files) {
       const fullPath = path.join(d, file)
       try {
-        const stat = fs.lstatSync(fullPath)
-        // Skip symlinks
-        if ((stat.mode & 0o170000) === 0o120000) {
-          continue
-        }
-        fs.unlinkSync(fullPath)
-        if (file.endsWith('.bin')) {
-          removed++
-        }
+        if (removeEligibleSnapshotFile(fullPath, file)) removed++
       } catch {
         continue
       }
@@ -281,17 +275,7 @@ export function cleanup_stale(maxAgeHours: number = 24.0): number {
         for (const file of files) {
           const fullPath = path.join(sessionPath, file)
           try {
-            const stat = fs.lstatSync(fullPath)
-            // Skip symlinks
-            if ((stat.mode & 0o170000) === 0o120000) {
-              continue
-            }
-            if (stat.mtimeMs < cutoff) {
-              fs.unlinkSync(fullPath)
-              if (file.endsWith('.bin')) {
-                removed++
-              }
-            }
+            if (removeEligibleSnapshotFile(fullPath, file, cutoff)) removed++
           } catch {
             continue
           }
