@@ -49,7 +49,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -371,32 +371,7 @@ function buildAgentsBlock(): string {
  * block -- the idempotent re-install case.
  */
 function writeAgentsBlock(p: string): boolean {
-  const block = buildAgentsBlock()
-  let existing: string
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    existing = ''
-  }
-
-  const beginIdx = existing.indexOf(AGENTS_BEGIN)
-  const endIdx = existing.indexOf(AGENTS_END)
-
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx)
-    const after = existing.slice(endIdx + AGENTS_END.length)
-    const current = existing.slice(beginIdx, endIdx + AGENTS_END.length)
-    if (current === block) return false
-    ensureDirSync(path.dirname(p))
-    atomicWriteText(p, `${before}${block}${after}`)
-    return true
-  }
-
-  const trimmed = existing.replace(/\s+$/, '')
-  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
-  ensureDirSync(path.dirname(p))
-  atomicWriteText(p, next)
-  return true
+  return upsertDelimitedBlock(p, AGENTS_BEGIN, AGENTS_END, buildAgentsBlock())
 }
 
 /** Strip the delimited block from `p`, preserving everything outside the markers. */

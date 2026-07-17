@@ -18,7 +18,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -347,32 +347,7 @@ function buildClaudeMdBlock(): string {
 }
 
 function writeClaudeMdBlock(p: string): boolean {
-  const block = buildClaudeMdBlock()
-  let existing: string
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    existing = ''
-  }
-
-  const beginIdx = existing.indexOf(CLAUDE_MD_BEGIN)
-  const endIdx = existing.indexOf(CLAUDE_MD_END)
-
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx)
-    const after = existing.slice(endIdx + CLAUDE_MD_END.length)
-    const current = existing.slice(beginIdx, endIdx + CLAUDE_MD_END.length)
-    if (current === block) return false
-    ensureDirSync(path.dirname(p))
-    atomicWriteText(p, `${before}${block}${after}`)
-    return true
-  }
-
-  const trimmed = existing.replace(/\s+$/, '')
-  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
-  ensureDirSync(path.dirname(p))
-  atomicWriteText(p, next)
-  return true
+  return upsertDelimitedBlock(p, CLAUDE_MD_BEGIN, CLAUDE_MD_END, buildClaudeMdBlock())
 }
 
 function stripClaudeMdBlock(p: string): boolean {
