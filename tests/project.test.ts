@@ -154,6 +154,26 @@ describe('project', () => {
         setPlatform('win32');
         expect(canonicalize('/c')).toBe('c:/');
       });
+
+      // Regression: paths.ts's exported MSYS_PATH_RE itself was missing the `s` (dotAll) flag
+      // its own sibling WSL_PATH_RE has -- so an MSYS path (/c/rest) containing an embedded
+      // newline byte failed to match (`(\/.*)?$` can't cross the newline without `s`) and fell
+      // through unrewritten, same failure class as the WSL_PATH_RE bug above but on the shared
+      // MSYS_PATH_RE constant itself, not a divergent copy.
+      it('rewrites an MSYS path containing an embedded newline byte, matching paths.ts::normalizePath', () => {
+        setPlatform('win32');
+        const result = canonicalize('/c/foo\nbar');
+        expect(result).toBe('c:/foo\nbar');
+      });
+
+      // Regression: project.ts's local CYGWIN_PREFIX_RE (no paths.ts counterpart exists) was also
+      // missing the `s` flag, so a Cygwin path (/cygdrive/c/rest) containing an embedded newline
+      // byte failed to match and fell through unrewritten -- the same bug class, third occurrence.
+      it('rewrites a Cygwin path containing an embedded newline byte', () => {
+        setPlatform('win32');
+        const result = canonicalize('/cygdrive/c/foo\nbar');
+        expect(result).toBe('c:/foo\nbar');
+      });
     });
   });
 
