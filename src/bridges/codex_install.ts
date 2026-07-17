@@ -49,7 +49,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripOwnHooksFromMap } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -284,30 +284,7 @@ export function uninstallCodex(): boolean {
   const config = readCodexConfig(configPath)
   const hooks = config.hooks
   if (hooks !== undefined) {
-    let hooksRemoved = false
-    for (const eventKey of Object.keys(hooks)) {
-      const groups = hooks[eventKey]
-      if (groups === undefined) continue
-      const kept: CodexMatcherGroup[] = []
-      for (const group of groups) {
-        const keptHooks = (group.hooks ?? []).filter((h) => {
-          const isOurs = isCodexTokenGoatCommand(h.command)
-          if (isOurs) hooksRemoved = true
-          return !isOurs
-        })
-        if (keptHooks.length > 0) {
-          kept.push({ ...group, hooks: keptHooks })
-        } else if ((group.hooks ?? []).length === 0) {
-          // A group that had no hooks to begin with is user data; preserve it.
-          kept.push(group)
-        }
-      }
-      if (kept.length > 0) {
-        hooks[eventKey] = kept
-      } else {
-        delete hooks[eventKey]
-      }
-    }
+    const hooksRemoved = stripOwnHooksFromMap(hooks, isCodexTokenGoatCommand)
     if (hooksRemoved) {
       if (Object.keys(hooks).length === 0) {
         delete config.hooks

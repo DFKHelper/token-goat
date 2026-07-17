@@ -69,7 +69,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, stripOwnHooksFromMap } from '../util.js'
 
 /**
  * Marker substring identifying a legacy (pre exec-path-hardening) bare
@@ -393,30 +393,7 @@ export function uninstallGemini(): boolean {
   const hooks = settings.hooks
   if (hooks === undefined) return false
 
-  let removed = false
-  for (const eventKey of Object.keys(hooks)) {
-    const groups = hooks[eventKey]
-    if (groups === undefined) continue
-    const kept: GeminiMatcherGroup[] = []
-    for (const group of groups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOurs = isGeminiTokenGoatCommand(h.command)
-        if (isOurs) removed = true
-        return !isOurs
-      })
-      if (keptHooks.length > 0) {
-        kept.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
-        // A group that had no hooks to begin with is user data; preserve it.
-        kept.push(group)
-      }
-    }
-    if (kept.length > 0) {
-      hooks[eventKey] = kept
-    } else {
-      delete hooks[eventKey]
-    }
-  }
+  const removed = stripOwnHooksFromMap(hooks, isGeminiTokenGoatCommand)
 
   if (!removed) return false
 

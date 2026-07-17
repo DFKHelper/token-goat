@@ -469,6 +469,59 @@ export function sanitizeIdForFilename(id: string, maxLen?: number, fallback?: st
   return safe.length > 0 ? safe : (fallback ?? safe)
 }
 
+/** One hook entry as stored in a harness's `[[hooks.<Event>]]`/`hooks.<event>[]` config shape --
+ * the minimal fields {@link stripOwnHooksFromMap} needs. */
+interface HookEntryLike {
+  readonly command: string
+}
+
+/** One matcher group under a hook event key -- the minimal fields {@link stripOwnHooksFromMap}
+ * needs. Generic over the hook-entry type so each bridge's own richer interface (with its
+ * harness-specific extra fields) is preserved through the spread in the returned groups. */
+interface MatcherGroupLike<H extends HookEntryLike> {
+  readonly hooks?: readonly H[]
+}
+
+/**
+ * Shared by codex_install.ts's `uninstallCodex` and gemini_install.ts's `uninstallGemini`
+ * (both harnesses use the same `Record<eventKey, matcherGroup[]>` hooks shape): strip
+ * token-goat's own hook entries out of `hooks`, mutating it in place. A matcher group survives
+ * if it still has non-token-goat hooks left, OR if it started with zero hooks (an empty group
+ * is user data token-goat never wrote, so it's preserved rather than treated as "fully
+ * stripped"). An event key whose every group was removed entirely is deleted. Returns true if
+ * at least one hook entry was actually removed, so callers can skip writing the file back when
+ * nothing changed.
+ */
+export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherGroupLike<H>>(
+  hooks: Record<string, G[] | undefined>,
+  isOurs: (command: string) => boolean,
+): boolean {
+  let removed = false
+  for (const eventKey of Object.keys(hooks)) {
+    const groups = hooks[eventKey]
+    if (groups === undefined) continue
+    const kept: G[] = []
+    for (const group of groups) {
+      const keptHooks = (group.hooks ?? []).filter((h) => {
+        const isOur = isOurs(h.command)
+        if (isOur) removed = true
+        return !isOur
+      })
+      if (keptHooks.length > 0) {
+        kept.push({ ...group, hooks: keptHooks })
+      } else if ((group.hooks ?? []).length === 0) {
+        kept.push(group)
+      }
+    }
+    if (kept.length > 0) {
+      hooks[eventKey] = kept
+    } else {
+      delete hooks[eventKey]
+    }
+  }
+  return removed
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
