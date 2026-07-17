@@ -127,7 +127,12 @@ function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown
     const typeSample = existing.length > 0 ? existing : (Array.isArray(defaultValue) ? defaultValue : existing)
     const isNumberList = typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')
     if (raw.trimStart().startsWith('[')) {
-      const parsed = JSON.parse(raw) as unknown[]
+      let parsed: unknown[]
+      try {
+        parsed = JSON.parse(raw) as unknown[]
+      } catch {
+        throw new Error(`expected a JSON array, got: ${raw}`)
+      }
       // Validate element types against the same type sample the comma-separated branch below
       // uses, instead of accepting any JSON array unchecked — otherwise a number-list key set
       // to a JSON array of non-numeric strings reports success here but the load-time
