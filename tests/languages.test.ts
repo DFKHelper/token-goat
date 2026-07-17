@@ -235,6 +235,38 @@ public class Foo {
     expect(bar?.docstring).toBe('Foo')
   })
 
+  it('does not leave a brace-less positional record "stuck" underneath a later class when the declaration line carries a trailing // comment (regression: stripped was computed from a line that never had its trailing line comment removed, so stripped.endsWith(\';\') was false and the pop check never fired -- the record frame stayed on classStack beneath Foo\'s frame, surviving Foo\'s own close and mis-parenting Baz\'s members under Point instead of Baz once Foo popped)', () => {
+    const content = `public record Point(int X, int Y); // immutable value type
+
+public class Foo {
+    public void Bar() {
+    }
+}
+
+public class Baz {
+    public void Qux() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Point.cs')
+    // Foo is top-level (not nested inside the record), so it must not inherit Point as its
+    // enclosing class -- the stuck record frame previously caused exactly this misparent.
+    const foo = symbols.find((s) => s.name === 'Foo')
+    expect(foo?.kind).toBe('class')
+    expect(foo?.docstring).toBe('')
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+    // Baz is declared after Foo's closing brace pops Foo off the stack, which previously
+    // exposed the still-stuck Point frame underneath it.
+    const baz = symbols.find((s) => s.name === 'Baz')
+    expect(baz?.kind).toBe('class')
+    expect(baz?.docstring).toBe('')
+    const qux = symbols.find((s) => s.name === 'Qux')
+    expect(qux?.kind).toBe('method')
+    expect(qux?.docstring).toBe('Baz')
+  })
+
   it('does not leave a fully single-line class "stuck" as the current class for later declarations', () => {
     const content = `public class Empty { }
 

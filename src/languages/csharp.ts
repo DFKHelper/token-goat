@@ -128,7 +128,10 @@ export function extractCsharp(
     // not treated as a comment opener.
     const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
-    const line = codeLine.trimEnd()
+
+    // Strip a trailing `//` line comment (quote-aware) so text after it — e.g. the brace-less
+    // one-liner pop check's `stripped.endsWith(';')` below — isn't corrupted by comment prose.
+    const line = stripLineComment(codeLine).trimEnd()
     const stripped = line.trim()
 
     if (!stripped || stripped.startsWith('//')) continue
