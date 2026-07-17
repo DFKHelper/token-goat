@@ -1289,4 +1289,21 @@ describe('a corrupt config.toml warns on stderr instead of silently falling back
       fs.rmSync(dataDir, { recursive: true, force: true })
     }
   })
+
+  // Regression: cmdPack/cmdTokens/cmdBudget/cmdFailures registered their .action() directly
+  // instead of through the shared `guard()` wrapper, so they silently skipped this same
+  // config.toml-parse-error diagnostic that every other command already surfaces.
+  it('also warns for commands that used to bypass guard() (pack/tokens/budget/failures)', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cfgwarn-bypass-'))
+    try {
+      const cfgPath = configTomlPath(dataDir)
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+      fs.writeFileSync(cfgPath, 'this is not [ valid toml ===\n', 'utf8')
+
+      const r = runWithDataDir(['tokens'], dataDir)
+      expect(r.stderr).toMatch(/config\.toml.*(failed to parse|parse)/i)
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
 })

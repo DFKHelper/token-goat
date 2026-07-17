@@ -1813,58 +1813,52 @@ function cmdPack(
     budget?: string
   },
 ): void {
-  try {
-    const root = process.cwd()
-    const style = opts.format === 'xml' ? 'xml' : opts.format === 'text' ? 'plain' : 'markdown'
-    const ignorePatterns = opts.ignore !== false ? readIgnoreFile(root) : undefined
-    const collectOpts = {
-      ...(opts.stripComments === true ? { do_strip_comments: true as const } : {}),
-      ...(ignorePatterns !== undefined ? { ignore_patterns: ignorePatterns } : {}),
+  const root = process.cwd()
+  const style = opts.format === 'xml' ? 'xml' : opts.format === 'text' ? 'plain' : 'markdown'
+  const ignorePatterns = opts.ignore !== false ? readIgnoreFile(root) : undefined
+  const collectOpts = {
+    ...(opts.stripComments === true ? { do_strip_comments: true as const } : {}),
+    ...(ignorePatterns !== undefined ? { ignore_patterns: ignorePatterns } : {}),
+  }
+  const patternList = patterns ?? []
+  const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
+  if (patternList.length > 0 && expandedList.length === 0) {
+    throw new CliError(`no files matched: ${patternList.join(' ')}`)
+  }
+  const result =
+    expandedList.length > 0
+      ? collectFiles(root, expandedList, collectOpts)
+      : collectFromStdin(root, collectOpts)
+  if (opts.budget !== undefined) {
+    const budgetN = requireInt('--budget', opts.budget)
+    if (result.total_tokens > budgetN) {
+      err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
+      process.exitCode = 3
+      return
     }
-    const patternList = patterns ?? []
-    const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
-    if (patternList.length > 0 && expandedList.length === 0) {
-      throw new CliError(`no files matched: ${patternList.join(' ')}`)
-    }
-    const result =
-      expandedList.length > 0
-        ? collectFiles(root, expandedList, collectOpts)
-        : collectFromStdin(root, collectOpts)
-    if (opts.budget !== undefined) {
-      const budgetN = requireInt('--budget', opts.budget)
-      if (result.total_tokens > budgetN) {
-        err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
-        process.exitCode = 3
-        return
+  }
+  if (opts.scanSecrets === true) {
+    const hits = scanSecrets(result.files)
+    if (hits.length > 0) {
+      for (const hit of hits) {
+        err(`token-goat: secret in ${hit.rel_path}:${hit.line}: ${hit.kind}`)
       }
+      process.exitCode = 2
+      return
     }
-    if (opts.scanSecrets === true) {
-      const hits = scanSecrets(result.files)
-      if (hits.length > 0) {
-        for (const hit of hits) {
-          err(`token-goat: secret in ${hit.rel_path}:${hit.line}: ${hit.kind}`)
-        }
-        process.exitCode = 2
-        return
-      }
-    }
-    let instruction: string | undefined
-    if (opts.instructionFile !== undefined) {
-      instruction = fs.readFileSync(opts.instructionFile, 'utf8')
-    }
-    const formatted = formatPack(result, style, {
-      ...(opts.lineNumbers === true ? { line_numbers: true } : {}),
-      ...(instruction !== undefined ? { instruction } : {}),
-    })
-    if (opts.output !== undefined) {
-      fs.writeFileSync(opts.output, formatted, 'utf8')
-    } else {
-      out(formatted)
-    }
-    process.exitCode = 0
-  } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
-    process.exitCode = 1
+  }
+  let instruction: string | undefined
+  if (opts.instructionFile !== undefined) {
+    instruction = fs.readFileSync(opts.instructionFile, 'utf8')
+  }
+  const formatted = formatPack(result, style, {
+    ...(opts.lineNumbers === true ? { line_numbers: true } : {}),
+    ...(instruction !== undefined ? { instruction } : {}),
+  })
+  if (opts.output !== undefined) {
+    fs.writeFileSync(opts.output, formatted, 'utf8')
+  } else {
+    out(formatted)
   }
 }
 
@@ -1872,79 +1866,64 @@ function cmdTokens(
   patterns: string[] | undefined,
   opts: { tree?: boolean; top?: string; asc?: boolean; json?: boolean },
 ): void {
-  try {
-    const root = process.cwd()
-    const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
-    let entries = [...result.entries]
-    if (opts.asc === true) entries.reverse()
-    if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
-    if (opts.json === true) {
-      out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
-      process.exitCode = 0
-      return
-    }
-    if (opts.tree === true) {
-      const dirs = new Map<string, typeof entries>()
-      for (const e of entries) {
-        const dir = path.dirname(e.rel_path)
-        if (!dirs.has(dir)) dirs.set(dir, [])
-        dirs.get(dir)!.push(e)
-      }
-      const lines: string[] = []
-      for (const [dir, dirEntries] of dirs) {
-        const dirTokens = dirEntries.reduce((s, e) => s + e.tokens, 0)
-        const pct = result.total_tokens > 0 ? Math.round((dirTokens / result.total_tokens) * 100) : 0
-        lines.push(`${dir}/ (${dirTokens} tokens, ${pct}%)`)
-        for (const e of dirEntries) {
-          lines.push(`  ${path.basename(e.rel_path).padEnd(30)}  ${String(e.tokens).padStart(8)} tokens`)
-        }
-      }
-      out(lines.join('\n'))
-      process.exitCode = 0
-      return
-    }
-    if (entries.length === 0) {
-      out('No files matched.')
-      process.exitCode = 0
-      return
-    }
-    const colW = Math.max(4, Math.max(...entries.map((e) => e.rel_path.length)))
-    const lines = [
-      `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
-      `${'-'.repeat(colW)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`,
-    ]
+  const root = process.cwd()
+  const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
+  let entries = [...result.entries]
+  if (opts.asc === true) entries.reverse()
+  if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
+  if (opts.json === true) {
+    out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
+    return
+  }
+  if (opts.tree === true) {
+    const dirs = new Map<string, typeof entries>()
     for (const e of entries) {
-      lines.push(`${e.rel_path.padEnd(colW)}  ${String(e.tokens).padStart(8)}  ${String(e.lines).padStart(6)}`)
+      const dir = path.dirname(e.rel_path)
+      if (!dirs.has(dir)) dirs.set(dir, [])
+      dirs.get(dir)!.push(e)
+    }
+    const lines: string[] = []
+    for (const [dir, dirEntries] of dirs) {
+      const dirTokens = dirEntries.reduce((s, e) => s + e.tokens, 0)
+      const pct = result.total_tokens > 0 ? Math.round((dirTokens / result.total_tokens) * 100) : 0
+      lines.push(`${dir}/ (${dirTokens} tokens, ${pct}%)`)
+      for (const e of dirEntries) {
+        lines.push(`  ${path.basename(e.rel_path).padEnd(30)}  ${String(e.tokens).padStart(8)} tokens`)
+      }
     }
     out(lines.join('\n'))
-    process.exitCode = 0
-  } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
-    process.exitCode = 1
+    return
   }
+  if (entries.length === 0) {
+    out('No files matched.')
+    return
+  }
+  const colW = Math.max(4, Math.max(...entries.map((e) => e.rel_path.length)))
+  const lines = [
+    `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
+    `${'-'.repeat(colW)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`,
+  ]
+  for (const e of entries) {
+    lines.push(`${e.rel_path.padEnd(colW)}  ${String(e.tokens).padStart(8)}  ${String(e.lines).padStart(6)}`)
+  }
+  out(lines.join('\n'))
 }
 
 function cmdBudget(
   patterns: string[],
   opts: { context?: string; json?: boolean },
 ): void {
-  try {
-    const root = process.cwd()
-    const result = estimateBudget(root, expandGlobs(root, patterns))
-    if (opts.json === true) {
-      out(JSON.stringify(result, null, 2))
-    } else {
-      // Falls back to the configured context.model_window_tokens (in thousands, matching
-      // --context's own units) so the % line shows up without requiring --context on every call.
-      const contextK = opts.context !== undefined
-        ? requirePositiveInt('--context', opts.context)
-        : Math.round(loadConfig().context.model_window_tokens / 1000)
-      out(formatBudgetText(result, contextK))
-    }
-    process.exitCode = 0
-  } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
-    process.exitCode = 1
+  const root = process.cwd()
+  const result = estimateBudget(root, expandGlobs(root, patterns))
+  if (opts.json === true) {
+    out(JSON.stringify(result, null, 2))
+  } else {
+    // Falls back to the configured context.model_window_tokens (in thousands, matching
+    // --context's own units) so the % line shows up without requiring --context on every call.
+    const contextK = opts.context !== undefined
+      ? requirePositiveInt('--context', opts.context)
+      : Math.round(loadConfig().context.model_window_tokens / 1000)
+    out(formatBudgetText(result, contextK))
   }
 }
 
@@ -1952,17 +1931,10 @@ function cmdFailures(
   src: string | undefined,
   opts: { runner?: string; json?: boolean },
 ): void {
-  try {
-    const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
-    const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
-    out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
-    process.exitCode = 0
-  } catch (e) {
-    err(`token-goat: ${extractErrorMessage(e)}`)
-    process.exitCode = 1
-  }
+  const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
+  const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
+  out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
 }
-
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
@@ -2559,7 +2531,7 @@ export function buildProgram(): Command {
     .option('--strip-comments', 'remove language-appropriate comments before packing')
     .option('--scan-secrets', 'scan for credentials; exit 2 if any are found')
     .option('--budget <n>', 'exit 3 if the estimated token count exceeds n')
-    .action(cmdPack)
+    .action(guard(cmdPack))
 
   program
     .command('tokens [patterns...]')
@@ -2568,21 +2540,21 @@ export function buildProgram(): Command {
     .option('--top <n>', 'limit to the N biggest files')
     .option('--asc', 'reverse order (ascending)')
     .option('-j, --json', 'output as JSON')
-    .action(cmdTokens)
+    .action(guard(cmdTokens))
 
   program
     .command('budget <patterns...>')
     .description('estimate the total token cost of a file set')
     .option('--context <n>', 'context window in thousands of tokens (shows % fill)')
     .option('-j, --json', 'output as JSON')
-    .action(cmdBudget)
+    .action(guard(cmdBudget))
 
   program
     .command('failures [src]')
     .description('extract failing test blocks from test runner output (pytest, Jest, Go, Cargo)')
     .option('--runner <name>', 'runner hint: pytest, jest, go, or cargo')
     .option('-j, --json', 'output as JSON')
-    .action(cmdFailures)
+    .action(guard(cmdFailures))
 
   program
     .command('todo [patterns...]')
