@@ -648,10 +648,6 @@ function extractTasksOutput(cmd: string): { id: string; path: string; n?: number
 }
 
 /**
- * Returns true when the command is a sed line-range extraction (`sed -n 'N,Mp'`).
- * These are typically used as a substitute for `token-goat section`, which is cheaper.
- */
-/**
  * Returns true when the command is a directory listing (eza --long or ls … | head)
  * for which `token-goat map --compact` is a cheaper alternative.
  */
@@ -949,12 +945,6 @@ function buildRecallHint(cmd: string, outputId: string): string {
   )
 }
 
-/**
- * pre_tool_use handler for the Bash tool.
- *
- * Emits a recall hint when the command is a known build tool and its output
- * was already captured this session. Passes through for all other commands.
- */
 /** Single-quote a string as one POSIX shell argument (escapes embedded quotes). */
 function shellQuoteSingle(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
@@ -1215,6 +1205,12 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
   return null
 }
 
+/**
+ * pre_tool_use handler for the Bash tool.
+ *
+ * Emits a recall hint when the command is a known build tool and its output
+ * was already captured this session. Passes through for all other commands.
+ */
 function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
