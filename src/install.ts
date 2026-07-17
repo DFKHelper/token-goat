@@ -18,7 +18,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripOwnHooksFromMap } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -376,31 +376,7 @@ function writeClaudeMdBlock(p: string): boolean {
 }
 
 function stripClaudeMdBlock(p: string): boolean {
-  let existing: string
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    return false
-  }
-
-  const beginIdx = existing.indexOf(CLAUDE_MD_BEGIN)
-  const endIdx = existing.indexOf(CLAUDE_MD_END)
-  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return false
-
-  const before = existing.slice(0, beginIdx).replace(/\s+$/, '')
-  const after = existing.slice(endIdx + CLAUDE_MD_END.length).replace(/^\s+/, '')
-
-  let next: string
-  if (before.length > 0 && after.length > 0) {
-    next = `${before}\n\n${after}`
-  } else if (before.length > 0) {
-    next = `${before}\n`
-  } else {
-    next = after
-  }
-
-  atomicWriteText(p, next)
-  return true
+  return stripDelimitedBlock(p, CLAUDE_MD_BEGIN, CLAUDE_MD_END)
 }
 
 /** Outcome of an {@link installClaudeMd} call. */

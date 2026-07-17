@@ -49,7 +49,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripOwnHooksFromMap } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -401,29 +401,5 @@ function writeAgentsBlock(p: string): boolean {
 
 /** Strip the delimited block from `p`, preserving everything outside the markers. */
 function stripAgentsBlock(p: string): boolean {
-  let existing: string
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    return false
-  }
-
-  const beginIdx = existing.indexOf(AGENTS_BEGIN)
-  const endIdx = existing.indexOf(AGENTS_END)
-  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return false
-
-  const before = existing.slice(0, beginIdx).replace(/\s+$/, '')
-  const after = existing.slice(endIdx + AGENTS_END.length).replace(/^\s+/, '')
-
-  let next: string
-  if (before.length > 0 && after.length > 0) {
-    next = `${before}\n\n${after}`
-  } else if (before.length > 0) {
-    next = `${before}\n`
-  } else {
-    next = after
-  }
-
-  atomicWriteText(p, next)
-  return true
+  return stripDelimitedBlock(p, AGENTS_BEGIN, AGENTS_END)
 }
