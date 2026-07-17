@@ -1045,8 +1045,7 @@ describe('html adapter', () => {
     const content = `<div id="pricing\ncard" class="foo\nbar"></div><link href="styles\nsheet.css"><script src="app\nbundle.js"></script>`
     const { symbols, imports } = extractHtml(content, 'multiline-attr.html')
     expect(symbols.some((s) => s.kind === 'html_id' && s.name === 'pricing\ncard')).toBe(true)
-    // class="foo\nbar" -- whitespace (including the embedded newline) is the token separator, so
-    // this correctly yields two class symbols, not one symbol literally named "foo\nbar".
+    // class="foo\nbar" -- whitespace (including the embedded newline) is the token separator, so this correctly yields two class symbols, not one symbol literally named "foo\nbar".
     expect(symbols.some((s) => s.kind === 'html_class' && s.name === 'foo')).toBe(true)
     expect(symbols.some((s) => s.kind === 'html_class' && s.name === 'bar')).toBe(true)
     expect(imports.some((i) => i.kind === 'html_link' && i.target === 'styles\nsheet.css')).toBe(true)

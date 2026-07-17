@@ -316,8 +316,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
-    // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's
-    // freshest observation) over disk's, since a newer write always supersedes an older one.
+    // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContext !== undefined
       ? { lastTabContext: mem.lastTabContext }
       : disk.lastTabContext !== undefined
