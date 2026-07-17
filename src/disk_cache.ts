@@ -66,6 +66,18 @@ export function blobPath(subdir: string, id: string): string | null {
   return candidate
 }
 
+/** True when the blob at `subdir`/`id` exists on disk and its mtime is older than DEFAULT_MAX_AGE_MS. A stat error (missing file, permission issue) fails soft to false so the caller falls through to loadBlob, which handles the error case on its own terms. Shared by web_cache.ts's getWebOutput and bash_output_cache.ts's getBashOutput, which previously duplicated this exact stat-and-compare logic. */
+export function isBlobStale(subdir: string, id: string): boolean {
+  const p = blobPath(subdir, id)
+  if (p === null) return false
+  try {
+    const stat = fs.statSync(p)
+    return Date.now() - stat.mtimeMs > DEFAULT_MAX_AGE_MS
+  } catch {
+    return false
+  }
+}
+
 /**
  * Resolve the maxCount/maxBytes/maxBytesPerItem eviction budget for a subdir from
  * its matching config section (bash_compress for bash outputs, webfetch for web

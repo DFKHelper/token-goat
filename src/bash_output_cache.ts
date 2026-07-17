@@ -20,7 +20,7 @@ import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
-import { storeBlob, loadBlob, blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
+import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
 import { isBuildCommand } from './hints/lang_patterns.js'
 import { indexRecallEntry } from './recall_index.js'
 
@@ -313,10 +313,7 @@ export async function commandHash(command: string, cwd: string | null = null): P
     if (fp) key = `${key}\x00lockfile:${fp}`
   }
 
-  // npm audit/outdated output depends on the resolved lockfile exactly like npm install does
-  // (both isNpmAuditCommand and isNpmOutdatedCommand's patterns existed with zero call sites
-  // until this wiring), so a cached result must key-scope on it too -- otherwise `npm install`
-  // adding a vulnerable package would never invalidate a previously cached `npm audit` result.
+  // npm audit/outdated output depends on the resolved lockfile exactly like npm install does (both isNpmAuditCommand and isNpmOutdatedCommand's patterns existed with zero call sites until this wiring), so a cached result must key-scope on it too -- otherwise `npm install` adding a vulnerable package would never invalidate a previously cached `npm audit` result.
   if (cwd && (isNpmInstallCommand(command) || isNpmAuditCommand(command) || isNpmOutdatedCommand(command))) {
     const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) key = `${key}\x00npm-install:${fp}`
@@ -577,17 +574,7 @@ export function getBashOutput(id: string): BashOutputEntry | null {
   const hit = _byId.get(id)
   if (hit !== undefined) return hit
 
-  const p = blobPath(BASH_OUTPUT_SUBDIR, id)
-  if (p !== null) {
-    try {
-      const stat = statSync(p)
-      if (Date.now() - stat.mtimeMs > DEFAULT_MAX_AGE_MS) {
-        return null // Cache entry is stale
-      }
-    } catch {
-      // If we can't stat the file, fall through to loadBlob which will handle the error
-    }
-  }
+  if (isBlobStale(BASH_OUTPUT_SUBDIR, id)) return null
 
   const entry = coerceBashEntry(loadBlob(BASH_OUTPUT_SUBDIR, id))
   if (entry === null) return null
