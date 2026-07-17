@@ -186,6 +186,22 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, aKey)).toBe(countBefore)
   })
 
+  it('refuses to prune at a WSL-mounted drive root (/mnt/c), the same hazard as a bare drive letter', () => {
+    // A file that would never actually be indexed this way on Windows (real paths use "c:/..."),
+    // but exercises the guard directly: a row whose path genuinely falls under "/mnt/c/" must
+    // survive a prune scoped to that prefix, exactly like the "c:" drive-letter case above.
+    const db = getDb(dbPath)
+    const fakePath = '/mnt/c/projects/fake/a.ts'
+    db.prepare(
+      `INSERT INTO files (path, sha, mtime, language, indexed_at, retry_count) VALUES (?, ?, ?, ?, ?, 0)`,
+    ).run(fakePath, 'deadbeef', Date.now(), 'ts', Date.now())
+
+    const result = pruneDeletedFiles('/mnt/c', dbPath)
+    expect(result).toBe(0)
+    const row = db.prepare(`SELECT path FROM files WHERE path = ?`).get(fakePath)
+    expect(row).toBeDefined()
+  })
+
   describe('case-insensitive filesystem path matching', () => {
     const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
     afterEach(() => {
