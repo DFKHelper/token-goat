@@ -1124,6 +1124,27 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
+  // Regression: `--path` passed `fs.existsSync` (true for directories too) then read the file
+  // separately with no try/catch -- a TOCTOU gap where a race (or, deterministically here, a
+  // path that exists-but-isn't-a-readable-file) throws a raw unwrapped Node error instead of a
+  // friendly CliError, defeating the whole point of the existsSync pre-check. A directory path
+  // exercises this deterministically: existsSync(dir) is true, but readFileSync(dir) throws
+  // EISDIR, which pre-fix propagated as the raw Node message instead of our own wording.
+  it('skill-compact --path pointed at a directory reports a friendly read error, not a raw Node exception', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    const dataDir = path.join(base, 'data')
+    const dirAsPath = path.join(base, 'not-a-file')
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.mkdirSync(dirAsPath, { recursive: true })
+    try {
+      const r = runIsolated(['skill-compact', '--path', dirAsPath], dataDir)
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain(`failed to read skill file '${dirAsPath}'`)
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
   // Regression for SKILLCOMPACT-SESSIONID: cmdSkillCompact used to derive its
   // cache-scoping session id from `Array.from(getSessionFiles().keys())[0]`, which
   // is the first *file path* read this process (or 'default' when none were read -

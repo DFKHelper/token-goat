@@ -1152,7 +1152,17 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
     if (!fs.existsSync(opts.path)) {
       throw new CliError(`skill file not found: ${opts.path}`)
     }
-    body = fs.readFileSync(opts.path, 'utf-8')
+    try {
+      body = fs.readFileSync(opts.path, 'utf-8')
+    } catch (e) {
+      // TOCTOU: the file can vanish between the existsSync check above and this read (race,
+      // or a symlink target disappearing). Re-throw as the same friendly CliError the
+      // existsSync guard exists to produce, rather than letting a raw ENOENT reach the user.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new CliError(`skill file not found: ${opts.path}`)
+      }
+      throw new CliError(`failed to read skill file '${opts.path}': ${extractErrorMessage(e)}`)
+    }
     cacheName = name ?? path.basename(path.dirname(path.resolve(opts.path)))
     sourcePath = path.resolve(opts.path)
   } else {
