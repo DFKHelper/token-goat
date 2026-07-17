@@ -16,9 +16,7 @@ import { getLastTabContext } from '../src/session.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
-// Random noise resists compression, guaranteeing a >512KB encoded size at 3000x3000 so the
-// shrink path (downscale to 1568) has real bytes to save — same construction as
-// tests/image_shrink.test.ts's largeJpeg fixture.
+// Random noise resists compression, guaranteeing a >512KB encoded size at 3000x3000 so the shrink path (downscale to 1568) has real bytes to save — same construction as tests/image_shrink.test.ts's largeJpeg fixture.
 let largeJpegB64: string
 let smallPngB64: string
 
@@ -142,8 +140,7 @@ describe('postBrowserImageHandler', () => {
       await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
       const changed = '\n\nTab Context:\n- Available tabs:\n  • tabId 2: "Other Tab" (https://example.com/)'
       const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: changed }]))
-      // Below-threshold image + a non-repeat Tab Context (first-seen-or-changed passes through
-      // verbatim, which is a no-op) means nothing actually needs rewriting this call.
+      // Below-threshold image + a non-repeat Tab Context (first-seen-or-changed passes through verbatim, which is a no-op) means nothing actually needs rewriting this call.
       expect(result.hookType).toBe('pass')
       expect(getLastTabContext()).toBe(changed)
     })

@@ -75,9 +75,7 @@ let _bashOutputs = new Map<string, string>()
 // recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
 let _grepQueries = new Map<string, number>()
 
-// Last-seen "Tab Context:" block text from a browser-automation MCP tool result this
-// session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a
-// placeholder instead of resending the full open-tab list.
+// Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command
 // hash used by recordBashOutput/getBashOutputId) for which a store call

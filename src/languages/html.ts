@@ -32,10 +32,7 @@ export interface HtmlSection {
 // characters unconditionally regardless of which one is actually delimiting this value. A
 // per-character negative lookahead against the captured opener (rather than a static
 // exclusion charclass) is required so the body can legally contain the non-delimiting quote.
-// [\s\S] (not a bare `.`) so an attribute value spanning a literal newline -- valid HTML,
-// produced by some auto-formatters wrapping long id/class/href/src lists -- still matches
-// instead of silently dropping the symbol/ref. Mirrors liquid.ts's INCLUDE_RE/SECTION_RE/
-// RENDER_RE, which already use this idiom for the same quoted-value-capture shape.
+// [\s\S] (not a bare `.`) so an attribute value spanning a literal newline -- valid HTML, produced by some auto-formatters wrapping long id/class/href/src lists -- still matches instead of silently dropping the symbol/ref. Mirrors liquid.ts's INCLUDE_RE/SECTION_RE/RENDER_RE, which already use this idiom for the same quoted-value-capture shape.
 const ID_RE = /(?<![\w-])id=(["'])((?:(?!\1)[\s\S])+)\1/gi
 const CLASS_RE = /(?<![\w-])class=(["'])((?:(?!\1)[\s\S])+)\1/gi
 
