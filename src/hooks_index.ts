@@ -102,12 +102,13 @@ export function clearDirtyQueue(): void {
 }
 
 /**
- * pre_compact handler: snapshot the dirty queue and clear it.
+ * pre_compact handler: snapshot the dirty queue.
  *
  * Actual reindexing is Layer 7; for now this records the pending paths (via
- * {@link atomicWriteBytes} to a sidecar the indexer can pick up) and clears the
- * live queue so the post-compact session starts fresh. Never blocks: always
- * returns `pass`.
+ * {@link atomicWriteBytes} to a sidecar the indexer can pick up). The live
+ * queue is deliberately left intact (see the TOCTOU note in the handler body
+ * below) so nothing appended around compaction time is ever dropped. Never
+ * blocks: always returns `pass`.
  */
 export function preCompactIndexHandler(_event: HookEvent): HookOutput {
   const paths = getDirtyPaths()
