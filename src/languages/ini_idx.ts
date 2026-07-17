@@ -13,18 +13,10 @@ const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200
 const MAX_ENV_KEYS = 200
 
-// Column-0-anchored [name] header. Captures anything up to the next `]` — covers plain names
-// like [tool.black]/[mysqld:replica]/[group/sub] as well as quoted/spaced git-config-style
-// subsection headers like [branch "master"], which a name-charset allowlist would reject.
+// Column-0-anchored [name] header. Captures anything up to the next `]` — covers plain names like [tool.black]/[mysqld:replica]/[group/sub] as well as quoted/spaced git-config-style subsection headers like [branch "master"], which a name-charset allowlist would reject.
 const HEADER_RE = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/
 
-// Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace.
-// A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false `https`
-// key - the colon there is a URL scheme separator immediately followed by `//`, not a
-// key/value split. Mirrors the same `:(?!\/\/)` guard the live section reader's
-// KEYVALUE_HEADER_RE already applies (section_reader.ts).
-// Matches ENV_KEYVALUE_HEADER_RE in section_reader.ts - includes '.'/'-' so keys like
-// NODE-ENV or DB.HOST are indexed the same as the live section reader finds them.
+// Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace. A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false `https` key - the colon there is a URL scheme separator immediately followed by `//`, not a key/value split. Mirrors the same `:(?!\/\/)` guard the live section reader's KEYVALUE_HEADER_RE already applies (section_reader.ts). Matches ENV_KEYVALUE_HEADER_RE in section_reader.ts - includes '.'/'-' so keys like NODE-ENV or DB.HOST are indexed the same as the live section reader finds them.
 const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 
 export function extractIni(content: string, filePath: string): SymbolEntry[] {
@@ -95,9 +87,7 @@ export function extractEnv(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const lines = content.split(/\r?\n/)
-  // Tracks a quote char opened on a prior line whose multi-line value hasn't closed yet, so a
-  // continuation line's content (which can look like its own `KEY=value` assignment) is never
-  // re-scanned as a new key.
+  // Tracks a quote char opened on a prior line whose multi-line value hasn't closed yet, so a continuation line's content (which can look like its own `KEY=value` assignment) is never re-scanned as a new key.
   let openQuote: string | null = null
 
   for (let i = 0; i < lines.length; i++) {
