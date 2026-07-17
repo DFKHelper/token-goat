@@ -14,23 +14,34 @@ function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, ['output', 'body', 'text', 'content']);
 }
 
+/** Shared prologue for {@link preFetchHandler}/{@link postFetchHandler}: only a WebFetch call
+ * with a valid url and a session id is in scope; everything else passes through untouched. */
+function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
+  const toolName = getToolName(event);
+  if (toolName !== 'WebFetch') {
+    return null;
+  }
+
+  const toolInput = getToolInput(event);
+  const url = toolInput['url'] as string;
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  if (!event.sessionId) {
+    return null;
+  }
+
+  return { toolInput, url };
+}
+
 export function preFetchHandler(event: HookEvent): HookOutput {
   try {
-    const toolName = getToolName(event);
-
-    if (toolName !== 'WebFetch') {
+    const ctx = resolveWebFetchContext(event);
+    if (ctx === null) {
       return passOutput();
     }
-
-    const toolInput = getToolInput(event);
-    const url = toolInput['url'] as string;
-    if (!url || typeof url !== 'string') {
-      return passOutput();
-    }
-
-    if (!event.sessionId) {
-      return passOutput();
-    }
+    const { toolInput, url } = ctx;
 
     // Dedup key includes the prompt: WebFetch answers are prompt-specific, so a
     // repeat fetch of the same URL with a different question must not be redirected
@@ -63,21 +74,11 @@ export function preFetchHandler(event: HookEvent): HookOutput {
 
 export function postFetchHandler(event: HookEvent): HookOutput {
   try {
-    const toolName = getToolName(event);
-
-    if (toolName !== 'WebFetch') {
+    const ctx = resolveWebFetchContext(event);
+    if (ctx === null) {
       return passOutput();
     }
-
-    const toolInput = getToolInput(event);
-    const url = toolInput['url'] as string;
-    if (!url || typeof url !== 'string') {
-      return passOutput();
-    }
-
-    if (!event.sessionId) {
-      return passOutput();
-    }
+    const { toolInput, url } = ctx;
 
     recordStat('web_fetch');
 
