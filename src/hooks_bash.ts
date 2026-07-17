@@ -544,7 +544,7 @@ function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; i
 }
 
 /** Extracts file path from `tail -n X <path>` or `tail -X <path>` commands on source files. Excludes -f (follow), -c (byte mode), and +N (offset). */
-function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | null {
+function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
   if (/-f\b/.test(cmd)) return null // follow mode — legitimate streaming
   if (/-c\b/.test(cmd)) return null // byte mode
   if (/-n\s*\+/.test(cmd)) return null // tail from line N offset — legitimate
@@ -557,11 +557,12 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  return { filePath, isDoc }
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { filePath, isDoc, isConfig }
 }
 
 // Extracts file path from `Get-Content <path> -Tail N` or `Get-Content -Tail N <path>` (PowerShell).
-function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean } | null {
+function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
   // Match: Get-Content <file> -Tail <N> or Get-Content -Tail <N> <file>
   const tailMatch = /-Tail\s+(\d+)/i.exec(cmd)
   if (!tailMatch) return null
@@ -578,7 +579,8 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean 
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  return { filePath, isDoc }
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { filePath, isDoc, isConfig }
 }
 
 // Extracts file path from `Get-Content <path> | Select-Object -First N` (PowerShell).
@@ -1406,10 +1408,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
-    const { filePath, isDoc } = tailResult
-    const hint = isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    const { filePath, isDoc, isConfig } = tailResult
+    const hint = isConfig
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+      : isDoc
+        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
     return contextOutput('`tail` bypasses read hooks. ' + hint)
   }
@@ -1428,10 +1432,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
-    const { filePath, isDoc } = gcTailResult
-    const hint = isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    const { filePath, isDoc, isConfig } = gcTailResult
+    const hint = isConfig
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+      : isDoc
+        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
     return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + hint)
   }

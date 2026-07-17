@@ -533,6 +533,22 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  it('tail command on a config file suggests config-get, matching head\'s hint for the same file type (regression: extractTailFile did not classify isConfig, so `tail config.json` fell back to the generic read/skeleton hint that `head config.json` never gets)', () => {
+    const result = preBashHandler(makeBashEvent('tail -n 30 src/config.json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+    }
+  })
+
+  it('Get-Content -Tail on a config file suggests config-get, matching Select-Object -First\'s hint for the same file type (regression: extractGetContentTail did not classify isConfig)', () => {
+    const result = preBashHandler(makeBashEvent('Get-Content -Tail 30 src/config.json'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+    }
+  })
+
   it(
     'head -n 10 and tail -n 10 on the same file agree on the surgical threshold ' +
       '(regression: extractHeadFile used n<10 while extractTailFile used n<=10, so ' +
