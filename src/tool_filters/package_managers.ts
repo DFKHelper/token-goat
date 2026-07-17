@@ -81,6 +81,20 @@ const UV_DIFF_LINE_RE = /^\s+[+-]\s+\S/
 const UV_FREEZE_THRESHOLD = 50
 const UV_FREEZE_SHOW = 20
 
+// Shared by PipFilter and UvFilter: both cap `pip/uv pip list`/`freeze` output identically
+// (one package per line, no install noise to strip -- just cap the count).
+function compressFreezeList(text: string): string {
+  const lines = text.split('\n').filter((l) => l.trim())
+  const errorLines = lines.filter((l) => ERROR_SIGNAL_RE.test(l))
+  const pkgLines = lines.filter((l) => !ERROR_SIGNAL_RE.test(l))
+  if (pkgLines.length <= UV_FREEZE_THRESHOLD) return text.trimEnd()
+  const shown = pkgLines.slice(0, UV_FREEZE_SHOW)
+  const tail = pkgLines.slice(UV_FREEZE_SHOW)
+  const collapsed = [`[token-goat: collapsed ${tail.length} package lines]`]
+  const result = [...shown, ...collapsed, ...errorLines]
+  return result.join('\n')
+}
+
 // conda noise
 const CONDA_DOWNLOAD_RE =
   /^\s*(?:[A-Za-z0-9_\-.]+[\d.]+\s+\||\[[-#\s]+\]|\d+%|\d+\s*(?:KB|MB|kB|B)\/s|Downloading and Extracting Packages:)/
@@ -498,15 +512,7 @@ class PipFilter extends ToolFilter {
   // package per line) but can still run to hundreds of lines; cap it the same
   // way UvFilter._compressFreezeList caps `uv pip list`/`uv pip freeze`.
   private _compressFreezeList(text: string): string {
-    const lines = text.split('\n').filter((l) => l.trim())
-    const errorLines = lines.filter((l) => ERROR_SIGNAL_RE.test(l))
-    const pkgLines = lines.filter((l) => !ERROR_SIGNAL_RE.test(l))
-    if (pkgLines.length <= UV_FREEZE_THRESHOLD) return text.trimEnd()
-    const shown = pkgLines.slice(0, UV_FREEZE_SHOW)
-    const tail = pkgLines.slice(UV_FREEZE_SHOW)
-    const collapsed = [`[token-goat: collapsed ${tail.length} package lines]`]
-    const result = [...shown, ...collapsed, ...errorLines]
-    return result.join('\n')
+    return compressFreezeList(text)
   }
 }
 
@@ -563,15 +569,7 @@ class UvFilter extends ToolFilter {
   }
 
   private _compressFreezeList(text: string): string {
-    const lines = text.split('\n').filter((l) => l.trim())
-    const errorLines = lines.filter((l) => ERROR_SIGNAL_RE.test(l))
-    const pkgLines = lines.filter((l) => !ERROR_SIGNAL_RE.test(l))
-    if (pkgLines.length <= UV_FREEZE_THRESHOLD) return text.trimEnd()
-    const shown = pkgLines.slice(0, UV_FREEZE_SHOW)
-    const tail = pkgLines.slice(UV_FREEZE_SHOW)
-    const collapsed = [`[token-goat: collapsed ${tail.length} package lines]`]
-    const result = [...shown, ...collapsed, ...errorLines]
-    return result.join('\n')
+    return compressFreezeList(text)
   }
 }
 
