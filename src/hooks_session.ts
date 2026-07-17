@@ -1,7 +1,7 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, contextOutput } from './hooks_common.js';
+import { passOutput, contextOutput, getCwd } from './hooks_common.js';
 import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 
@@ -18,7 +18,7 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
     }
 
     const parts: string[] = [];
-    const cwd = event.raw['cwd'] as string | undefined;
+    const cwd = getCwd(event);
 
     if (cwd) {
       try {
@@ -67,7 +67,7 @@ function subagentStopHandler(event: HookEvent): HookOutput {
       return passOutput();
     }
 
-    const cwd = event.raw['cwd'] as string | undefined;
+    const cwd = getCwd(event);
     if (!cwd) {
       return passOutput();
     }
