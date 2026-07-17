@@ -175,7 +175,6 @@ function wrapAndCompress(
   opts: RunOptions,
 ): number {
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))
-  const start = Date.now()
   const result = spawnSync(command, {
     ...baseSpawnOptions(timeout, opts.cwd, opts.env),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -223,12 +222,12 @@ function wrapAndCompress(
   const body = text + marker
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 
-  recordSavings(compressed, Date.now() - start)
+  recordSavings(compressed)
   return exitCode
 }
 
 /** Best-effort: record the savings stat. recordStat already swallows DB errors. */
-function recordSavings(result: CompressedOutput, _elapsedMs: number): void {
+function recordSavings(result: CompressedOutput): void {
   if (result.bytesSaved < MIN_RECORD_STAT_BYTES) return
   recordStat(`bash_compress:${result.filterName}`, result.bytesSaved, result.tokensSaved)
 }
