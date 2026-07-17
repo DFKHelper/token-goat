@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   extractSection,
   listSections,
-  listAllSections,
   normalizeHeading,
   readSection,
   findContainingSection,
@@ -228,6 +227,13 @@ describe('listSections', () => {
   it('returns an empty array for an unreadable file', () => {
     expect(listSections('/no/such/path/nope.md')).toEqual([])
   })
+
+  it('returns all headings at all nesting levels, deeper document', () => {
+    const content = ['# Title', '## Sub A', '### Deep A1', '## Sub B'].join('\n')
+    const file = tmpFile('nested.md', content)
+    const sections = listSections(file)
+    expect(sections).toEqual(['Title', 'Sub A', 'Deep A1', 'Sub B'])
+  })
 })
 
 describe('normalizeHeading', () => {
@@ -371,19 +377,6 @@ describe('extractSection — unambiguous prefix redirect (#92)', () => {
   it('does NOT use the prefix fallback when an ordinal is given', () => {
     // An ordinal implies the caller knows the exact heading text, so a prefix-only query with `#N` must miss rather than silently redirect.
     expect(extractSection(MD_PREFIX, 'Business#1')).toBeNull()
-  })
-})
-
-describe('listAllSections', () => {
-  it('returns all headings at all nesting levels', () => {
-    const content = ['# Title', '## Sub A', '### Deep A1', '## Sub B'].join('\n')
-    const file = tmpFile('nested.md', content)
-    const sections = listAllSections(file)
-    expect(sections).toEqual(['Title', 'Sub A', 'Deep A1', 'Sub B'])
-  })
-
-  it('returns an empty array for an unreadable file', () => {
-    expect(listAllSections('/no/such/path/nope.md')).toEqual([])
   })
 })
 
@@ -659,7 +652,7 @@ describe('listSections regression: nested headings visibility', () => {
     // This test verifies that when using section --list on a document with nested headings,
     // the user sees the complete hierarchy, not just the top-level headings.
     // Before the fix, listSections would only return ['Main Title'] (the shallowest level).
-    // After the fix (using listAllSections), it should return all levels.
+    // After the fix (to findHeaders' underlying nesting-level logic), it returns all levels.
     const sections = listSections(file)
     expect(sections).toContain('Section A')
     expect(sections).toContain('Subsection A1')
@@ -708,7 +701,7 @@ describe('BOM stripping regression', () => {
     const BOM = '﻿'
     const md = BOM + '# First\n## Second\n### Third'
     const file = tmpFile('nested-bom.md', md)
-    const sections = listAllSections(file)
+    const sections = listSections(file)
     expect(sections).toEqual(['First', 'Second', 'Third'])
   })
 })

@@ -14,7 +14,6 @@ vi.mock('../src/index_reader.js', () => ({
 vi.mock('../src/section_reader.js', () => ({
   readSection: vi.fn(() => null),
   listSections: vi.fn(() => []),
-  listAllSections: vi.fn(() => []),
   extractSection: vi.fn(() => null),
   findContainingSection: vi.fn(() => null),
 }))
@@ -77,7 +76,7 @@ import {
 import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
-import { readSection, listSections, listAllSections, findContainingSection } from '../src/section_reader.js'
+import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
 import { indexFileSync } from '../src/parser.js'
 import { resolveCallers } from '../src/graph_commands.js'
@@ -95,7 +94,6 @@ const mockResolveCallers = vi.mocked(resolveCallers)
 const mockQueryRefs = vi.mocked(queryRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
-const mockListAllSections = vi.mocked(listAllSections)
 const mockIndexFileSync = vi.mocked(indexFileSync)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockTakeScreenshot = vi.mocked(takeScreenshot)
@@ -807,21 +805,21 @@ describe('read_commands', () => {
 
     it('splits on the LAST :: so a file path containing a literal :: still resolves the correct heading (#m2)', () => {
       mockReadSection.mockReturnValue(null)
-      mockListAllSections.mockReturnValue([])
+      mockListSections.mockReturnValue([])
       runSection({ spec: 'a::b::Heading' })
       expect(mockReadSection).toHaveBeenCalledWith('a::b', 'Heading')
     })
 
     it('returns 1 when section not found', () => {
       mockReadSection.mockReturnValue(null)
-      mockListAllSections.mockReturnValue(['Other'])
+      mockListSections.mockReturnValue(['Other'])
       const { text: stderr } = runSection({ spec: 'README.md::Install' })
       expect(stderr).toContain('Install')
     })
 
     it('caps the heading list on section miss at DIDYOUMEAN_LIMIT (5), matching runRead\'s "did you mean" cap, instead of dumping every heading (regression: unbounded "Available sections" dump)', () => {
       mockReadSection.mockReturnValue(null)
-      mockListAllSections.mockReturnValue([
+      mockListSections.mockReturnValue([
         'Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing', 'License',
       ])
       const { text: stderr } = runSection({ spec: 'README.md::Nonexistent' })
