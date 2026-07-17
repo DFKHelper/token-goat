@@ -218,12 +218,17 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
   const ws = requireSheet(wb, sheetName)
   const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
+  // Track the sheet-wide max column inline during this row scan instead of calling
+  // usedRange(ws) afterward, which would redo an identical full eachCell pass over every
+  // row just to recompute the same maximum this loop already sees one row at a time.
+  let sheetCols = 0
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
     let maxCol = 0
     row.eachCell({ includeEmpty: false }, (_c, colNumber) => {
       if (colNumber > maxCol) maxCol = colNumber
     })
+    if (maxCol > sheetCols) sheetCols = maxCol
     const rowVals: string[] = []
     for (let c = 1; c <= maxCol; c++) {
       rowVals.push(cellText(ws.getCell(encodeCell({ r, c }))))
@@ -234,7 +239,6 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
   // sheetToCsv already applies below) rather than to the header's own width - a data row
   // wider than the header (e.g. trailing notes columns) must still line up under a header
   // cell, or the CSV output desyncs which value belongs to which column.
-  const { cols: sheetCols } = usedRange(ws)
   const header = Array.from({ length: sheetCols }, (_, i) => String(aoa[0]?.[i] ?? ''))
   const dataRows = aoa.slice(1, 1 + rows).map((r) =>
     Array.from({ length: sheetCols }, (_, i) => String(r[i] ?? '')),
