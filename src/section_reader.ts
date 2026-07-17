@@ -498,9 +498,10 @@ function buildSectionResult(
  * case-insensitive on the trimmed heading text. Without an ordinal the first
  * occurrence by line order is returned.
  */
-export function extractSection(text: string, headingSpec: string): SectionResult | null {
-  // Language is unknown here (we only have text); the sniffer handles it.
-  const { headers, kind } = findHeaders(text, 'unknown')
+/** Shared by {@link extractSection}/{@link readSection}: resolve `headingSpec` against
+ * `text`'s header structure (parsed for `language`) and build the section result. */
+function resolveSectionFromText(text: string, headingSpec: string, language: string): SectionResult | null {
+  const { headers, kind } = findHeaders(text, language)
   const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
   if (base.length === 0) return null
 
@@ -509,6 +510,11 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   const resolved = resolveHeaderPos(headers, base, ordinal)
   if (resolved === null) return null
   return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
+}
+
+export function extractSection(text: string, headingSpec: string): SectionResult | null {
+  // Language is unknown here (we only have text); the sniffer handles it.
+  return resolveSectionFromText(text, headingSpec, 'unknown')
 }
 
 /**
@@ -538,16 +544,7 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   const text = readTextForSections(filePath)
   if (text === null) return null
 
-  const language = detectLanguage(filePath)
-  const { headers, kind } = findHeaders(text, language)
-  const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
-  if (base.length === 0) return null
-
-  const lines = text.split('\n')
-
-  const resolved = resolveHeaderPos(headers, base, ordinal)
-  if (resolved === null) return null
-  return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
+  return resolveSectionFromText(text, headingSpec, detectLanguage(filePath))
 }
 
 // Finds the tightest (innermost) heading section whose line range contains a symbol's
