@@ -10,12 +10,7 @@ import { foldPath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
-// Remove every indexed row (symbols, refs, files) and embedding chunk for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on.
-// Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash
-// or thrown error between the two deletes can never leave orphaned chunks/chunk_vectors rows for
-// a files row that no longer exists -- nothing else ever cleans those up, since
-// pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete
-// alone (without the second) would already have removed the file from.
+// Remove every indexed row (symbols, refs, files) and embedding chunk for one file. Shared primitive the full reindex prune and any future vanished-file reconciliation both build on. Wrapped in a single transaction (mirroring upsertChunks' pattern in embeddings.ts) so a crash or thrown error between the two deletes can never leave orphaned chunks/chunk_vectors rows for a files row that no longer exists -- nothing else ever cleans those up, since pruneDeletedFiles only iterates `SELECT DISTINCT path FROM files`, which the first delete alone (without the second) would already have removed the file from.
 export function removeFileFromIndex(db: DbHandle, filePath: string): void {
   const tx = db.transaction(() => {
     deleteFileRows(db, filePath)
@@ -27,6 +22,8 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
 // A drive root (`c:/`) or empty prefix would scope the prune to an entire drive across every project in the shared global DB; refuse it so a malformed root can never mass-delete another project's rows.
 function isTooShallowToPrune(rootPrefix: string): boolean {
   const segments = rootPrefix.split('/').filter((s) => s.length > 0 && !/^[a-z]:$/i.test(s))
+  // A WSL-mounted drive root (/mnt/c) is the same "entire drive" hazard as a bare drive letter -- recognize it too, in case a project root is ever literally the mount root rather than a real path under it.
+  if (segments.length === 2 && segments[0]?.toLowerCase() === 'mnt' && /^[a-z]$/i.test(segments[1] ?? '')) return true
   return segments.length === 0
 }
 
@@ -35,26 +32,30 @@ function foldedBounds(rootPrefix: string): { foldedRootPrefix: string; foldedPre
   return { foldedRootPrefix: foldPath(rootPrefix), foldedPrefix: foldPath(prefix) }
 }
 
-// Scan indexed files under rootPrefix and return the absolute paths whose file no longer exists
-// on disk, WITHOUT deleting anything. Shared by pruneDeletedFiles (which deletes them
-// immediately) and sweepKnownRoots' anomaly-ratio guard, which needs the count of what *would*
-// be deleted before committing to the mutating delete.
-function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
-  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
+function allIndexedPaths(dbPath: string): string[] {
   const db = getDb(dbPath)
   const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
-  const deletable: string[] = []
-  for (const { path: p } of rows) {
+  return rows.map((r) => r.path)
+}
+
+// Every distinct indexed path folded under rootPrefix, WITHOUT filtering by disk existence. Shared by findDeletablePaths and countFilesUnderRoot so both match the same fold/prefix rule.
+function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
+  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
+  return allIndexedPaths(dbPath).filter((p) => {
     const foldedP = foldPath(p)
-    if (foldedP !== foldedRootPrefix && !foldedP.startsWith(foldedPrefix)) continue
+    return foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)
+  })
+}
+
+// Scan indexed files under rootPrefix and return the absolute paths whose file no longer exists on disk, WITHOUT deleting anything. Shared by pruneDeletedFiles (which deletes them immediately) and sweepKnownRoots' anomaly-ratio guard, which needs the count of what *would* be deleted before committing to the mutating delete.
+function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
+  const deletable: string[] = []
+  for (const p of foldedPathsUnderRoot(rootPrefix, dbPath)) {
     let stillExists: boolean
     try {
       stillExists = fs.statSync(p, { throwIfNoEntry: false }) !== undefined
     } catch {
-      // Stat failed for a reason other than "file is gone" (EPERM, EBUSY, an
-      // antivirus/search-indexer holding a transient lock, etc.). We can't
-      // confirm the file was actually deleted, so don't treat it as deletable
-      // this pass -- it will be re-evaluated the next time pruning runs.
+      // Stat failed for a reason other than "file is gone" (EPERM, EBUSY, an antivirus/search-indexer holding a transient lock, etc.). We can't confirm the file was actually deleted, so don't treat it as deletable this pass -- it will be re-evaluated the next time pruning runs.
       continue
     }
     if (!stillExists) deletable.push(p)
@@ -64,59 +65,38 @@ function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
 
 /** Count indexed file rows under rootPrefix, folded the same way findDeletablePaths matches them. Used by sweepKnownRoots to size its anomaly-ratio guard. */
 export function countFilesUnderRoot(rootPrefix: string, dbPath: string = globalDbPath()): number {
-  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
-  const db = getDb(dbPath)
-  const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
-  let count = 0
-  for (const { path: p } of rows) {
-    const foldedP = foldPath(p)
-    if (foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)) count += 1
+  return foldedPathsUnderRoot(rootPrefix, dbPath).length
+}
+
+function removeFilesBestEffort(db: DbHandle, paths: string[]): string[] {
+  const removed: string[] = []
+  for (const p of paths) {
+    try {
+      removeFileFromIndex(db, p)
+      removed.push(p)
+    } catch {
+      // Best-effort: one file's delete failure must not abort pruning the rest.
+    }
   }
-  return count
+  return removed
 }
 
 // Remove index rows for files under rootPrefix that no longer exist on disk. Scoped by absolute-path prefix so the shared global DB never prunes another project's rows, and keeps every file still present on disk. Returns the count pruned.
 export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbPath()): number {
   if (isTooShallowToPrune(rootPrefix)) return 0
   const db = getDb(dbPath)
-  let pruned = 0
-  for (const p of findDeletablePaths(rootPrefix, dbPath)) {
-    try {
-      removeFileFromIndex(db, p)
-      pruned += 1
-    } catch {
-      // Best-effort: one file's delete failure must not abort pruning the rest.
-    }
-  }
-  return pruned
+  return removeFilesBestEffort(db, findDeletablePaths(rootPrefix, dbPath)).length
 }
 
-// Scan all indexed files and return the absolute paths that live under the OS system temp
-// directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike
-// findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral,
-// so any indexed row under it is stale regardless of which scratch checkout produced it.
-// Exported so cmdProject's --dry-run can report what would be pruned before committing.
+// Scan all indexed files and return the absolute paths that live under the OS system temp directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral, so any indexed row under it is stale regardless of which scratch checkout produced it. Exported so cmdProject's --dry-run can report what would be pruned before committing.
 export function findSystemTempFiles(dbPath: string = globalDbPath()): string[] {
-  const db = getDb(dbPath)
-  const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
-  return rows.map((r) => r.path).filter((p) => isUnderSystemTemp(p))
+  return allIndexedPaths(dbPath).filter((p) => isUnderSystemTemp(p))
 }
 
-// Remove index rows for every indexed file under the OS system temp directory -- the
-// retroactive half of the system-temp pollution fix (the prevention half gates
-// hooks_edit.ts's dirty-queue enqueue). Returns the pruned paths.
+// Remove index rows for every indexed file under the OS system temp directory -- the retroactive half of the system-temp pollution fix (the prevention half gates hooks_edit.ts's dirty-queue enqueue). Returns the pruned paths.
 export function pruneSystemTempFiles(dbPath: string = globalDbPath()): string[] {
   const db = getDb(dbPath)
-  const pruned: string[] = []
-  for (const p of findSystemTempFiles(dbPath)) {
-    try {
-      removeFileFromIndex(db, p)
-      pruned.push(p)
-    } catch {
-      // Best-effort: one file's delete failure must not abort pruning the rest.
-    }
-  }
-  return pruned
+  return removeFilesBestEffort(db, findSystemTempFiles(dbPath))
 }
 
 /**
@@ -143,12 +123,7 @@ export function recordKnownRoot(filePath: string, dbPath: string = globalDbPath(
 /** How long a known root must read as unreachable, across consecutive sweeps, before it's treated as genuinely gone (renamed/deleted project) rather than a transient outage (sleeping external disk, disconnected network share, an unmounted drive) -- see sweepKnownRoots. */
 export const KNOWN_ROOT_MISSING_GRACE_MS = 7 * 24 * 60 * 60 * 1000
 
-// A live root should only ever lose a handful of files between sweeps under normal churn. If a
-// sweep would delete more than this fraction of a *reachable* root's indexed rows in one pass,
-// that's far more likely to mean a mount point/subdirectory inside the root went offline than
-// that the files were actually deleted -- flag instead of deleting so a human can confirm before
-// the rows are gone for good. Does not apply to a root confirmed gone past the grace period
-// above: full deletion there is the correct, intended outcome.
+// A live root should only ever lose a handful of files between sweeps under normal churn. If a sweep would delete more than this fraction of a *reachable* root's indexed rows in one pass, that's far more likely to mean a mount point/subdirectory inside the root went offline than that the files were actually deleted -- flag instead of deleting so a human can confirm before the rows are gone for good. Does not apply to a root confirmed gone past the grace period above: full deletion there is the correct, intended outcome.
 const ANOMALY_PRUNE_RATIO = 0.5
 // Paired with the ratio above so a small project losing e.g. 2 of its 3 files to normal editing
 // churn never gets flagged as an anomaly -- only a genuinely large, suspicious drop does.
@@ -238,14 +213,7 @@ export function sweepKnownRoots(
       continue
     }
 
-    for (const p of deletable) {
-      try {
-        removeFileFromIndex(db, p)
-        prunedRows += 1
-      } catch {
-        // Best-effort: one file's delete failure must not abort the rest of the sweep.
-      }
-    }
+    prunedRows += removeFilesBestEffort(db, deletable).length
     prunedRoots.push(root)
   }
 
