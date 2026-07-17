@@ -58,18 +58,6 @@ export function dataDirForHome(homeDir: string): string {
 }
 
 /**
- * Compute the platform-appropriate data directory for the *current* process.
- *
- * Matches platformdirs.user_data_dir("token-goat", "dfk-helper"):
- *   - Windows:   %LOCALAPPDATA%\dfk-helper\token-goat
- *   - macOS:     ~/Library/Application Support/token-goat
- *   - Linux/BSD: $XDG_DATA_HOME/token-goat (falls back to ~/.local/share/token-goat)
- *
- * Env-var overrides are validated via `safeEnvDir`; malformed values fall back
- * to the home-based default (via `dataDirForHome`) so a crafted env var
- * cannot redirect data paths.
- */
-/**
  * dataDirForHome(os.homedir()) is the correct real-machine fallback when no platform env var
  * override is present -- but tests/setup/isolate-home.ts unconditionally pins LOCALAPPDATA/
  * XDG_DATA_HOME for every Vitest worker specifically so this fallback is never reached in
@@ -96,6 +84,18 @@ function homeFallbackOrGuard(): string {
   return dataDirForHome(os.homedir())
 }
 
+/**
+ * Compute the platform-appropriate data directory for the *current* process.
+ *
+ * Matches platformdirs.user_data_dir("token-goat", "dfk-helper"):
+ *   - Windows:   %LOCALAPPDATA%\dfk-helper\token-goat
+ *   - macOS:     ~/Library/Application Support/token-goat
+ *   - Linux/BSD: $XDG_DATA_HOME/token-goat (falls back to ~/.local/share/token-goat)
+ *
+ * Env-var overrides are validated via `safeEnvDir`; malformed values fall back
+ * to the home-based default (via `dataDirForHome`) so a crafted env var
+ * cannot redirect data paths.
+ */
 function defaultDataDir(): string {
   const platform = process.platform
   if (platform === 'win32') {
