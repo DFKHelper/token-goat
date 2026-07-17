@@ -13,51 +13,18 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 
 /**
- * Pull the textual result out of a tool_response payload. Handles the plain
- * string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array,
- * the common `{output|text|body|content}` string fields, and finally a
- * JSON.stringify fallback so structured results still cache.
- */
-export function extractMcpResultText(raw: Record<string, unknown>): string {
-  const tr = raw['tool_response']
-  if (typeof tr === 'string') return tr
-  if (!tr || typeof tr !== 'object') return ''
-  const resp = tr as Record<string, unknown>
-  const content = resp['content']
-  if (Array.isArray(content)) {
-    const parts: string[] = []
-    for (const block of content) {
-      if (block && typeof block === 'object') {
-        const text = (block as Record<string, unknown>)['text']
-        if (typeof text === 'string') parts.push(text)
-      }
-    }
-    if (parts.length > 0) return parts.join('\n')
-  }
-  for (const key of ['output', 'text', 'body']) {
-    if (typeof resp[key] === 'string') return resp[key] as string
-  }
-  if (typeof content === 'string') return content
-  try {
-    return JSON.stringify(resp)
-  } catch {
-    return ''
-  }
-}
-
-/**
  * Return true when a tool_response is an MCP `CallToolResult` carrying an
  * in-band `isError: true` — a genuine tool-level failure ("tool not found",
  * bad params, a downstream API error surfaced through MCP) rather than a hard
  * transport failure. Such a response is still a normal, successful protocol
- * round trip, so {@link extractMcpResultText} happily returns its text; the
+ * round trip, so {@link extractToolResultText} happily returns its text; the
  * caller must exclude it from caching so a one-off or transient error is not
  * served back to every identical retry until the dedup window ages out.
  */
@@ -93,7 +60,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
   // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
   if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
-  const resultText = extractMcpResultText(event.raw)
+  const resultText = extractToolResultText(event.raw)
   if (!resultText) return passOutput()
   const id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
   // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts):

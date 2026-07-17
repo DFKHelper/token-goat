@@ -64,6 +64,34 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   return ''
 }
 
+/** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
+export function extractToolResultText(raw: Record<string, unknown>): string {
+  const tr = raw['tool_response']
+  if (typeof tr === 'string') return tr
+  if (!tr || typeof tr !== 'object') return ''
+  const resp = tr as Record<string, unknown>
+  const content = resp['content']
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const block of content) {
+      if (block && typeof block === 'object') {
+        const text = (block as Record<string, unknown>)['text']
+        if (typeof text === 'string') parts.push(text)
+      }
+    }
+    if (parts.length > 0) return parts.join('\n')
+  }
+  for (const key of ['output', 'text', 'body']) {
+    if (typeof resp[key] === 'string') return resp[key] as string
+  }
+  if (typeof content === 'string') return content
+  try {
+    return JSON.stringify(resp)
+  } catch {
+    return ''
+  }
+}
+
 /** Build a `pass` output — let the tool call proceed unchanged. */
 export function passOutput(): HookOutput {
   return { hookType: 'pass' }
