@@ -75,6 +75,7 @@ import {
   runScreenshot,
 } from '../src/read_commands.js'
 import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
+import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
@@ -2790,6 +2791,109 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
     expect(mockQueryRefs).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'helperFn', filePath: expect.any(String) }),
     )
+  })
+})
+
+// Type-resolved "exact" tier (ts_refs.ts): name-based matching alone conflates two unrelated
+// symbols sharing a name. These tests exercise the real querySymbols->resolveTypedRefs wiring
+// end to end through runRefs/runRefsSingle (index_reader.js is mocked at the top of this file,
+// but ts_refs.ts is NOT, so these hit the real TypeScript compiler API against real temp files).
+describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_refs.ts)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-refs-typed-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('excludes the false-positive reference to an unrelated same-named method, keeps the true one', () => {
+    const fooSrc = ['export class Foo {', '  run(): void {', "    console.log('foo')", '  }', '}', ''].join('\n')
+    const barSrc = ['export class Bar {', '  run(): void {', "    console.log('bar')", '  }', '}', ''].join('\n')
+    const callerASrc = ["import { Foo } from './fileA'", 'const foo = new Foo()', 'foo.run()', ''].join('\n')
+    const callerBSrc = ["import { Bar } from './fileB'", 'const bar = new Bar()', 'bar.run()', ''].join('\n')
+    const fileA = path.join(dir, 'fileA.ts')
+    const callerA = path.join(dir, 'callerA.ts')
+    const callerB = path.join(dir, 'callerB.ts')
+    fs.writeFileSync(fileA, fooSrc)
+    fs.writeFileSync(path.join(dir, 'fileB.ts'), barSrc)
+    fs.writeFileSync(callerA, callerASrc)
+    fs.writeFileSync(callerB, callerBSrc)
+
+    mockQuerySymbols.mockReturnValue([
+      { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '' } satisfies SymbolEntry,
+    ])
+    mockQueryRefs.mockReturnValue([
+      // col 0 mirrors the real indexer's column semantics for `foo.run()` -- parser.ts's
+      // extractRefs records the call-expression's own start (at `foo`), not the callee
+      // identifier's column; both lines below start flush left, so that start column is 0.
+      { filePath: callerA, name: 'run', line: 3, col: 0, context: '' },
+      { filePath: callerB, name: 'run', line: 3, col: 0, context: '' },
+    ])
+
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: `${fileA}::run` })
+      expect(code).toBe(0)
+    })
+
+    expect(stdout).toContain(callerA)
+    expect(stdout).not.toContain(callerB)
+  })
+
+  it('falls back to unfiltered name-based results when the definition is ambiguous (querySymbols finds 2+ matches)', () => {
+    mockQuerySymbols.mockReturnValue([
+      { name: 'run', kind: 'method', filePath: 'src/a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'method', filePath: 'src/b.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+    ])
+    mockQueryRefs.mockReturnValue([
+      { filePath: 'src/x.ts', name: 'run', line: 1, col: 0, context: '' },
+    ])
+
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'run' })
+      expect(code).toBe(0)
+    })
+
+    expect(stdout).toContain('src/x.ts')
+  })
+
+  it('falls back to unfiltered name-based results when the definition is not a TypeScript file', () => {
+    mockQuerySymbols.mockReturnValue([
+      { name: 'run', kind: 'function', filePath: 'src/legacy.py', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+    ])
+    mockQueryRefs.mockReturnValue([
+      { filePath: 'src/x.py', name: 'run', line: 1, col: 0, context: '' },
+    ])
+
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'run' })
+      expect(code).toBe(0)
+    })
+
+    expect(stdout).toContain('src/x.py')
+  })
+
+  it('never crashes/hangs when the definition file does not actually exist on disk', () => {
+    mockQuerySymbols.mockReturnValue([
+      { name: 'run', kind: 'function', filePath: path.join(dir, 'missing.ts'), lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+    ])
+    mockQueryRefs.mockReturnValue([
+      { filePath: path.join(dir, 'caller.ts'), name: 'run', line: 1, col: 0, context: '' },
+    ])
+
+    const { stdout, stderr } = capture(() => {
+      const code = runRefs({ spec: 'run' })
+      expect(code).toBe(0)
+    })
+
+    expect(stderr).toBe('')
+    expect(stdout).toContain('caller.ts')
   })
 })
 

@@ -33,6 +33,7 @@ import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
+import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -739,6 +740,43 @@ export interface RefsOptions {
   limit?: number
 }
 
+/**
+ * Best-effort "exact" tier for `refs`: name-based matching (via `queryRefs`) conflates two
+ * unrelated symbols that happen to share a name -- see `ts_refs.ts`'s module doc. When the
+ * symbol's definition is unambiguous (exactly one `querySymbols` hit for `symName`/`file`) and is
+ * a TypeScript file, this narrows `results` using the TypeScript compiler API's type checker.
+ *
+ * Always degrades to `results` unchanged when the tier can't apply: ambiguous or missing
+ * definition, non-TS definition file, `typescript` unavailable, or any resolution failure. No CLI
+ * flag gates this -- it applies silently whenever the file type qualifies, the same
+ * best-available-accuracy pattern `embeddings.ts`'s `isAvailable()`-gated semantic tier uses.
+ */
+function applyTypedRefsTier(
+  symName: string,
+  file: string | undefined,
+  results: RefEntry[],
+): RefEntry[] {
+  if (results.length === 0) return results
+  try {
+    const symbolQueryOpts: Parameters<typeof querySymbols>[0] = { name: symName, limit: 2 }
+    if (file !== undefined) symbolQueryOpts.filePath = file
+    const defs = querySymbols(symbolQueryOpts)
+    if (defs.length !== 1) return results
+    const def = defs[0]
+    if (def === undefined || !isTsPath(def.filePath)) return results
+    const typed = resolveTypedRefs({
+      defFile: def.filePath,
+      defLineStart: def.lineStart,
+      defLineEnd: def.lineEnd,
+      symbolName: symName,
+      candidates: results,
+    })
+    return typed ?? results
+  } catch {
+    return results
+  }
+}
+
 /** Splits a refs spec into an optional `::`-prefixed file scope and the comma-separated symbol list after it. With no `::`, the whole spec is the comma-separated symbol list; with no comma, a single-element list (the original single-symbol form). */
 function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: string[] } {
   const colonIdx = findSpecSeparator(spec)
@@ -777,7 +815,7 @@ export function runRefs(opts: RefsOptions): number {
     // anywhere in the codebase, so --callers must never scope the search to that file.
     if (file !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
-    const results = queryRefs(queryOpts)
+    const results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
@@ -817,10 +855,11 @@ function runRefsSingle(opts: RefsOptions): number {
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // Same reasoning as runRefs above: `file` only disambiguates which same-named symbol
   // this is, by its defining file — it must not restrict --callers to that one file.
-  if (symbol !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
+  const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
+  if (defFileHint !== undefined && opts.callers !== true) queryOpts.filePath = defFileHint
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
 
-  const results = queryRefs(queryOpts)
+  const results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
 
   if (results.length === 0) {
     emitErr(`No references found for '${symName}'`)

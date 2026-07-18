@@ -20,6 +20,12 @@ const EXTERNAL_NATIVE_DEPS = [
   '@modelcontextprotocol/sdk',
   '@modelcontextprotocol/sdk/*',
   '@xenova/transformers',
+  // Not a native addon, but the same "optionalDependencies entry must not get statically
+  // inlined" reasoning applies: the full TypeScript compiler (ts_refs.ts's lazily-`require`d
+  // type-resolved `refs` tier) is multiple MB of pure JS. Bundling it would both bloat
+  // dist/token-goat.mjs for every install and, per the comment above, defeat graceful
+  // degradation on installs that skip optional deps.
+  'typescript',
 ]
 
 await esbuild.build({
