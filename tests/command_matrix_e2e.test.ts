@@ -1055,6 +1055,61 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const parsed = JSON.parse(rj.stdout) as { failures: unknown[] }
     expect(parsed.failures.length).toBeGreaterThan(0)
+
+    // --delta: first invocation for this --key has no baseline yet, so the current failure is
+    // reported as newly-failing rather than an empty/silent delta.
+    const first = run(['failures', '--delta', '--key', 'matrix-e2e'], { input })
+    expect(first.status, first.stderr).toBe(0)
+    expect(first.stdout).toContain('No baseline yet')
+    expect(first.stdout).toContain('test_add')
+
+    // Second invocation with the SAME failure: nothing newly failing/fixed, one still-failing
+    // (reported as a count, not a re-dump of the block body).
+    const second = run(['failures', '--delta', '--key', 'matrix-e2e'], { input })
+    expect(second.status, second.stderr).toBe(0)
+    expect(second.stdout).toContain('Newly failing (0)')
+    expect(second.stdout).toContain('Newly fixed (0)')
+    expect(second.stdout).toContain('Still failing (unchanged): 1')
+
+    // Third invocation with a different failing test: the old one is newly-fixed, the new one is
+    // newly-failing.
+    const changedInput = [
+      '=== FAILURES ===',
+      '______ test_subtract ______',
+      'def test_subtract():',
+      '    assert 1 == 0',
+      'E   AssertionError: assert 1 == 0',
+      '',
+      'test_math.py:9: AssertionError',
+      '=== 1 failed in 0.05s ===',
+    ].join('\n')
+    const third = run(['failures', '--delta', '--key', 'matrix-e2e'], { input: changedInput })
+    expect(third.status, third.stderr).toBe(0)
+    expect(third.stdout).toContain('Newly failing (1)')
+    expect(third.stdout).toContain('test_subtract')
+    expect(third.stdout).toContain('Newly fixed (1)')
+    expect(third.stdout).toContain('test_add')
+
+    // --json shape for --delta: hasBaseline, newlyFailing/newlyFixed arrays, stillFailingCount
+    // (not a full stillFailing array).
+    const fourthJson = run(['failures', '--delta', '--key', 'matrix-e2e-json', '--json'], { input })
+    expect(fourthJson.status, fourthJson.stderr).toBe(0)
+    const firstDelta = JSON.parse(fourthJson.stdout) as { hasBaseline: boolean; newlyFailing: string[] }
+    expect(firstDelta.hasBaseline).toBe(false)
+    expect(firstDelta.newlyFailing.length).toBeGreaterThan(0)
+    const fifthJson = run(['failures', '--delta', '--key', 'matrix-e2e-json', '--json'], { input })
+    const secondDelta = JSON.parse(fifthJson.stdout) as {
+      hasBaseline: boolean
+      newlyFailing: string[]
+      newlyFixed: string[]
+      stillFailingCount: number
+      stillFailing?: unknown
+    }
+    expect(secondDelta.hasBaseline).toBe(true)
+    expect(secondDelta.newlyFailing).toEqual([])
+    expect(secondDelta.newlyFixed).toEqual([])
+    expect(secondDelta.stillFailingCount).toBe(1)
+    expect(secondDelta.stillFailing).toBeUndefined()
   },
   todo: () => {
     // Write a temp file with a TODO marker and confirm it's found.
