@@ -98,6 +98,7 @@ import {
   findSpecSeparator,
   runSemantic,
 } from './read_commands.js'
+import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
@@ -298,6 +299,14 @@ function cmdMap(opts: { compact?: boolean }): void {
   const compact = opts.compact === true
   const map = buildProjectMap(process.cwd(), { compact })
   out(formatProjectMap(map, compact))
+}
+
+function cmdBridgesStatus(opts: { json?: boolean }): void {
+  if (opts.json === true) {
+    out(JSON.stringify(bridgesStatusToJson(BRIDGE_CAPABILITY_MATRIX)))
+  } else {
+    out(formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX))
+  }
 }
 
 // Runs an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic as tools. The returned promise only resolves once the underlying Server reports its connection closed (via the Protocol-level `onclose` hook, set after `connect()` so it's not clobbered by the wiring `connect()` itself does to the transport's own `onclose`) -- resolving early here would let `run()`'s caller (main.ts) return while the process still has useful work queued on stdin.
@@ -2099,6 +2108,12 @@ export function buildProgram(): Command {
     .description('project overview')
     .option('-c, --compact', 'compact, low-token summary')
     .action(guard(cmdMap))
+
+  program
+    .command('bridges-status')
+    .description('hook-event parity matrix across every AI-harness bridge (read-only static analysis, never invokes a real harness binary)')
+    .option('--json', 'emit the matrix as JSON instead of text')
+    .action(guard(cmdBridgesStatus))
 
   program
     .command('mcp-serve')

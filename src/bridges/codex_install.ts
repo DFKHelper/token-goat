@@ -25,7 +25,10 @@
  *   array-of-tables block (Codex's real hook config shape; verified against
  *   OpenAI's Codex hooks documentation) wiring `PreToolUse`/`PostToolUse` for
  *   the three Codex-specific matchers the README documents: `view_image|Bash`,
- *   `apply_patch`, `web_search`. Parsed/serialized with `smol-toml`, the same
+ *   `apply_patch`, `web_search` -- plus three matcher-less global events,
+ *   `PreCompact`/`UserPromptSubmit`/`SubagentStop`, matching what Claude Code
+ *   and Grok already wire (see {@link CODEX_GLOBAL_HOOK_EVENTS}'s docstring).
+ *   Parsed/serialized with `smol-toml`, the same
  *   library `config.ts` already uses for token-goat's own config file, so no
  *   TOML is hand-rolled. Any other keys/tables in the file are preserved
  *   verbatim (mirrors `install.ts`'s treatment of unrelated `settings.json`
@@ -73,6 +76,31 @@ type CodexHookEvent = (typeof CODEX_HOOK_EVENTS)[number]
 const CODEX_EVENT_ARG: Record<CodexHookEvent, string> = {
   PreToolUse: 'pre_tool_use',
   PostToolUse: 'post_tool_use',
+}
+
+/**
+ * Codex hook events that are turn-scoped but not tool-specific, so they need
+ * no `matcher` (Codex's docs: omit `matcher` entirely to match every
+ * occurrence of a supported event). Confirmed against Codex's real hooks
+ * documentation (developers.openai.com/codex/hooks, "Configuration
+ * Reference"/"Hooks" pages, checked 2026-07-18): `PreCompact`,
+ * `UserPromptSubmit`, and `SubagentStop` are real Codex hook events using the
+ * identical `[[hooks.<Event>]]` config.toml shape already used for
+ * `PreToolUse`/`PostToolUse` above -- token-goat just wasn't wiring them.
+ * Claude Code (`../install.ts`'s `HOOK_EVENT_MAP`) and Grok
+ * (`grok_install.ts`'s `GROK_HOOK_EVENTS`) already wire the equivalent three
+ * events to the same server-side handlers (`preCompactHandler`/
+ * `preCompactIndexHandler`, `userPromptSubmitHandler`, `subagentStopHandler`
+ * in src/hooks_compact.ts, src/hooks_index.ts, src/hooks_session.ts).
+ */
+const CODEX_GLOBAL_HOOK_EVENTS = ['PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
+type CodexGlobalHookEvent = (typeof CODEX_GLOBAL_HOOK_EVENTS)[number]
+
+/** Codex global event key -> the internal event arg passed to the shim / `token-goat hook`. */
+const CODEX_GLOBAL_EVENT_ARG: Record<CodexGlobalHookEvent, string> = {
+  PreCompact: 'pre_compact',
+  UserPromptSubmit: 'user_prompt_submit',
+  SubagentStop: 'subagent_stop',
 }
 
 /** One `type = "command"` hook entry as Codex's config.toml stores it. */
@@ -177,6 +205,26 @@ function groupHasTokenGoat(
   return false
 }
 
+/**
+ * True when `groups` (a matcher-less/global event's `[[hooks.<Event>]]` array)
+ * already has an entry matching `predicate`, regardless of `matcher` value.
+ * Mirrors {@link groupHasTokenGoat} but without the exact-matcher requirement,
+ * since {@link CODEX_GLOBAL_HOOK_EVENTS} entries are written with no `matcher`
+ * field at all.
+ */
+function anyGroupHasTokenGoat(
+  groups: CodexMatcherGroup[] | undefined,
+  predicate: (command: string) => boolean = isCodexTokenGoatCommand,
+): boolean {
+  if (groups === undefined) return false
+  for (const group of groups) {
+    for (const h of group.hooks ?? []) {
+      if (predicate(h.command)) return true
+    }
+  }
+  return false
+}
+
 // hookCommandFor is shared with copilot_cli_install.ts -- see util.ts.
 
 /** Outcome of an {@link installCodex} call. */
@@ -248,6 +296,32 @@ export function installCodex(): CodexInstallResult {
       hooksChanged = true
     }
     hooks[event] = groups
+  }
+
+  for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
+    const eventArg = CODEX_GLOBAL_EVENT_ARG[event]
+    const expectedCommand = hookCommandFor(scriptPath, eventArg)
+    const groups = [...(hooks[event] ?? [])]
+
+    if (anyGroupHasTokenGoat(groups, (c) => c === expectedCommand)) {
+      hooks[event] = groups
+      continue
+    }
+
+    // Same stale-entry handling as the matcher loop above: strip any
+    // outdated token-goat entry before writing the current command.
+    const nextGroups: CodexMatcherGroup[] = []
+    for (const group of groups) {
+      const keptHooks = (group.hooks ?? []).filter((h) => !isCodexTokenGoatCommand(h.command))
+      if (keptHooks.length > 0) {
+        nextGroups.push({ ...group, hooks: keptHooks })
+      } else if ((group.hooks ?? []).length === 0) {
+        nextGroups.push(group)
+      }
+    }
+    nextGroups.push({ hooks: [{ type: 'command', command: expectedCommand }] })
+    hooks[event] = nextGroups
+    hooksChanged = true
   }
 
   const agentsChanged = writeAgentsBlock(agentsPath)
@@ -327,6 +401,9 @@ export function isCodexInstalled(): boolean {
     for (const matcher of CODEX_MATCHERS) {
       if (!groupHasTokenGoat(hooks[event], matcher)) return false
     }
+  }
+  for (const event of CODEX_GLOBAL_HOOK_EVENTS) {
+    if (!anyGroupHasTokenGoat(hooks[event])) return false
   }
   if (!fs.existsSync(codexHookScriptPath())) return false
 

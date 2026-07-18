@@ -19,7 +19,7 @@ vi.mock('node:os', async (importOriginal) => {
 
 import * as os from 'node:os'
 
-import { parse } from 'smol-toml'
+import { parse, stringify } from 'smol-toml'
 
 import {
   CodexConfigParseError,
@@ -89,6 +89,31 @@ describe('installCodex', () => {
     expect(isCodexInstalled()).toBe(true)
   })
 
+  // Regression coverage for the parity-matrix gap found via feature-queue #307's
+  // static capability audit: codex_install.ts wired PreToolUse/PostToolUse only,
+  // even though Codex's real hooks API (developers.openai.com/codex/hooks) also
+  // supports PreCompact/UserPromptSubmit/SubagentStop -- the same three events
+  // Claude Code (install.ts's HOOK_EVENT_MAP) and Grok (grok_install.ts) already
+  // wire to token-goat's real registered handlers.
+  it('writes matcher-less PreCompact/UserPromptSubmit/SubagentStop hook entries on a fresh install', () => {
+    installCodex()
+    const config = readConfig()
+    for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
+      const groups = config.hooks?.[event] ?? []
+      expect(groups.length).toBeGreaterThan(0)
+      const commands = commandsFor(config, event)
+      expect(commands.some((c) => c.includes('token-goat-shim'))).toBe(true)
+      // No matcher: these are turn-scoped, not tool-scoped, events.
+      for (const g of groups) {
+        expect(g.matcher).toBeUndefined()
+      }
+    }
+    // Correct internal event arg is baked into each command.
+    expect(commandsFor(config, 'PreCompact').some((c) => c.includes(' pre_compact '))).toBe(true)
+    expect(commandsFor(config, 'UserPromptSubmit').some((c) => c.includes(' user_prompt_submit '))).toBe(true)
+    expect(commandsFor(config, 'SubagentStop').some((c) => c.includes(' subagent_stop '))).toBe(true)
+  })
+
   it('is idempotent (second call reports alreadyInstalled and does not duplicate entries)', () => {
     installCodex()
     const second = installCodex()
@@ -100,6 +125,9 @@ describe('installCodex', () => {
       expect(matchers.filter((m) => m === 'apply_patch')).toHaveLength(1)
       expect(matchers.filter((m) => m === 'web_search')).toHaveLength(1)
       expect(matchers.filter((m) => m === 'view_image|Bash')).toHaveLength(1)
+    }
+    for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
+      expect(commandsFor(config, event)).toHaveLength(1)
     }
 
     const agents = fs.readFileSync(codexAgentsPath(), 'utf8')
@@ -245,6 +273,18 @@ describe('isCodexInstalled / uninstallCodex', () => {
     expect(isCodexInstalled()).toBe(true)
   })
 
+  it('isCodexInstalled is false when the global (matcher-less) events are missing even if the matcher-scoped ones are present', () => {
+    installCodex()
+    expect(isCodexInstalled()).toBe(true)
+
+    const p = codexConfigPath()
+    const config = readConfig()
+    delete config.hooks?.['PreCompact']
+    fs.writeFileSync(p, stringify(config as Record<string, unknown>))
+
+    expect(isCodexInstalled()).toBe(false)
+  })
+
   it('uninstallCodex removes the hooks, the AGENTS.md block, and the shim script; returns true', () => {
     const result = installCodex()
     expect(uninstallCodex()).toBe(true)
@@ -256,6 +296,9 @@ describe('isCodexInstalled / uninstallCodex', () => {
 
     const agents = fs.readFileSync(result.agentsPath, 'utf8')
     expect(agents).not.toContain('<!-- token-goat-codex-begin -->')
+    for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
+      expect(commandsFor(config, event)).toHaveLength(0)
+    }
   })
 
   it('uninstallCodex returns false when nothing is installed', () => {
