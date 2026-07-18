@@ -248,6 +248,61 @@ export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array)
   atomicWriteCore(filePath, content)
 }
 
+/** Outcome of an {@link installSingleFilePlugin} call. */
+export interface SingleFilePluginInstallResult {
+  readonly filePath: string
+  /** True when the file on disk was already byte-identical to the current template (no write needed). */
+  readonly alreadyInstalled: boolean
+}
+
+/**
+ * Install a single-file, no-merge-target plugin/extension (pi's extension, opencode's
+ * plugin): write `template` to `filePath` unless it's already byte-identical, and
+ * unconditionally refresh the `{entryPath: process.argv[1]}` sidecar next to it so a
+ * stale sidecar gets fixed even when the plugin file itself needs no update.
+ */
+export function installSingleFilePlugin(filePath: string, sidecarPath: string, template: string): SingleFilePluginInstallResult {
+  let existing: string | undefined
+  try {
+    existing = readFileSync(filePath, 'utf8')
+  } catch {
+    existing = undefined
+  }
+
+  const entryPath = process.argv[1]
+  if (entryPath) {
+    ensureDirSync(path.dirname(filePath))
+    atomicWriteText(sidecarPath, JSON.stringify({ entryPath }))
+  }
+
+  if (existing === template) {
+    return { filePath, alreadyInstalled: true }
+  }
+
+  ensureDirSync(path.dirname(filePath))
+  atomicWriteText(filePath, template)
+  return { filePath, alreadyInstalled: false }
+}
+
+/**
+ * Remove a single-file plugin/extension and its entry sidecar (see
+ * {@link installSingleFilePlugin}). Returns true when the main file was actually
+ * present and removed; false when nothing was installed (no write occurs either way).
+ */
+export function uninstallSingleFilePlugin(filePath: string, sidecarPath: string): boolean {
+  try {
+    unlinkSync(sidecarPath)
+  } catch {
+    // no sidecar to remove -- fine, e.g. an install predating the sidecar
+  }
+  try {
+    unlinkSync(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Copy `p` to a timestamped `<p>.bak.<ISO-with-dashes>` sibling before an in-place
  * overwrite, so a bad merge or corrupt rewrite has a recovery copy. No-op if `p`
