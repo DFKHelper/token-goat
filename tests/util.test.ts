@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -521,5 +521,49 @@ describe('isWithinQuietHours', () => {
 
   it('treats an identical start and end as always-false', () => {
     expect(isWithinQuietHours('09:00-09:00', new Date(2026, 0, 1, 9, 0))).toBe(false)
+  })
+})
+
+describe('stripOwnHooksFromMap', () => {
+  it('removes a matching hook entry from an array-of-tables event', () => {
+    const hooks: Record<string, Array<{ hooks?: Array<{ command: string }> }> | undefined> = {
+      PreToolUse: [{ hooks: [{ command: 'token-goat hook pre_tool_use' }, { command: 'other-tool' }] }],
+    }
+    const removed = stripOwnHooksFromMap(hooks, (c) => c.includes('token-goat'))
+    expect(removed).toBe(true)
+    expect(hooks['PreToolUse']).toEqual([{ hooks: [{ command: 'other-tool' }] }])
+  })
+
+  it('does not throw when an event key holds a single table object instead of an array (malformed TOML shape) -- skips it rather than crashing', () => {
+    // TOML's `[hooks.SomeEvent]` (single table) parses to a plain object, not the
+    // array-of-tables `[[hooks.SomeEvent]]` shape this function otherwise assumes --
+    // regression for a real "groups is not iterable" crash hit against a live config.toml.
+    const hooks: Record<string, unknown> = {
+      PreToolUse: [{ hooks: [{ command: 'token-goat hook pre_tool_use' }] }],
+      SomeEvent: { hooks: [{ command: 'not-ours' }] },
+    }
+    expect(() =>
+      stripOwnHooksFromMap(hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }> | undefined>, (c) =>
+        c.includes('token-goat'),
+      ),
+    ).not.toThrow()
+    expect(hooks['SomeEvent']).toEqual({ hooks: [{ command: 'not-ours' }] })
+  })
+
+  it('preserves an empty matcher group (user data token-goat never wrote)', () => {
+    const hooks: Record<string, Array<{ hooks?: Array<{ command: string }> }> | undefined> = {
+      PreToolUse: [{ hooks: [] }],
+    }
+    const removed = stripOwnHooksFromMap(hooks, (c) => c.includes('token-goat'))
+    expect(removed).toBe(false)
+    expect(hooks['PreToolUse']).toEqual([{ hooks: [] }])
+  })
+
+  it('deletes an event key whose every group was fully stripped', () => {
+    const hooks: Record<string, Array<{ hooks?: Array<{ command: string }> }> | undefined> = {
+      PreToolUse: [{ hooks: [{ command: 'token-goat hook pre_tool_use' }] }],
+    }
+    stripOwnHooksFromMap(hooks, (c) => c.includes('token-goat'))
+    expect(hooks['PreToolUse']).toBeUndefined()
   })
 })
