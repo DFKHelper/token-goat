@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -203,6 +203,12 @@ function coerce(raw: unknown): SerializedSession {
           Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
       )
     : []
+  const outstandingAgentSpawns: Array<[string, number]> = Array.isArray(o['outstandingAgentSpawns'])
+    ? (o['outstandingAgentSpawns'] as unknown[]).filter(
+        (p): p is [string, number] =>
+          Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
+      )
+    : []
   return {
     files,
     hintsShown,
@@ -215,6 +221,7 @@ function coerce(raw: unknown): SerializedSession {
     pendingLargeFileHints,
     grepQueries,
     globQueries,
+    outstandingAgentSpawns,
     ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
@@ -294,6 +301,33 @@ function mergePendingLargeFileHints(
   return Array.from(merged.entries())
 }
 
+/** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below,
+ * this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually
+ * stick, so a plain disk-union would silently resurrect an entry this process just removed from
+ * the pre-update disk snapshot. Start from disk, drop anything this process explicitly removed
+ * (see consumedOutstandingAgentSpawnKeys), then overlay only the entries this process newly added
+ * (present in mem but not in its own load-time snapshot) -- an entry merely carried over unchanged
+ * defers to disk. Finally cap to MAX_OUTSTANDING_AGENT_SPAWNS, dropping the oldest entries first,
+ * same oldest-evicted shape as recordOutstandingAgentSpawn's own local cap. */
+function mergeOutstandingAgentSpawns(
+  disk: Array<[string, number]>,
+  mem: Array<[string, number]>,
+): Array<[string, number]> {
+  const merged = new Map(disk.map(([prompt, ts]) => [outstandingAgentSpawnKey(prompt, ts), [prompt, ts] as [string, number]]))
+  for (const key of consumedOutstandingAgentSpawnKeys()) merged.delete(key)
+  const atLoad = new Set(outstandingAgentSpawnsAtLoad().map((e) => outstandingAgentSpawnKey(e.prompt, e.ts)))
+  for (const [prompt, ts] of mem) {
+    const key = outstandingAgentSpawnKey(prompt, ts)
+    if (atLoad.has(key)) continue
+    merged.set(key, [prompt, ts])
+  }
+  const result = Array.from(merged.values()).sort((a, b) => a[1] - b[1])
+  if (result.length > MAX_OUTSTANDING_AGENT_SPAWNS) {
+    result.splice(0, result.length - MAX_OUTSTANDING_AGENT_SPAWNS)
+  }
+  return result
+}
+
 /** Merge the on-disk snapshot with the in-memory one (see module invariants). */
 function mergeSessionState(disk: SerializedSession, mem: SerializedSession): SerializedSession {
   const byPath = new Map<string, FileEntry>()
@@ -315,6 +349,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
     globQueries: mergePairs(disk.globQueries ?? [], mem.globQueries ?? []),
+    outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContext !== undefined
       ? { lastTabContext: mem.lastTabContext }
