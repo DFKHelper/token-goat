@@ -31,6 +31,7 @@ import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
+import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
@@ -1273,6 +1274,82 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
     emitErr(extractErrorMessage(e))
     return 1
   }
+}
+
+export interface OpenApiOutlineCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat openapi-outline file``: one compact line per operation (method, path,
+ * operationId, summary, tags) instead of a raw Read of a multi-thousand-line OpenAPI/Swagger
+ * spec (JSON or YAML). */
+export function runOpenApiOutline(opts: OpenApiOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let spec: unknown
+  try {
+    spec = parseOpenApiSpec(text, opts.file)
+  } catch {
+    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${opts.file}`)
+    return 1
+  }
+
+  const operations = extractOperations(spec)
+  if (opts.json === true) {
+    emit(JSON.stringify(operations))
+  } else {
+    emitGuarded(formatOpenApiOutline(operations), 'openapi-outline')
+  }
+  return 0
+}
+
+export interface OpenApiOpCliOptions {
+  file: string
+  operation: string
+  json?: boolean
+}
+
+/** Handle ``token-goat openapi-op file operationId-or-"METHOD path"``: full detail (parameters,
+ * request body schema, response schemas per status code, description) for exactly one operation
+ * instead of a raw Read. Lookup tries an exact `operationId` match first, then a `METHOD path`
+ * match -- same exact-then-fallback shape as `read`/`symbol`'s resolution elsewhere in this file. */
+export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let spec: unknown
+  try {
+    spec = parseOpenApiSpec(text, opts.file)
+  } catch {
+    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${opts.file}`)
+    return 1
+  }
+
+  const operations = extractOperations(spec)
+  const match = findOperation(operations, opts.operation)
+
+  if (match === undefined) {
+    const messages = [`Operation '${opts.operation}' not found in '${opts.file}'`]
+    const closes = operations.map(operationLabel)
+    if (closes.length > 0) messages.push(didYouMean(closes))
+    emitErr(messages.join('\n'))
+    return 1
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(match))
+  } else {
+    emitGuarded(formatOperationDetail(match), 'openapi-op')
+  }
+  return 0
 }
 
 export interface SqliteSchemaCliOptions {

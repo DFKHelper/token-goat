@@ -82,6 +82,8 @@ import {
   runCsvQuery,
   runJsonOutline,
   runJsonQuery,
+  runOpenApiOutline,
+  runOpenApiOp,
   runSqliteSchema,
   runSqliteQuery,
 
@@ -994,6 +996,14 @@ function cmdJsonOutline(file: string, opts: { json?: boolean }) {
 
 function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: string; json?: boolean }) {
   process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
+}
+
+function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
+  process.exitCode = runOpenApiOutline({ file, ...opts })
+}
+
+function cmdOpenApiOp(file: string, operation: string, opts: { json?: boolean }) {
+  process.exitCode = runOpenApiOp({ file, operation, ...opts })
 }
 
 function cmdSqliteSchema(file: string, opts: { json?: boolean }) {
@@ -2965,6 +2975,21 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdJsonQuery))
+
+  program
+    .command('openapi-outline <file>')
+    .description('per-operation listing (method, path, operationId, summary, tags) of an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) instead of a raw Read')
+    .option('--json', 'emit the operation list as JSON instead of text')
+    .action(guard(cmdOpenApiOutline))
+
+  program
+    .command('openapi-op <file> <operation>')
+    .description(
+      'full detail (parameters, request body schema, response schemas, description) for exactly one OpenAPI operation instead of a raw Read\n\n' +
+        "operation may be an operationId (exact match) or a \"METHOD path\" spec, e.g. \"GET /users/{id}\"",
+    )
+    .option('--json', 'emit the operation detail as JSON instead of text')
+    .action(guard(cmdOpenApiOp))
 
   program
     .command('sqlite-schema <file>')
