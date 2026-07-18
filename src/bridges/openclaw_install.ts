@@ -101,7 +101,22 @@ function readOpenclawConfig(p: string, opts: { strict?: boolean } = {}): Opencla
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-    return parsed as OpenclawSettings
+    const settings = parsed as OpenclawSettings
+    // A hand-edited config can hold e.g. `"paths": "some/path"` (a bare string) instead of the
+    // documented array -- every call site below assumes `plugins.load.paths` is an array
+    // (spreads or filters/.some's over it), so a mismatched shape must be caught here rather
+    // than silently corrupting a write (string spread splits into characters) or crashing a
+    // read (.some/.filter isn't a function on a string/number/object).
+    const paths = settings.plugins?.load?.paths
+    if (paths !== undefined && !Array.isArray(paths)) {
+      if (opts.strict === true) {
+        throw new OpenclawConfigParseError(
+          `OpenClaw config file '${p}' has a 'plugins.load.paths' field that isn't a JSON array. Fix or back up the file before running install.`,
+        )
+      }
+      delete settings.plugins?.load?.paths
+    }
+    return settings
   }
   if (opts.strict === true) {
     throw new OpenclawConfigParseError(

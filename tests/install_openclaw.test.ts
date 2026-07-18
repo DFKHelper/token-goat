@@ -164,6 +164,21 @@ describe('installOpenclaw', () => {
     expect(() => installOpenclaw()).toThrow(/does not contain a JSON object/)
     expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
   })
+
+  it('throws on plugins.load.paths being a bare string instead of an array, and leaves the file untouched', () => {
+    // Regression: readOpenclawConfig cast the parsed JSON straight to OpenclawSettings with no
+    // validation of the nested plugins.load.paths shape. A hand-edited config with a bare
+    // string there made installOpenclaw's `[...(plugins.load?.paths ?? [])]` spread the string
+    // into individual characters and silently persist that garbage back to disk.
+    const p = openclawConfigPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const malformed = JSON.stringify({ plugins: { load: { paths: 'not-an-array' } } })
+    fs.writeFileSync(p, malformed)
+
+    expect(() => installOpenclaw()).toThrow(OpenclawConfigParseError)
+    expect(() => installOpenclaw()).toThrow(/plugins\.load\.paths.*isn't a JSON array/)
+    expect(fs.readFileSync(p, 'utf8')).toBe(malformed)
+  })
 })
 
 describe('isOpenclawInstalled / uninstallOpenclaw', () => {
@@ -197,6 +212,16 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
 
   it('uninstallOpenclaw returns false when nothing is installed', () => {
     expect(uninstallOpenclaw()).toBe(false)
+  })
+
+  it('uninstallOpenclaw and isOpenclawInstalled do not throw when plugins.load.paths is a bare string (non-strict read drops the malformed field instead of crashing)', () => {
+    const p = openclawConfigPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, JSON.stringify({ plugins: { load: { paths: 'not-an-array' } } }))
+
+    expect(() => isOpenclawInstalled()).not.toThrow()
+    expect(isOpenclawInstalled()).toBe(false)
+    expect(() => uninstallOpenclaw()).not.toThrow()
   })
 
   it('uninstallOpenclaw collapses openclaw.json back to an empty object when nothing else was in it (no dangling empty plugins/load/entries)', () => {
