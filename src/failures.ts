@@ -318,3 +318,124 @@ export function formatFailuresJson(result: FailureResult): string {
     2
   );
 }
+
+// ───────────────────────────────────────────────────────────────────────────── Delta (--delta) ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Result of diffing a failure-signature snapshot from a prior run against
+ * the current one. `stillFailing` is intentionally not summarized further
+ * here -- callers that want a compact report show its length, not its
+ * contents; this type carries the full list so a caller that wants detail
+ * still can.
+ */
+export interface FailureDelta {
+  hasBaseline: boolean;
+  newlyFailing: string[];
+  newlyFixed: string[];
+  stillFailing: string[];
+}
+
+/**
+ * Extract a stable per-failure identity list from a parsed result, for
+ * diffing across runs. Block names (pytest/jest/go/cargo) are the same test
+ * identity the extractors already isolate out of the runner's own failure
+ * headers (e.g. pytest's `___ test_foo ___` separator, Go's `--- FAIL:
+ * TestFoo`) -- none of them embed a source line number, so line-number
+ * drift between two runs of the same test never registers as "a different
+ * test". Falls back to summary lines when a runner has no block structure
+ * (pytest's FAILED-line fallback path, and the generic/unknown runner).
+ * Deduplicated, insertion order preserved.
+ */
+export function failureSignatures(result: FailureResult): string[] {
+  const raw =
+    result.blocks.length > 0
+      ? result.blocks.map((b) => b.name.trim())
+      : result.summaryLines.map((s) => s.trim()).filter((s) => s !== '');
+  return Array.from(new Set(raw));
+}
+
+/**
+ * Diff a previous failure-signature snapshot against the current run's
+ * signatures.
+ *
+ * `prevSignatures === null` means no baseline exists yet for this
+ * project/key (the first `--delta` invocation, or a wiped/corrupted state
+ * file). Rather than reporting an empty, uninformative delta, everything
+ * currently failing is reported as `newlyFailing` -- the first run still
+ * surfaces the full failure list (useful on its own), and the caller's
+ * output makes clear it's establishing a baseline rather than showing a
+ * real regression set.
+ */
+export function computeFailureDelta(prevSignatures: string[] | null, currSignatures: string[]): FailureDelta {
+  if (prevSignatures === null) {
+    return { hasBaseline: false, newlyFailing: [...currSignatures], newlyFixed: [], stillFailing: [] };
+  }
+  const prevSet = new Set(prevSignatures);
+  const currSet = new Set(currSignatures);
+  return {
+    hasBaseline: true,
+    newlyFailing: currSignatures.filter((s) => !prevSet.has(s)),
+    newlyFixed: prevSignatures.filter((s) => !currSet.has(s)),
+    stillFailing: currSignatures.filter((s) => prevSet.has(s)),
+  };
+}
+
+/**
+ * Format a delta result as human-readable text. Still-failing tests are
+ * reported as a count, not a full list -- that's the point of `--delta`: an
+ * iterate-fix-rerun loop wants "did I fix what I intended, did I break
+ * anything new", not a re-dump of everything already known to be failing.
+ */
+export function formatFailureDeltaText(delta: FailureDelta, runner: string): string {
+  if (!delta.hasBaseline) {
+    const lines = [
+      `No baseline yet for this project/key -- showing all ${delta.newlyFailing.length} current failure(s) as new.  [${runner}]`,
+    ];
+    if (delta.newlyFailing.length === 0) {
+      lines.push('(no failures)');
+    } else {
+      for (const name of delta.newlyFailing) lines.push(`+ ${name}`);
+    }
+    return lines.join('\n');
+  }
+
+  const lines: string[] = [];
+  lines.push(`Newly failing (${delta.newlyFailing.length}):`);
+  if (delta.newlyFailing.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const name of delta.newlyFailing) lines.push(`  + ${name}`);
+  }
+  lines.push('');
+  lines.push(`Newly fixed (${delta.newlyFixed.length}):`);
+  if (delta.newlyFixed.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const name of delta.newlyFixed) lines.push(`  - ${name}`);
+  }
+  lines.push('');
+  lines.push(`Still failing (unchanged): ${delta.stillFailing.length}`);
+  lines.push(
+    `\n[${runner}]  ${delta.newlyFailing.length} newly failing, ${delta.newlyFixed.length} newly fixed, ${delta.stillFailing.length} still failing`
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Format a delta result as JSON. Mirrors formatFailureDeltaText's
+ * "still-failing is a count, not a dump" choice -- `stillFailingCount` only,
+ * not `stillFailing: string[]`, keeping the JSON and text shapes symmetric.
+ */
+export function formatFailureDeltaJson(delta: FailureDelta, runner: string): string {
+  return JSON.stringify(
+    {
+      runner,
+      hasBaseline: delta.hasBaseline,
+      newlyFailing: delta.newlyFailing,
+      newlyFixed: delta.newlyFixed,
+      stillFailingCount: delta.stillFailing.length,
+    },
+    null,
+    2
+  );
+}

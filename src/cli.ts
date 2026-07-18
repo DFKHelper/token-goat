@@ -132,7 +132,17 @@ import {
   estimateBudget,
   formatBudgetText,
 } from './pack.js'
-import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
+import {
+  extractFailures,
+  formatFailuresText,
+  formatFailuresJson,
+  failureSignatures,
+  computeFailureDelta,
+  formatFailureDeltaText,
+  formatFailureDeltaJson,
+} from './failures.js'
+import { loadFailureSnapshot, saveFailureSnapshot, DEFAULT_FAILURES_STATE_KEY } from './failures_state.js'
+import { findProject } from './project.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
 import { runDepDocs } from './dep_docs.js'
 import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
@@ -1859,11 +1869,29 @@ function cmdBudget(
 
 function cmdFailures(
   src: string | undefined,
-  opts: { runner?: string; json?: boolean },
+  opts: { runner?: string; json?: boolean; delta?: boolean; key?: string },
 ): void {
   const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
   const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
-  out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
+
+  if (opts.delta !== true) {
+    out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
+    return
+  }
+
+  // --delta needs a project identity to scope the persisted baseline to (see
+  // failures_state.ts's module doc for why project hash + an explicit --key, not a
+  // (sessionId, bash_id) pair, is the right key here).
+  const project = findProject(process.cwd())
+  if (project === null) {
+    throw new Error('token-goat failures --delta requires a project root (git repo, package.json, etc.) from cwd to scope the saved baseline')
+  }
+  const key = opts.key ?? DEFAULT_FAILURES_STATE_KEY
+  const signatures = failureSignatures(result)
+  const prior = loadFailureSnapshot(project.hash, key)
+  const delta = computeFailureDelta(prior?.signatures ?? null, signatures)
+  saveFailureSnapshot(project.hash, key, { signatures, runner: result.runner, storedAt: Date.now() })
+  out(opts.json === true ? formatFailureDeltaJson(delta, result.runner) : formatFailureDeltaText(delta, result.runner))
 }
 // --- Program assembly -------------------------------------------------------
 
@@ -2497,6 +2525,8 @@ export function buildProgram(): Command {
     .command('failures [src]')
     .description('extract failing test blocks from test runner output (pytest, Jest, Go, Cargo)')
     .option('--runner <name>', 'runner hint: pytest, jest, go, or cargo')
+    .option('--delta', 'compare against the previously saved failure set for this project (see --key) and report only newly-failing/newly-fixed tests, with still-failing tests as a count')
+    .option('--key <name>', 'scope the --delta baseline to a named suite (default: "default"); use distinct keys to track multiple independent suites in the same project')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdFailures))
 

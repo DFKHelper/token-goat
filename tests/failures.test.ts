@@ -4,6 +4,10 @@ import {
   formatFailuresText,
   formatFailuresJson,
   getFailureCount,
+  failureSignatures,
+  computeFailureDelta,
+  formatFailureDeltaText,
+  formatFailureDeltaJson,
 } from '../src/failures.js';
 
 describe('failures', () => {
@@ -323,6 +327,112 @@ short test summary info
       expect(result.runner).toBe('go');
       expect(result.blocks.length).toBeGreaterThan(0);
       expect(result.blocks[0]?.name).toContain('TestExample');
+    });
+  });
+
+  describe('failureSignatures', () => {
+    it('uses block names when blocks exist', () => {
+      const result = extractFailures('--- FAIL: TestA\n--- FAIL: TestB\nFAIL');
+      expect(failureSignatures(result)).toEqual(['TestA', 'TestB']);
+    });
+
+    it('falls back to summary lines when there are no blocks', () => {
+      const output = 'short test summary info\nFAILED tests/test_a.py::test_foo - assertion error';
+      const result = extractFailures(output);
+      expect(result.blocks.length).toBe(0);
+      const sigs = failureSignatures(result);
+      expect(sigs.length).toBeGreaterThan(0);
+      expect(sigs[0]).toContain('test_foo');
+    });
+
+    it('deduplicates repeated signatures', () => {
+      const result = extractFailures('--- FAIL: TestA\n--- FAIL: TestA\nFAIL');
+      expect(failureSignatures(result)).toEqual(['TestA']);
+    });
+
+    it('does not treat line-number-only differences as different tests (pytest block names carry no line number)', () => {
+      const runA = extractFailures('=== FAILURES ===\n______ test_foo _______\ntest_module.py:12: assert 1 == 2\n=== 1 failed ===');
+      const runB = extractFailures('=== FAILURES ===\n______ test_foo _______\ntest_module.py:99: assert 1 == 2\n=== 1 failed ===');
+      expect(failureSignatures(runA)).toEqual(failureSignatures(runB));
+    });
+  });
+
+  describe('computeFailureDelta', () => {
+    it('reports everything as newlyFailing when there is no prior baseline', () => {
+      const delta = computeFailureDelta(null, ['TestA', 'TestB']);
+      expect(delta.hasBaseline).toBe(false);
+      expect(delta.newlyFailing).toEqual(['TestA', 'TestB']);
+      expect(delta.newlyFixed).toEqual([]);
+      expect(delta.stillFailing).toEqual([]);
+    });
+
+    it('splits into newlyFailing/newlyFixed/stillFailing against a prior baseline', () => {
+      const prev = ['TestA', 'TestB', 'TestC'];
+      const curr = ['TestB', 'TestD'];
+      const delta = computeFailureDelta(prev, curr);
+      expect(delta.hasBaseline).toBe(true);
+      expect(delta.newlyFailing).toEqual(['TestD']);
+      expect(delta.newlyFixed).toEqual(['TestA', 'TestC']);
+      expect(delta.stillFailing).toEqual(['TestB']);
+    });
+
+    it('reports no changes when current matches the prior baseline exactly', () => {
+      const set = ['TestA', 'TestB'];
+      const delta = computeFailureDelta(set, set);
+      expect(delta.newlyFailing).toEqual([]);
+      expect(delta.newlyFixed).toEqual([]);
+      expect(delta.stillFailing).toEqual(['TestA', 'TestB']);
+    });
+
+    it('reports all fixed when current is empty', () => {
+      const delta = computeFailureDelta(['TestA', 'TestB'], []);
+      expect(delta.newlyFailing).toEqual([]);
+      expect(delta.newlyFixed).toEqual(['TestA', 'TestB']);
+      expect(delta.stillFailing).toEqual([]);
+    });
+  });
+
+  describe('formatFailureDeltaText', () => {
+    it('shows the no-baseline message on first run', () => {
+      const delta = computeFailureDelta(null, ['TestA']);
+      const text = formatFailureDeltaText(delta, 'go');
+      expect(text).toContain('No baseline yet');
+      expect(text).toContain('+ TestA');
+      expect(text).toContain('[go]');
+    });
+
+    it('shows newly failing, newly fixed, and a still-failing count (not a full list)', () => {
+      const delta = computeFailureDelta(['TestA', 'TestC'], ['TestA', 'TestB']);
+      const text = formatFailureDeltaText(delta, 'pytest');
+      expect(text).toContain('Newly failing (1)');
+      expect(text).toContain('+ TestB');
+      expect(text).toContain('Newly fixed (1)');
+      expect(text).toContain('- TestC');
+      expect(text).toContain('Still failing (unchanged): 1');
+      // TestA is still-failing (unchanged) and must not appear as a bulleted detail line.
+      expect(text).not.toMatch(/[+-] TestA/);
+    });
+  });
+
+  describe('formatFailureDeltaJson', () => {
+    it('produces valid JSON with a stillFailingCount, not a full stillFailing list', () => {
+      const delta = computeFailureDelta(['TestA', 'TestC'], ['TestA', 'TestB']);
+      const json = formatFailureDeltaJson(delta, 'pytest');
+      const parsed = JSON.parse(json);
+      expect(parsed.runner).toBe('pytest');
+      expect(parsed.hasBaseline).toBe(true);
+      expect(parsed.newlyFailing).toEqual(['TestB']);
+      expect(parsed.newlyFixed).toEqual(['TestC']);
+      expect(parsed.stillFailingCount).toBe(1);
+      expect(parsed.stillFailing).toBeUndefined();
+    });
+
+    it('reflects hasBaseline:false on the first invocation', () => {
+      const delta = computeFailureDelta(null, ['TestA']);
+      const json = formatFailureDeltaJson(delta, 'go');
+      const parsed = JSON.parse(json);
+      expect(parsed.hasBaseline).toBe(false);
+      expect(parsed.newlyFailing).toEqual(['TestA']);
     });
   });
 });
