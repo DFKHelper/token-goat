@@ -26,6 +26,19 @@ const MEM_EPOCH_TIMEOUT_MS = 800
 /** Cap on read/edit/web rows so a huge session can't blow the token budget. */
 const MAX_ROWS = 40
 
+/**
+ * Appends a blank line, `header`, up to `cap` of `rows` verbatim, and an `- ...and N more`
+ * overflow line when `rows` exceeds `cap`. No-op when `rows` is empty. Shared by every
+ * capped-list section in {@link buildManifest} and {@link buildSafeToDiscardSection}.
+ */
+function appendCappedSection(lines: string[], header: string, rows: readonly string[], cap: number): void {
+  if (rows.length === 0) return
+  lines.push('')
+  lines.push(header)
+  for (const row of rows.slice(0, cap)) lines.push(row)
+  if (rows.length > cap) lines.push(`- ...and ${rows.length - cap} more`)
+}
+
 /** Render one read-file row: `path (Xkb, N reads[, edited])`. */
 function renderReadRow(entry: FileEntry): string {
   const kb = Math.max(1, toKB(entry.sizeBytes))
@@ -96,44 +109,26 @@ export function buildManifest(sessionId?: string): string {
   lines.push(`Files read: ${readFiles.length}`)
   lines.push(`Files edited: ${editedFiles.length}`)
 
-  if (readFiles.length > 0) {
-    lines.push('')
-    lines.push('### Read files')
-    for (const entry of readFiles.slice(0, MAX_ROWS)) {
-      lines.push(renderReadRow(entry))
-    }
-    if (readFiles.length > MAX_ROWS) {
-      lines.push(`- ...and ${readFiles.length - MAX_ROWS} more`)
-    }
-  }
-
-  if (editedFiles.length > 0) {
-    lines.push('')
-    lines.push('### Edited files')
-    for (const entry of editedFiles.slice(0, MAX_ROWS)) {
-      lines.push(`- ${entry.path}`)
-    }
-    if (editedFiles.length > MAX_ROWS) {
-      lines.push(`- ...and ${editedFiles.length - MAX_ROWS} more`)
-    }
-  }
-
-  if (webFetches.length > 0) {
-    lines.push('')
-    lines.push('### Web URLs fetched')
-    // The map key is the url+'\x00'+prompt composite (see recordWebFetch in session.ts),
-    // so split it back apart for display instead of treating the whole key as the url.
-    for (const [key, cacheId] of webFetches.slice(0, MAX_ROWS)) {
+  appendCappedSection(lines, '### Read files', readFiles.map(renderReadRow), MAX_ROWS)
+  appendCappedSection(
+    lines,
+    '### Edited files',
+    editedFiles.map((entry) => `- ${entry.path}`),
+    MAX_ROWS,
+  )
+  // The map key is the url+'\x00'+prompt composite (see recordWebFetch in session.ts), so split it back apart for display instead of treating the whole key as the url.
+  appendCappedSection(
+    lines,
+    '### Web URLs fetched',
+    webFetches.map(([key, cacheId]) => {
       const sep = key.indexOf('\x00')
       const url = sep === -1 ? key : key.slice(0, sep)
       const prompt = sep === -1 ? '' : key.slice(sep + 1)
       const promptSuffix = prompt ? `, prompt: ${JSON.stringify(prompt)}` : ''
-      lines.push(`- ${url} (cacheId: ${cacheId}${promptSuffix})`)
-    }
-    if (webFetches.length > MAX_ROWS) {
-      lines.push(`- ...and ${webFetches.length - MAX_ROWS} more`)
-    }
-  }
+      return `- ${url} (cacheId: ${cacheId}${promptSuffix})`
+    }),
+    MAX_ROWS,
+  )
 
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())
@@ -204,24 +199,9 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
   const lines: string[] = []
   lines.push('')
   lines.push('### SAFE_TO_DISCARD (' + total + ' items — provably inert; each is recallable, not gone)')
-  if (rerunRows.length > 0) {
-    lines.push('')
-    lines.push('Superseded reruns (' + rerunRows.length + '):')
-    for (const row of rerunRows.slice(0, MAX_ROWS)) lines.push(row)
-    if (rerunRows.length > MAX_ROWS) lines.push('- ...and ' + (rerunRows.length - MAX_ROWS) + ' more')
-  }
-  if (supersededReadRows.length > 0) {
-    lines.push('')
-    lines.push('Superseded file reads (' + supersededReadRows.length + '):')
-    for (const row of supersededReadRows.slice(0, MAX_ROWS)) lines.push(row)
-    if (supersededReadRows.length > MAX_ROWS) lines.push('- ...and ' + (supersededReadRows.length - MAX_ROWS) + ' more')
-  }
-  if (cachedOutputRows.length > 0) {
-    lines.push('')
-    lines.push('Other cached bash outputs (' + cachedOutputRows.length + '):')
-    for (const row of cachedOutputRows.slice(0, MAX_ROWS)) lines.push(row)
-    if (cachedOutputRows.length > MAX_ROWS) lines.push('- ...and ' + (cachedOutputRows.length - MAX_ROWS) + ' more')
-  }
+  appendCappedSection(lines, 'Superseded reruns (' + rerunRows.length + '):', rerunRows, MAX_ROWS)
+  appendCappedSection(lines, 'Superseded file reads (' + supersededReadRows.length + '):', supersededReadRows, MAX_ROWS)
+  appendCappedSection(lines, 'Other cached bash outputs (' + cachedOutputRows.length + '):', cachedOutputRows, MAX_ROWS)
   return lines
 }
 
