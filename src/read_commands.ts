@@ -32,6 +32,20 @@ import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
+import {
+  isGhAvailable,
+  isGhAuthenticated,
+  parseGithubRepoFromRemoteUrl,
+  parsePrSliceArg,
+  fetchPrFiles,
+  fetchPrDiff,
+  fetchPrComments,
+  fetchPrDescription,
+  extractFileDiff,
+  formatFilesSlice,
+  formatCommentsSlice,
+  formatDescriptionSlice,
+} from './pr_slice.js'
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
@@ -1350,6 +1364,106 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
     emitGuarded(formatOperationDetail(match), 'openapi-op')
   }
   return 0
+}
+
+export interface PrSliceCliOptions {
+  pr: string
+  slice: string
+  repo?: string
+  json?: boolean
+  projectRoot?: string
+}
+
+/** Handle ``token-goat pr-slice <pr> <slice>``: fetch and format exactly one slice of a GitHub
+ * PR via `gh` -- `files` (changed files with +/- counts), `diff:<path>` (one file's diff hunk),
+ * `comments` (review comments), or `description` (title/body/metadata) -- instead of a raw
+ * `gh pr view`/`gh pr diff` dump. Resolves the target repo from `--repo`, falling back to the
+ * current directory's `origin` git remote when omitted. */
+export function runPrSlice(opts: PrSliceCliOptions): number {
+  const parsed = parsePrSliceArg(opts.slice)
+  if (parsed === null) {
+    emitErr(`Invalid slice '${opts.slice}' -- expected one of: files, diff:<path>, comments, description`)
+    return 1
+  }
+
+  if (!isGhAvailable()) {
+    emitErr('gh (GitHub CLI) not found on PATH -- install it from https://cli.github.com and run `gh auth login`')
+    return 1
+  }
+
+  let repo = opts.repo
+  if (repo === undefined) {
+    const cwd = opts.projectRoot ?? process.cwd()
+    let remoteUrl = ''
+    try {
+      const result = runGit(['remote', 'get-url', 'origin'], { cwd })
+      if (result.exitCode === 0) remoteUrl = result.stdout.trim()
+    } catch {
+      // Fall through to the resolution-failure error below.
+    }
+    const resolved = remoteUrl.length > 0 ? parseGithubRepoFromRemoteUrl(remoteUrl) : null
+    if (resolved === null) {
+      emitErr("Could not resolve a GitHub repo from the current directory's git remote 'origin' -- pass --repo owner/repo")
+      return 1
+    }
+    repo = resolved
+  }
+
+  if (!isGhAuthenticated()) {
+    emitErr('gh is not authenticated -- run `gh auth login`')
+    return 1
+  }
+
+  try {
+    switch (parsed.kind) {
+      case 'files': {
+        const files = fetchPrFiles(opts.pr, repo)
+        if (opts.json === true) {
+          const capped = guardJsonRows(files)
+          emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+        } else {
+          emitGuarded(formatFilesSlice(files), 'pr-slice')
+        }
+        return 0
+      }
+      case 'diff': {
+        const diffText = fetchPrDiff(opts.pr, repo)
+        const fileDiff = extractFileDiff(diffText, parsed.path)
+        if (fileDiff === null) {
+          emitErr(`No diff found for '${parsed.path}' in PR #${opts.pr}`)
+          return 1
+        }
+        if (opts.json === true) {
+          emit(JSON.stringify({ path: parsed.path, diff: fileDiff }))
+        } else {
+          emitGuarded(fileDiff, 'pr-slice')
+        }
+        return 0
+      }
+      case 'comments': {
+        const comments = fetchPrComments(opts.pr, repo)
+        if (opts.json === true) {
+          const capped = guardJsonRows(comments)
+          emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+        } else {
+          emitGuarded(formatCommentsSlice(comments), 'pr-slice')
+        }
+        return 0
+      }
+      case 'description': {
+        const desc = fetchPrDescription(opts.pr, repo)
+        if (opts.json === true) {
+          emit(JSON.stringify(desc))
+        } else {
+          emitGuarded(formatDescriptionSlice(desc), 'pr-slice')
+        }
+        return 0
+      }
+    }
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
 }
 
 export interface SqliteSchemaCliOptions {
