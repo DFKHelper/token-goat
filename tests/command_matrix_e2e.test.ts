@@ -280,6 +280,42 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
   },
+  'sqlite-schema': () => {
+    const dir = mkIsolated('tg-matrix-sqliteschema-')
+    const dbPath = path.join(dir, 'fixture.db')
+    execFileSync(process.execPath, [
+      '-e',
+      "const Database = require(" +
+        JSON.stringify(path.join(ROOT, 'node_modules', 'better-sqlite3')) +
+        "); const db = new Database(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
+      dbPath,
+    ])
+    const r = run(['sqlite-schema', dbPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('users  (table, 1 row)')
+    expect(r.stdout).toContain('name TEXT')
+  },
+  'sqlite-query': () => {
+    const dir = mkIsolated('tg-matrix-sqlitequery-')
+    const dbPath = path.join(dir, 'fixture.db')
+    execFileSync(process.execPath, [
+      '-e',
+      "const Database = require(" +
+        JSON.stringify(path.join(ROOT, 'node_modules', 'better-sqlite3')) +
+        "); const db = new Database(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); const ins = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)'); ins.run(1, 'Alice'); ins.run(2, 'Bob'); db.close();",
+      dbPath,
+    ])
+    const r = run(['sqlite-query', dbPath, 'SELECT id, name FROM users ORDER BY id'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).toContain('Bob')
+    const rDrop = run(['sqlite-query', dbPath, 'DROP TABLE users'])
+    expect(rDrop.status).toBe(1)
+    expect(rDrop.stderr).toContain('only SELECT statements are allowed')
+    const rStillThere = run(['sqlite-query', dbPath, 'SELECT COUNT(*) AS c FROM users'])
+    expect(rStillThere.status, rStillThere.stderr).toBe(0)
+    expect(rStillThere.stdout).toContain('2')
+  },
   'pdf-extract': () => {
     const dir = mkIsolated('tg-matrix-pdf-')
     const pdfPath = path.join(dir, 'doc.pdf')

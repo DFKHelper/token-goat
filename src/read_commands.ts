@@ -31,6 +31,7 @@ import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
+import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
@@ -1266,6 +1267,78 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
       }
       emitGuarded(lines.join('\n'), 'json-query')
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface SqliteSchemaCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat sqlite-schema file``: structural summary of a SQLite database --
+ * tables/views with column list (name/type/nullable/PK), indexes, foreign keys, and row
+ * counts -- instead of a raw Read (useless on binary bytes) or shelling out to the sqlite3
+ * CLI. Mirrors runJsonOutline's "summary, not a dump" shape for SQLite structure. */
+export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
+  try {
+    const schema = getSqliteSchema(opts.file)
+    if (opts.json === true) {
+      emit(JSON.stringify(schema))
+    } else {
+      emit(formatSqliteSchema(schema))
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface SqliteQueryCliOptions {
+  file: string
+  sql: string
+  head?: string
+  json?: boolean
+}
+
+/** Handle ``token-goat sqlite-query file sql``: run a read-only SELECT against a SQLite
+ * database and return rows in token-goat's standard tabular/JSON convention (mirrors
+ * csv-query's --json / --head / overflow-guard shaping). Rejects any non-SELECT statement,
+ * multi-statement injection, and anything that isn't demonstrably read-only -- see
+ * sqlite_query.ts's module doc for the full defense-in-depth rationale. This is a
+ * surgical-extraction tool, not a general SQL execution surface. */
+export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const result = runReadOnlySqliteQuery(opts.file, opts.sql)
+    const headTruncated = head !== undefined && result.rows.length > head
+    const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
+
+    if (opts.json === true) {
+      const capped = guardJsonRows(rows)
+      emit(
+        JSON.stringify({
+          columns: result.columns,
+          items: capped.items,
+          truncated: capped.truncated || headTruncated || result.rowCapped,
+          totalCount: capped.totalCount,
+          rowCapped: result.rowCapped,
+        }),
+      )
+    } else {
+      emit(formatSqliteQueryTable({ ...result, rows }, { headTruncated }))
     }
     return 0
   } catch (e) {

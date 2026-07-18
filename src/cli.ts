@@ -82,6 +82,8 @@ import {
   runCsvQuery,
   runJsonOutline,
   runJsonQuery,
+  runSqliteSchema,
+  runSqliteQuery,
 
   runPdfExtractText,
   runPdfMeta,
@@ -992,6 +994,14 @@ function cmdJsonOutline(file: string, opts: { json?: boolean }) {
 
 function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: string; json?: boolean }) {
   process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
+}
+
+function cmdSqliteSchema(file: string, opts: { json?: boolean }) {
+  process.exitCode = runSqliteSchema({ file, ...opts })
+}
+
+function cmdSqliteQuery(file: string, sql: string, opts: { head?: string; json?: boolean }) {
+  process.exitCode = runSqliteQuery({ file, sql, ...opts })
 }
 
 async function cmdScreenshot(
@@ -2955,6 +2965,19 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdJsonQuery))
+
+  program
+    .command('sqlite-schema <file>')
+    .description('tables/views, columns, indexes, foreign keys, and row counts of a SQLite database instead of a raw Read')
+    .option('--json', 'emit the schema as JSON instead of text')
+    .action(guard(cmdSqliteSchema))
+
+  program
+    .command('sqlite-query <file> <sql>')
+    .description('run a read-only SELECT against a SQLite database instead of a raw Read or shelling out to sqlite3 -- rejects any non-SELECT statement')
+    .option('--head <n>', 'limit to the first N returned rows')
+    .option('--json', 'emit rows as a JSON array of objects instead of a table')
+    .action(guard(cmdSqliteQuery))
 
   program
     .command('screenshot <url> <destPath>')

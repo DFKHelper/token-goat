@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import Database from 'better-sqlite3'
 
 // Stub the DB-layer imports so tests don't need a real SQLite DB
 vi.mock('../src/index_reader.js', () => ({
@@ -64,6 +65,8 @@ import {
   runCsvQuery,
   runJsonOutline,
   runJsonQuery,
+  runSqliteSchema,
+  runSqliteQuery,
 
   runExports,
   runChanged,
@@ -2098,6 +2101,182 @@ describe('read_commands', () => {
       const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'foo' }) })
       expect(code).toBe(1)
       expect(stderr).toContain('Failed to parse JSON')
+    })
+  })
+
+  // ---- runSqliteSchema / runSqliteQuery ----------------------------------
+
+  describe('runSqliteSchema / runSqliteQuery', () => {
+    function makeFixtureDb(): string {
+      const f = path.join(tempDir, 'fixture.db')
+      const db = new Database(f)
+      db.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT
+        );
+      `)
+      const insert = db.prepare('INSERT INTO users (id, name, email) VALUES (?, ?, ?)')
+      insert.run(1, 'Alice', 'alice@example.com')
+      insert.run(2, 'Bob', 'bob@example.com')
+      insert.run(3, 'Carol', null)
+      db.close()
+      return f
+    }
+
+    describe('runSqliteSchema', () => {
+      it('prints table/column/row-count detail for a real database', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => { runSqliteSchema({ file: f }) })
+        expect(stdout).toContain('users  (table, 3 rows)')
+        expect(stdout).toContain('id INTEGER')
+        expect(stdout).toContain('name TEXT')
+      })
+
+      it('emits a structured schema object under --json', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => { runSqliteSchema({ file: f, json: true }) })
+        const parsed = JSON.parse(stdout)
+        expect(parsed.tables[0].name).toBe('users')
+        expect(parsed.tables[0].rowCount).toBe(3)
+      })
+
+      it('returns 1 with a clear message when the file does not exist', () => {
+        let code = -1
+        const { stderr } = capture(() => { code = runSqliteSchema({ file: path.join(tempDir, 'missing.db') }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('file not found')
+      })
+
+      it('returns 1 with a clear message for a corrupt/non-SQLite file, never a raw stack trace', () => {
+        const f = path.join(tempDir, 'not-a-db.txt')
+        fs.writeFileSync(f, 'just plain text, definitely not a sqlite database')
+        let code = -1
+        const { stderr } = capture(() => { code = runSqliteSchema({ file: f }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('not a valid SQLite database')
+      })
+    })
+
+    describe('runSqliteQuery', () => {
+      it('runs a SELECT and prints a CSV-style table', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => { runSqliteQuery({ file: f, sql: 'SELECT id, name FROM users ORDER BY id' }) })
+        expect(stdout.split('\n')[0]).toBe('id,name')
+        expect(stdout).toContain('1,Alice')
+      })
+
+      it('emits a JSON envelope with columns/items/truncated/totalCount under --json', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT id, name FROM users ORDER BY id', json: true })
+        })
+        const parsed = JSON.parse(stdout)
+        expect(parsed.columns).toEqual(['id', 'name'])
+        expect(parsed.items).toEqual([
+          { id: 1, name: 'Alice' },
+          { id: 2, name: 'Bob' },
+          { id: 3, name: 'Carol' },
+        ])
+        expect(parsed.truncated).toBe(false)
+      })
+
+      it('limits results with --head and notes elision in text mode', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT id FROM users ORDER BY id', head: '1' })
+        })
+        expect(stdout).toContain('1')
+        expect(stdout).not.toContain('2\n3')
+        expect(stdout).toContain('more rows elided')
+      })
+
+      it('reflects --head truncation in the --json envelope', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT id FROM users ORDER BY id', head: '1', json: true })
+        })
+        const parsed = JSON.parse(stdout)
+        expect(parsed.items).toEqual([{ id: 1 }])
+        expect(parsed.truncated).toBe(true)
+      })
+
+      it('caps an oversized result at overflow_guard.max_tokens under --json', () => {
+        mockLoadConfig.mockReturnValue({
+          overflow_guard: { enabled: true, max_tokens: 20 },
+        } as unknown as ReturnType<typeof loadConfig>)
+        const f = path.join(tempDir, 'big.db')
+        const db = new Database(f)
+        db.exec('CREATE TABLE items (id INTEGER, blob TEXT)')
+        const insert = db.prepare('INSERT INTO items (id, blob) VALUES (?, ?)')
+        for (let i = 0; i < 500; i++) insert.run(i, `item-${i}-`.repeat(5))
+        db.close()
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT * FROM items', json: true })
+        })
+        const parsed = JSON.parse(stdout)
+        expect(parsed.truncated).toBe(true)
+      })
+
+      it('rejects an INSERT attempt, returning 1 with a clear message', () => {
+        const f = makeFixtureDb()
+        let code = -1
+        const { stderr } = capture(() => {
+          code = runSqliteQuery({ file: f, sql: "INSERT INTO users (id, name) VALUES (4, 'Eve')" })
+        })
+        expect(code).toBe(1)
+        expect(stderr).toContain('only SELECT statements are allowed')
+        // Row count must be unchanged -- the rejection happened before execution.
+        const check = new Database(f, { readonly: true })
+        const row = check.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }
+        check.close()
+        expect(row.c).toBe(3)
+      })
+
+      it('rejects a DROP TABLE attempt, returning 1 with a clear message', () => {
+        const f = makeFixtureDb()
+        let code = -1
+        const { stderr } = capture(() => { code = runSqliteQuery({ file: f, sql: 'DROP TABLE users' }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('only SELECT statements are allowed')
+        const check = new Database(f, { readonly: true })
+        const row = check.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()
+        check.close()
+        expect(row).toBeDefined()
+      })
+
+      it('rejects a multi-statement injection attempt, returning 1 with a clear message', () => {
+        const f = makeFixtureDb()
+        let code = -1
+        const { stderr } = capture(() => {
+          code = runSqliteQuery({ file: f, sql: 'SELECT 1; DROP TABLE users;' })
+        })
+        expect(code).toBe(1)
+        expect(stderr).toContain('multiple statements are not allowed')
+        const check = new Database(f, { readonly: true })
+        const row = check.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()
+        check.close()
+        expect(row).toBeDefined()
+      })
+
+      it('returns 1 with a clear message when the file does not exist', () => {
+        let code = -1
+        const { stderr } = capture(() => {
+          code = runSqliteQuery({ file: path.join(tempDir, 'missing.db'), sql: 'SELECT 1' })
+        })
+        expect(code).toBe(1)
+        expect(stderr).toContain('file not found')
+      })
+
+      it('returns 1 with a clear message for a corrupt/non-SQLite file', () => {
+        const f = path.join(tempDir, 'not-a-db.txt')
+        fs.writeFileSync(f, 'not a database at all')
+        let code = -1
+        const { stderr } = capture(() => { code = runSqliteQuery({ file: f, sql: 'SELECT 1' }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('not a valid SQLite database')
+      })
     })
   })
 
