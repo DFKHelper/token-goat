@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { consumedCurlDownloadKeys, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -249,8 +249,10 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   return merged
 }
 
-/** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by
- * every disk/mem pair-list field (webFetches, bashOutputs, curlDownloads, grepQueries). */
+/** "mem overlays disk" merge: the current process's view is at least as fresh. Shared by every
+ * pure-append/overwrite disk/mem pair-list field with no removal path (webFetches, bashOutputs,
+ * grepQueries, globQueries). curlDownloads has one (clearCurlDownload) and uses
+ * {@link mergeCurlDownloads} instead so a clearing deletion actually sticks. */
 function mergePairs<V>(disk: Array<[string, V]>, mem: Array<[string, V]>): Array<[string, V]> {
   return Array.from(new Map([...disk, ...mem]).entries())
 }
@@ -301,6 +303,31 @@ function mergePendingLargeFileHints(
   return Array.from(merged.entries())
 }
 
+/** Merge two views of curl -o download records: union disk with mem, but drop any URL this
+ * process explicitly cleared (see {@link consumedCurlDownloadKeys}) even if a stale disk read
+ * still has it -- like mergePendingLargeFileHints, this is NOT a plain set-union field, because
+ * clearCurlDownload's removal must actually stick.
+ *
+ * The overlay only re-asserts URLs this process actually acted on this run: brand-new URLs it
+ * recorded, or URLs whose saved path it changed. A URL merely carried unchanged from hydration
+ * (same URL, same path as `curlDownloadsAtLoad`) is left alone and instead defers to whatever
+ * the freshest disk read says -- otherwise a process that loaded a URL but never touched it would
+ * resurrect that URL on every save, even after a *different* concurrent process legitimately
+ * cleared it from disk in the meantime. */
+function mergeCurlDownloads(
+  disk: Array<[string, string]>,
+  mem: Array<[string, string]>,
+): Array<[string, string]> {
+  const merged = new Map(disk)
+  for (const key of consumedCurlDownloadKeys()) merged.delete(key)
+  const atLoad = curlDownloadsAtLoad()
+  for (const [url, savedPath] of mem) {
+    if (atLoad.get(url) === savedPath) continue
+    merged.set(url, savedPath)
+  }
+  return Array.from(merged.entries())
+}
+
 /** Merge two views of outstanding Agent-spawn prompts. Like mergePendingLargeFileHints below,
  * this is NOT a plain set-union: removal (the post-hook clearing a completed spawn) must actually
  * stick, so a plain disk-union would silently resurrect an entry this process just removed from
@@ -342,7 +369,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
     webFetches: mergePairs(disk.webFetches, mem.webFetches),
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
-    curlDownloads: mergePairs(disk.curlDownloads, mem.curlDownloads),
+    curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),

@@ -132,6 +132,11 @@ describe('parseOpenApiSpec', () => {
   it('throws on malformed JSON with a .json extension', () => {
     expect(() => parseOpenApiSpec('{ not valid json', 'openapi.json')).toThrow()
   })
+
+  it('strips a leading UTF-8 BOM before parsing .json content (fail-on-buggy: JSON.parse throws "Unexpected token" on a BOM-prefixed file, common from Windows editors)', () => {
+    const data = parseOpenApiSpec('﻿' + JSON.stringify(SPEC_JSON), 'openapi.json')
+    expect(data).toEqual(SPEC_JSON)
+  })
 })
 
 // ---- pure module: extractOperations / formatOpenApiOutline ----------------

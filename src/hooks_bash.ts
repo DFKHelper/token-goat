@@ -1673,7 +1673,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
       const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cwd ?? process.cwd())
       if (existsSync(resolvedOutputPath)) {
-        recordCurlDownload(curlDl.url, curlDl.outputPath)
+        recordCurlDownload(curlDl.url, resolvedOutputPath)
       }
     }
 

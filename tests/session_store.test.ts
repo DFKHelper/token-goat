@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadSessionState, readSessionStateFile, saveSessionState } from '../src/session_store.js'
 import { normalizePath } from '../src/paths.js'
 import {
+  clearCurlDownload,
   exportSessionState,
+  getCurlDownloadPath,
   importSessionState,
+  recordCurlDownload,
   recordFileRead,
   recordLargeFileHintPending,
   recordSymbolRead,
@@ -334,6 +337,82 @@ describe('pendingLargeFileHints merge does not resurrect an untouched carried ke
       ['/existing.md', 10],
       ['/new.md', 20],
     ])
+  })
+})
+
+describe('curlDownloads merge (cleared downloads stay cleared)', () => {
+  it('does not resurrect a curl download this process cleared, even though a fresh disk read at save time still has it (fail-on-buggy: a plain union-of-entries merge restores the deleted key)', () => {
+    // Process A: a curl -o download is recorded and saved.
+    importSessionState(empty())
+    recordCurlDownload('http://x/f.zip', '/repo/a/downloads/f.zip')
+    saveSessionState('sid-curl-1')
+
+    const diskAfterA = JSON.parse(fs.readFileSync(sessionFile('sid-curl-1'), 'utf8')) as SerializedSession
+    expect(diskAfterA.curlDownloads).toEqual([['http://x/f.zip', '/repo/a/downloads/f.zip']])
+
+    // Process B: a fresh hook process loads that session, clears the download (its saved file
+    // is gone), and saves. Nothing else touches the file in between, so the disk read at B's
+    // save time still shows the entry — the merge must still drop it, not resurrect it.
+    importSessionState(empty())
+    loadSessionState('sid-curl-1')
+    clearCurlDownload('http://x/f.zip')
+    saveSessionState('sid-curl-1')
+
+    const diskAfterB = JSON.parse(fs.readFileSync(sessionFile('sid-curl-1'), 'utf8')) as SerializedSession
+    expect(diskAfterB.curlDownloads).toEqual([])
+  })
+
+  it('does not resurrect an untouched carried curl download when a concurrent process legitimately cleared it', () => {
+    const sid = 'sid-curl-2'
+
+    // Seed disk: an earlier process recorded and persisted a curl download.
+    importSessionState(empty())
+    recordCurlDownload('http://y/g.zip', '/repo/a/downloads/g.zip')
+    saveSessionState(sid)
+
+    // Process A: loads the disk snapshot (sees the URL) but never touches it — it's just
+    // carried along in memory, unconsumed and unmodified.
+    importSessionState(empty())
+    loadSessionState(sid)
+    expect(exportSessionState().curlDownloads).toEqual([['http://y/g.zip', '/repo/a/downloads/g.zip']])
+    const aSnapshot = exportSessionState()
+
+    // Process B: independently loads the same disk snapshot, legitimately clears the URL
+    // (its saved file is gone), and saves — removing it from disk.
+    importSessionState(empty())
+    loadSessionState(sid)
+    clearCurlDownload('http://y/g.zip')
+    saveSessionState(sid)
+    const afterB = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect(afterB.curlDownloads).toEqual([])
+
+    // Process A now saves its own (stale) view. A plain union-of-entries overlay would still
+    // resurrect the URL from A's stale in-memory copy. It must not: B already legitimately
+    // cleared it.
+    importSessionState(aSnapshot)
+    saveSessionState(sid)
+
+    const finalDisk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect(finalDisk.curlDownloads).toEqual([])
+  })
+
+  it('still persists a genuinely new curl download a process recorded after loading', () => {
+    const sid = 'sid-curl-3'
+    importSessionState(empty())
+    recordCurlDownload('http://existing/a.zip', '/repo/downloads/a.zip')
+    saveSessionState(sid)
+
+    importSessionState(empty())
+    loadSessionState(sid)
+    recordCurlDownload('http://new/b.zip', '/repo/downloads/b.zip')
+    saveSessionState(sid)
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect(disk.curlDownloads.slice().sort()).toEqual([
+      ['http://existing/a.zip', '/repo/downloads/a.zip'],
+      ['http://new/b.zip', '/repo/downloads/b.zip'],
+    ])
+    expect(getCurlDownloadPath('http://new/b.zip')).toBe('/repo/downloads/b.zip')
   })
 })
 

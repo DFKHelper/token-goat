@@ -9,6 +9,8 @@
 import * as path from 'node:path'
 import { load as loadYaml } from 'js-yaml'
 
+import { stripBom } from './util.js'
+
 /** The HTTP-method keys OpenAPI/Swagger recognize as operations under a path item. Any other
  * key on a path item (`parameters`, `summary`, `$ref`, `servers`, ...) is not an operation. */
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const
@@ -22,6 +24,7 @@ const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch'
  * syntax error behind a YAML fallback that happens to succeed on a truncated document.
  */
 export function parseOpenApiSpec(text: string, filePath: string): unknown {
+  text = stripBom(text)
   const ext = path.extname(filePath).toLowerCase()
   if (ext === '.yaml' || ext === '.yml') return loadYaml(text)
   if (ext === '.json') return JSON.parse(text)

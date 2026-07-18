@@ -1880,7 +1880,10 @@ describe('preBashHandler — curl download dedup', () => {
       const result = preBashHandler(makeBashEvent(secondCmd))
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
-        expect(result.message).toContain(v1Path)
+        // The recall message shows the fully-resolved, normalized path recorded at download
+        // time (see the "resolves a relative -o path against the ORIGINAL download cwd"
+        // regression below), not the raw -o argument as typed on the command line.
+        expect(result.message).toContain(resolveIndexPath(v1Path))
         expect(result.message).toContain('rg')
         expect(result.message).toContain('token-goat read')
       }
@@ -1929,6 +1932,49 @@ describe('preBashHandler — curl download dedup', () => {
       expect(getCurlDownloadPath(url)).toBeNull()
     } finally {
       try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
+  })
+
+  it('resolves a relative -o path against the ORIGINAL download cwd on recall, not the current command\'s cwd (fail-on-buggy: storing the raw relative outputPath instead of the cwd-resolved absolute path lets a same-named file in the new cwd shadow the real downloaded one)', async () => {
+    const dirA = mkdtempSync(join(tmpdir(), 'tg-curl-cwd-a-'))
+    const dirB = mkdtempSync(join(tmpdir(), 'tg-curl-cwd-b-'))
+    try {
+      const { mkdirSync } = await import('node:fs')
+      mkdirSync(join(dirA, 'downloads'), { recursive: true })
+      mkdirSync(join(dirB, 'downloads'), { recursive: true })
+
+      const relOutputPath = 'downloads/file.json'
+      const absPathA = join(dirA, relOutputPath)
+      const absPathB = join(dirB, relOutputPath)
+
+      // The real download, saved under dirA, is above the dedup floor.
+      writeFileSync(absPathA, JSON.stringify({ items: new Array(20).fill({ id: 1, name: 'foo' }) }))
+      // A same-named but unrelated, much smaller file happens to already exist under dirB.
+      writeFileSync(absPathB, '{}')
+
+      const url = 'https://example.com/relative-cwd-file.json'
+      const cmd = `curl ${url} -o ${relOutputPath}`
+
+      // Record the download as if it ran from dirA.
+      await postBashHandler(makePostBashEvent(cmd, '', dirA))
+
+      // The recorded path must be the fully-resolved absolute path from the ORIGINAL cwd, not
+      // the raw relative string.
+      expect(getCurlDownloadPath(url)).toBe(resolveIndexPath(relOutputPath, dirA))
+
+      // Now the same command is run again, but from a DIFFERENT cwd (dirB) that happens to
+      // contain its own, much-smaller file at the same relative path.
+      const result = preBashHandler(makeBashEvent(cmd, dirB))
+
+      // The recall must still find and deny based on the ORIGINAL (dirA) file, not dirB's.
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(resolveIndexPath(absPathA))
+        expect(result.message).not.toContain(resolveIndexPath(absPathB))
+      }
+    } finally {
+      try { rmSync(dirA, { recursive: true, force: true }) } catch { /* best-effort */ }
+      try { rmSync(dirB, { recursive: true, force: true }) } catch { /* best-effort */ }
     }
   })
 
