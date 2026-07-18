@@ -65,6 +65,7 @@ import {
 
   runExports,
   runChanged,
+  runDiff,
   runRefs,
   runBrief,
   extractImports,
@@ -2307,6 +2308,149 @@ describe('read_commands', () => {
       // repo root, doubling the "subdir" segment (subdir/subdir/touched.ts).
       expect(arg.filePath).not.toBe(resolveIndexPath('subdir/touched.ts', subdir))
       expect(arg.filePath).not.toContain(path.join('subdir', 'subdir'))
+    })
+  })
+
+  // ---- runDiff --------------------------------------------------------------
+
+  describe('runDiff', () => {
+    const mockRunGit = vi.mocked(runGit)
+
+    function twoHunkDiff(filePath: string): string {
+      return [
+        `diff --git a/${filePath} b/${filePath}`,
+        'index 111..222 100644',
+        `--- a/${filePath}`,
+        `+++ b/${filePath}`,
+        '@@ -1,2 +1,2 @@',
+        '-function untouchedFn() {',
+        '+function untouchedFn() { // edited',
+        '   return 1',
+        '@@ -10,2 +10,3 @@',
+        ' function touchedFn() {',
+        '+  // touched line',
+        '   return 2',
+      ].join('\n')
+    }
+
+    it('shows only the hunk overlapping the symbol\'s line range, not an unrelated hunk in the same file', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      const { stdout, stderr } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::touchedFn' })).toBe(0)
+      })
+      expect(stderr).toBe('')
+      expect(stdout).toContain('touched line')
+      expect(stdout).not.toContain('untouchedFn')
+    })
+
+    it('runs a plain `git diff -- file` (no ref) by default', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      runDiff({ spec: 'a.ts::touchedFn' })
+      expect(mockRunGit).toHaveBeenCalledWith(['diff', '--unified=0', '--', 'a.ts'], expect.anything())
+    })
+
+    it('passes an explicit ref range straight through to git diff as a single token', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      runDiff({ spec: 'a.ts::touchedFn', ref: 'HEAD~3..HEAD' })
+      expect(mockRunGit).toHaveBeenCalledWith(['diff', 'HEAD~3..HEAD', '--unified=0', '--', 'a.ts'], expect.anything())
+    })
+
+    it('reports "no changes" (non-error) when a hunk exists but does not overlap the symbol', () => {
+      const sym: MockSymbol = { name: 'untouchedFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({
+        exitCode: 0,
+        stdout: [
+          'diff --git a/a.ts b/a.ts',
+          'index 111..222 100644',
+          '--- a/a.ts',
+          '+++ b/a.ts',
+          '@@ -10,2 +10,3 @@',
+          ' function touchedFn() {',
+          '+  // touched line',
+          '   return 2',
+        ].join('\n'),
+        stderr: '',
+      })
+      const { stdout } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::untouchedFn' })).toBe(0)
+      })
+      expect(stdout).toContain('No changes')
+    })
+
+    it('reports "no changes" (non-error) when the file has no diff at all', () => {
+      const sym: MockSymbol = { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
+      const { stdout } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::anyFn' })).toBe(0)
+      })
+      expect(stdout).toContain('No changes')
+    })
+
+    it('fails the same way runRead does when the symbol does not resolve (not found + did-you-mean)', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::missingSym' })).toBe(1)
+      })
+      expect(stderr).toContain("Symbol 'missingSym' not found in 'a.ts'")
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
+      const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
+      const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([candA, candB] as any)
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::render' })).toBe(1)
+      })
+      expect(stderr).toContain('Ambiguous symbol')
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('errors up front (never spawns git) when the spec has no ::symbol part', () => {
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'a.ts' })).toBe(1)
+      })
+      expect(stderr).toContain('file::symbol')
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('returns 1 and reports the git failure when git diff itself errors', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::touchedFn', ref: 'nope' })).toBe(1)
+      })
+      expect(stderr).toContain('git diff failed')
+    })
+
+    it('emits a structured items envelope in --json mode, scoped to the same overlapping hunk', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      const { stdout } = capture(() => {
+        expect(runDiff({ spec: 'a.ts::touchedFn', json: true })).toBe(0)
+      })
+      const parsed = JSON.parse(stdout) as { symbol: string; hunks: Array<{ text: string }> }
+      expect(parsed.symbol).toBe('touchedFn')
+      expect(parsed.hunks).toHaveLength(1)
+      expect(parsed.hunks[0]?.text).toContain('touched line')
     })
   })
 })

@@ -1487,6 +1487,164 @@ export function runChanged(opts: ChangedOptions = {}): number {
   return 0
 }
 
+// ---- diff -------------------------------------------------------------------
+
+export interface DiffOptions {
+  spec: string
+  ref?: string
+  json?: boolean
+  projectRoot?: string
+}
+
+/**
+ * Split a single-file unified diff into its preamble (the `diff --git` / `index` / `---` /
+ * `+++` header lines) and its individual `@@` hunks, each carrying both its raw text (for
+ * verbatim reprinting) and its new-side line range. Range math mirrors `parseDiffHunks`
+ * exactly (a pure-deletion hunk with a new-side count of 0 anchors to its single insertion
+ * point) -- this just additionally keeps the hunk body text, which `parseDiffHunks` discards.
+ */
+function splitDiffHunks(diffText: string): {
+  preamble: string
+  hunks: Array<{ text: string; start: number; end: number }>
+} {
+  const lines = diffText.split(/\r?\n/)
+  const hunkHeaderRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
+  let preambleEnd = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    if (hunkHeaderRe.test(lines[i]!)) {
+      preambleEnd = i
+      break
+    }
+  }
+  const preamble = lines.slice(0, preambleEnd).join('\n')
+  const hunks: Array<{ text: string; start: number; end: number }> = []
+  let i = preambleEnd
+  while (i < lines.length) {
+    const line = lines[i]!
+    const m = hunkHeaderRe.exec(line)
+    if (m === null) {
+      i++
+      continue
+    }
+    const newStart = parseInt(m[1]!, 10)
+    const newLines = m[2] !== undefined ? parseInt(m[2], 10) : 1
+    const range =
+      newLines === 0
+        ? { start: Math.max(newStart, 1), end: Math.max(newStart, 1) }
+        : { start: newStart, end: newStart + newLines - 1 }
+    const bodyLines = [line]
+    let j = i + 1
+    while (j < lines.length && !hunkHeaderRe.test(lines[j]!)) {
+      bodyLines.push(lines[j]!)
+      j++
+    }
+    // A trailing newline in the source diff leaves one phantom empty element at the very end
+    // of the final hunk's body after the `split` above -- drop it so it doesn't get reprinted
+    // as a stray blank line.
+    if (j >= lines.length && bodyLines[bodyLines.length - 1] === '') bodyLines.pop()
+    hunks.push({ text: bodyLines.join('\n'), start: range.start, end: range.end })
+    i = j
+  }
+  return { preamble, hunks }
+}
+
+/**
+ * Handle ``token-goat diff "file::symbol" [refA..refB]`` -- show only the git diff hunk(s)
+ * whose new-side line range overlaps one symbol's indexed line range, instead of the whole
+ * file's diff. Resolves the spec exactly like `runRead` (same ambiguous/none error shapes,
+ * via `resolveSymbolSpec`), then scopes `git diff [ref] -- <file>` down to the overlapping
+ * hunks via `splitDiffHunks`. No ref given -> plain `git diff -- file` (unstaged working tree
+ * vs the index), the same bare-`git diff` default `resume.ts` already uses for its own
+ * "uncommitted changes" summary -- there is no existing "vs HEAD~N" precedent for a single
+ * current-state diff view the way there is for `changed`'s historical file/symbol listing.
+ */
+export function runDiff(opts: DiffOptions): number {
+  const { file, symbol } = parseReadSpec(opts.spec)
+  if (symbol === undefined || symbol === '') {
+    emitErr(`'token-goat diff' requires a 'file::symbol' spec (got '${opts.spec}')`)
+    return 1
+  }
+
+  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
+
+  if (resolution.kind === 'ambiguous') {
+    // Same hard-refuse shape as runRead's ambiguous branch -- never guess which candidate the
+    // caller meant.
+    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
+    return 1
+  }
+
+  if (resolution.kind === 'none') {
+    // Same "not found" + did-you-mean shape as runRead's none branch.
+    const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
+    if (closes.length > 0) messages.push(didYouMean(closes))
+    emitErr(messages.join('\n'))
+    return 1
+  }
+
+  const match = resolution.entry
+  const cwd = opts.projectRoot ?? process.cwd()
+
+  // `--unified=0` (no surrounding context lines), same as runChanged's own symbolMode
+  // hunk-scoping above: a hunk's line range must precisely bound only the lines that actually
+  // changed, or a default-context hunk from an adjacent, unrelated symbol could spuriously
+  // overlap this symbol's range just because the two sit close together in the file.
+  const diffArgs =
+    opts.ref !== undefined
+      ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
+      : ['diff', '--unified=0', '--', match.filePath]
+  let diffResult
+  try {
+    diffResult = runGit(diffArgs, { cwd })
+  } catch {
+    emitErr(`Could not run git diff for '${match.filePath}'`)
+    return 1
+  }
+  if (diffResult.exitCode !== 0) {
+    emitErr(`git diff failed: ${diffResult.stderr}`)
+    return 1
+  }
+
+  if (diffResult.stdout.trim() === '') {
+    emit(`No changes to '${match.name}' in '${match.filePath}'.`)
+    return 0
+  }
+
+  const { hunks } = splitDiffHunks(diffResult.stdout)
+  const overlapping = hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
+
+  if (overlapping.length === 0) {
+    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${match.filePath}'.`)
+    return 0
+  }
+
+  if (opts.json === true) {
+    const capped = guardJsonRows(overlapping.map((h) => ({ start: h.start, end: h.end, text: h.text })))
+    emit(
+      JSON.stringify(
+        {
+          symbol: match.name,
+          file: match.filePath,
+          lineStart: match.lineStart,
+          lineEnd: match.lineEnd,
+          hunks: capped.items,
+          truncated: capped.truncated,
+          totalCount: capped.totalCount,
+        },
+        null,
+        2,
+      ),
+    )
+    return 0
+  }
+
+  const header = `# ${match.name} (${match.kind}) — ${match.filePath}:${match.lineStart}-${match.lineEnd}`
+  emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
+  return 0
+}
+
 // ---- grep -------------------------------------------------------------------
 
 export interface GrepOptions {
