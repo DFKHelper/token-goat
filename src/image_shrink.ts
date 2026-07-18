@@ -59,6 +59,18 @@ export interface ShrinkResult {
   readonly format: string
 }
 
+/** Build the human-readable savings summary and the shrunk image's data URL, shared by every caller of {@link shrinkImage} (hooks_browser_image.ts's inline-screenshot rewrite, this file's own file-read rewrite). */
+export function formatShrinkSummary(result: ShrinkResult, subject: string): { summary: string; dataUrl: string } {
+  const saved = result.originalBytes - result.shrunkBytes
+  const pct = Math.round((saved / result.originalBytes) * 100)
+  const summary =
+    `token-goat shrank ${subject}: ` +
+    `${toKB(result.originalBytes)}kb -> ${toKB(result.shrunkBytes)}kb ` +
+    `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
+  const dataUrl = `data:image/${result.format};base64,${result.data.toString('base64')}`
+  return { summary, dataUrl }
+}
+
 /**
  * Minimal structural type for the `sharp` API surface we use.
  *
@@ -216,12 +228,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (result === null) return passOutput()
 
   const saved = result.originalBytes - result.shrunkBytes
-  const pct = Math.round((saved / result.originalBytes) * 100)
-  const dataUrl = `data:image/${result.format};base64,${result.data.toString('base64')}`
-  const summary =
-    `token-goat shrank ${path.basename(filePath)}: ` +
-    `${toKB(result.originalBytes)}kb -> ${toKB(result.shrunkBytes)}kb ` +
-    `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
+  const { summary, dataUrl } = formatShrinkSummary(result, path.basename(filePath))
 
   // The Python original (hooks_read.py) recorded this under 'image_shrink' via an exact vision-token delta (Claude's per-tile token cost at the pre/post dimensions); that formula was never ported to shrinkImage's return shape, so this uses the same bytes/4 token-cost approximation the rest of this TS codebase already applies to savings it can't cost in exact tokens (see hooks_read.ts's session_hint calls). This call was dropped entirely during the Python->TS port -- restoring it is what makes 'image_shrink' rows (and the flagship image-shrink savings figure derived from them) appear in `token-goat stats --full` again.
   recordStat('image_shrink', saved, Math.round(saved / 4), undefined, path.basename(filePath))
