@@ -7,14 +7,32 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
-import { recordBashOutput } from '../src/session.js'
+import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
+import { loadSessionState, saveSessionState } from '../src/session_store.js'
 
 let tmpHome: string
 let prevHome: string | undefined
 let sessionId: string
 
+// Clears session.ts's in-memory state without touching the hook registry (clearModuleCaches()
+// from reset.ts would also wipe hook_registry.ts's registered handlers, which are only ever
+// registered once at module-import time via top-level registerHook() calls in hooks_agent_spawn.ts
+// -- clearing them mid-file would silently unregister every hook for the rest of this test file,
+// since nothing re-imports/re-registers afterward).
+function resetSessionState(): void {
+  importSessionState({
+    files: [],
+    hintsShown: [],
+    webFetches: [],
+    bashOutputs: [],
+    curlDownloads: [],
+    outstandingAgentSpawns: [],
+  })
+}
+
 beforeEach(() => {
+  resetSessionState()
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hooks-agent-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
@@ -22,6 +40,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  resetSessionState()
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
   try {
@@ -30,6 +49,34 @@ afterEach(() => {
     // best-effort cleanup
   }
 })
+
+/**
+ * Run a hook event the way relay.ts's relayInProcess does for a real Claude Code call: load the
+ * named session's persisted state, dispatch through the real registered handlers, then persist
+ * whatever the handlers mutated. hooks_agent_spawn's pre/post handlers fire as separate
+ * `token-goat hook` processes in production, so exercising the duplicate-brief feature through
+ * this load/dispatch/save cycle (rather than bare back-to-back runHook calls sharing one
+ * process's module state) is what actually proves the cross-process tracking works.
+ *
+ * Resets in-memory session state to empty before loading, so that switching `sid` between calls
+ * faithfully simulates a brand-new `token-goat hook` process (which always starts with empty
+ * module state before loadSessionState populates it from that session's own file) rather than
+ * leaking a previous call's in-process module state into a session that has no on-disk file yet.
+ */
+async function callAgentHook(
+  eventName: 'pre_tool_use' | 'post_tool_use',
+  toolInput: Record<string, unknown>,
+  sid: string,
+  toolResponse?: unknown,
+) {
+  resetSessionState()
+  loadSessionState(sid)
+  const payload: Record<string, unknown> = { tool_name: 'Agent', tool_input: toolInput, session_id: sid }
+  if (toolResponse !== undefined) payload['tool_response'] = toolResponse
+  const result = await runHook(buildEvent(eventName, payload))
+  saveSessionState(sid)
+  return result
+}
 
 describe('Agent spawn briefing hook (real runHook dispatch)', () => {
   it('appends a briefing to an Agent tool prompt', async () => {
@@ -188,5 +235,88 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     const payload = { tool_name: 'Bash', tool_input: { command: 'echo hi' }, session_id: sessionId, tool_response: largeReport }
     const result = await runHook(buildEvent('post_tool_use', payload))
     expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('Duplicate-subagent-brief detection (real cross-process load/dispatch/save cycle)', () => {
+  it('fires an advisory warning when a near-duplicate prompt is spawned while the original is still outstanding', async () => {
+    const original = 'Investigate the failing tests in the payment module and fix the root cause of the failures.'
+    const near = 'Investigate the failing tests in the payment module and find the root cause of the failures.'
+
+    const first = await callAgentHook('pre_tool_use', { prompt: original }, sessionId)
+    expect(first.hookType).toBe('rewriteInput')
+
+    const second = await callAgentHook('pre_tool_use', { prompt: near }, sessionId)
+    expect(second.hookType).toBe('rewriteInput')
+    if (second.hookType === 'rewriteInput') {
+      const updatedPrompt = second.updatedInput['prompt']
+      expect(typeof updatedPrompt).toBe('string')
+      expect(updatedPrompt).toContain('already appears to be outstanding')
+    }
+  })
+
+  it('does not fire the advisory for two genuinely different tasks that merely share some words', async () => {
+    const first = 'Fix the login bug in auth.ts where the session token is not refreshed correctly.'
+    const second = 'Write documentation for the new API rate limiter feature, including usage examples.'
+
+    const firstResult = await callAgentHook('pre_tool_use', { prompt: first }, sessionId)
+    expect(firstResult.hookType).toBe('rewriteInput')
+
+    const secondResult = await callAgentHook('pre_tool_use', { prompt: second }, sessionId)
+    expect(secondResult.hookType).toBe('rewriteInput')
+    if (secondResult.hookType === 'rewriteInput') {
+      const updatedPrompt = secondResult.updatedInput['prompt']
+      expect(typeof updatedPrompt).toBe('string')
+      expect(updatedPrompt).not.toContain('already appears to be outstanding')
+    }
+  })
+
+  it('does not fire once the original spawn has completed (post-hook cleared its outstanding entry)', async () => {
+    const original = 'Refactor the billing service to use the new retry queue instead of polling.'
+
+    const preResult = await callAgentHook('pre_tool_use', { prompt: original }, sessionId)
+    expect(preResult.hookType).toBe('rewriteInput')
+    const spawnedInput = preResult.hookType === 'rewriteInput' ? preResult.updatedInput : { prompt: original }
+
+    // Complete the spawn via the real registered post-hook, using the actual (briefing-appended)
+    // tool_input Claude Code would have sent, with a small (non-cacheable) report.
+    const postResult = await callAgentHook('post_tool_use', spawnedInput, sessionId, 'Done. Small report.')
+    expect(postResult.hookType).toBe('pass')
+
+    // A near-duplicate prompt fired again after completion must not be flagged.
+    const again = await callAgentHook('pre_tool_use', { prompt: original }, sessionId)
+    expect(again.hookType).toBe('rewriteInput')
+    if (again.hookType === 'rewriteInput') {
+      const updatedPrompt = again.updatedInput['prompt']
+      expect(typeof updatedPrompt).toBe('string')
+      expect(updatedPrompt).not.toContain('already appears to be outstanding')
+    }
+  })
+
+  it('is session-scoped: the same prompt under a different sessionId does not cross-flag', async () => {
+    const prompt = 'Audit the checkout flow for accessibility issues and report findings.'
+    const otherSessionId = `agent-other-${sessionId}`
+
+    const inFirstSession = await callAgentHook('pre_tool_use', { prompt }, sessionId)
+    expect(inFirstSession.hookType).toBe('rewriteInput')
+
+    const inOtherSession = await callAgentHook('pre_tool_use', { prompt }, otherSessionId)
+    expect(inOtherSession.hookType).toBe('rewriteInput')
+    if (inOtherSession.hookType === 'rewriteInput') {
+      const updatedPrompt = inOtherSession.updatedInput['prompt']
+      expect(typeof updatedPrompt).toBe('string')
+      expect(updatedPrompt).not.toContain('already appears to be outstanding')
+    }
+  })
+
+  it('bounds the tracked outstanding-spawn set: spawning many distinct prompts in one session never exceeds the cap', async () => {
+    const extra = 10
+    for (let i = 0; i < MAX_OUTSTANDING_AGENT_SPAWNS + extra; i++) {
+      const result = await callAgentHook('pre_tool_use', { prompt: `Distinct standalone task number ${i} about topic ${i}.` }, sessionId)
+      expect(result.hookType).toBe('rewriteInput')
+    }
+
+    loadSessionState(sessionId)
+    expect(getOutstandingAgentSpawns().length).toBeLessThanOrEqual(MAX_OUTSTANDING_AGENT_SPAWNS)
   })
 })

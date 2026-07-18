@@ -14,7 +14,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
-import { getSessionBashOutputs } from './session.js'
+import { getOutstandingAgentSpawns, getSessionBashOutputs, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
@@ -93,6 +93,56 @@ function buildSubagentBriefing(): string {
   }
 }
 
+/**
+ * Word-set Jaccard similarity threshold above which two Agent-spawn prompts are treated as
+ * near-duplicates. Chosen high (0.75, within the recommended 0.7-0.8 range) to bias hard against
+ * false positives: two genuinely different subagent tasks that merely share some vocabulary
+ * (both mention "fix", "the file", "tests", ...) must never trip this. A missed true duplicate
+ * only costs a nice-to-have warning; a false "duplicate!" on two real, different tasks is
+ * actively annoying and erodes trust in the hint.
+ */
+const DUPLICATE_PROMPT_JACCARD_THRESHOLD = 0.75
+
+/** Normalize `text` into its lowercase, punctuation-stripped word set for Jaccard comparison. */
+function promptWordSet(text: string): Set<string> {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 0)
+  return new Set(words)
+}
+
+/** Word-set Jaccard similarity: |intersection| / |union|, 0 when either side has no words. */
+function jaccardSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let intersection = 0
+  for (const word of a) {
+    if (b.has(word)) intersection++
+  }
+  const union = a.size + b.size - intersection
+  return union === 0 ? 0 : intersection / union
+}
+
+/**
+ * Find an already-outstanding Agent-spawn prompt this session that is a near-duplicate of
+ * `prompt` (Jaccard similarity >= {@link DUPLICATE_PROMPT_JACCARD_THRESHOLD}), or null if none.
+ */
+function findDuplicateOutstandingPrompt(prompt: string): string | null {
+  const words = promptWordSet(prompt)
+  for (const entry of getOutstandingAgentSpawns()) {
+    if (jaccardSimilarity(words, promptWordSet(entry.prompt)) >= DUPLICATE_PROMPT_JACCARD_THRESHOLD) {
+      return entry.prompt
+    }
+  }
+  return null
+}
+
+/** Truncate `text` to `max` chars for embedding in the advisory warning, appending an ellipsis when cut. */
+function truncateForWarning(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) + '...' : text
+}
+
 function preAgentHandler(event: HookEvent): HookOutput {
   // Only fire on Agent tool
   if (event.toolName !== 'Agent') return passOutput()
@@ -104,13 +154,20 @@ function preAgentHandler(event: HookEvent): HookOutput {
   if (typeof prompt !== 'string' || prompt.trim() === '') return passOutput()
 
   try {
+    // Check for a near-duplicate BEFORE registering this prompt, so a spawn never flags itself.
+    const duplicateOf = findDuplicateOutstandingPrompt(prompt)
+    recordOutstandingAgentSpawn(prompt)
+
     const briefing = buildSubagentBriefing()
+    const advisory = duplicateOf
+      ? `\n\n[token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${truncateForWarning(duplicateOf, 80)}"). This is advisory only -- proceeding is fine if intentional.`
+      : ''
 
-    // If briefing is empty (failed to build), pass through unchanged
-    if (!briefing) return passOutput()
+    // If there is nothing to add (briefing failed to build and no duplicate warning), pass through unchanged
+    if (!briefing && !advisory) return passOutput()
 
-    // Append briefing to the prompt
-    const updatedPrompt = prompt + briefing
+    // Append briefing and/or duplicate-spawn advisory to the prompt
+    const updatedPrompt = prompt + briefing + advisory
     const updatedInput = { ...toolInput, prompt: updatedPrompt }
 
     return {
@@ -129,6 +186,14 @@ const AGENT_RESULT_CACHE_MIN_BYTES = 8000
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
     if (event.toolName !== 'Agent' || !event.sessionId) return passOutput()
+
+    // Clear this spawn's outstanding-prompt entry so a later, unrelated Agent spawn with similar
+    // wording is not incorrectly flagged as a duplicate of a call that has already finished.
+    const finishedPrompt = event.toolInput['prompt']
+    if (typeof finishedPrompt === 'string' && finishedPrompt !== '') {
+      removeOutstandingAgentSpawn(finishedPrompt)
+    }
+
     const resultText = extractToolResultText(event.raw)
     if (!resultText || resultText.length < AGENT_RESULT_CACHE_MIN_BYTES) return passOutput()
     const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)

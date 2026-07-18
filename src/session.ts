@@ -78,6 +78,28 @@ let _globQueries = new Map<string, number>()
 
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null
+
+/** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's
+ * duplicate-brief detection: the original prompt text (before any briefing/advisory the
+ * pre-hook appends) and when it was recorded. */
+export interface OutstandingAgentSpawn {
+  readonly prompt: string
+  readonly ts: number
+}
+
+// Prompts of Agent-tool spawns fired this session whose matching post_tool_use has not yet
+// arrived. Populated by recordOutstandingAgentSpawn (pre_tool_use), cleared by
+// removeOutstandingAgentSpawn (post_tool_use) once the corresponding spawn completes.
+let _outstandingAgentSpawns: OutstandingAgentSpawn[] = []
+
+// Snapshot of _outstandingAgentSpawns at hydration time, so session_store.ts's merge can tell
+// "this process explicitly removed an entry that was here at load" apart from "this process
+// never saw it" -- a plain disk-union merge (like the other pair-list fields use) would silently
+// resurrect a removed entry from the pre-update disk snapshot, since removal, unlike every other
+// field here, is not a monotonic set-union operation. Mirrors pendingLargeFileHintsAtLoad's role
+// for the exact same class of problem.
+let _outstandingAgentSpawnsAtLoad: OutstandingAgentSpawn[] = []
+
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command hash used by recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
 let _bashReruns = new Set<string>()
 
@@ -397,6 +419,61 @@ export function getLastTabContext(): string | null {
   return _lastTabContext
 }
 
+/** Upper bound on outstanding Agent-spawn prompts tracked per session; oldest recorded first once exceeded, mirroring MAX_RANGES_PER_FILE's cap-then-evict shape. A long session that spawns many subagents must not grow this list unboundedly. */
+export const MAX_OUTSTANDING_AGENT_SPAWNS = 30
+
+/** Record that an Agent-tool spawn with `prompt` (the original prompt text, before any
+ * briefing/advisory is appended) is now outstanding this session. Caps the tracked list at
+ * {@link MAX_OUTSTANDING_AGENT_SPAWNS}, evicting the oldest entries first. */
+export function recordOutstandingAgentSpawn(prompt: string): void {
+  _outstandingAgentSpawns.push({ prompt, ts: Date.now() })
+  if (_outstandingAgentSpawns.length > MAX_OUTSTANDING_AGENT_SPAWNS) {
+    _outstandingAgentSpawns.splice(0, _outstandingAgentSpawns.length - MAX_OUTSTANDING_AGENT_SPAWNS)
+  }
+}
+
+/** Every Agent-spawn prompt currently outstanding this session (insertion order). */
+export function getOutstandingAgentSpawns(): ReadonlyArray<OutstandingAgentSpawn> {
+  return _outstandingAgentSpawns
+}
+
+/** Remove the outstanding entry whose tracked prompt is a prefix of `finishedPrompt` -- prefix,
+ * not exact equality, because preAgentHandler's rewriteInput only ever appends text
+ * (briefing/advisory) after the original prompt tracked here, so a completed spawn's actual
+ * tool_input prompt always starts with the tracked original. Removes the oldest match first (the
+ * earliest still-outstanding entry with that prefix) and is a no-op if none match. */
+export function removeOutstandingAgentSpawn(finishedPrompt: string): void {
+  const idx = _outstandingAgentSpawns.findIndex((e) => finishedPrompt.startsWith(e.prompt))
+  if (idx !== -1) _outstandingAgentSpawns.splice(idx, 1)
+}
+
+/** A stable identity key for one outstanding-spawn entry (prompt + record timestamp), used by
+ * session_store.ts's merge to tell entries apart even when two distinct spawns share identical
+ * prompt text. */
+export function outstandingAgentSpawnKey(prompt: string, ts: number): string {
+  return `${prompt} ${ts}`
+}
+
+/** Snapshot of outstanding Agent-spawn entries exactly as they were at hydration time, before
+ * this process made any changes. session_store.ts's merge uses this to compute which entries
+ * this process explicitly removed (see {@link consumedOutstandingAgentSpawnKeys}). */
+export function outstandingAgentSpawnsAtLoad(): ReadonlyArray<OutstandingAgentSpawn> {
+  return _outstandingAgentSpawnsAtLoad
+}
+
+/** Keys (see {@link outstandingAgentSpawnKey}) present at load but removed (consumed by
+ * {@link removeOutstandingAgentSpawn}) since -- tombstones for session_store.ts's merge, mirroring
+ * {@link consumedPendingLargeFileHintKeys} for the same removal-is-not-a-union-op reason. */
+export function consumedOutstandingAgentSpawnKeys(): string[] {
+  const currentKeys = new Set(_outstandingAgentSpawns.map((e) => outstandingAgentSpawnKey(e.prompt, e.ts)))
+  const consumed: string[] = []
+  for (const e of _outstandingAgentSpawnsAtLoad) {
+    const key = outstandingAgentSpawnKey(e.prompt, e.ts)
+    if (!currentKeys.has(key)) consumed.push(key)
+  }
+  return consumed
+}
+
 /** Record that a curl -o download saved `url` to `savedPath` this session. */
 export function recordCurlDownload(url: string, savedPath: string): void {
   _curlDownloads.set(url, savedPath)
@@ -507,6 +584,7 @@ export interface SerializedSession {
   pendingLargeFileHints?: Array<[string, number]>
   grepQueries?: Array<[string, number]>
   globQueries?: Array<[string, number]>
+  outstandingAgentSpawns?: Array<[string, number]>
   lastTabContext?: string
   /**
    * Unix time in *seconds* at which this session's on-disk cache was first
@@ -531,6 +609,7 @@ export function exportSessionState(): SerializedSession {
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
     grepQueries: Array.from(_grepQueries.entries()),
     globQueries: Array.from(_globQueries.entries()),
+    outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
     ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
   }
 }
@@ -560,6 +639,8 @@ export function importSessionState(s: SerializedSession): void {
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
   _grepQueries = new Map(s.grepQueries ?? [])
   _globQueries = new Map(s.globQueries ?? [])
+  _outstandingAgentSpawns = (s.outstandingAgentSpawns ?? []).map(([prompt, ts]) => ({ prompt, ts }))
+  _outstandingAgentSpawnsAtLoad = [..._outstandingAgentSpawns]
   _lastTabContext = s.lastTabContext ?? null
 }
 
@@ -577,6 +658,8 @@ registerReset(() => {
   _pendingLargeFileHintsAtLoad = new Map()
   _grepQueries = new Map()
   _globQueries = new Map()
+  _outstandingAgentSpawns = []
+  _outstandingAgentSpawnsAtLoad = []
   _lastTabContext = null
   _sessionId = null
 })
