@@ -79,6 +79,7 @@ import {
   extractTranscriptText,
   parseDiffHunks,
   runScreenshot,
+  runZipRead,
 } from '../src/read_commands.js'
 import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
@@ -3531,5 +3532,57 @@ describe('runScreenshot --width/--height validation', () => {
       '/tmp/out.png',
       expect.objectContaining({ width: 800, height: 600 }),
     )
+  })
+})
+
+describe('runZipRead — directory entry (regression: extractZipEntry decompresses a directory entry to a defined, empty Uint8Array, not undefined, so it silently "succeeded" with empty output instead of a clear error)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('reports a clear error, not empty content, when the requested entry is a directory', async () => {
+    const { zipSync, strToU8 } = await import('fflate')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zipread-test-'))
+    const zipPath = path.join(dir, 'archive.zip')
+    try {
+      const zip = zipSync({
+        'sub/': new Uint8Array(0),
+        'sub/file.txt': strToU8('hello'),
+      })
+      fs.writeFileSync(zipPath, zip)
+
+      const { stdout, stderr } = capture(() => {
+        const code = runZipRead({ file: zipPath, entry: 'sub/' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain("Entry 'sub/' is a directory, not a file")
+      expect(stdout).toBe('')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still reads a real file entry\'s content normally', async () => {
+    const { zipSync, strToU8 } = await import('fflate')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zipread-test-'))
+    const zipPath = path.join(dir, 'archive.zip')
+    try {
+      const zip = zipSync({
+        'sub/': new Uint8Array(0),
+        'sub/file.txt': strToU8('hello'),
+      })
+      fs.writeFileSync(zipPath, zip)
+
+      const { stdout } = capture(() => {
+        const code = runZipRead({ file: zipPath, entry: 'sub/file.txt' })
+        expect(code).toBe(0)
+      })
+      expect(stdout.trim()).toBe('hello')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

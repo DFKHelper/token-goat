@@ -1447,6 +1447,16 @@ export function runZipRead(opts: ZipReadCliOptions): number {
     return 1
   }
 
+  // A directory entry (e.g. `dir/`) still matches extractZipEntry's exact-name filter and
+  // decompresses to a defined, zero-length Uint8Array -- not `undefined` -- so without this
+  // check it would silently "succeed" with empty output instead of reporting that the requested
+  // entry is a directory, not a readable file.
+  const matchedEntry = entries.find((e) => e.path === opts.entry)
+  if (matchedEntry?.isDirectory === true) {
+    emitErr(`Entry '${opts.entry}' is a directory, not a file, in '${opts.file}'`)
+    return 1
+  }
+
   if (content === undefined) {
     const messages = [`Entry '${opts.entry}' not found in '${opts.file}'`]
     const closes = entries.map((e) => e.path)
