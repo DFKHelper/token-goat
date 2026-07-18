@@ -22,8 +22,6 @@
  * crashes it.
  */
 
-import * as path from 'node:path'
-
 import { readStdinJson } from './relay.js'
 import { colorStdout, stripAnsi, fg, RESET, C } from './render/ansi.js'
 import { dataDir } from './constants.js'
@@ -109,7 +107,11 @@ export interface StatuslineData {
  */
 export function buildStatuslineData(payload: StatuslinePayload): StatuslineData {
   const cwd = payload.workspace?.current_dir ?? payload.cwd ?? process.cwd()
-  const project = path.basename(cwd) || cwd
+  // Split on both separators rather than the host-platform `path.basename` --
+  // the payload's current_dir reflects the OS Claude Code is running on, which
+  // may differ from the OS this hook process is running on (e.g. a Linux CI
+  // runner rendering a fixture captured on Windows).
+  const project = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || cwd
   const model = typeof payload.model?.display_name === 'string' ? payload.model.display_name : null
   const contextPct =
     typeof payload.context_window?.used_percentage === 'number' ? payload.context_window.used_percentage : null
