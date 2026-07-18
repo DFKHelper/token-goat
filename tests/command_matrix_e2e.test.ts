@@ -226,6 +226,17 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rMissing.status).toBe(1)
     expect(rMissing.stderr).toContain('not found')
   },
+  log: () => {
+    // gammaSym was added by the second commit; the log for its own line range should show that
+    // commit's history, scoped via git's own `-L` line-range tracking.
+    const r = run(['log', 'src/mod.ts::gammaSym'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('gammaSym')
+    expect(r.stdout).toContain('second')
+    const rMissing = run(['log', 'src/mod.ts::doesNotExistSym'])
+    expect(rMissing.status).toBe(1)
+    expect(rMissing.stderr).toContain('not found')
+  },
   'config-get': () => expectRead(['config-get', 'pkg.json', 'version'], '3.2.1'),
   'csv-query': () => {
     const dir = mkIsolated('tg-matrix-csv-')

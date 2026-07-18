@@ -2230,6 +2230,176 @@ export function runDiff(opts: DiffOptions): number {
   return 0
 }
 
+// ---- log --------------------------------------------------------------------
+
+export interface LogOptions {
+  spec: string
+  ref?: string
+  json?: boolean
+  projectRoot?: string
+  maxCount?: number
+}
+
+/** One commit's entry from `--json` output of {@link runLog}. */
+interface LogEntry {
+  hash: string
+  author: string
+  date: string
+  message: string
+  diff: string
+}
+
+/** `--max-count` used by `runLog` when the caller doesn't pass one explicitly. */
+const DEFAULT_LOG_MAX_COUNT = 20
+
+/**
+ * Parse `git log -L <range>:<file>` stdout into one entry per matching commit. Each commit
+ * block starts with a `commit <sha40>` line and runs up to (but not including) the next
+ * `commit <sha40>` line or end of output. Within a block: `Author:`/`Date:` come verbatim from
+ * their header lines; the commit message is every line between the header block and the first
+ * `diff --git` line, with git's 4-space indent stripped; everything from `diff --git` onward is
+ * kept as the raw per-commit diff text. Unlike `splitDiffHunks`, this makes no attempt to
+ * further parse the diff body -- `git log -L` already scopes each commit's diff to just the
+ * requested line range, so there is no hunk-vs-symbol-range intersection left to do.
+ *
+ * Edge cases this has to tolerate: a symbol added in its very first commit still gets a normal
+ * entry (the diff is a pure-addition hunk, same shape as any other); a symbol that was added
+ * and never touched again simply yields a single entry; a merge or rename commit still starts
+ * with a `commit <sha40>` header, so it parses the same as any other entry (its diff body may
+ * just look different, which this function doesn't inspect).
+ */
+function parseLogDashLOutput(stdout: string): LogEntry[] {
+  const lines = stdout.split(/\r?\n/)
+  const commitHeaderRe = /^commit ([0-9a-f]{40})/
+  const entries: LogEntry[] = []
+  let i = 0
+  while (i < lines.length) {
+    const headerMatch = commitHeaderRe.exec(lines[i]!)
+    if (headerMatch === null) {
+      i++
+      continue
+    }
+    const hash = headerMatch[1]!
+    let author = ''
+    let date = ''
+    // Scan the header block (Author/Date/blank/indented message lines) until either the diff
+    // body starts or the next commit block begins -- whichever comes first.
+    let j = i + 1
+    while (j < lines.length && !commitHeaderRe.test(lines[j]!)) {
+      const line = lines[j]!
+      if (line.startsWith('diff --git')) break
+      if (author === '' && line.startsWith('Author:')) author = line.slice('Author:'.length).trim()
+      else if (date === '' && line.startsWith('Date:')) date = line.slice('Date:'.length).trim()
+      j++
+    }
+    const messageLines: string[] = []
+    for (let k = i + 1; k < j; k++) {
+      const line = lines[k]!
+      if (line.startsWith('Author:') || line.startsWith('Date:')) continue
+      messageLines.push(line.startsWith('    ') ? line.slice(4) : line)
+    }
+    const message = trimBlankLines(messageLines).join('\n')
+
+    let k = j
+    while (k < lines.length && !commitHeaderRe.test(lines[k]!)) k++
+    const diff = lines.slice(j, k).join('\n')
+
+    entries.push({ hash, author, date, message, diff })
+    i = k
+  }
+  return entries
+}
+
+/**
+ * Handle ``token-goat log "file::symbol" [ref]`` -- git commit history scoped to one symbol's
+ * indexed line range, via git's own `git log -L <start>,<end>:<file>` line-range history
+ * feature, instead of a raw `git log -- file` dump of every commit that ever touched the whole
+ * file. Resolves the spec exactly like `runDiff` (same ambiguous/none error shapes, via
+ * `resolveSymbolSpec`). Unlike `runDiff`, no manual hunk-vs-symbol-range intersection is
+ * needed here: `-L` tracks the requested line range through history itself, adjusting line
+ * numbers for earlier commits that shifted content above/below the range -- far more accurate
+ * than intersecting per-commit diffs against a fixed range after the fact.
+ */
+export function runLog(opts: LogOptions): number {
+  const { file, symbol } = parseReadSpec(opts.spec)
+  if (symbol === undefined || symbol === '') {
+    emitErr(`'token-goat log' requires a 'file::symbol' spec (got '${opts.spec}')`)
+    return 1
+  }
+
+  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
+
+  if (resolution.kind === 'ambiguous') {
+    // Same hard-refuse shape as runDiff's ambiguous branch -- never guess which candidate the
+    // caller meant.
+    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
+    return 1
+  }
+
+  if (resolution.kind === 'none') {
+    // Same "not found" + did-you-mean shape as runDiff's none branch.
+    const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
+    if (closes.length > 0) messages.push(didYouMean(closes))
+    emitErr(messages.join('\n'))
+    return 1
+  }
+
+  const match = resolution.entry
+  const cwd = opts.projectRoot ?? process.cwd()
+  const maxCount = opts.maxCount ?? DEFAULT_LOG_MAX_COUNT
+
+  // No `--` pathspec separator here (unlike runDiff's `git diff`) -- `-L<range>:<file>` already
+  // embeds the file, and git log rejects a `-L<range>:<file>` combined with a separate pathspec.
+  const logArgs = [
+    'log',
+    `-L${match.lineStart},${match.lineEnd}:${match.filePath}`,
+    `--max-count=${maxCount}`,
+    ...(opts.ref !== undefined ? [opts.ref] : []),
+  ]
+  let logResult
+  try {
+    logResult = runGit(logArgs, { cwd })
+  } catch {
+    emitErr(`Could not run git log for '${match.filePath}'`)
+    return 1
+  }
+  if (logResult.exitCode !== 0) {
+    emitErr(`git log failed: ${logResult.stderr}`)
+    return 1
+  }
+
+  if (logResult.stdout.trim() === '') {
+    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${match.filePath}'.`)
+    return 0
+  }
+
+  if (opts.json === true) {
+    const capped = guardJsonRows(parseLogDashLOutput(logResult.stdout))
+    emit(
+      JSON.stringify(
+        {
+          symbol: match.name,
+          file: match.filePath,
+          lineStart: match.lineStart,
+          lineEnd: match.lineEnd,
+          commits: capped.items,
+          truncated: capped.truncated,
+          totalCount: capped.totalCount,
+        },
+        null,
+        2,
+      ),
+    )
+    return 0
+  }
+
+  const header = `# ${match.name} (${match.kind}) — ${match.filePath}:${match.lineStart}-${match.lineEnd}`
+  emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
+  return 0
+}
+
 // ---- grep -------------------------------------------------------------------
 
 export interface GrepOptions {

@@ -71,6 +71,7 @@ import {
   runExports,
   runChanged,
   runDiff,
+  runLog,
   runRefs,
   runBrief,
   extractImports,
@@ -2820,6 +2821,154 @@ describe('read_commands', () => {
       expect(parsed.symbol).toBe('touchedFn')
       expect(parsed.hunks).toHaveLength(1)
       expect(parsed.hunks[0]?.text).toContain('touched line')
+    })
+  })
+
+  // ---- runLog ------------------------------------------------------------
+
+  describe('runLog', () => {
+    const mockRunGit = vi.mocked(runGit)
+
+    function oneCommitLogDashL(filePath: string, hash = 'a'.repeat(40)): string {
+      return [
+        `commit ${hash}`,
+        'Author: Test User <test@example.com>',
+        'Date:   Mon Jan 1 00:00:00 2026 +0000',
+        '',
+        '    touch touchedFn',
+        '',
+        `diff --git a/${filePath} b/${filePath}`,
+        `--- a/${filePath}`,
+        `+++ b/${filePath}`,
+        '@@ -10,2 +10,3 @@',
+        ' function touchedFn() {',
+        '+  // touched line',
+        '   return 2',
+      ].join('\n')
+    }
+
+    it('shows the symbol\'s scoped history', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      const { stdout, stderr } = capture(() => {
+        expect(runLog({ spec: 'a.ts::touchedFn' })).toBe(0)
+      })
+      expect(stderr).toBe('')
+      expect(stdout).toContain('touchedFn')
+      expect(stdout).toContain('touched line')
+    })
+
+    it('builds a `git log -L<start>,<end>:<file> --max-count=<default>` call with no ref', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      runLog({ spec: 'a.ts::touchedFn' })
+      expect(mockRunGit).toHaveBeenCalledWith(['log', '-L10,12:a.ts', '--max-count=20'], expect.anything())
+    })
+
+    it('appends an explicit ref as the starting point and respects a custom --max-count', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      runLog({ spec: 'a.ts::touchedFn', ref: 'HEAD~3', maxCount: 5 })
+      expect(mockRunGit).toHaveBeenCalledWith(['log', '-L10,12:a.ts', '--max-count=5', 'HEAD~3'], expect.anything())
+    })
+
+    it('reports a clean "no history" message (non-error) when git log has no output', () => {
+      const sym: MockSymbol = { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
+      const { stdout } = capture(() => {
+        expect(runLog({ spec: 'a.ts::anyFn' })).toBe(0)
+      })
+      expect(stdout).toContain('No history')
+    })
+
+    it('fails the same way runDiff does when the symbol does not resolve (not found + did-you-mean)', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stderr } = capture(() => {
+        expect(runLog({ spec: 'a.ts::missingSym' })).toBe(1)
+      })
+      expect(stderr).toContain("Symbol 'missingSym' not found in 'a.ts'")
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
+      const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' }
+      const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([candA, candB] as any)
+      const { stderr } = capture(() => {
+        expect(runLog({ spec: 'a.ts::render' })).toBe(1)
+      })
+      expect(stderr).toContain('Ambiguous symbol')
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('errors up front (never spawns git) when the spec has no ::symbol part', () => {
+      const { stderr } = capture(() => {
+        expect(runLog({ spec: 'a.ts' })).toBe(1)
+      })
+      expect(stderr).toContain('file::symbol')
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('returns 1 and reports the git failure when git log itself errors', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
+      const { stderr } = capture(() => {
+        expect(runLog({ spec: 'a.ts::touchedFn', ref: 'nope' })).toBe(1)
+      })
+      expect(stderr).toContain('git log failed')
+    })
+
+    it('emits a structured commits envelope in --json mode with hash/author/date/message/diff per entry', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const hash = 'b'.repeat(40)
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts', hash), stderr: '' })
+      const { stdout } = capture(() => {
+        expect(runLog({ spec: 'a.ts::touchedFn', json: true })).toBe(0)
+      })
+      const parsed = JSON.parse(stdout) as {
+        symbol: string
+        commits: Array<{ hash: string; author: string; date: string; message: string; diff: string }>
+      }
+      expect(parsed.symbol).toBe('touchedFn')
+      expect(parsed.commits).toHaveLength(1)
+      expect(parsed.commits[0]?.hash).toBe(hash)
+      expect(parsed.commits[0]?.author).toBe('Test User <test@example.com>')
+      expect(parsed.commits[0]?.date).toBe('Mon Jan 1 00:00:00 2026 +0000')
+      expect(parsed.commits[0]?.message).toBe('touch touchedFn')
+      expect(parsed.commits[0]?.diff).toContain('touched line')
+    })
+
+    it('parses multiple commit blocks into separate entries', () => {
+      const sym: MockSymbol = { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 10, lineEnd: 12, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const hashA = 'c'.repeat(40)
+      const hashB = 'd'.repeat(40)
+      mockRunGit.mockReturnValue({
+        exitCode: 0,
+        stdout: [oneCommitLogDashL('a.ts', hashA), oneCommitLogDashL('a.ts', hashB)].join('\n'),
+        stderr: '',
+      })
+      const { stdout } = capture(() => {
+        expect(runLog({ spec: 'a.ts::touchedFn', json: true })).toBe(0)
+      })
+      const parsed = JSON.parse(stdout) as { commits: Array<{ hash: string }> }
+      expect(parsed.commits).toHaveLength(2)
+      expect(parsed.commits[0]?.hash).toBe(hashA)
+      expect(parsed.commits[1]?.hash).toBe(hashB)
     })
   })
 })
