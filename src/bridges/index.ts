@@ -31,3 +31,13 @@ export {
   uninstallCopilotCli,
 } from './copilot_cli_install.js'
 export type { CopilotCliInstallResult, CopilotCliScopeOptions } from './copilot_cli_install.js'
+export { GROK_HOOK_SCRIPT } from './grok.js'
+export {
+  grokConfigPath,
+  grokHooksDir,
+  grokHookScriptPath,
+  installGrok,
+  isGrokInstalled,
+  uninstallGrok,
+} from './grok_install.js'
+export type { GrokInstallResult } from './grok_install.js'

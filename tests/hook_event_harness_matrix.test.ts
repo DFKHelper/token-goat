@@ -91,11 +91,15 @@ function extractKnownEvents(block: string, sourceLabel: string): HookEventName[]
 /**
  * claudecode's HOOK_EVENT_MAP (src/install.ts): [PascalCaseSettingsKey, internal
  * snake_case event] pairs written into ~/.claude/settings.json. grok and hermes
- * both ride these same entries: grok has no separate install path and just runs
- * Claude Code's settings.json hooks with a camelCase payload; hermes's own
+ * both ride these same entries by default: absent an explicit `install --grok`
+ * (src/bridges/grok_install.ts, added after this comment was first written --
+ * an OPT-IN, additive bridge that writes its own `~/.grok/hooks/token-goat.json`
+ * + shim, never touching this shared settings.json), grok just runs Claude
+ * Code's settings.json hooks directly with a camelCase payload; hermes's own
  * `install --hermes` only verifies these entries exist rather than writing its
  * own (see src/bridges/registry.ts's module docstring and
- * harnessForNormalization() in src/relay.ts).
+ * harnessForNormalization() in src/relay.ts). This matrix only exercises the
+ * default (no `--grok`) path for grok, below.
  */
 function claudecodeFamilyEvents(): HookEventName[] {
   const src = readSrc('install.ts')
@@ -379,14 +383,20 @@ describe('hook-event x harness bundle matrix (real bundle, non-crash coverage)',
 
 describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', () => {
   // claudecode/grok/hermes/gemini/generic have no bridge/shim that reshapes
-  // serializeOutput's own {decision:'block', reason} wire JSON: claudecode/
-  // grok/hermes all read ~/.claude/settings.json's `token-goat hook <event>`
-  // command directly with no wrapper script; gemini_install.ts wires the same
-  // command directly into ~/.gemini/settings.json with no shim file either
-  // (confirmed against gemini-cli's own BeforeTool contract in
-  // tests/relay.test.ts's "relay Gemini deny wire format" suite); generic is
-  // the raw-CLI fallback with no bridge at all. For these five, the raw bundle
-  // response IS the harness's expected wire shape.
+  // serializeOutput's own {decision:'block', reason} wire JSON on their
+  // DEFAULT install path: claudecode/hermes always, and grok absent an
+  // explicit `install --grok` (see the note above claudecodeFamilyEvents()),
+  // read ~/.claude/settings.json's `token-goat hook <event>` command directly
+  // with no wrapper script; gemini_install.ts wires the same command directly
+  // into ~/.gemini/settings.json with no shim file either (confirmed against
+  // gemini-cli's own BeforeTool contract in tests/relay.test.ts's "relay
+  // Gemini deny wire format" suite, which -- unlike grok -- documents 'block'
+  // as an accepted alias for 'deny'); generic is the raw-CLI fallback with no
+  // bridge at all. For these five on their default path, the raw bundle
+  // response IS the harness's expected wire shape. `install --grok`'s own
+  // shim (GROK_HOOK_SCRIPT, src/bridges/grok.ts) instead translates this
+  // 'block' shape into Grok's documented '{"decision":"deny",...}' -- verified
+  // separately in tests/install_grok.test.ts, not exercised here.
   const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'generic']
 
   for (const harness of RAW_PASSTHROUGH_HARNESSES) {
