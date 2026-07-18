@@ -36,11 +36,10 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, passOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
-import { shrinkImage } from './image_shrink.js'
+import { formatShrinkSummary, shrinkImage } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
 import { getLastTabContext, setLastTabContext } from './session.js'
 import { recordStat } from './stats.js'
-import { toKB } from './util.js'
 
 interface ContentBlock {
   readonly type?: unknown
@@ -77,12 +76,7 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
   if (result === null) return { text: originalDataUrl, changed: false, savedBytes: 0 }
 
   const saved = result.originalBytes - result.shrunkBytes
-  const pct = Math.round((saved / result.originalBytes) * 100)
-  const summary =
-    `token-goat shrank an inline browser screenshot: ` +
-    `${toKB(result.originalBytes)}kb -> ${toKB(result.shrunkBytes)}kb ` +
-    `(${pct}% smaller, ${result.width}x${result.height} ${result.format}).`
-  const dataUrl = `data:image/${result.format};base64,${result.data.toString('base64')}`
+  const { summary, dataUrl } = formatShrinkSummary(result, 'an inline browser screenshot')
   return { text: `${summary}\n${dataUrl}`, changed: true, savedBytes: saved }
 }
 
