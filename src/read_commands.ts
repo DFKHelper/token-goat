@@ -99,6 +99,42 @@ function staleWarning(resolvedPath: string): string {
   return `${STALE_WARNING}\n`
 }
 
+/**
+ * Self-heals a stale index entry instead of just warning about it: on the same SHA mismatch
+ * {@link staleWarning} detects, synchronously reparses `resolvedPath` in-process via
+ * {@link indexFileSync} -- the exact entry point the worker's dirty-queue drain (worker.ts's
+ * makeIndexer) and `--force-refresh` already use, so this shares `writeParseResult`'s single
+ * DELETE+INSERT transaction and db.ts's WAL journal mode + 15s busy_timeout. A background worker
+ * racing to reindex the very same file just makes whichever write goes second wait for the held
+ * lock instead of corrupting either write; no new concurrency handling is needed here.
+ *
+ * MUST be called before the caller's own DB query (querySymbols/etc.) so a successful heal is
+ * picked up by that query automatically -- this function does not itself return or re-fetch any
+ * rows. Every call site keeps its existing trailing `staleWarning(...)` call unchanged: once the
+ * heal has landed, that check naturally finds the sha now matches and emits nothing, so the
+ * surgical-read command just serves fresh data instead of a warning telling the agent to burn a
+ * full-file read. On a genuine reparse failure (syntax error, unsupported file type, I/O error)
+ * this fails safe -- the stale rows are left in place and the trailing `staleWarning(...)` call
+ * falls back to the original warning text unchanged. Also enqueues the dirty-queue path on a
+ * successful heal, mirroring `--force-refresh`'s own indexFileSync + enqueueDirtyPathSafe pairing
+ * (see that function's doc): indexFileSync always wipes `files.embed_sha`, so semantic search
+ * needs the same re-embed signal here too. Never throws.
+ */
+function healStaleIndex(resolvedPath: string): void {
+  const entry = getFileEntry(resolvedPath)
+  if (entry === null || entry.sha === '') return
+  const diskSha = fingerprintFile(resolvedPath)
+  if (diskSha === null || diskSha === entry.sha) return
+  try {
+    indexFileSync(resolvedPath, globalDbPath())
+    enqueueDirtyPathSafe(resolvedPath)
+  } catch {
+    // Fail-safe: leave the stale rows in place. The caller's trailing staleWarning(...) call
+    // will detect the still-mismatched sha and fall back to the pre-existing warning text --
+    // never let a reparse failure turn a surgical-read command into a hard crash.
+  }
+}
+
 function emit(text: string): void {
   const out = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(out))
@@ -243,7 +279,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
-  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+  if (opts.file !== undefined) {
+    queryOpts.filePath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+    // Self-heal before querying so a stale index serves fresh data instead of a warning.
+    healStaleIndex(queryOpts.filePath)
+  }
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
   // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
@@ -468,6 +508,10 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
   if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved)
+  } else {
+    // Self-heal a stale index before querying below, so runRead/runBrief serve fresh data
+    // instead of the caller having to fall back to a stale-index warning.
+    healStaleIndex(resolved)
   }
 
   // Collapse a raw candidate list into a final resolution. Distinct definitions are keyed by
@@ -870,6 +914,10 @@ function prepareSymbolListing(
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved)
+  } else {
+    // Self-heal a stale index before querying below, so skeleton/outline serve fresh data
+    // instead of the caller having to fall back to a stale-index warning.
+    healStaleIndex(resolved)
   }
   const symbols = querySymbols({ filePath: resolved, limit: 500 })
 

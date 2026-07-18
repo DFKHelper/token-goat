@@ -253,7 +253,7 @@ describe('read_commands', () => {
       expect(path.isAbsolute(arg.filePath ?? '')).toBe(true)
     })
 
-    it('prepends a stale-index warning when a file-scoped query targets an index row whose sha is stale (#1)', () => {
+    it('self-heals (inline reparse) instead of warning when a file-scoped query targets an index row whose sha is stale (#1)', () => {
       const content = 'export function foo() {}\n'
       const f = path.join(tempDir, 'stale-symbol.ts')
       fs.writeFileSync(f, content)
@@ -264,7 +264,11 @@ describe('read_commands', () => {
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runSymbol({ name: 'foo', file: f })
-      expect(stdout).toContain('STALE')
+      // Fix: a stale sha triggers an inline reparse (indexFileSync) before the query runs,
+      // instead of just prepending a warning telling the agent to burn a full-file read.
+      expect(mockIndexFileSync).toHaveBeenCalled()
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f))
+      expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
     })
 
@@ -714,7 +718,7 @@ describe('read_commands', () => {
         expect(stdout).toContain('oldSymbol')
       })
 
-      it('prepends a stale-index warning when the indexed sha differs from the on-disk file sha (#1)', () => {
+      it('self-heals (inline reparse) instead of warning when the indexed sha differs from the on-disk file sha (#1)', () => {
         const content = 'export function foo() {\n  return 1\n}'
         const f = path.join(tempDir, 'stale-sha-read.ts')
         fs.writeFileSync(f, content)
@@ -725,7 +729,10 @@ describe('read_commands', () => {
           filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
         } as never)
         const { text: stdout } = runRead({ spec: `${f}::foo` })
-        expect(stdout).toContain('STALE')
+        // Fix: a stale sha triggers an inline reparse before the symbol lookup, instead of just
+        // prepending a warning telling the agent to burn a full-file read.
+        expect(mockIndexFileSync).toHaveBeenCalled()
+        expect(stdout).not.toContain('STALE')
         expect(stdout).toContain('foo')
       })
 
@@ -999,7 +1006,7 @@ describe('read_commands', () => {
       expect(stdout).toContain('100 lines')
     })
 
-    it('prepends a stale-index warning when the on-disk file sha differs from the indexed row (#1)', () => {
+    it('self-heals (inline reparse) instead of warning when the on-disk file sha differs from the indexed row (#1)', () => {
       const f = path.join(tempDir, 'stale-skeleton.ts')
       fs.writeFileSync(f, 'export function foo() {}\n')
       const syms: MockSymbol[] = [
@@ -1011,8 +1018,11 @@ describe('read_commands', () => {
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runSkeleton({ file: f })
-      expect(stdout).toContain('STALE')
-      expect(stdout).toContain('worker')
+      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of
+      // just prepending a warning telling the agent to burn a full-file read.
+      expect(mockIndexFileSync).toHaveBeenCalled()
+      expect(stdout).not.toContain('STALE')
+      expect(stdout).toContain('foo')
     })
 
     it('does not warn when the indexed sha matches the on-disk file', () => {
@@ -1117,7 +1127,7 @@ describe('read_commands', () => {
       expect(parsed.items.length).toBeLessThan(50)
     })
 
-    it('prepends a stale-index warning when the on-disk file sha differs from the indexed row (#1)', () => {
+    it('self-heals (inline reparse) instead of warning when the on-disk file sha differs from the indexed row (#1)', () => {
       const f = path.join(tempDir, 'stale-outline.ts')
       fs.writeFileSync(f, 'export function foo() {}\n')
       const syms: MockSymbol[] = [
@@ -1129,7 +1139,10 @@ describe('read_commands', () => {
         filePath: f, sha: 'not-the-real-sha256-of-this-file', mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
       } as never)
       const { text: stdout } = runOutline({ file: f })
-      expect(stdout).toContain('STALE')
+      // Fix: a stale sha triggers an inline reparse before the symbol listing query, instead of
+      // just prepending a warning telling the agent to burn a full-file read.
+      expect(mockIndexFileSync).toHaveBeenCalled()
+      expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
     })
   })
