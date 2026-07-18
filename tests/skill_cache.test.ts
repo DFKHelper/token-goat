@@ -73,6 +73,7 @@ import {
   getAllCachedSkills,
   setSkillOutputsDirForTesting,
   setSkillsSourceDirForTesting,
+  setPluginsManifestPathForTesting,
   getSkillFilePath,
   installedSkillPath,
   listSkills,
@@ -769,6 +770,90 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
 
   it('installedSkillPath rejects an unsafe (traversal) name', async () => {
     expect(await installedSkillPath('../etc')).toBeNull()
+  })
+})
+
+describe('installedSkillPath — plugin-scoped `plugin:skill` resolution (regression)', () => {
+  // Regression: installedSkillPath treated a plugin-scoped name (e.g. `chrome-devtools-mcp:a11y-debugging`)
+  // as one literal directory segment under ~/.claude/skills/<name>/SKILL.md, which never matches how
+  // plugin skills are actually laid out on disk (~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>/SKILL.md,
+  // discoverable only via installed_plugins.json). Every plugin skill silently resolved to null.
+  const sourceDir = path.resolve(__dirname, '.temp-skill-source-plugin')
+  const pluginInstallDir = path.resolve(__dirname, '.temp-plugin-install', 'my-plugin', '1.0.0')
+  const manifestPath = path.resolve(__dirname, '.temp-plugin-manifest.json')
+
+  beforeEach(async () => {
+    for (const dir of [sourceDir, path.dirname(pluginInstallDir)]) {
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+      } catch {
+        // not present yet
+      }
+    }
+    await fs.mkdir(sourceDir, { recursive: true })
+    await fs.mkdir(path.join(pluginInstallDir, 'skills', 'my-skill'), { recursive: true })
+    await fs.writeFile(path.join(pluginInstallDir, 'skills', 'my-skill', 'SKILL.md'), 'Plugin skill body')
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          'my-plugin@some-marketplace': [{ scope: 'user', installPath: pluginInstallDir }],
+        },
+      })
+    )
+    setSkillsSourceDirForTesting(sourceDir)
+    setPluginsManifestPathForTesting(manifestPath)
+  })
+
+  afterEach(async () => {
+    setSkillsSourceDirForTesting(null)
+    setPluginsManifestPathForTesting(null)
+    for (const dir of [sourceDir, path.dirname(pluginInstallDir)]) {
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      await fs.rm(manifestPath, { force: true })
+    } catch {
+      // ignore
+    }
+  })
+
+  it('resolves a plugin-scoped skill via installed_plugins.json when it is not under the flat skills source dir', async () => {
+    const resolved = await installedSkillPath('my-plugin:my-skill')
+    expect(resolved).toBe(path.join(pluginInstallDir, 'skills', 'my-skill', 'SKILL.md'))
+  })
+
+  it('getSkillFilePath falls back to the plugin manifest for an uncached plugin-scoped skill', async () => {
+    const resolved = await getSkillFilePath('my-plugin:my-skill')
+    expect(resolved).toBe(path.join(pluginInstallDir, 'skills', 'my-skill', 'SKILL.md'))
+  })
+
+  it('returns null for a plugin name not present in the manifest', async () => {
+    expect(await installedSkillPath('unknown-plugin:my-skill')).toBeNull()
+  })
+
+  it('returns null for a skill slug not present under the matched plugin install path', async () => {
+    expect(await installedSkillPath('my-plugin:no-such-skill')).toBeNull()
+  })
+
+  it('fails soft (null) when installed_plugins.json is missing entirely', async () => {
+    setPluginsManifestPathForTesting(path.resolve(__dirname, '.does-not-exist-manifest.json'))
+    expect(await installedSkillPath('my-plugin:my-skill')).toBeNull()
+  })
+
+  it('fails soft (null) when installed_plugins.json is malformed JSON', async () => {
+    await fs.writeFile(manifestPath, 'not valid json{')
+    expect(await installedSkillPath('my-plugin:my-skill')).toBeNull()
+  })
+
+  it('fails soft (null) when installed_plugins.json has a malformed plugins shape (bare string instead of a map)', async () => {
+    await fs.writeFile(manifestPath, JSON.stringify({ version: 2, plugins: 'not-an-object' }))
+    expect(await installedSkillPath('my-plugin:my-skill')).toBeNull()
   })
 })
 
