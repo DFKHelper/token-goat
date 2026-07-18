@@ -610,7 +610,156 @@ function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
   return { format: 'requirements', deps: parseRequirementsTxt(content) }
 }
 
-export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean }): void {
+// ── lockdeps --package (single-package query) ────────────────────────────────
+
+// name -> declared direct-dependency names, plus the set of top-level/direct project
+// dependency names. Only npm's lockfile (v1 nested `dependencies`, or v2/v3 `packages`)
+// actually records edges between packages -- the other formats this file parses
+// (yarn.lock, poetry/uv/Cargo's `[[package]]` TOML blocks, Pipfile.lock, requirements.txt)
+// are flattened here into name/version/kind only, with no graph data to walk. Returns null
+// for any format where edge extraction isn't implemented.
+function buildNpmEdges(content: string): { edges: Map<string, string[]>; directNames: Set<string> } | null {
+  const raw = JSON.parse(content) as {
+    packages?: Record<
+      string,
+      {
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+        optionalDependencies?: Record<string, string>
+      }
+    >
+    dependencies?: Record<string, V1PackageLockDependency>
+  }
+
+  if (raw.packages === undefined && raw.dependencies !== undefined) {
+    const edges = new Map<string, string[]>()
+    const directNames = new Set(Object.keys(raw.dependencies))
+    const walk = (deps: Record<string, V1PackageLockDependency>): void => {
+      for (const [name, val] of Object.entries(deps)) {
+        // First occurrence wins: a name can recur at deeper nesting with a different
+        // resolved version (diamond dependency); this query reports one declared edge
+        // set per name, not per lockfile path.
+        if (!edges.has(name)) edges.set(name, val.dependencies !== undefined ? Object.keys(val.dependencies) : [])
+        if (val.dependencies !== undefined) walk(val.dependencies)
+      }
+    }
+    walk(raw.dependencies)
+    return { edges, directNames }
+  }
+
+  const pkgs = raw.packages
+  if (pkgs === undefined) return null
+  const rootEntry = pkgs[''] as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } | undefined
+  const directNames = new Set([...Object.keys(rootEntry?.dependencies ?? {}), ...Object.keys(rootEntry?.devDependencies ?? {})])
+  const edges = new Map<string, string[]>()
+  for (const [key, val] of Object.entries(pkgs)) {
+    if (key === '') continue
+    const name = key.split('node_modules/').pop() ?? key
+    if (edges.has(name)) continue
+    edges.set(name, [
+      ...new Set([...Object.keys(val.dependencies ?? {}), ...Object.keys(val.devDependencies ?? {}), ...Object.keys(val.optionalDependencies ?? {})]),
+    ])
+  }
+  return { edges, directNames }
+}
+
+// DFS from each top-level/direct project dependency, checking whether `target` is reachable
+// through the declared-edge graph. Cycle-safe via a per-source `seen` set.
+function findReverseDirectDeps(target: string, edges: Map<string, string[]>, directNames: Set<string>): string[] {
+  const result: string[] = []
+  for (const direct of directNames) {
+    if (direct === target) continue
+    const seen = new Set<string>([direct])
+    const stack = [...(edges.get(direct) ?? [])]
+    let reaches = false
+    while (stack.length > 0) {
+      const cur = stack.pop() as string
+      if (seen.has(cur)) continue
+      seen.add(cur)
+      if (cur === target) {
+        reaches = true
+        break
+      }
+      for (const next of edges.get(cur) ?? []) stack.push(next)
+    }
+    if (reaches) result.push(direct)
+  }
+  return result.sort()
+}
+
+// Capped Levenshtein distance, mirroring config_commands.ts's didYouMeanKeySuffix helper
+// (same cap, same top-N/sort-by-distance shape) for consistency across this CLI's
+// "did you mean" suggestions on an unrecognized flat-namespace key.
+function packageNameDistance(a: string, b: string, cap = 3): number {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const curr: number[] = [i]
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      curr.push(Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost))
+    }
+    prev.splice(0, prev.length, ...curr)
+  }
+  return prev[b.length] ?? cap + 1
+}
+
+function suggestPackageNames(query: string, names: string[]): string[] {
+  return [...new Set(names)]
+    .map((n) => ({ n, d: packageNameDistance(query.toLowerCase(), n.toLowerCase()) }))
+    .filter((x) => x.d <= 3)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 5)
+    .map((x) => x.n)
+}
+
+function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], query: string, json: boolean): void {
+  const matches = deps.filter((d) => d.name === query)
+  if (matches.length === 0) {
+    const suggestions = suggestPackageNames(query, deps.map((d) => d.name))
+    const hint = suggestions.length > 0 ? ` (did you mean: ${suggestions.join(', ')}?)` : ''
+    throw new Error(`Package '${query}' not found in ${lockfile}${hint}`)
+  }
+
+  // A package can resolve to more than one version across a lockfile's nested node_modules
+  // tree; prefer the top-level/direct pin as "the" version and surface the rest via
+  // otherVersions rather than silently picking an arbitrary transitive copy.
+  const primary = matches.find((d) => d.kind === 'direct') ?? (matches[0] as DepEntry)
+  const otherVersions = [...new Set(matches.filter((d) => d.version !== primary.version).map((d) => d.version))]
+
+  const graph = format === 'npm' ? buildNpmEdges(fs.readFileSync(lockfile, 'utf8')) : null
+  const graphAvailable = graph !== null
+  const dependsOn = graph !== null ? [...(graph.edges.get(query) ?? [])].sort() : []
+  const dependedOnBy = graph !== null ? findReverseDirectDeps(query, graph.edges, graph.directNames) : []
+
+  if (json) {
+    process.stdout.write(
+      JSON.stringify(
+        { file: lockfile, format, package: primary.name, version: primary.version, kind: primary.kind, otherVersions, graphAvailable, dependsOn, dependedOnBy },
+        null,
+        2,
+      ) + '\n',
+    )
+    return
+  }
+
+  process.stdout.write(`Lockfile: ${lockfile}  (${format})\n`)
+  process.stdout.write(`Package: ${primary.name}\n`)
+  process.stdout.write(`Version: ${primary.version}${primary.kind === 'unknown' ? '' : `  (${primary.kind})`}\n`)
+  if (otherVersions.length > 0) process.stdout.write(`Other versions in lockfile: ${otherVersions.join(', ')}\n`)
+  if (!graphAvailable) {
+    process.stdout.write(`\nDependency graph not available for format '${format}' (only npm package-lock.json exposes package-to-package edges).\n`)
+    return
+  }
+  process.stdout.write(`\nDepends on (${dependsOn.length}):\n`)
+  if (dependsOn.length === 0) process.stdout.write('  (none)\n')
+  for (const n of dependsOn) process.stdout.write(`  ${n}\n`)
+  process.stdout.write(`\nDepended on by direct/top-level deps (${dependedOnBy.length}):\n`)
+  if (dependedOnBy.length === 0) process.stdout.write('  (none)\n')
+  for (const n of dependedOnBy) process.stdout.write(`  ${n}\n`)
+}
+
+export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean; package?: string }): void {
   const target = filePath !== undefined ? path.resolve(filePath) : process.cwd()
   const found = findLockfile(target)
   if (found === null) {
@@ -619,6 +768,11 @@ export function cmdLockdeps(filePath: string | undefined, opts: { json?: boolean
 
   const { deps, format } = parseLockFile(found.file)
   const others = found.others
+
+  if (opts.package !== undefined) {
+    cmdLockdepsPackage(found.file, format, deps, opts.package, opts.json === true)
+    return
+  }
 
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ file: found.file, format, total: deps.length, others, deps }, null, 2) + '\n')
