@@ -87,6 +87,7 @@ import {
   runPrSlice,
   runSqliteSchema,
   runSqliteQuery,
+  runCoverageReportGaps,
 
   runPdfExtractText,
   runPdfMeta,
@@ -1031,6 +1032,14 @@ function cmdSqliteSchema(file: string, opts: { json?: boolean }) {
 
 function cmdSqliteQuery(file: string, sql: string, opts: { head?: string; json?: boolean }) {
   process.exitCode = runSqliteQuery({ file, sql, ...opts })
+}
+
+function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }) {
+  process.exitCode = runCoverageReportGaps({
+    file,
+    ...(opts.file !== undefined ? { fileFilter: opts.file } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+  })
 }
 
 async function cmdScreenshot(
@@ -3052,6 +3061,17 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit to the first N returned rows')
     .option('--json', 'emit rows as a JSON array of objects instead of a table')
     .action(guard(cmdSqliteQuery))
+
+  program
+    .command('coverage-report-gaps <file>')
+    .description(
+      'uncovered lines/functions/branches from a code-coverage report instead of a raw Read\n\n' +
+        'supports LCOV .info text and Istanbul/nyc JSON (coverage-final.json for per-line/function/branch detail, ' +
+        'coverage-summary.json for file-level aggregate counts only); format is auto-detected from content, not the filename',
+    )
+    .option('--file <path>', "narrow to one source file's gaps (matched exact or as a path suffix against the report's own file keys)")
+    .option('--json', 'emit the gap report as JSON instead of text')
+    .action(guard(cmdCoverageReportGaps))
 
   program
     .command('screenshot <url> <destPath>')

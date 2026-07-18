@@ -370,6 +370,23 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rStillThere.status, rStillThere.stderr).toBe(0)
     expect(rStillThere.stdout).toContain('2')
   },
+  'coverage-report-gaps': () => {
+    const dir = mkIsolated('tg-matrix-coveragegaps-')
+    const lcovPath = path.join(dir, 'lcov.info')
+    fs.writeFileSync(
+      lcovPath,
+      'SF:src/clean.ts\nDA:1,1\nend_of_record\nSF:src/partial.ts\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n',
+    )
+    const r = run(['coverage-report-gaps', lcovPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('src/partial.ts')
+    expect(r.stdout).toContain('2-3')
+    expect(r.stdout).not.toContain('src/clean.ts')
+    const rFiltered = run(['coverage-report-gaps', lcovPath, '--file', 'partial.ts', '--json'])
+    expect(rFiltered.status, rFiltered.stderr).toBe(0)
+    const parsed = JSON.parse(rFiltered.stdout) as { files: Array<{ filePath: string }> }
+    expect(parsed.files.map((f) => f.filePath)).toEqual(['src/partial.ts'])
+  },
   'pdf-extract': () => {
     const dir = mkIsolated('tg-matrix-pdf-')
     const pdfPath = path.join(dir, 'doc.pdf')
