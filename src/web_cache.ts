@@ -119,17 +119,21 @@ export function getWebOutputByUrl(url: string): { cacheId: string; content: stri
  * Return the cached body and id for `url`, reading through to the disk store
  * on an in-memory miss.
  *
- * `cacheIdForUrl` is a pure function of `url` (a content-address, not a
+ * `cacheIdForUrl` is a pure function of `dedupKey` (a content-address, not a
  * value that needs to have been seen this process to compute), so the id can
  * be derived directly and handed to {@link getWebOutput}, which already reads
  * through to disk. This is what lets a URL-keyed cross-process caller (e.g.
  * `gdrive.ts`, where each CLI invocation is a fresh process) recall a body
  * persisted by an earlier invocation instead of always re-fetching over the
  * network.
+ *
+ * `dedupKey` defaults to `url`, mirroring {@link storeWebOutput}'s own
+ * default -- pass the exact same `dedupKey` used at store time (e.g. a
+ * composite `${url}\x00${prompt}` key) so the id this function derives
+ * always matches the id `storeWebOutput` actually persisted under.
  */
-// Assumes cacheId is a pure function of `url` alone -- only correct when the entry was stored via storeWebOutput's default `dedupKey = url`. A caller that stored under a composite dedupKey (e.g. hooks_fetch.ts's `${url}\x00${prompt}`) will not be found here; gdrive.ts, the only current caller, always uses the default.
-export function getWebOutputByUrlFromDisk(url: string): { cacheId: string; content: string } | null {
-  const cacheId = cacheIdForUrl(url)
+export function getWebOutputByUrlFromDisk(url: string, dedupKey: string = url): { cacheId: string; content: string } | null {
+  const cacheId = cacheIdForUrl(dedupKey)
   const content = getWebOutput(cacheId)
   if (content === null) return null
   return { cacheId, content }

@@ -89,4 +89,21 @@ describe('getWebOutputByUrlFromDisk cross-process URL lookup (m33 regression)', 
   it('returns null for a URL that was never fetched, with nothing on disk', () => {
     expect(getWebOutputByUrlFromDisk('https://docs.google.com/document/d/never-fetched/export?format=txt')).toBeNull()
   })
+
+  // Regression: getWebOutputByUrlFromDisk used to always recompute cacheIdForUrl(url), which
+  // only matches storeWebOutput's actual id when the entry was stored with the default
+  // dedupKey = url. hooks_fetch.ts stores under a composite `${url}\x00${prompt}` dedupKey
+  // (WebFetch answers are prompt-specific), so a lookup with only the plain url produced the
+  // WRONG cacheId and silently missed an entry that genuinely exists on disk. Passing the same
+  // dedupKey used at store time must resolve it.
+  it('resolves a URL cached under a composite dedupKey when the same dedupKey is passed', () => {
+    const url = 'https://example.com/fetched-with-a-prompt'
+    const prompt = 'summarize the pricing section'
+    const dedupKey = `${url}\x00${prompt}`
+    const cacheId = storeWebOutput(url, '# Pricing\nsummary', dedupKey)
+
+    clearModuleCaches()
+
+    expect(getWebOutputByUrlFromDisk(url, dedupKey)).toEqual({ cacheId, content: '# Pricing\nsummary' })
+  })
 })
