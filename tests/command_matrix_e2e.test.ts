@@ -581,6 +581,20 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(compact.stdout).toContain('alphaSym')
     expect(compact.stdout.length).toBeLessThan(r.stdout.length)
   },
+  'bridges-status': () => {
+    const r = run(['bridges-status'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('parity matrix')
+    expect(r.stdout).toContain('claudecode')
+    expect(r.stdout).toContain('pre_tool_use')
+
+    const json = run(['bridges-status', '--json'])
+    expect(json.status, json.stderr).toBe(0)
+    const rows = JSON.parse(json.stdout) as Array<{ harness: string; events: Record<string, boolean> }>
+    expect(rows.length).toBeGreaterThan(0)
+    const claudecode = rows.find((row) => row.harness === 'claudecode')
+    expect(claudecode?.events.pre_tool_use).toBe(true)
+  },
   'bash-output': () => {
     // --file reads a regular file, giving a deterministic real-output check.
     const r = run(['bash-output', '--file', 'pkg.json'])
