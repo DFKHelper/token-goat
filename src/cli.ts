@@ -134,6 +134,7 @@ import {
 } from './pack.js'
 import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
+import { runDepDocs } from './dep_docs.js'
 import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
@@ -2535,6 +2536,23 @@ export function buildProgram(): Command {
     .option('--package <name>', 'query one package only: its resolved version, direct dependencies, and which direct project dependencies depend on it (npm lockfiles only expose the dependency graph)')
     .action((filePath: string | undefined, opts: { json?: boolean; package?: string }) =>
       guard(() => cmdLockdeps(filePath, opts))(),
+    )
+
+  program
+    .command('dep-docs <package>')
+    .description(
+      "extract one installed npm package's README, package.json metadata, and (if resolvable) a compact .d.ts signature outline instead of grepping node_modules",
+    )
+    .option('-j, --json', 'output as JSON')
+    .option('--project <path>', 'project root to resolve node_modules against (defaults to cwd)')
+    .action((packageName: string, opts: { json?: boolean; project?: string }) =>
+      runExitText(() =>
+        runDepDocs({
+          packageName,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.project !== undefined ? { projectRoot: opts.project } : {}),
+        }),
+      ),
     )
 
   program

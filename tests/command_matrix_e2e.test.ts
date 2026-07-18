@@ -1096,6 +1096,21 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('commander')
     expect(r.stdout).toContain('package-lock.json')
   },
+  'dep-docs': () => {
+    // token-goat depends on commander directly (see package.json); run against the repo root
+    // so package.json/README/types resolution all hit the real installed package.
+    const r = run(['dep-docs', 'commander', '--json'], { cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { package: string; readme: { file: string } | null; types: { source: string } | null }
+    expect(parsed.package).toBe('commander')
+    expect(parsed.readme?.file).toMatch(/[Rr]eadme/)
+    expect(parsed.types?.source).toBe('bundled')
+
+    const rMissing = run(['dep-docs', 'commande'], { cwd: ROOT })
+    expect(rMissing.status).toBe(1)
+    expect(rMissing.stderr).toContain('not found')
+    expect(rMissing.stderr).toContain('did you mean')
+  },
   note: () => {
     // Use an isolated data dir so notes don't pollute real home.
     const noteData = mkIsolated('tg-note-')
