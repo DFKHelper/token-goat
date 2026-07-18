@@ -314,6 +314,8 @@ describe('loadConfig', () => {
     cfg.hints.git_hint_max_ms = 99
     cfg.worker.blocked_roots = ['/tmp/blocked']
     cfg.image_shrink.jpeg_quality = 85
+    cfg.image_shrink.ocr_enabled = false
+    cfg.image_shrink.ocr_min_confidence = 80
 
     saveConfig(cfg)
     // saveConfig calls invalidateConfigCache internally
@@ -324,6 +326,8 @@ describe('loadConfig', () => {
     expect(loaded.hints.git_hint_max_ms).toBe(99)
     expect(loaded.worker.blocked_roots).toEqual(['/tmp/blocked'])
     expect(loaded.image_shrink.jpeg_quality).toBe(85)
+    expect(loaded.image_shrink.ocr_enabled).toBe(false)
+    expect(loaded.image_shrink.ocr_min_confidence).toBe(80)
   })
 
   it('treats a persisted reread_deny_min_bytes of exactly 2048 as the stale pre-a1fad4c6 default and falls through to the current default (51_200), instead of trusting it (regression: saveConfig always resaves every field, so a config set on any unrelated key before a1fad4c6 permanently persisted the then-in-memory-only 2048 default, which a1fad4c6 later wired up as the real re-read-deny gate)', () => {
@@ -485,6 +489,8 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.image_shrink.jpeg_quality).toBe(75)
     expect(cfg.image_shrink.max_image_pixels).toBe(16_000_000)
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
+    expect(cfg.image_shrink.ocr_enabled).toBe(true)
+    expect(cfg.image_shrink.ocr_min_confidence).toBe(65)
   })
 })
 

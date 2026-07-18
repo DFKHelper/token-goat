@@ -16,6 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 })
 
 import { isImagePath, preReadImageHandler, shrinkImage } from '../src/image_shrink.js'
+import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 import { summarize } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
 // Importing relay registers EVERY hook module (hooks_read's large-file deny AND
@@ -76,6 +77,11 @@ afterAll(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
+// This suite predates OCR and asserts on the pixel-shrink path specifically (data URLs,
+// jpeg_quality wiring, etc). Forcing tesseract.js "unavailable" keeps every existing
+// assertion here exercising exactly the path it always has -- OCR's own success/fallback
+// behavior gets its dedicated coverage in image_ocr.test.ts and the OCR-specific cases in
+// this file's own describe block below.
 beforeEach(() => {
   try {
     fs.unlinkSync(_testConfigPath)
@@ -83,6 +89,8 @@ beforeEach(() => {
     // no config file → schema defaults, matching this suite's behaviour before the mock existed
   }
   invalidateConfigCache()
+  resetOcrStateForTesting()
+  setTesseractEntryForTesting(null)
 })
 
 afterEach(() => {
@@ -92,6 +100,7 @@ afterEach(() => {
     // already absent
   }
   invalidateConfigCache()
+  resetOcrStateForTesting()
 })
 
 describe('isImagePath', () => {
@@ -230,6 +239,77 @@ describe('preReadImageHandler', () => {
       fs.writeFileSync(_testConfigPath, '', 'utf8')
       invalidateConfigCache()
     }
+  })
+})
+
+describe('preReadImageHandler + OCR wiring', () => {
+  const ocrStubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ocr-wiring-stub-'))
+
+  function writeStub(name: string, body: string): string {
+    const file = path.join(ocrStubDir, `${name}.cjs`)
+    fs.writeFileSync(file, body, 'utf8')
+    return file
+  }
+
+  it('returns the OCR text instead of a data URL when the image is text-heavy (confidence above threshold)', async () => {
+    setTesseractEntryForTesting(
+      writeStub(
+        'text-heavy',
+        `module.exports.createWorker = async function () {
+          return {
+            recognize: async () => ({ data: { text: 'a'.repeat(100), confidence: 92 } }),
+            terminate: async () => {},
+          }
+        }`,
+      ),
+    )
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('a'.repeat(100))
+    expect(out.context).not.toContain('data:image/')
+  })
+
+  it('falls back to the pixel-shrink data URL when OCR confidence is below the configured threshold', async () => {
+    setTesseractEntryForTesting(
+      writeStub(
+        'low-confidence',
+        `module.exports.createWorker = async function () {
+          return {
+            recognize: async () => ({ data: { text: 'STOP', confidence: 20 } }),
+            terminate: async () => {},
+          }
+        }`,
+      ),
+    )
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('data:image/')
+  })
+
+  it('falls back to the pixel-shrink data URL when ocr_enabled is false, without attempting OCR at all', async () => {
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nocr_enabled = false\n', 'utf8')
+    invalidateConfigCache()
+    // A stub that would throw if ever invoked -- proves the config gate short-circuits before spawning.
+    setTesseractEntryForTesting(
+      writeStub(
+        'should-not-run',
+        `module.exports.createWorker = async function () { throw new Error('OCR should not have been attempted') }`,
+      ),
+    )
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('data:image/')
+  })
+
+  it('falls back to the pixel-shrink data URL when OCR is unavailable (dep unresolved)', async () => {
+    setTesseractEntryForTesting(null)
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('data:image/')
   })
 })
 

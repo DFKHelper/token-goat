@@ -84,6 +84,8 @@ export interface ImageShrinkConfig {
   jpeg_quality: number
   max_image_pixels: number
   screenshot_redirect: boolean
+  ocr_enabled: boolean
+  ocr_min_confidence: number
 }
 
 export interface ScreenshotConfig {
@@ -284,6 +286,13 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     jpeg_quality: 75,
     max_image_pixels: 16_000_000,
     screenshot_redirect: true,
+    ocr_enabled: true,
+    // Confidence is Tesseract's own 0-100 mean-word-confidence score. 65 is a deliberately
+    // conservative floor: a real screenshot of terminal/code/prose text routinely scores
+    // 85+, while a photo with an incidental sign or logo in frame scores much lower and
+    // noisier -- padding the threshold below the terminal/code norm still comfortably
+    // excludes photographic false positives without needing a second heuristic.
+    ocr_min_confidence: 65,
   },
   screenshot: {
     chrome_path: '',
@@ -484,6 +493,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'skill_preservation.compress_min_bytes': {min: 1024, max: 10 * 1024 * 1024},
   'image_shrink.jpeg_quality': {min: 1, max: 100},
   'image_shrink.max_image_pixels': {min: 0, max: 1_000_000_000},
+  'image_shrink.ocr_min_confidence': {min: 0, max: 100},
   'repomap.compact_file_threshold': {min: 0, max: 100_000},
   'overflow_guard.max_tokens': {min: 1000, max: 1_000_000},
   'hints.suppress_after_ignored': {min: 0, max: 1000},
@@ -878,7 +888,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, ...boundsOf('image_shrink.jpeg_quality'))
   is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
+  is_cfg.ocr_enabled = validatedBool(is_raw['ocr_enabled'], is_cfg.ocr_enabled)
+  is_cfg.ocr_min_confidence = validatedInt(is_raw['ocr_min_confidence'], is_cfg.ocr_min_confidence, ...boundsOf('image_shrink.ocr_min_confidence'))
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
+  is_cfg.ocr_enabled = envBool('TOKEN_GOAT_OCR_ENABLED', is_cfg.ocr_enabled)
 
   const sc_raw = section(raw, 'screenshot')
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
@@ -1072,6 +1085,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.pre_skill_enabled': ['TOKEN_GOAT_PRE_SKILL'],
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
+  'image_shrink.ocr_enabled': ['TOKEN_GOAT_OCR_ENABLED'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
   'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
@@ -1163,6 +1177,8 @@ export function saveConfig(config: Config): void {
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
       screenshot_redirect: is_cfg.screenshot_redirect,
+      ocr_enabled: is_cfg.ocr_enabled,
+      ocr_min_confidence: is_cfg.ocr_min_confidence,
     },
     screenshot: {
       chrome_path: config.screenshot.chrome_path,

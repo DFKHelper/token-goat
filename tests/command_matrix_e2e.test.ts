@@ -1464,7 +1464,15 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       tool_input: { file_path: imgPath },
       session_id: 'matrix-image-shrink',
     })
-    const r = run(['hook', 'pre_tool_use'], { input: payload })
+    // OCR is disabled here: this test's whole point is the sharp DLL-poisoning regression,
+    // predating OCR entirely. Leaving OCR on would make the assertion depend on real
+    // tesseract.js's confidence score for random noise (low, but not a contract) rather than
+    // deterministically exercising the pixel-shrink path this test actually targets. OCR's
+    // own built-bundle wiring gets its own smoke test below.
+    const r = run(['hook', 'pre_tool_use'], {
+      input: payload,
+      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false' },
+    })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('sharp unavailable')
 
@@ -1474,6 +1482,56 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     const context = out.hookSpecificOutput?.additionalContext ?? ''
     expect(context).toContain('smaller')
     expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
+  }, 30000)
+
+  // Regression coverage for the same class of bug the test above guards against, but for
+  // OCR's dependency instead of sharp's: 'tesseract.js' must be in esbuild.config.mjs's
+  // EXTERNAL_NATIVE_DEPS (see that file's comment) or esbuild would statically inline it into
+  // dist/token-goat.mjs, defeating graceful degradation on installs that skip optional deps --
+  // a bug that, like the sharp/DLL one above, would pass every image_ocr.test.ts/
+  // image_shrink.test.ts case (they import image_ocr.ts/image_shrink.ts directly from src,
+  // never through the built bundle) while being silently broken in the shipped binary. This
+  // spawns the real dist/token-goat.mjs against a genuinely text-heavy generated image and
+  // asserts only that the hook completes cleanly with SOME valid context output -- not that
+  // OCR specifically wins over the pixel-shrink path, since a CI runner with no cached
+  // eng.traineddata and no outbound network to fetch it is expected to fail open to the
+  // shrink path per this feature's own "must fail open" contract, not fail the test.
+  it('handles a text-heavy image end-to-end through the built bundle without crashing or hanging (OCR wiring smoke test)', async () => {
+    // A dense multi-line "terminal output" SVG, comfortably under the 16M-pixel decode cap
+    // (1400x900 = 1.26M) so it isn't rejected before OCR ever gets a chance to run, and
+    // rendered with PNG compression disabled so the byte count clears image_shrink's 512KB
+    // gate without needing extreme dimensions that would distort the text past legibility.
+    const lines = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `<text x="20" y="${30 + i * 28}" font-family="monospace" font-size="22" fill="white">` +
+        `line ${i}: npm run build succeeded, tests passed 214/214</text>`,
+    ).join('')
+    const svg = Buffer.from(`<svg width="1400" height="900" xmlns="http://www.w3.org/2000/svg">` + `<rect width="1400" height="900" fill="black"/>${lines}</svg>`)
+    const textPng = await sharp(svg).png({ compressionLevel: 0 }).toBuffer()
+    expect(textPng.length).toBeGreaterThan(512 * 1024)
+
+    const imgDir = mkIsolated('tg-matrix-ocr-img-')
+    const imgPath = path.join(imgDir, 'text.png')
+    fs.writeFileSync(imgPath, textPng)
+
+    const payload = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { file_path: imgPath },
+      session_id: 'matrix-image-ocr',
+    })
+    const r = run(['hook', 'pre_tool_use'], { input: payload })
+    expect(r.status, r.stderr).toBe(0)
+
+    const out = JSON.parse(r.stdout) as {
+      hookSpecificOutput?: { additionalContext?: string }
+    }
+    const context = out.hookSpecificOutput?.additionalContext ?? ''
+    // Either path is acceptable (see comment above); a crash, a hang, or an empty/pass-through
+    // response with neither marker is not.
+    const gotOcrText = context.includes("OCR'd")
+    const gotShrunkImage = /data:image\/(jpeg|webp);base64,/.test(context)
+    expect(gotOcrText || gotShrunkImage, `unexpected context output: ${context.slice(0, 200)}`).toBe(true)
   }, 30000)
 })
 
