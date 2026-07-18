@@ -9,7 +9,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { SKIP_DIRS } from './baseline.js'
+import { SKIP_DIRS, walkProject } from './baseline.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
@@ -48,6 +48,7 @@ import {
 } from './pr_slice.js'
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
 import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
+import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflictSummaries } from './conflict_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
@@ -1573,6 +1574,54 @@ export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): numbe
     emit(JSON.stringify(scoped))
   } else {
     emitGuarded(formatCoverageGaps(scoped), 'coverage-report-gaps')
+  }
+  return 0
+}
+
+export interface ConflictsCliOptions {
+  path?: string
+  json?: boolean
+  summary?: boolean
+}
+
+/** Handle ``token-goat conflicts [path]``: unresolved git merge-conflict markers
+ * (`<<<<<<<` / `|||||||` / `=======` / `>>>>>>>`, both plain two-way and diff3 three-way)
+ * instead of a raw Read or grep for `<<<<<<<`. `path` may be a single file, a directory (scanned
+ * via {@link walkProject}, same bounded walker `map`/`todo` use), or omitted entirely (scans the
+ * whole project from cwd) -- mirrors text_commands.ts's `collectTodoFiles`'s file-vs-directory-
+ * vs-omitted resolution. Only files with at least one conflict region or malformed-marker
+ * warning are reported; a fully clean scan prints one clear message. `--summary` narrows each
+ * region to its line range and side labels, omitting the ours/base/theirs content. */
+export function runConflicts(opts: ConflictsCliOptions): number {
+  let files: string[]
+  if (opts.path === undefined) {
+    files = walkProject(process.cwd()).files
+  } else {
+    const abs = path.resolve(opts.path)
+    let stat: fs.Stats
+    try {
+      stat = fs.statSync(abs)
+    } catch {
+      emitErr(`Could not read: ${opts.path}`)
+      return 1
+    }
+    files = stat.isDirectory() ? walkProject(abs).files : [abs]
+  }
+
+  const results: ReturnType<typeof parseConflicts>[] = []
+  for (const f of files) {
+    const text = readFileText(f)
+    if (text === null) continue
+    const parsed = parseConflicts(f, text)
+    if (parsed.regions.length > 0 || parsed.warnings.length > 0) results.push(parsed)
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(opts.summary === true ? results.map(summarizeFileConflicts) : results))
+  } else if (opts.summary === true) {
+    emitGuarded(formatConflictSummaries(results.map(summarizeFileConflicts)), 'conflicts')
+  } else {
+    emitGuarded(formatConflicts(results), 'conflicts')
   }
   return 0
 }
