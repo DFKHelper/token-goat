@@ -197,6 +197,12 @@ function coerce(raw: unknown): SerializedSession {
           Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
       )
     : []
+  const globQueries: Array<[string, number]> = Array.isArray(o['globQueries'])
+    ? (o['globQueries'] as unknown[]).filter(
+        (p): p is [string, number] =>
+          Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
+      )
+    : []
   return {
     files,
     hintsShown,
@@ -208,6 +214,7 @@ function coerce(raw: unknown): SerializedSession {
     bashReruns,
     pendingLargeFileHints,
     grepQueries,
+    globQueries,
     ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
@@ -307,6 +314,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     grepQueries: mergePairs(disk.grepQueries ?? [], mem.grepQueries ?? []),
+    globQueries: mergePairs(disk.globQueries ?? [], mem.globQueries ?? []),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContext !== undefined
       ? { lastTabContext: mem.lastTabContext }

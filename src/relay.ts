@@ -27,6 +27,7 @@ import { loadSessionState, saveSessionState } from './session_store.js'
 // Side-effect imports: each registers its handlers with the hook registry.
 import './hooks_read.js'
 import './hooks_grep.js'
+import './hooks_glob.js'
 import './hooks_edit.js'
 import './hooks_index.js'
 import './hooks_compact.js'
