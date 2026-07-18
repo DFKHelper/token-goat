@@ -80,6 +80,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   structured_file_hint: SOURCE_HINT,
   predictive_prefetch_hit: SOURCE_HINT,
   grep_dedup_hint: SOURCE_HINT,
+  websearch_dedup_hint: SOURCE_HINT,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
   symbol_read: SOURCE_READ,
