@@ -3,6 +3,25 @@ import { readFileSync } from 'node:fs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 
+// Shared by both builds below -- see the first build's own external comment for why these must
+// stay external rather than bundled.
+const EXTERNAL_NATIVE_DEPS = [
+  'better-sqlite3',
+  'sqlite-vec',
+  'tree-sitter',
+  'tree-sitter-*',
+  'sharp',
+  'puppeteer-core',
+  'pdfjs-dist',
+  'pdfjs-dist/*',
+  'exceljs',
+  'fflate',
+  'fast-xml-parser',
+  '@modelcontextprotocol/sdk',
+  '@modelcontextprotocol/sdk/*',
+  '@xenova/transformers',
+]
+
 await esbuild.build({
   entryPoints: ['src/main.ts'],
   bundle: true,
@@ -18,22 +37,7 @@ await esbuild.build({
   // even a dynamic `import('literal')`, so the feature only worked at runtime
   // because a matching platform package happened to be present in
   // node_modules, not because the graceful-degradation fallback ever ran.
-  external: [
-    'better-sqlite3',
-    'sqlite-vec',
-    'tree-sitter',
-    'tree-sitter-*',
-    'sharp',
-    'puppeteer-core',
-    'pdfjs-dist',
-    'pdfjs-dist/*',
-    'exceljs',
-    'fflate',
-    'fast-xml-parser',
-    '@modelcontextprotocol/sdk',
-    '@modelcontextprotocol/sdk/*',
-    '@xenova/transformers',
-  ],
+  external: EXTERNAL_NATIVE_DEPS,
   banner: {
     // The shebang lets the OS run this file directly.
     // The require polyfill makes esbuild's CJS-interop stub (__require2) work
@@ -66,22 +70,7 @@ await esbuild.build({
   target: 'node22',
   format: 'esm',
   outfile: 'dist/token-goat-hook.mjs',
-  external: [
-    'better-sqlite3',
-    'sqlite-vec',
-    'tree-sitter',
-    'tree-sitter-*',
-    'sharp',
-    'puppeteer-core',
-    'pdfjs-dist',
-    'pdfjs-dist/*',
-    'exceljs',
-    'fflate',
-    'fast-xml-parser',
-    '@modelcontextprotocol/sdk',
-    '@modelcontextprotocol/sdk/*',
-    '@xenova/transformers',
-  ],
+  external: EXTERNAL_NATIVE_DEPS,
   banner: {
     js: [
       "import { createRequire as __cjsRequire } from 'node:module';",
