@@ -24,6 +24,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
+import { zipSync, strToU8 } from 'fflate'
 
 import { allCommandNames } from './registry.js'
 
@@ -324,6 +325,38 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('GET /users/{id}')
     expect(r.stdout).toContain('404:')
+  },
+  'zip-list': () => {
+    const dir = mkIsolated('tg-matrix-ziplist-')
+    const zipPath = path.join(dir, 'fixture.zip')
+    fs.writeFileSync(
+      zipPath,
+      zipSync({
+        'README.md': strToU8('# hello\n'),
+        'src/index.ts': strToU8('export const x = 1\n'),
+      }),
+    )
+    const r = run(['zip-list', zipPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('README.md')
+    expect(r.stdout).toContain('src/index.ts')
+
+    const rJson = run(['zip-list', zipPath, '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout) as Array<{ path: string }>
+    expect(parsed.map((e) => e.path)).toEqual(['README.md', 'src/index.ts'])
+  },
+  'zip-read': () => {
+    const dir = mkIsolated('tg-matrix-zipread-')
+    const zipPath = path.join(dir, 'fixture.zip')
+    fs.writeFileSync(zipPath, zipSync({ 'a.txt': strToU8('hello world\n') }))
+    const r = run(['zip-read', zipPath, 'a.txt'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('hello world')
+
+    const rMissing = run(['zip-read', zipPath, 'does-not-exist.txt'])
+    expect(rMissing.status).toBe(1)
+    expect(rMissing.stderr).toContain('not found')
   },
   'pr-slice': () => {
     // gh's presence/auth state varies by machine and CI image (and this suite must stay

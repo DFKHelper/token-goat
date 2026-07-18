@@ -84,6 +84,8 @@ import {
   runJsonQuery,
   runOpenApiOutline,
   runOpenApiOp,
+  runZipList,
+  runZipRead,
   runPrSlice,
   runSqliteSchema,
   runSqliteQuery,
@@ -1021,6 +1023,14 @@ function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
 
 function cmdOpenApiOp(file: string, operation: string, opts: { json?: boolean }) {
   process.exitCode = runOpenApiOp({ file, operation, ...opts })
+}
+
+function cmdZipList(file: string, opts: { json?: boolean }) {
+  process.exitCode = runZipList({ file, ...opts })
+}
+
+function cmdZipRead(file: string, entry: string, opts: { json?: boolean }) {
+  process.exitCode = runZipRead({ file, entry, ...opts })
 }
 
 function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
@@ -3047,6 +3057,23 @@ export function buildProgram(): Command {
     )
     .option('--json', 'emit the operation detail as JSON instead of text')
     .action(guard(cmdOpenApiOp))
+
+  program
+    .command('zip-list <archive>')
+    .description(
+      'entry paths and sizes inside a zip-format archive (.zip/.jar/.whl/.vsix/.nupkg are all zip containers under the hood) ' +
+        'instead of a raw Read or an unzip -l shell-out',
+    )
+    .option('--json', 'emit the entry list as JSON instead of text')
+    .action(guard(cmdZipList))
+
+  program
+    .command('zip-read <archive> <entry>')
+    .description(
+      "extract and print exactly one entry's text content from a zip-format archive by its in-archive path instead of extracting the whole archive to disk",
+    )
+    .option('--json', 'emit the entry content as JSON instead of text')
+    .action(guard(cmdZipRead))
 
   program
     .command('pr-slice <pr> <slice>')
