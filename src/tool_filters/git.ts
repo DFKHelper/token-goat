@@ -539,6 +539,27 @@ function _trimHunkTrailingContext(hunkLines: string[], maxTrail = 2): [string[],
   return [hunkLines.slice(0, lastChanged + 1 + maxTrail), nTrim]
 }
 
+/**
+ * Detect whether a hunk's changed lines are entirely whitespace/EOL-only noise:
+ * an equal count of removed/added lines where each removed line pairs (in
+ * order) to an added line that is byte-identical once ALL whitespace is
+ * stripped from both (this also covers a trailing `\r` / CRLF-vs-LF-only
+ * difference, since `\r` is itself a whitespace character). Unequal `-`/`+`
+ * counts, or any single pair that differs on non-whitespace content, makes
+ * the whole hunk ineligible -- a real change anywhere in the hunk must never
+ * be hidden by this collapse. Returns the pair count when eligible, else null.
+ */
+function _hunkWhitespaceEolOnlyPairCount(hunkLines: string[]): number | null {
+  const removed = hunkLines.filter(_isDiffRemove).map((ln) => ln.slice(1))
+  const added = hunkLines.filter(_isDiffAdd).map((ln) => ln.slice(1))
+  if (removed.length === 0 || added.length === 0) return null
+  if (removed.length !== added.length) return null
+  for (let i = 0; i < removed.length; i++) {
+    if (removed[i]!.replace(/\s+/g, '') !== added[i]!.replace(/\s+/g, '')) return null
+  }
+  return removed.length
+}
+
 /** Compress diff body: binary detection, large-hunk truncation, JSONL summarisation. */
 function _compressGitDiffBody(stdout: string, stderr: string): string {
   const MAX_HUNK_CHANGED = 50
@@ -574,6 +595,14 @@ function _compressGitDiffBody(stdout: string, stderr: string): string {
     const compressedHunks: string[] = []
     for (const hunk of hunks) {
       const hunkLines = hunk.split('\n')
+      const wsPairCount = _hunkWhitespaceEolOnlyPairCount(hunkLines)
+      if (wsPairCount !== null) {
+        compressedHunks.push(
+          (hunkLines[0] ?? '') +
+            `\n[token-goat: ${wsPairCount} line${wsPairCount !== 1 ? 's' : ''} whitespace/EOL-only change, collapsed]`,
+        )
+        continue
+      }
       const changed = hunkLines.filter((ln) => ln.startsWith('+') || ln.startsWith('-'))
       if (changed.length > MAX_HUNK_CHANGED) {
         if (_isRepetitiveJsonHunk(hunkLines)) {

@@ -526,6 +526,111 @@ describe('GitDiffFilter JSONL hunk', () => {
 })
 
 // ---------------------------------------------------------------------------
+// GitDiffFilter — whitespace/EOL-only hunk collapse
+// ---------------------------------------------------------------------------
+
+describe('GitDiffFilter whitespace/EOL-only hunk collapse', () => {
+  it('trailing-whitespace-only hunk collapses to a marker', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,3 +1,3 @@\n context\n-line one  \n+line one\n context\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+    expect(result).not.toContain('-line one')
+    expect(result).not.toContain('+line one')
+    // File header and hunk header are preserved even though the hunk body is elided.
+    expect(result).toContain('diff --git a/foo.py')
+    expect(result).toContain('@@ -1,3 +1,3 @@')
+  })
+
+  it('CRLF-vs-LF-only hunk collapses to a marker', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,2 +1,2 @@\n-line one\r\n+line one\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+    expect(result).not.toContain('-line one')
+  })
+
+  it('internal-whitespace-only hunk (reformatted spacing, identical stripped content) collapses', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,2 +1,2 @@\n-x = 1+2\n+x  =  1  +  2\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+  })
+
+  it('mixed real+whitespace hunk does NOT collapse (passes through unmodified)', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,4 +1,4 @@\n context\n-line one  \n+line one\n-real change\n+different content\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).not.toContain('whitespace/EOL-only change, collapsed')
+    expect(result).toContain('-line one  ')
+    expect(result).toContain('+line one')
+    expect(result).toContain('-real change')
+    expect(result).toContain('+different content')
+  })
+
+  it('unrelated-content hunk does NOT collapse', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,2 +1,2 @@\n-old value\n+new value\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).not.toContain('whitespace/EOL-only change, collapsed')
+    expect(result).toContain('-old value')
+    expect(result).toContain('+new value')
+  })
+
+  it('unequal -/+ counts within a hunk does NOT collapse, even if all lines are whitespace-only individually', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,2 +1,3 @@\n context\n-line one  \n+line one\n+line two\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).not.toContain('whitespace/EOL-only change, collapsed')
+    expect(result).toContain('-line one  ')
+    expect(result).toContain('+line two')
+  })
+
+  it('multi-hunk file: whitespace-only hunk collapses while a mixed hunk in the same file does not', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,3 +1,3 @@\n context\n-line one  \n+line one\n context\n' +
+      '@@ -50,2 +50,2 @@\n-old value\n+new value\n'
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+    expect(result).not.toContain('-line one')
+    expect(result).toContain('-old value')
+    expect(result).toContain('+new value')
+  })
+
+  it('collapses via the real selectFilter dispatch path (git diff), not just a directly-instantiated filter', () => {
+    const text =
+      'diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n' +
+      '@@ -1,3 +1,3 @@\n context\n-line one  \n+line one\n context\n'
+    const filter = selectFilter(['git', 'diff'])
+    expect(filter?.name).toBe('git-diff')
+    const result = apply(filter as typeof gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+    expect(result).not.toContain('-line one')
+  })
+
+  it('does not misfire on a large all-whitespace hunk that would otherwise hit large-hunk truncation', () => {
+    const nPairs = 80
+    const removed = Array.from({ length: nPairs }, (_, i) => `-line ${i}  `).join('\n')
+    const added = Array.from({ length: nPairs }, (_, i) => `+line ${i}`).join('\n')
+    const text =
+      'diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n@@ -1,80 +1,80 @@\n context\n' +
+      removed +
+      '\n' +
+      added
+    const result = apply(gitDiffFilter, text, ['git', 'diff'])
+    expect(result).toContain('whitespace/EOL-only change, collapsed')
+    expect(result).not.toContain('omitted by token-goat')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GitDiffFilter — stat rollup
 // ---------------------------------------------------------------------------
 
