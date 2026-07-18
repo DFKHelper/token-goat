@@ -628,6 +628,122 @@ describe('lockdeps command', () => {
 
     fs.rmSync(mixedDir, { recursive: true, force: true })
   })
+
+  describe('--package (single-package query)', () => {
+    function writeGraphFixture(dir: string): string {
+      const lockPath = path.join(dir, 'package-lock.json')
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          name: 'graph-fixture',
+          version: '1.0.0',
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { direct: '2.0.0', other: '1.0.0' } },
+            'node_modules/direct': { version: '2.0.0', dependencies: { mid: '^1.0.0' } },
+            'node_modules/mid': { version: '1.0.0', dependencies: { child: '^1.0.0' } },
+            'node_modules/child': { version: '1.5.0' },
+            'node_modules/other': { version: '1.0.0' },
+          },
+        }),
+        'utf8',
+      )
+      return lockPath
+    }
+
+    it('returns a transitive package\'s version, direct deps, and reverse-lookup of which top-level deps pull it in', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = writeGraphFixture(dir)
+      const r = run(['lockdeps', lockPath, '--package', 'child', '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as {
+        package: string
+        version: string
+        kind: string
+        graphAvailable: boolean
+        dependsOn: string[]
+        dependedOnBy: string[]
+      }
+      expect(parsed.package).toBe('child')
+      expect(parsed.version).toBe('1.5.0')
+      expect(parsed.kind).toBe('transitive')
+      expect(parsed.graphAvailable).toBe(true)
+      expect(parsed.dependsOn).toEqual([])
+      expect(parsed.dependedOnBy).toEqual(['direct'])
+      expect(parsed.dependedOnBy).not.toContain('other')
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('returns a direct package\'s own direct dependencies and excludes itself from the reverse lookup', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = writeGraphFixture(dir)
+      const r = run(['lockdeps', lockPath, '--package', 'direct', '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { package: string; kind: string; dependsOn: string[]; dependedOnBy: string[] }
+      expect(parsed.package).toBe('direct')
+      expect(parsed.kind).toBe('direct')
+      expect(parsed.dependsOn).toEqual(['mid'])
+      expect(parsed.dependedOnBy).toEqual([])
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('non-JSON output includes the package, version, depends-on, and depended-on-by sections', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = writeGraphFixture(dir)
+      const r = run(['lockdeps', lockPath, '--package', 'child'])
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('Package: child')
+      expect(r.stdout).toContain('Version: 1.5.0')
+      expect(r.stdout).toContain('Depends on (0):')
+      expect(r.stdout).toContain('Depended on by direct/top-level deps (1):')
+      expect(r.stdout).toContain('direct')
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('exits non-zero with a clear error, including a did-you-mean suggestion, when the package is not in the lockfile', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = writeGraphFixture(dir)
+      const r = run(['lockdeps', lockPath, '--package', 'chil'])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain("Package 'chil' not found")
+      expect(r.stderr).toContain('did you mean')
+      expect(r.stderr).toContain('child')
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('degrades gracefully for lockfile formats with no parsed edge data (requirements.txt): version/kind still resolve, graph fields report unavailable', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-req-'))
+      const req = path.join(dir, 'requirements.txt')
+      fs.writeFileSync(req, 'requests==2.31.0\nnumpy>=1.24.0\n', 'utf8')
+      const r = run(['lockdeps', req, '--package', 'requests', '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as {
+        package: string
+        version: string
+        graphAvailable: boolean
+        dependsOn: string[]
+        dependedOnBy: string[]
+      }
+      expect(parsed.package).toBe('requests')
+      expect(parsed.version).toBe('2.31.0')
+      expect(parsed.graphAvailable).toBe(false)
+      expect(parsed.dependsOn).toEqual([])
+      expect(parsed.dependedOnBy).toEqual([])
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('leaves the default full-dump behavior (no --package) completely unchanged', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = writeGraphFixture(dir)
+      const r = run(['lockdeps', lockPath, '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { format: string; total: number; deps: unknown[] }
+      expect(parsed.format).toBe('npm')
+      expect(parsed.total).toBe(4)
+      expect(parsed.deps.length).toBe(4)
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+  })
 })
 
 // ── note ─────────────────────────────────────────────────────────────────────
