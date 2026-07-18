@@ -82,6 +82,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   predictive_prefetch_hit: SOURCE_HINT,
   grep_dedup_hint: SOURCE_HINT,
   glob_dedup_hint: SOURCE_HINT,
+  write_rewrite_hint: SOURCE_HINT,
   websearch_dedup_hint: SOURCE_HINT,
   read_replacement: SOURCE_READ,
   section_replacement: SOURCE_READ,
