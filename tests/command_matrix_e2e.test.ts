@@ -280,6 +280,51 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
   },
+  'openapi-outline': () => {
+    const dir = mkIsolated('tg-matrix-openapioutline-')
+    const specPath = path.join(dir, 'openapi.json')
+    fs.writeFileSync(
+      specPath,
+      JSON.stringify({
+        openapi: '3.0.0',
+        paths: {
+          '/users/{id}': {
+            get: { operationId: 'getUserById', summary: 'Get a user by ID', tags: ['users'], responses: { '200': { description: 'OK' } } },
+          },
+        },
+      }),
+    )
+    const r = run(['openapi-outline', specPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('GET')
+    expect(r.stdout).toContain('/users/{id}')
+    expect(r.stdout).toContain('[getUserById]')
+  },
+  'openapi-op': () => {
+    const dir = mkIsolated('tg-matrix-openapiop-')
+    const specPath = path.join(dir, 'openapi.json')
+    fs.writeFileSync(
+      specPath,
+      JSON.stringify({
+        openapi: '3.0.0',
+        paths: {
+          '/users/{id}': {
+            get: {
+              operationId: 'getUserById',
+              summary: 'Get a user by ID',
+              tags: ['users'],
+              parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+              responses: { '200': { description: 'OK' }, '404': { description: 'Not found' } },
+            },
+          },
+        },
+      }),
+    )
+    const r = run(['openapi-op', specPath, 'getUserById'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('GET /users/{id}')
+    expect(r.stdout).toContain('404:')
+  },
   'sqlite-schema': () => {
     const dir = mkIsolated('tg-matrix-sqliteschema-')
     const dbPath = path.join(dir, 'fixture.db')
