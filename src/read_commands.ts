@@ -47,6 +47,7 @@ import {
   formatDescriptionSlice,
 } from './pr_slice.js'
 import { getSqliteSchema, formatSqliteSchema, runReadOnlySqliteQuery, formatSqliteQueryTable } from './sqlite_query.js'
+import { parseCoverageReport, filterCoverageGapsByFile, formatCoverageGaps } from './coverage_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
@@ -1536,6 +1537,44 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     emitErr(extractErrorMessage(e))
     return 1
   }
+}
+
+export interface CoverageReportGapsCliOptions {
+  file: string
+  fileFilter?: string
+  json?: boolean
+}
+
+/** Handle ``token-goat coverage-report-gaps file``: extracts and prints only the uncovered
+ * lines/functions/branches ("the gaps") from a code-coverage report -- LCOV `.info` text or
+ * Istanbul/nyc `coverage-final.json` / `coverage-summary.json` -- instead of a raw Read of what
+ * can be a multi-thousand-line report. `--file` narrows to one source file's gaps (matched
+ * exact-or-suffix against the report's own per-file path keys, see
+ * filterCoverageGapsByFile). A report with zero gaps anywhere prints one clear message rather
+ * than an empty or confusing listing. */
+export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let report: ReturnType<typeof parseCoverageReport>
+  try {
+    report = parseCoverageReport(text)
+  } catch (e) {
+    emitErr(`Failed to parse coverage report (not valid LCOV or Istanbul JSON): ${opts.file}\n${extractErrorMessage(e)}`)
+    return 1
+  }
+
+  const scoped = opts.fileFilter !== undefined ? filterCoverageGapsByFile(report, opts.fileFilter) : report
+
+  if (opts.json === true) {
+    emit(JSON.stringify(scoped))
+  } else {
+    emitGuarded(formatCoverageGaps(scoped), 'coverage-report-gaps')
+  }
+  return 0
 }
 
 /** Thin async wrapper: reads the PDF off disk and extracts its text. Kept
