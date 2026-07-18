@@ -86,7 +86,7 @@ function readFileText(p: string): string | null {
  * line range instead of rendering blank. Shared by runSymbol, runRead, and runBrief so all
  * three read surfaces resolve empty-body symbols the same way.
  */
-function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number }): string {
+export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number }): string {
   if (entry.body !== '') return entry.body
   const source = readFileText(entry.filePath)
   if (source === null) return entry.body
