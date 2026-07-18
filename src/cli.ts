@@ -463,60 +463,24 @@ function cmdUninstall(opts: {
   const skillRemoved = uninstallSkill()
   out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
 
-  // --codex is additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so it runs on top of the base uninstall above rather than replacing it.
-  if (opts.codex === true) {
-    const codexRemoved = uninstallCodex()
-    out(
-      codexRemoved
-        ? 'Removed token-goat Codex CLI integration.'
-        : 'No token-goat Codex CLI integration to remove.',
-    )
-  }
-
-  // --gemini is additive, exactly like --codex above.
-  if (opts.gemini === true) {
-    const geminiRemoved = uninstallGemini()
-    out(
-      geminiRemoved
-        ? 'Removed token-goat Gemini CLI integration.'
-        : 'No token-goat Gemini CLI integration to remove.',
-    )
-  }
-
-  // --pi is additive, exactly like --codex above. --local narrows removal to the project-local scope only; without it, uninstallPi cleans up wherever the extension actually is (global and/or local) instead of requiring the caller to remember which scope --pi was originally installed with.
-  if (opts.pi === true) {
-    const piRemoved = opts.local === true ? uninstallPi({ local: true }) : uninstallPi()
-    out(piRemoved ? 'Removed token-goat pi extension.' : 'No token-goat pi extension to remove.')
-  }
-
-  // --openclaw is additive, exactly like --codex above.
-  if (opts.openclaw === true) {
-    const openclawRemoved = uninstallOpenclaw()
-    out(
-      openclawRemoved
-        ? 'Removed token-goat OpenClaw integration.'
-        : 'No token-goat OpenClaw integration to remove.',
-    )
-  }
-
-  // --copilot is additive, exactly like --codex above. Same auto-detect-both-scopes reasoning as --pi above: --local narrows removal to the project scope only; without it, uninstallCopilotCli cleans up wherever the hook config actually is.
-  if (opts.copilot === true) {
-    const copilotRemoved = opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()
-    out(
-      copilotRemoved
-        ? 'Removed token-goat Copilot CLI integration.'
-        : 'No token-goat Copilot CLI integration to remove.',
-    )
-  }
-
-  // --opencode is additive, exactly like --pi above.
-  if (opts.opencode === true) {
-    const opencodeRemoved = uninstallOpencode()
-    out(
-      opencodeRemoved
-        ? 'Removed token-goat opencode plugin.'
-        : 'No token-goat opencode plugin to remove.',
-    )
+  // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install
+  // and uninstall (README: "Add --codex ... to also strip those integrations"), so they run
+  // on top of the base uninstall above rather than replacing it. --local (pi, copilot) narrows
+  // removal to the project-local scope only; without it, the uninstaller cleans up wherever
+  // the integration actually is (global and/or local) instead of requiring the caller to
+  // remember which scope it was originally installed with.
+  const removals: Array<{ flag: boolean; run: () => boolean; label: string }> = [
+    { flag: opts.codex === true, run: uninstallCodex, label: 'Codex CLI integration' },
+    { flag: opts.gemini === true, run: uninstallGemini, label: 'Gemini CLI integration' },
+    { flag: opts.pi === true, run: () => (opts.local === true ? uninstallPi({ local: true }) : uninstallPi()), label: 'pi extension' },
+    { flag: opts.openclaw === true, run: uninstallOpenclaw, label: 'OpenClaw integration' },
+    { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
+    { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
+  ]
+  for (const removal of removals) {
+    if (!removal.flag) continue
+    const removed = removal.run()
+    out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
 
   // --hermes removes no files: Hermes shares the Claude Code hook entries uninstallHooks() above already stripped, so this only exists for CLI symmetry with the other harness flags (README's uninstall table lists --hermes alongside the rest).
