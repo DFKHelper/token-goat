@@ -449,7 +449,10 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
   let removed = false
   for (const eventKey of Object.keys(hooks)) {
     const groups = hooks[eventKey]
-    if (groups === undefined) continue
+    // A malformed config can hold a single table (TOML `[hooks.SomeEvent]`) where the
+    // array-of-tables shape (`[[hooks.SomeEvent]]`) is expected -- skip it rather than
+    // crashing on `for...of` over a non-iterable; it's user data, not ours to touch.
+    if (groups === undefined || !Array.isArray(groups)) continue
     const kept: G[] = []
     for (const group of groups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
