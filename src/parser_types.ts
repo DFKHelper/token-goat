@@ -74,6 +74,7 @@ export type Language =
   | 'ini'
   | 'makefile'
   | 'proto'
+  | 'terraform'
   | 'env_file'
   | 'powershell'
   | 'apex'
@@ -140,6 +141,9 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.cfg', 'ini'],
   ['.conf', 'ini'],
   ['.proto', 'proto'],
+  ['.tf', 'terraform'],
+  ['.tfvars', 'terraform'],
+  ['.hcl', 'terraform'],
   ['.ps1', 'powershell'],
   ['.psm1', 'powershell'],
   ['.env', 'env_file'],
