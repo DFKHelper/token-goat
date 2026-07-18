@@ -1,6 +1,8 @@
-# Architecture
+# Architecture (historical — pre-TypeScript-rewrite)
 
-This file holds design notes and high-level patterns that drive token-goat's implementation. Detailed technical architecture has moved to `docs/plans/`.
+> **This file is a historical record, not current documentation.** It describes token-goat's original Python implementation (`compact.py`, `hooks_read.py`, `session.py`, `uv tool install`, etc.), which was fully rewritten to TypeScript. None of the module names, file paths, or mechanisms below reflect the current codebase. For the actual current architecture, see [CLAUDE.arch.md](../CLAUDE.arch.md) at the repo root, which is the maintained architecture reference. The design rationale and historical iteration notes below are preserved for context on *why* things are shaped the way they are, not *how they currently work*.
+
+This file holds design notes and high-level patterns that drove token-goat's original implementation. Detailed technical architecture (Python era) lived in `docs/plans/`.
 
 For installation and usage, see the [README](../README.md).
 
