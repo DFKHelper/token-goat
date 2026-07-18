@@ -2002,7 +2002,7 @@ export function buildProgram(): Command {
 
   program
     .command('refs <spec>')
-    .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view)')
+    .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view). For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol false positives; falls back to name-based matching when that is not possible.')
     .option('--callers', 'group references by their enclosing caller symbol')
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')
