@@ -192,7 +192,7 @@ describe('cli_context_stats', () => {
       expect(parsed.claude_md_total).toBeGreaterThan(0)
     })
 
-    it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', () => {
+    it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', async () => {
       // runContextStats calls os.homedir() twice (findClaudeMdFiles, then findMemoryMd),
       // so it needs two queued mock returns.
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
@@ -218,7 +218,7 @@ describe('cli_context_stats', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stdout as any).write = (s: string) => { output += s; return true }
       try {
-        runContextStats({ project: projectRoot, fix: true })
+        await runContextStats({ project: projectRoot, fix: true, yes: true })
       } finally {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(process.stdout as any).write = orig
@@ -233,7 +233,41 @@ describe('cli_context_stats', () => {
       expect(rewritten).not.toContain('Stale entry')
     })
 
-    it('--fix reports nothing to prune when no MEMORY.md exists', () => {
+    it('--fix without --yes on a non-TTY stdin is a dry run: reports and does not write', async () => {
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValueOnce(tempDir).mockReturnValueOnce(tempDir)
+
+      const projectRoot = path.join(tempDir, 'fix-dryrun-project')
+      fs.mkdirSync(projectRoot)
+
+      const slug = path.resolve(canonicalize(projectRoot)).replace(/[^A-Za-z0-9]/g, '-')
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
+      fs.mkdirSync(memDir, { recursive: true })
+      const memFile = path.join(memDir, 'MEMORY.md')
+      const original = '- [Stale entry](missing-target.md)\n'
+      fs.writeFileSync(memFile, original)
+
+      const origIsTTY = process.stdin.isTTY
+      Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true })
+
+      let output = ''
+      const orig = process.stdout.write.bind(process.stdout)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(process.stdout as any).write = (s: string) => { output += s; return true }
+      try {
+        await runContextStats({ project: projectRoot, fix: true })
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(process.stdout as any).write = orig
+        Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true })
+      }
+
+      expect(output).not.toContain('[--fix] Pruned MEMORY.md')
+      expect(output).toMatch(/Dry run|Skipped/)
+      expect(fs.readFileSync(memFile, 'utf-8')).toBe(original)
+    })
+
+    it('--fix reports nothing to prune when no MEMORY.md exists', async () => {
       const project = path.join(tempDir, 'fix-no-memory')
       fs.mkdirSync(project)
 
@@ -242,7 +276,7 @@ describe('cli_context_stats', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stdout as any).write = (s: string) => { output += s; return true }
       try {
-        runContextStats({ project, fix: true })
+        await runContextStats({ project, fix: true })
       } finally {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(process.stdout as any).write = orig

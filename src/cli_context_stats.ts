@@ -11,6 +11,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { confirmAndApply } from './confirm_apply.js'
 import { pruneIndex } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
 
@@ -137,10 +138,12 @@ export interface ContextStatsOptions {
   json?: boolean
   /** Project root to analyse (defaults to cwd). */
   project?: string
+  /** Apply --fix without prompting (non-interactive / scripted use), matching `memory --fix`'s --yes. */
+  yes?: boolean
 }
 
 /** Run the ``token-goat context-stats`` command. */
-export function runContextStats(opts: ContextStatsOptions = {}): void {
+export async function runContextStats(opts: ContextStatsOptions = {}): Promise<void> {
   const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
   const result = buildStats(projectRoot)
 
@@ -178,12 +181,28 @@ export function runContextStats(opts: ContextStatsOptions = {}): void {
     if (result.memory_md_path === null) {
       process.stdout.write('[--fix] No MEMORY.md found; nothing to prune.\n')
     } else {
-      const pruneResult = pruneIndex(path.dirname(result.memory_md_path))
-      process.stdout.write('[--fix] Pruned MEMORY.md\n')
-      process.stdout.write(`  removed ${pruneResult.removedDead.length} dead-link entries\n`)
-      process.stdout.write(`  removed ${pruneResult.removedDup.length} duplicate entries\n`)
-      process.stdout.write(`  kept ${pruneResult.kept} entries\n`)
-      process.stdout.write(`  ${pruneResult.tokensSaved} tok saved\n`)
+      const memPath = result.memory_md_path
+      const pruneResult = pruneIndex(path.dirname(memPath), { dryRun: true })
+      if (!pruneResult.changed || pruneResult.after === undefined) {
+        process.stdout.write('[--fix] MEMORY.md already clean; nothing to prune.\n')
+      } else {
+        const before = fs.readFileSync(memPath, 'utf-8')
+        const applyResult = await confirmAndApply(
+          [{ path: memPath, before, after: pruneResult.after, label: 'MEMORY.md' }],
+          opts.yes === true ? { yes: true } : {},
+        )
+        if (applyResult.applied.length > 0) {
+          process.stdout.write('[--fix] Pruned MEMORY.md\n')
+          process.stdout.write(`  removed ${pruneResult.removedDead.length} dead-link entries\n`)
+          process.stdout.write(`  removed ${pruneResult.removedDup.length} duplicate entries\n`)
+          process.stdout.write(`  kept ${pruneResult.kept} entries\n`)
+          process.stdout.write(`  ${pruneResult.tokensSaved} tok saved\n`)
+        } else {
+          process.stdout.write(
+            `[--fix] ${applyResult.dryRun ? 'Dry run' : 'Skipped'} -- MEMORY.md not written. Re-run with --yes to apply without prompting.\n`,
+          )
+        }
+      }
     }
   }
 }

@@ -94,6 +94,8 @@ export interface PruneResult {
   kept: number
   changed: boolean
   tokensSaved: number
+  /** Reconstructed MEMORY.md content, present only when `changed` is true (set regardless of `dryRun`). */
+  after?: string
 }
 
 /**
@@ -163,7 +165,7 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
     dead.reduce((sum, e) => sum + estimateTokens(e.raw), 0) +
     dups.reduce((sum, e) => sum + estimateTokens(e.raw), 0)
 
-  if (!result.changed || opts?.dryRun) {
+  if (!result.changed) {
     return result
   }
 
@@ -183,6 +185,12 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
   // Ensure trailing newline.
   if (reconstructed && !reconstructed.endsWith('\n')) {
     reconstructed += '\n'
+  }
+
+  result.after = reconstructed
+
+  if (opts?.dryRun) {
+    return result
   }
 
   try {
