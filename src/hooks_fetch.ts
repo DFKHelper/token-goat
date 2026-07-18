@@ -1,7 +1,7 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, getToolName, getToolInput, denyOutput, extractToolResponseField } from './hooks_common.js';
+import { passOutput, getToolName, getToolInput, denyOutput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
 import { recordStat } from './stats.js';
 import { storeWebOutput, getWebOutput } from './web_cache.js';
 import { recordWebFetch } from './session.js';
@@ -11,7 +11,7 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, ['output', 'body', 'text', 'content']);
+  return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
 
 /** Shared prologue for {@link preFetchHandler}/{@link postFetchHandler}: only a WebFetch call

@@ -64,6 +64,12 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   return ''
 }
 
+/** Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`. */
+export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body']
+
+/** Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`. */
+export const BODY_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'body', 'text', 'content']
+
 /** Pull the textual result out of a tool_response payload. Handles the plain string form, the Anthropic MCP `{ content: [{type:'text', text}] }` array (also what Agent/subagent tool results carry, since HookEvent.raw's wire shape is uniform across tool types, not MCP-specific), the common `{output|text|body|content}` string fields, and finally a JSON.stringify fallback so structured results still cache. */
 export function extractToolResultText(raw: Record<string, unknown>): string {
   const tr = raw['tool_response']
