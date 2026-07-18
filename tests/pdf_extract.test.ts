@@ -64,6 +64,42 @@ function layoutPdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(LAYOUT_PDF, 'latin1'));
 }
 
+// A/B/C/D on a single visual line, but with SMOOTHLY DRIFTING y (each adjacent pair within
+// Y_EPSILON=2, e.g. baseline jitter from a scanned/rotated PDF) such that the first and last
+// item's y differ by more than Y_EPSILON. Regression: reconstructLayout used to compare every
+// new item's y only against the row's FIRST item, not its nearest neighbor, so this whole
+// chain got wrongly split into two rows once cumulative drift exceeded Y_EPSILON from A.
+const DRIFT_PDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 300 200] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 200 >>
+stream
+BT /F1 10 Tf 20 100.0 Td (A) Tj ET
+BT /F1 10 Tf 60 98.5 Td (B) Tj ET
+BT /F1 10 Tf 100 97.0 Td (C) Tj ET
+BT /F1 10 Tf 140 95.5 Td (D) Tj ET
+endstream
+endobj
+trailer
+<< /Size 6 /Root 1 0 R >>
+%%EOF
+`;
+
+function driftPdfBytes(): Uint8Array {
+  return new Uint8Array(Buffer.from(DRIFT_PDF, 'latin1'));
+}
+
 // Two-page PDF where page 1 has an empty content stream (a blank cover page) and page 2
 // has real text -- exercises extractPdfMeta's multi-page text-layer sample, which must
 // not conclude "no text layer" from page 1 alone.
@@ -158,6 +194,13 @@ describe('extractPdfText', () => {
     expect(lines[0]).toContain('Right');
     expect(lines[0].indexOf('Left')).toBeLessThan(lines[0].indexOf('Right'));
     expect(lines[1]).toContain('Bottom');
+  });
+
+  it('keeps a smoothly y-drifting line as one row instead of splitting it once cumulative drift exceeds Y_EPSILON (regression: row grouping used to compare only against the first item in a row, not its nearest neighbor)', async () => {
+    const result = await extractPdfText(driftPdfBytes(), undefined, true);
+    const lines = result.text.split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('A B C D');
   });
 });
 

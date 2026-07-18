@@ -75,7 +75,13 @@ function reconstructLayout(items: LayoutTextItem[]): string {
   const Y_EPSILON = 2
   for (const item of items) {
     const y = item.transform[5] as number
-    const row = rows.find((r) => Math.abs((r[0] as LayoutTextItem).transform[5]! - y) < Y_EPSILON)
+    // Compare against the row's MOST RECENTLY added item, not its first -- a row is a
+    // proximity chain (each item within Y_EPSILON of the item right before it), not a fixed
+    // band around the first item's y. A smoothly y-drifting line (baseline jitter from a
+    // scanned/rotated PDF, or justified text) where each adjacent pair is within Y_EPSILON but
+    // the cumulative drift across the whole line exceeds it would otherwise get wrongly split
+    // into multiple rows once compared only against the first item.
+    const row = rows.find((r) => Math.abs((r[r.length - 1] as LayoutTextItem).transform[5]! - y) < Y_EPSILON)
     if (row) row.push(item)
     else rows.push([item])
   }
