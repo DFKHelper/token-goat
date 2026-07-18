@@ -83,6 +83,18 @@ describe('ANSI formatting', () => {
     expect(result).not.toContain('\x1b')
   })
 
+  it('stripAnsi strips the full Supplementary PUA-A range through its last code point U+FFFFD (regression: upper bound was transposed to U+FFFDD, leaking U+FFFDE..U+FFFFD)', () => {
+    // PUA stripping only runs once the ESC fast-path is passed, so each input carries a RESET
+    // escape alongside the PUA char. U+FFFFD is the last code point of Supplementary Private
+    // Use Area-A (U+F0000..U+FFFFD).
+    expect(stripAnsi(`a\u{FFFFD}b${RESET}`)).toBe('ab')
+    expect(stripAnsi(`a\u{FFFDE}b${RESET}`)).toBe('ab')
+    // Boundaries already covered by the old range must keep working.
+    expect(stripAnsi(`a\u{F0000}b${RESET}`)).toBe('ab')
+    // A noncharacter just past the PUA-A range must NOT be stripped.
+    expect(stripAnsi(`a\u{FFFFF}b${RESET}`)).toBe('a\u{FFFFF}b')
+  })
+
   it('lerpRgb interpolates colors', () => {
     const result = lerpRgb([0, 0, 0], [255, 255, 255], 0.5)
     expect(result[0]).toBe(128)
