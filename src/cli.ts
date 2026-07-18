@@ -80,6 +80,8 @@ import {
   runGrep,
   runCsvProfile,
   runCsvQuery,
+  runJsonOutline,
+  runJsonQuery,
 
   runPdfExtractText,
   runPdfMeta,
@@ -982,6 +984,14 @@ function cmdCsvQuery(
 function cmdCsvProfile(file: string, opts: { delimiter?: string; header?: boolean }) {
   const { header, ...rest } = opts
   process.exitCode = runCsvProfile({ file, ...rest, ...(header === false ? { noHeader: true } : {}) })
+}
+
+function cmdJsonOutline(file: string, opts: { json?: boolean }) {
+  process.exitCode = runJsonOutline({ file, ...opts })
+}
+
+function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: string; json?: boolean }) {
+  process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
 }
 
 async function cmdScreenshot(
@@ -2927,6 +2937,24 @@ export function buildProgram(): Command {
     .option('--delimiter <char>', 'field delimiter (default: ,)')
     .option('--no-header', 'treat the first row as data, not a header (columns become col1, col2, ...)')
     .action(guard(cmdCsvProfile))
+
+  program
+    .command('json-outline <file>')
+    .description('structural summary of a JSON document (array shape / object key types) instead of a raw Read')
+    .option('--json', 'emit the outline as JSON instead of text')
+    .action(guard(cmdJsonOutline))
+
+  program
+    .command('json-query <file> <path>')
+    .description(
+      "extract one value or a projected/filtered subset from a JSON document by dot-path instead of a raw Read\n\n" +
+        "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
+        '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
+        "stringifies to value). Examples: data.items[3].name, items[*].id, items[status=active]",
+    )
+    .option('--head <n>', 'limit a projected/filtered result to the first N items')
+    .option('--json', 'emit the result as JSON instead of text')
+    .action(guard(cmdJsonQuery))
 
   program
     .command('screenshot <url> <destPath>')

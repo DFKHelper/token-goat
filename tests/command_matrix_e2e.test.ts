@@ -248,6 +248,38 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('id  (number)')
     expect(r.stdout).toContain('status  (string)')
   },
+  'json-outline': () => {
+    const dir = mkIsolated('tg-matrix-jsonoutline-')
+    const jsonPath = path.join(dir, 'people.json')
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify([
+        { id: 1, name: 'Alice', status: 'active' },
+        { id: 2, name: 'Bob', status: 'inactive' },
+      ]),
+    )
+    const r = run(['json-outline', jsonPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('array of 2 elements (object)')
+    expect(r.stdout).toContain('name: string')
+  },
+  'json-query': () => {
+    const dir = mkIsolated('tg-matrix-jsonquery-')
+    const jsonPath = path.join(dir, 'people.json')
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify({
+        items: [
+          { id: 1, name: 'Alice', status: 'active' },
+          { id: 2, name: 'Bob', status: 'inactive' },
+        ],
+      }),
+    )
+    const r = run(['json-query', jsonPath, 'items[status=active].name'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).not.toContain('Bob')
+  },
   'pdf-extract': () => {
     const dir = mkIsolated('tg-matrix-pdf-')
     const pdfPath = path.join(dir, 'doc.pdf')
