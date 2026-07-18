@@ -910,6 +910,29 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['hook', 'PreToolUse'], { input: '{}' })
     expect(r.status, r.stderr).toBe(0)
   },
+  statusline: () => {
+    // Must never throw or hang: valid payload, empty stdin, and malformed stdin all exit 0
+    // with a single non-empty stdout line, through the real built bundle and its own
+    // (shorter than the hook relay's) stdin timeout.
+    const payload = JSON.stringify({
+      model: { display_name: 'Opus' },
+      workspace: { current_dir: repo },
+      context_window: { used_percentage: 12 },
+    })
+    const r = run(['statusline'], { input: payload })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.split('\n').filter((l) => l.length > 0).length).toBe(1)
+    expect(r.stdout).toContain('Opus')
+
+    const rEmpty = run(['statusline'], { input: '' })
+    expect(rEmpty.status, rEmpty.stderr).toBe(0)
+    expect(rEmpty.stdout.trim().length).toBeGreaterThan(0)
+
+    const rJson = run(['statusline', '--json'], { input: payload })
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const data = JSON.parse(rJson.stdout) as { project: string; model: string | null }
+    expect(data.model).toBe('Opus')
+  },
   'write-file': () => {
     const dest = path.join(mkIsolated('tg-matrix-wf-'), 'out.txt')
     const payload = Buffer.from('hello-matrix', 'utf8').toString('base64')
