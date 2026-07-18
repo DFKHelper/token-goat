@@ -25,7 +25,7 @@ import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
-import { contextOutput, passOutput, denyOutput, extractToolResponseField } from './hooks_common.js'
+import { contextOutput, passOutput, denyOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
@@ -1103,7 +1103,7 @@ registerHook('pre_tool_use', preReadHandler, { toolName: 'Grep' })
 
 /** Extract tool response text from a post_tool_use Read event. */
 function extractReadOutput(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
+  return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
 /** Count text lines the way `wc -l` does: newline count, plus one for a final non-empty

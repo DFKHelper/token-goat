@@ -9,13 +9,13 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField } from './hooks_common.js'
+import { passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 
 function extractToolResponse(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, ['output', 'content', 'text', 'body'])
+  return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
 }
 
 /** Non-empty lines in `text`, used as a match-count proxy across every Grep output_mode

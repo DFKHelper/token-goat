@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResponseField } from './hooks_common.js';
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
 import { loadConfig } from './config.js';
 import { recordStat } from './stats.js';
 import {
@@ -28,7 +28,7 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
 }
 
 function extractSkillBody(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, ['output', 'body', 'text', 'content']);
+  return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
 
 /** Shared prologue for {@link preSkillHandler}/{@link postSkillHandler}: only a Skill call with
