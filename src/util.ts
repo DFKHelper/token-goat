@@ -627,6 +627,14 @@ export function basename(p: string): string {
   return path.basename(p)
 }
 
+/** Strip a leading UTF-8 BOM (U+FEFF) if present -- some editors (notably Windows ones) save
+ * text files with this prefix, which is valid content but trips up a strict JSON.parse. Mirrors
+ * parser.ts's parseContent and section_reader.ts's inline BOM strips; this is the shared copy for
+ * callers (openapi_query.ts, coverage_query.ts) that don't otherwise share a module with those two. */
+export function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
 /**
  * Swap `filePath`'s extension for `format` (e.g. `'jpeg'` -> `.jpg`, `'webp'` -> `.webp`),
  * preserving its directory and basename. Used after `shrinkImage()` re-encodes a capture to a

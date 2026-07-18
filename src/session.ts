@@ -106,6 +106,13 @@ let _bashReruns = new Set<string>()
 // url -> saved file path for curl -o download dedup (Item 2).
 let _curlDownloads = new Map<string, string>()
 
+// Snapshot of `_curlDownloads` at hydration time, so `consumedCurlDownloadKeys` can tell "this
+// process explicitly cleared it" apart from "this process never saw it" -- mirrors
+// `_pendingLargeFileHintsAtLoad`/`_outstandingAgentSpawnsAtLoad`'s role for the same
+// removal-is-not-a-union-op reason: clearCurlDownload's deletion must actually stick, so
+// session_store.ts's merge needs this to avoid resurrecting a cleared entry from a stale disk read.
+let _curlDownloadsAtLoad = new Map<string, string>()
+
 // path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
 let _fileLineRanges = new Map<string, Array<[number, number]>>()
 
@@ -489,6 +496,24 @@ export function clearCurlDownload(url: string): void {
   _curlDownloads.delete(url)
 }
 
+/** Snapshot of curl-download entries exactly as they were at hydration time, before this process
+ * made any changes. session_store.ts's merge uses this to compute which entries this process
+ * explicitly cleared (see {@link consumedCurlDownloadKeys}). */
+export function curlDownloadsAtLoad(): ReadonlyMap<string, string> {
+  return _curlDownloadsAtLoad
+}
+
+/** URLs present at load but cleared (consumed by {@link clearCurlDownload}) since -- tombstones
+ * for session_store.ts's merge, mirroring {@link consumedPendingLargeFileHintKeys} for the same
+ * removal-is-not-a-union-op reason. */
+export function consumedCurlDownloadKeys(): string[] {
+  const consumed: string[] = []
+  for (const url of _curlDownloadsAtLoad.keys()) {
+    if (!_curlDownloads.has(url)) consumed.push(url)
+  }
+  return consumed
+}
+
 /** Cap on retained line ranges per file - bounds memory if one file is paged many times. */
 export const MAX_RANGES_PER_FILE = 64
 
@@ -633,6 +658,7 @@ export function importSessionState(s: SerializedSession): void {
   _bashOutputs = new Map(s.bashOutputs)
   _bashReruns = new Set(s.bashReruns ?? [])
   _curlDownloads = new Map(s.curlDownloads)
+  _curlDownloadsAtLoad = new Map(_curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
@@ -652,6 +678,7 @@ registerReset(() => {
   _bashOutputs = new Map()
   _bashReruns = new Set()
   _curlDownloads = new Map()
+  _curlDownloadsAtLoad = new Map()
   _fileLineRanges = new Map()
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()

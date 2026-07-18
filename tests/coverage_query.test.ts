@@ -333,6 +333,11 @@ describe('parseCoverageReport (auto-detect + parse)', () => {
     const r = parseCoverageReport(JSON.stringify(ISTANBUL_SUMMARY_FIXTURE))
     expect(r.format).toBe('istanbul-summary')
   })
+
+  it('strips a leading UTF-8 BOM before parsing a JSON report (fail-on-buggy: JSON.parse throws "Unexpected token" on a BOM-prefixed file, common from Windows editors)', () => {
+    const r = parseCoverageReport('﻿' + JSON.stringify(ISTANBUL_FINAL_FIXTURE))
+    expect(r.format).toBe('istanbul-final')
+  })
 })
 
 describe('filterCoverageGapsByFile', () => {
@@ -351,6 +356,30 @@ describe('filterCoverageGapsByFile', () => {
   it('does not falsely suffix-match across a segment boundary', () => {
     const scoped = filterCoverageGapsByFile(report, 'artial.ts')
     expect(scoped.files).toEqual([])
+  })
+
+  it('matches case-insensitively on a case-insensitive filesystem (fail-on-buggy: normalizePath only lowercases the drive letter, so a differently-cased query never matched)', () => {
+    const prevOverride = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    try {
+      const scoped = filterCoverageGapsByFile(report, 'SRC/PARTIAL.TS')
+      expect(scoped.files.map((f) => f.filePath)).toEqual(['src/partial.ts'])
+    } finally {
+      if (prevOverride === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prevOverride
+    }
+  })
+
+  it('stays case-sensitive on a case-sensitive filesystem', () => {
+    const prevOverride = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '0'
+    try {
+      const scoped = filterCoverageGapsByFile(report, 'SRC/PARTIAL.TS')
+      expect(scoped.files).toEqual([])
+    } finally {
+      if (prevOverride === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prevOverride
+    }
   })
 })
 

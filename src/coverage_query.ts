@@ -16,6 +16,7 @@
  */
 
 import { normalizePath } from './paths.js'
+import { foldPath, stripBom } from './util.js'
 
 // ---- shared types -------------------------------------------------------------
 
@@ -452,6 +453,7 @@ export function parseIstanbulSummary(data: Record<string, unknown>): CoverageGap
  * Error (caught and clean-formatted by the CLI layer) when the input is neither valid LCOV nor
  * valid Istanbul JSON. */
 export function parseCoverageReport(text: string): CoverageGapsReport {
+  text = stripBom(text)
   const format = detectCoverageFormat(text)
   if (format === 'lcov') return parseLcov(text)
   const data = JSON.parse(text) as Record<string, unknown>
@@ -479,9 +481,14 @@ function endsWithPathBoundaryLocal(full: string, suffix: string): boolean {
  * for a report that happens to store relative paths against an absolute `--file` argument.
  */
 export function filterCoverageGapsByFile(report: CoverageGapsReport, filePathQuery: string): CoverageGapsReport {
-  const query = normalizePath(filePathQuery)
+  // normalizePath only lowercases the drive letter, not the rest of the path, so a case-insensitive
+  // filesystem (Windows/macOS) match like `C:/Repo/src/Foo.ts` vs `c:/repo/src/foo.ts` needs an
+  // explicit fold on top -- reuse util.ts's foldPath, the codebase's established platform-gated
+  // case-fold helper (see read_commands.ts's identical foldPath(file)/foldPath(s.filePath) pattern),
+  // rather than mutating normalizePath itself, which would change behavior for every other caller.
+  const query = foldPath(normalizePath(filePathQuery))
   const files = report.files.filter((f) => {
-    const candidate = normalizePath(f.filePath)
+    const candidate = foldPath(normalizePath(f.filePath))
     return candidate === query || endsWithPathBoundaryLocal(candidate, query) || endsWithPathBoundaryLocal(query, candidate)
   })
   return { format: report.format, files }
