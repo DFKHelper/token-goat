@@ -3,9 +3,10 @@ import * as fs from 'node:fs'
 import { parse, stringify } from 'smol-toml'
 
 import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
-import { configPath } from './constants.js'
+import { configPath, projectConfigPath } from './constants.js'
 import { envBool, envInt, envStr } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
+import { findProject } from './project.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
 
 // ---------------------------------------------------------------------------
@@ -664,6 +665,8 @@ interface CacheEntry {
   config: Config
   contentFp: string
   envFp: string
+  projectRoot: string
+  projectContentFp: string
 }
 
 let _cached: CacheEntry | null = null
@@ -700,6 +703,59 @@ export function getLastConfigParseError(): string | null {
   return _lastConfigParseError
 }
 
+// Mirrors _lastConfigParseError, but for the per-project .token-goat.toml override read by
+// loadConfig(). Set on every loadConfig() call; null when the file is absent or parsed cleanly.
+let _lastProjectConfigParseError: string | null = null
+
+/**
+ * The error message from the most recent `.token-goat.toml` parse/read failure, or `null` if
+ * the most recent {@link loadConfig} call found no per-project override file, or found one that
+ * parsed cleanly. Unlike {@link getLastConfigParseError}, a non-null result here never blocks
+ * config loading — the per-project layer fails open and loadConfig() always returns a valid
+ * global-only config in that case. Intended for a CLI entry point to optionally surface a
+ * warning, the same way {@link getLastConfigParseError} is surfaced for the global config.toml.
+ */
+export function getLastProjectConfigParseError(): string | null {
+  return _lastProjectConfigParseError
+}
+
+/** Dotted `section.key` names set at the top two levels of a raw TOML tree (section-only entries report just the section name). */
+function flattenRawKeys(raw: Record<string, unknown>): string[] {
+  const keys: string[] = []
+  for (const [sectionName, val] of Object.entries(raw)) {
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      for (const sub of Object.keys(val as Record<string, unknown>)) {
+        keys.push(`${sectionName}.${sub}`)
+      }
+    } else {
+      keys.push(sectionName)
+    }
+  }
+  return keys
+}
+
+export interface ProjectConfigInfo {
+  path: string
+  keys: string[]
+  parseError: string | null
+}
+
+/**
+ * Report what (if anything) a project's `.token-goat.toml` override file contributes, for
+ * `token-goat config list`'s "what's actually in effect and why" display (see cmdConfig in
+ * config_commands.ts). Returns `null` if no such file exists at the resolved project root.
+ * A malformed or unreadable file returns an empty `keys` list with `parseError` set — matching
+ * loadConfig()'s fail-open handling of the same file — so the caller can still show the
+ * effective (global-only) config alongside a note that the override itself is broken.
+ */
+export function getProjectConfigInfo(projectRoot?: string): ProjectConfigInfo | null {
+  const root = projectRoot ?? resolveConfigProjectRoot()
+  const p = projectConfigPath(root)
+  if (!fs.existsSync(p)) return null
+  const { raw, parseError } = readConfigToml(p)
+  return { path: p, keys: parseError === null ? flattenRawKeys(raw) : [], parseError }
+}
+
 /**
  * Read and parse `p` as TOML, distinguishing "file does not exist" (not an error — returns
  * `{}` with no message) from a genuine parse/read failure (returns `{}` with the error
@@ -717,12 +773,82 @@ function readConfigToml(p: string): { raw: Record<string, unknown>; parseError: 
   }
 }
 
+/**
+ * Read `p` as UTF-8 text for cache-fingerprinting purposes, distinguishing "file does not
+ * exist" (returns `null` text, no error) from a genuine read failure (returns `null` text with
+ * an error message) exactly like {@link readConfigToml} does for parsing — but deferring the
+ * TOML parse itself so {@link loadConfig} can compute a content fingerprint and check the cache
+ * before paying for a re-parse. Shared by the global config.toml and per-project
+ * `.token-goat.toml` reads inside {@link loadConfig}.
+ */
+function readConfigText(p: string): { text: string | null; readError: string | null } {
+  try {
+    return { text: fs.readFileSync(p, 'utf8'), readError: null }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { text: null, readError: null }
+    return { text: null, readError: extractErrorMessage(e) }
+  }
+}
+
+/**
+ * Layer a per-project `.token-goat.toml` override on top of the global config.toml's raw TOML
+ * data, one field at a time within each section — not a whole-section replace, so a project
+ * file that sets only `hints.large_read_redirect_bytes` still inherits every other `hints.*`
+ * key from the global file instead of losing them to a blank section. Only 2 levels deep
+ * (section -> field), matching the {@link Config} schema's own shape. Unknown sections/keys in
+ * `override` pass through here untouched and are silently dropped later by `_buildConfig`'s
+ * {@link section} helper, exactly like an unknown key in the global config.toml already is.
+ */
+function mergeRawConfig(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base }
+  for (const [key, overrideVal] of Object.entries(override)) {
+    if (overrideVal !== null && typeof overrideVal === 'object' && !Array.isArray(overrideVal)) {
+      const baseVal = base[key]
+      const baseSection = baseVal !== null && typeof baseVal === 'object' && !Array.isArray(baseVal)
+        ? (baseVal as Record<string, unknown>)
+        : {}
+      merged[key] = { ...baseSection, ...(overrideVal as Record<string, unknown>) }
+    } else {
+      // A non-object value at a section-level key (e.g. a project file that sets `hints = 5`)
+      // is not a valid section shape — section() already treats any non-object raw value as {}
+      // at build time, so pass it through as-is and let that existing guard handle it exactly
+      // like a malformed value in the global config.toml.
+      merged[key] = overrideVal
+    }
+  }
+  return merged
+}
+
+let _projectRootCache: { cwd: string; root: string } | null = null
+
+/**
+ * Resolve the project root to check for a per-project `.token-goat.toml` override, for callers
+ * of {@link loadConfig} that don't pass one explicitly — almost every hook and CLI command.
+ * Deliberately uses the cheap, subprocess-free `findProject()` marker walk rather than
+ * `resolveProjectRoot()`'s `git rev-parse` step: loadConfig() is called from the hot hook path
+ * (every Read/Grep/Bash/... hook invocation), where hooks already avoid spawning git for this
+ * exact reason (see hooks_read.ts's own findProject() usage). Memoized per `process.cwd()`,
+ * matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or
+ * CLI process's lifetime.
+ */
+function resolveConfigProjectRoot(): string {
+  const cwd = process.cwd()
+  if (_projectRootCache !== null && _projectRootCache.cwd === cwd) return _projectRootCache.root
+  const project = findProject(cwd)
+  const root = project !== null ? project.root : cwd
+  _projectRootCache = { cwd, root }
+  return root
+}
+
 // ---------------------------------------------------------------------------
 // load / save
 // ---------------------------------------------------------------------------
 
-export function loadConfig(): Config {
+export function loadConfig(projectRoot?: string): Config {
   const p = configPath()
+  const root = projectRoot ?? resolveConfigProjectRoot()
+  const projPath = projectConfigPath(root)
 
   // Content hash, not mtime: a `config set` immediately followed by another `config set`
   // (or a concurrent writer) can land two different writes within the same mtime tick on
@@ -730,18 +856,24 @@ export function loadConfig(): Config {
   // first write's config after the second landed. Reading the whole file is cheap (config.toml
   // is always tiny) and this also skips the actual cost we care about avoiding on a hit --
   // re-parsing the TOML.
-  let text: string | null = null
-  let readError: string | null = null
-  try {
-    text = fs.readFileSync(p, 'utf8')
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') readError = extractErrorMessage(e)
-  }
+  const { text, readError } = readConfigText(p)
   const contentFp = text !== null ? shortFingerprint(text) : ''
 
+  // Same content-hash-not-mtime reasoning applies to the per-project override file, plus the
+  // resolved project root itself is part of the cache key -- an explicit projectRoot argument
+  // (or a cwd change between calls) can change which .token-goat.toml is in play even when
+  // neither the global file nor env vars changed.
+  const { text: projText, readError: projReadError } = readConfigText(projPath)
+  const projectContentFp = projText !== null ? shortFingerprint(projText) : ''
+
   const envFp = configEnvFingerprint()
-  if (_cached !== null && _cached.contentFp === contentFp && _cached.envFp === envFp) {
+  if (
+    _cached !== null &&
+    _cached.contentFp === contentFp &&
+    _cached.envFp === envFp &&
+    _cached.projectRoot === root &&
+    _cached.projectContentFp === projectContentFp
+  ) {
     return _cached.config
   }
 
@@ -757,9 +889,25 @@ export function loadConfig(): Config {
     _lastConfigParseError = readError
   }
 
-  const cfg = deepFreeze(_buildConfig(raw))
+  // A malformed or unreadable .token-goat.toml fails open, exactly like a malformed global
+  // config.toml does above: the parse/read error is recorded for a CLI entry point to
+  // optionally surface (see getLastProjectConfigParseError()'s doc comment), but loadConfig()
+  // itself never throws and always falls through to the global-only config on failure.
+  let projectRaw: Record<string, unknown> = {}
+  if (projText !== null) {
+    try {
+      projectRaw = parse(projText) as Record<string, unknown>
+      _lastProjectConfigParseError = null
+    } catch (e) {
+      _lastProjectConfigParseError = extractErrorMessage(e)
+    }
+  } else {
+    _lastProjectConfigParseError = projReadError
+  }
 
-  _cached = { config: cfg, contentFp, envFp }
+  const cfg = deepFreeze(_buildConfig(raw, projectRaw))
+
+  _cached = { config: cfg, contentFp, envFp, projectRoot: root, projectContentFp }
   return cfg
 }
 
@@ -812,7 +960,16 @@ export function loadPersistedConfig(): Config {
   return buildPersistedConfig(raw)
 }
 
-function _buildConfig(raw: Record<string, unknown>): Config {
+function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, unknown> = {}): Config {
+  // Layer the per-project override (if any) on top of the global raw data before any field is
+  // read below, so every validatedInt/validatedBool/bounds-checked field, the legacy-sentinel
+  // guards, and the cross-field clamps all see one already-merged raw tree — the exact same
+  // validation path the global-only config always went through, with no divergent logic for
+  // the project layer.
+  if (Object.keys(projectRaw).length > 0) {
+    raw = mergeRawConfig(raw, projectRaw)
+  }
+
   const ca_raw = section(raw, 'compact_assist')
   const ca = getDefaultConfig('compact_assist') as CompactAssistConfig
   ca.enabled = validatedBool(ca_raw['enabled'], ca.enabled)

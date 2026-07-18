@@ -4,20 +4,27 @@ import * as path from 'node:path'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted — this redirects configPath() to a per-test temp file.
+// vi.mock is hoisted — this redirects configPath()/projectConfigPath() to per-test temp files.
+// projectConfigPath() ignores its projectRoot argument entirely (same zero-arg-equivalent
+// convention as configPath()), so tests don't need to control loadConfig()'s real cwd-based
+// project-root resolution to exercise the per-project override layer.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
     ...original,
     configPath: () => _testConfigPath,
+    projectConfigPath: () => _testProjectConfigPath,
   }
 })
 
 const _testConfigPath = path.join(os.tmpdir(), `tg-config-test-${process.pid}.toml`)
+const _testProjectConfigPath = path.join(os.tmpdir(), `tg-project-config-test-${process.pid}.toml`)
 
 import {
   defaultConfig,
   getLastConfigParseError,
+  getLastProjectConfigParseError,
+  getProjectConfigInfo,
   invalidateConfigCache,
   loadConfig,
   loadPersistedConfig,
@@ -32,6 +39,11 @@ import { ENV_KEYS } from '../src/constants.js'
 afterAll(() => {
   try {
     fs.unlinkSync(_testConfigPath)
+  } catch {
+    // ignore
+  }
+  try {
+    fs.unlinkSync(_testProjectConfigPath)
   } catch {
     // ignore
   }
@@ -672,5 +684,131 @@ describe('cross-field config clamping', () => {
 describe('ENV_KEYS registry (constants.ts)', () => {
   it('does not export a dead PREFER_AVIF entry (no feature ever reads it; removed from the canonical env-var registry)', () => {
     expect('PREFER_AVIF' in ENV_KEYS).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Per-project .token-goat.toml override (#306)
+// ---------------------------------------------------------------------------
+
+describe('per-project .token-goat.toml override', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+    vi.restoreAllMocks()
+  })
+
+  it('falls back to global-only behavior unchanged when no .token-goat.toml is present (regression: existing behavior)', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(4)
+    expect(getProjectConfigInfo()).toBeNull()
+    expect(getLastProjectConfigParseError()).toBeNull()
+  })
+
+  it('a valid .token-goat.toml overriding one known key changes that key\'s effective value', () => {
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(9)
+  })
+
+  it('per-project file overriding a value also set in the global file: per-project wins', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(9)
+  })
+
+  it('per-project file setting one key in a section leaves sibling keys in that section inherited from the global file (field-level merge, not whole-section replace)', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\nmax_manifest_tokens = 700\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 9\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(9)
+    expect(cfg.compact_assist.max_manifest_tokens).toBe(700)
+  })
+
+  it('an unknown key in .token-goat.toml is ignored, same as an unknown key in the global config.toml', () => {
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nnot_a_real_key = 123\nmin_events = 6\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(6)
+    expect(Object.hasOwn(cfg.compact_assist, 'not_a_real_key')).toBe(false)
+  })
+
+  it('an unknown section in .token-goat.toml is ignored, same as an unknown section in the global config.toml', () => {
+    fs.writeFileSync(_testProjectConfigPath, '[not_a_real_section]\nfoo = 1\n\n[compact_assist]\nmin_events = 6\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(6)
+    expect(Object.hasOwn(cfg, 'not_a_real_section')).toBe(false)
+  })
+
+  it('a malformed .token-goat.toml fails open: global config still loads, and the parse error is reported separately from the global one', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, 'this is not [ valid toml ===\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(4)
+    expect(getLastConfigParseError()).toBeNull()
+    expect(getLastProjectConfigParseError()).not.toBeNull()
+  })
+
+  it('an out-of-bounds value in .token-goat.toml is clamped/rejected the same way an out-of-bounds value in the global config is', () => {
+    // compact_assist.min_events bounds are [0, 1000] (NUMERIC_FIELD_BOUNDS in config.ts).
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 999999\n', 'utf8')
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(1000)
+  })
+
+  it('an env var override wins over both the global file and the per-project file', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nenabled = true\n', 'utf8')
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nenabled = true\n', 'utf8')
+    const orig = process.env['TOKEN_GOAT_COMPACT_ASSIST']
+    try {
+      process.env['TOKEN_GOAT_COMPACT_ASSIST'] = '0'
+      const cfg = loadConfig()
+      expect(cfg.compact_assist.enabled).toBe(false)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_COMPACT_ASSIST']
+      } else {
+        process.env['TOKEN_GOAT_COMPACT_ASSIST'] = orig
+      }
+    }
+  })
+
+  it('cache: a change to the per-project file (with the global file and env unchanged) is picked up on the next loadConfig() after invalidateConfigCache()', () => {
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 3\n', 'utf8')
+    const first = loadConfig()
+    expect(first.compact_assist.min_events).toBe(3)
+
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 8\n', 'utf8')
+    invalidateConfigCache()
+    const second = loadConfig()
+    expect(second.compact_assist.min_events).toBe(8)
+    expect(second).not.toBe(first)
+  })
+
+  it('getProjectConfigInfo() reports the overridden dotted keys for the config-list display', () => {
+    fs.writeFileSync(_testProjectConfigPath, '[compact_assist]\nmin_events = 6\n\n[hints]\ngit_hint_max_ms = 5\n', 'utf8')
+    const info = getProjectConfigInfo()
+    expect(info).not.toBeNull()
+    expect(info?.keys).toEqual(expect.arrayContaining(['compact_assist.min_events', 'hints.git_hint_max_ms']))
+    expect(info?.parseError).toBeNull()
+  })
+
+  it('getProjectConfigInfo() returns null when no .token-goat.toml exists', () => {
+    expect(getProjectConfigInfo()).toBeNull()
+  })
+
+  it('does not break existing zero-arg loadConfig() callers (signature stays backward compatible)', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')
+    // Called exactly as every pre-existing caller in src/ calls it -- no args.
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(4)
   })
 })

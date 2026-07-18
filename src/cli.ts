@@ -127,7 +127,7 @@ import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, 
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
-import { loadConfig, getLastConfigParseError } from './config.js'
+import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -1949,6 +1949,13 @@ export function buildProgram(): Command {
       const parseErr = getLastConfigParseError()
       if (parseErr !== null) {
         err(`token-goat: config.toml failed to parse (${parseErr}); using defaults — run \`token-goat config validate\` for details`)
+      }
+      // Same distinction as above, for the optional per-project .token-goat.toml override --
+      // it fails open (global-only config still loads), but a corrupt project file should not
+      // look identical to "no project override" for every command.
+      const projectParseErr = getLastProjectConfigParseError()
+      if (projectParseErr !== null) {
+        err(`token-goat: .token-goat.toml failed to parse (${projectParseErr}); ignoring project override`)
       }
       try {
         await fn(...(args as never[]))
