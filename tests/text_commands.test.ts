@@ -495,7 +495,7 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('External.java')
   })
 
-  it('handles the Native Method/Unknown Source no-source-info JVM frame forms without crashing', () => {
+  it('parses the Native Method/Unknown Source no-source-info JVM frame forms without crashing, and filters them out as non-project frames (regression: isProjectFrame treated the literal "Native Method"/"Unknown Source" marker text as a relative in-project path via canonicalize, wrongly keeping a frame with no real source location)', () => {
     const noSource = [
       'java.lang.RuntimeException: boom',
       '\tat java.base/java.lang.Thread.run(Native Method)',
@@ -505,7 +505,8 @@ describe('trace command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number }> }> }
     const frames = parsed.tracebacks[0]?.frames ?? []
-    expect(frames.some((f) => f.file === 'Native Method' && f.lineNo === 0)).toBe(true)
+    expect(frames.some((f) => f.file === 'Native Method')).toBe(false)
+    expect(frames.some((f) => f.file === 'MyClass.java' && f.lineNo === 7)).toBe(true)
   })
 
   // ── .NET grammar ────────────────────────────────────────────────────────
@@ -542,7 +543,7 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('External.cs')
   })
 
-  it('parses a bare .NET exception (no "Unhandled exception." prefix) and handles a frame with no source location', () => {
+  it('parses a bare .NET exception (no "Unhandled exception." prefix) and filters out a frame with no source location as a non-project frame (regression: isProjectFrame treated an empty framePath as cwd itself via canonicalize, wrongly keeping a frame with no real source location)', () => {
     const bare = [
       'System.InvalidOperationException: bad state',
       '   at MyApp.Program.DoWork() in Program.cs:line 9',
@@ -552,8 +553,8 @@ describe('trace command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
     const frames = parsed.tracebacks[0]?.frames ?? []
-    expect(frames.length).toBe(2)
-    expect(frames[1]).toMatchObject({ file: '', lineNo: 0, func: 'MyApp.Program.Main(String[] args)' })
+    expect(frames.length).toBe(1)
+    expect(frames[0]).toMatchObject({ file: 'Program.cs', lineNo: 9, func: 'MyApp.Program.DoWork()' })
   })
 
   // ── mixed grammars in one input ────────────────────────────────────────

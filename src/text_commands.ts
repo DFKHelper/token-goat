@@ -511,6 +511,15 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   // stdlib/site-packages frames are excluded below, just earlier because this one can't survive
   // the same ordering.
   if (framePath.startsWith('node:')) return false
+  // An empty framePath (.NET's no-location frame form) or JVM's two literal no-source-info
+  // markers ("Native Method"/"Unknown Source", from parseJvmFrameLine) are not real paths --
+  // canonicalize()/path.resolve() treats an empty string as cwd itself and a bare marker string
+  // as a plain relative path, both of which resolve UNDER cwd and would otherwise wrongly pass
+  // the root-boundary check below (a frame with no real source location would then be kept as
+  // "in the project" instead of correctly falling through to the "no symbol covers this" path
+  // resolveFrameSymbol already handles for any unresolvable frame). Reject up front, same as the
+  // node: check above.
+  if (framePath === '' || framePath === 'Native Method' || framePath === 'Unknown Source') return false
   // Route through canonicalize (project.ts) so a WSL/MSYS-style frame path (e.g.
   // /mnt/c/Projects/token-goat/...) is recognized as the same file as its native
   // Windows drive-letter form, instead of being compared as a raw resolved string.
