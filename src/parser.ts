@@ -52,6 +52,7 @@ import {
   extractLwcTemplate,
   extractSalesforceMarkup,
 } from './languages/salesforce_frontend.js'
+import { extractVue, extractSvelte, extractAstro } from './languages/sfc_idx.js'
 import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
@@ -1677,6 +1678,12 @@ function extractNoTreeSitter(
   if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
   if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
   if (language === 'html' && isLwcFile(filePath, '.html')) return extractLwcTemplate(content, filePath)
+  // Vue/Svelte/Astro adapters emit both symbols and refs (template component-tag references),
+  // same shape as extractSalesforceMarkup above -- returned directly rather than forced through
+  // the symbols-only NO_TREE_SITTER_EXTRACTORS map.
+  if (language === 'vue') return extractVue(content, filePath)
+  if (language === 'svelte') return extractSvelte(content, filePath)
+  if (language === 'astro') return extractAstro(content, filePath)
 
   const parsed: ParseContentResult = {
     symbols: extractSymbolsNoTreeSitter(content, filePath, language),

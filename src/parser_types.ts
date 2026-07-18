@@ -80,6 +80,9 @@ export type Language =
   | 'apex'
   | 'salesforce_metadata'
   | 'salesforce_markup'
+  | 'vue'
+  | 'svelte'
+  | 'astro'
   | 'unknown'
 
 /**
@@ -159,6 +162,9 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.page', 'salesforce_markup'],
   ['.component', 'salesforce_markup'],
   ['.email', 'salesforce_markup'],
+  ['.vue', 'vue'],
+  ['.svelte', 'svelte'],
+  ['.astro', 'astro'],
 ])
 
 /**
