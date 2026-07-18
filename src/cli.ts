@@ -71,6 +71,7 @@ import {
   runSkeleton,
   runOutline,
   runChanged,
+  runDiff,
   runConfigGet,
   runExports,
   runImports,
@@ -2644,6 +2645,20 @@ export function buildProgram(): Command {
         runChanged({
           ref: opts.since ?? 'HEAD~5',
           ...(opts.symbol === true ? { symbolMode: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('diff <spec> [ref]')
+    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" HEAD~3..HEAD`')
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, ref: string | undefined, opts: { json?: boolean }) =>
+      runExit(() =>
+        runDiff({
+          spec,
+          ...(ref !== undefined ? { ref } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),

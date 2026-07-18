@@ -213,6 +213,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rs.stdout).not.toContain('alphaSym')
     expect(rs.stdout).not.toContain('betaSym')
   },
+  diff: () => {
+    // gammaSym was added by the second commit; alphaSym/betaSym are untouched by it.
+    const r = run(['diff', 'src/mod.ts::gammaSym', 'HEAD~1..HEAD'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('gammaSym')
+    const rUnchanged = run(['diff', 'src/mod.ts::alphaSym', 'HEAD~1..HEAD'])
+    expect(rUnchanged.status, rUnchanged.stderr).toBe(0)
+    expect(rUnchanged.stdout).toMatch(/No changes/)
+    const rMissing = run(['diff', 'src/mod.ts::doesNotExistSym'])
+    expect(rMissing.status).toBe(1)
+    expect(rMissing.stderr).toContain('not found')
+  },
   'config-get': () => expectRead(['config-get', 'pkg.json', 'version'], '3.2.1'),
   'csv-query': () => {
     const dir = mkIsolated('tg-matrix-csv-')
