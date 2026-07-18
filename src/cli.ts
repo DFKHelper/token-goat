@@ -541,8 +541,8 @@ function cmdDoctor(opts: { context?: boolean }): void {
   }
 }
 
-function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean } = {}): void {
-  runContextStats(opts)
+function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
+  return runContextStats(opts)
 }
 
 function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
@@ -2034,7 +2034,8 @@ export function buildProgram(): Command {
     .description('show context statistics')
     .option('--project <path>', 'project root to analyze')
     .option('-j, --json', 'output as JSON')
-    .option('--fix', 'apply automatic fixes')
+    .option('--fix', 'apply automatic fixes (confirm-gated; shows a diff before writing)')
+    .option('-y, --yes', 'with --fix, apply without prompting (non-interactive / scripted use)')
     .action(guard(cmdContextStats))
 
   program
