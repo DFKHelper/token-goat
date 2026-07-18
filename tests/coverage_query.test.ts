@@ -283,6 +283,26 @@ describe('parseIstanbulFinal', () => {
     expect(partial!.uncoveredBranches).toEqual([{ line: 31 }])
     expect(partial!.summaryOnly).toBe(false)
   })
+
+  it('does not throw on an fnMap/branchMap entry whose loc is present but has no start key (fail-on-buggy: `loc?.start.line` only guards the loc hop, not the trailing .line access on a missing start)', () => {
+    const fixture = {
+      '/repo/src/edge.ts': {
+        path: '/repo/src/edge.ts',
+        statementMap: {},
+        s: {},
+        fnMap: { '0': { name: 'weird', loc: {} } },
+        f: { '0': 0 },
+        branchMap: { '0': { loc: {}, locations: [{}] } },
+        b: { '0': [0] },
+      },
+    }
+    expect(() => parseIstanbulFinal(fixture)).not.toThrow()
+    const result = parseIstanbulFinal(fixture)
+    const file = result.files.find((f) => f.filePath === '/repo/src/edge.ts')
+    expect(file).toBeDefined()
+    expect(file!.uncoveredFunctions).toEqual([{ name: 'weird', line: 0 }])
+    expect(file!.uncoveredBranches).toEqual([{ line: 0 }])
+  })
 })
 
 describe('parseIstanbulSummary', () => {
