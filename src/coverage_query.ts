@@ -353,7 +353,11 @@ export function parseIstanbulFinal(data: Record<string, unknown>): CoverageGapsR
     for (const [id, fnInfo] of Object.entries(fnMap)) {
       functionsTotal++
       if (num(f[id]) === 0) {
-        const line = fnInfo.loc?.start.line ?? fnInfo.decl?.start.line ?? 0
+        // `?.` only guards the hop immediately before it -- `loc?.start` protects against a
+        // missing `loc`, but not against `loc` being present with no `start` key (seen in some
+        // real coverage-final.json output). Explicit undefined checks, mirroring the
+        // statementMap loop above.
+        const line = (fnInfo.loc?.start !== undefined ? fnInfo.loc.start.line : undefined) ?? (fnInfo.decl?.start !== undefined ? fnInfo.decl.start.line : undefined) ?? 0
         uncoveredFunctions.push({ name: fnInfo.name !== undefined && fnInfo.name !== '' ? fnInfo.name : '(anonymous)', line })
       }
     }
@@ -368,7 +372,9 @@ export function parseIstanbulFinal(data: Record<string, unknown>): CoverageGapsR
       branchesTotal += hitsArr.length
       hitsArr.forEach((hits, idx) => {
         if (num(hits) === 0) {
-          const line = branchInfo?.locations?.[idx]?.start.line ?? branchInfo?.loc?.start.line ?? 0
+          const locStart = branchInfo?.locations?.[idx]?.start
+          const branchStart = branchInfo?.loc?.start
+          const line = (locStart !== undefined ? locStart.line : undefined) ?? (branchStart !== undefined ? branchStart.line : undefined) ?? 0
           uncoveredBranches.push({ line })
         }
       })
