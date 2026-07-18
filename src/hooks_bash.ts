@@ -82,6 +82,20 @@ function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, is
 }
 
 /**
+ * Shared hint ladder for `tail`/`head`/`Get-Content -Tail`/`Select-Object -First`-style
+ * partial-file-read commands, which (unlike the whole-file-dump commands {@link
+ * surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc,
+ * non-config case since the caller already knows the file structure is what's wanted.
+ */
+function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean): string {
+  return isConfig
+    ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+    : isDoc
+      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+}
+
+/**
  * Strips a command's downstream pipeline and trailing redirections, returning the
  * base command. Used to key the bash-output cache so that the same build/test
  * command run with different downstream filters (`| tail -40` vs `| grep ERROR`)
@@ -136,13 +150,7 @@ function stripOutputPipeline(cmd: string): string {
   return base.trim()
 }
 
-// A cache entry keyed on the base command (stripOutputPipeline) or a curl URL is intentionally
-// shared across different downstream pipes/redirects on the same underlying command — see
-// stripOutputPipeline's docstring. But the stored *content* is whatever that one run's pipe
-// produced, so a differently-piped recall (`| jq '.a'` vs `| jq '.b'`) can silently serve the
-// wrong value. Rather than break the intentional sharing (and the tests that pin it), surface
-// the command that actually produced the cached content whenever it differs from the one being
-// run now, so the caller can judge whether the recall still covers what they need.
+// A cache entry keyed on the base command (stripOutputPipeline) or a curl URL is intentionally shared across different downstream pipes/redirects on the same underlying command — see stripOutputPipeline's docstring. But the stored *content* is whatever that one run's pipe produced, so a differently-piped recall (`| jq '.a'` vs `| jq '.b'`) can silently serve the wrong value. Rather than break the intentional sharing (and the tests that pin it), surface the command that actually produced the cached content whenever it differs from the one being run now, so the caller can judge whether the recall still covers what they need.
 function pipelineDivergenceNote(cmd: string, entryCommand: string): string {
   if (entryCommand === cmd) return ''
   const preview = entryCommand.length > 60 ? entryCommand.slice(0, 57) + '...' : entryCommand
@@ -179,10 +187,7 @@ function extractCatSourceFile(cmd: string): string | null {
 }
 
 /** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, config, or sql file. Returns null for multi-file cat, piped cat, etc. */
-// Classify a single candidate `cat`/`bat`/`type`/`Get-Content` path: returns the
-// per-path flags used by the deny/hint logic, or null if the path is a temp scratch
-// file or lacks a known source/doc/config extension. Shared by the single-path
-// extractCatFile and the multi-path extractCatFilesMulti so both apply identical rules.
+// Classify a single candidate `cat`/`bat`/`type`/`Get-Content` path: returns the per-path flags used by the deny/hint logic, or null if the path is a temp scratch file or lacks a known source/doc/config extension. Shared by the single-path extractCatFile and the multi-path extractCatFilesMulti so both apply identical rules.
 /**
  * Classify a file path's extension into the doc/env/config/sql flags shared by every
  * cat-family extractor below. Returns null when the path has neither a known source/doc/
@@ -222,17 +227,11 @@ export function extractCatFile(cmd: string): { filePath: string; isDoc: boolean;
   return classifyCatPath(filePath, cmd0)
 }
 
-// Multi-file variant: `cat a.ts b.ts` (2+ path args) slips past the single-path
-// extractCatFile (its `$` anchor rejects a trailing second path), so a multi-file cat
-// used to bypass the deny entirely. Tokenizes every path argument and returns the
-// qualifying ones so the same per-path deny/hint fires. Returns null unless the command
-// is a bare cat/bat/type/Get-Content with 2+ arguments and at least one qualifying path.
+// Multi-file variant: `cat a.ts b.ts` (2+ path args) slips past the single-path extractCatFile (its `$` anchor rejects a trailing second path), so a multi-file cat used to bypass the deny entirely. Tokenizes every path argument and returns the qualifying ones so the same per-path deny/hint fires. Returns null unless the command is a bare cat/bat/type/Get-Content with 2+ arguments and at least one qualifying path.
 export function extractCatFilesMulti(
   cmd: string,
 ): Array<{ filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string }> | null {
-  // Only a bare `cat a b c`: bail on any pipe/redirect/chain/substitution so a piped
-  // single read (`cat -n f | jq`, `cat f | grep`) still passes through untouched, the
-  // same way the `$`-anchored single-path extractCatFile never matched those.
+  // Only a bare `cat a b c`: bail on any pipe/redirect/chain/substitution so a piped single read (`cat -n f | jq`, `cat f | grep`) still passes through untouched, the same way the `$`-anchored single-path extractCatFile never matched those.
   if (/[|<>;&`]/.test(cmd) || cmd.includes('$(')) return null
   const m = /^(cat|bat|type|Get-Content|gc)\s+(.+?)\s*$/i.exec(cmd)
   if (!m) return null
@@ -241,10 +240,7 @@ export function extractCatFilesMulti(
   const paths = tokens.filter((t) => !/^-/.test(t)).map((t) => t.replace(/^["']|["']$/g, ''))
   if (paths.length < 2) return null
   const out = paths.map((p) => classifyCatPath(p, cmd0)).filter((r): r is NonNullable<typeof r> => r !== null)
-  // Require 2+ qualifying source paths: a single path with flag VALUES (e.g.
-  // `Get-Content -Tail 50 src/auth.ts`, where `50` is the -Tail argument) is a
-  // flagged single-file read that the tail/head/single-cat handlers own -- firing
-  // here would preempt them with a hard deny.
+  // Require 2+ qualifying source paths: a single path with flag VALUES (e.g. `Get-Content -Tail 50 src/auth.ts`, where `50` is the -Tail argument) is a flagged single-file read that the tail/head/single-cat handlers own -- firing here would preempt them with a hard deny.
   return out.length >= 2 ? out : null
 }
 
@@ -426,15 +422,7 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
 }
 
 function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
-  // Multi-range `sed -n 'N,Mp;X,Yp' file` is legal: a semicolon-separated list of `N,Mp` clauses
-  // inside a single quoted address block, followed by the same file-path argument and optional
-  // `2>/dev/null` suffix as the single-range form. The earlier single-range regex required
-  // exactly one range then end-of-string, so any `;`-joined command silently fell through with
-  // no hint at all, leaving an agent that grabs N+M ranges in one sed call getting zero
-  // guidance. The regex below matches the leading `N,Mp` plus zero or more `;N,Mp`
-  // continuations sharing the same surrounding quotes; the range list is reparsed from cmd so
-  // each clause is independently validated (start >= 1, end >= start) and empty/malformed
-  // inputs are rejected uniformly.
+  // Multi-range `sed -n 'N,Mp;X,Yp' file` is legal: a semicolon-separated list of `N,Mp` clauses inside a single quoted address block, followed by the same file-path argument and optional `2>/dev/null` suffix as the single-range form. The earlier single-range regex required exactly one range then end-of-string, so any `;`-joined command silently fell through with no hint at all, leaving an agent that grabs N+M ranges in one sed call getting zero guidance. The regex below matches the leading `N,Mp` plus zero or more `;N,Mp` continuations sharing the same surrounding quotes; the range list is reparsed from cmd so each clause is independently validated (start >= 1, end >= start) and empty/malformed inputs are rejected uniformly.
   const m = /^sed\s+-n\s+['"](?:\d+,\d+p)(?:;\d+,\d+p)*['"]\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
   if (!m) return null
   const quotedAddress = /['"]([^'"]+)['"]/.exec(cmd)
@@ -460,11 +448,7 @@ const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
   'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell', 'apex', 'salesforce_metadata', 'salesforce_markup',
 ])
 
-// Builds the recall hint for a `sed -n 'N,Mp' file` read, tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range.
-// Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`),
-// tailored to the file's language: Markdown -> section by heading; structured config ->
-// config-get/section; source code -> symbol read (robust to line shifts); everything else ->
-// the exact line range per requested range.
+// Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`), tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range per requested range.
 function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>): string {
   const lang = detectLanguage(filePath)
   // One token-goat read per requested range so the agent can fetch each independently. Combined
@@ -505,9 +489,7 @@ function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start
 // Builds the recall hint when a sed range overlaps one already served this session: name the prior range and point at a `read "file@delta"` for only the not-yet-seen lines.
 function sedOverlapHint(filePath: string, prior: readonly [number, number], start: number, end: number): string {
   const base = 'You already read lines ' + prior[0] + '-' + prior[1] + ' of ' + filePath + ' via an earlier `sed` this session; this read (' + start + '-' + end + ') overlaps. '
-  // The never-served portion of [start, end] is whatever falls outside [prior[0], prior[1]]: a
-  // leading segment when the new request starts before the prior range, a trailing segment when
-  // it ends after, or both when the new request straddles the prior range on both sides.
+  // The never-served portion of [start, end] is whatever falls outside [prior[0], prior[1]]: a leading segment when the new request starts before the prior range, a trailing segment when it ends after, or both when the new request straddles the prior range on both sides.
   const segments: Array<readonly [number, number]> = []
   if (start < prior[0]) segments.push([start, Math.min(end, prior[0] - 1)])
   if (end > prior[1]) segments.push([Math.max(start, prior[1] + 1), end])
@@ -680,7 +662,7 @@ function extractForLoopWcL(cmd: string): boolean {
  */
 function extractFindCommand(cmd: string): { extGlob: string | null; isXargsGrepL: boolean } | null {
   if (!/^find\b/.test(cmd)) return null
-  const isXargsGrepL = /[|]\s*xargs\s+(?:grep|rg)\s+.*-l\b/.test(cmd) || /[|]\s*xargs\s+grep\s+-l\b/.test(cmd)
+  const isXargsGrepL = /[|]\s*xargs\s+(?:grep|rg)\s+.*-l\b/.test(cmd)
   const nameMatch = /-name\s+['"]([^'"]+)['"]/i.exec(cmd)
   const extGlob = nameMatch ? (nameMatch[1] ?? null) : null
   return { extGlob, isXargsGrepL }
@@ -782,11 +764,7 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
 
   // skill-body/skill-compact take a name (or --path/--all flags), not a file::symbol spec.
   if (sub === 'skill-body' || sub === 'skill-compact') {
-    // `--path <file>` takes an actual file path — resolve it the same way read/section do
-    // (against cwd, normalized) so relative/differently-cased/slash-direction variants of the
-    // same file collide under one dedup key, instead of the raw --path text differing byte-for-
-    // byte across equivalent invocations. A plain NAME arg (or --all) isn't a file path, so it
-    // still dedups on the raw remainder unchanged.
+    // `--path <file>` takes an actual file path — resolve it the same way read/section do (against cwd, normalized) so relative/differently-cased/slash-direction variants of the same file collide under one dedup key, instead of the raw --path text differing byte-for-byte across equivalent invocations. A plain NAME arg (or --all) isn't a file path, so it still dedups on the raw remainder unchanged.
     const pathFlagMatch = /--path\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(rest)
     if (pathFlagMatch !== null) {
       const rawPathArg = pathFlagMatch[1] ?? pathFlagMatch[2] ?? pathFlagMatch[3] ?? ''
@@ -803,21 +781,13 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
   let filePath: string | null = null
   let spec = rawSpec
   if (sub === 'read' || sub === 'section') {
-    // A `read` spec may carry a `@N-M`/`@N` line-range suffix (read_commands.ts's own
-    // parseLineRange, mirrored here so the split stays in sync) ahead of any `::symbol` split.
-    // Strip it before extracting the file path so the dedup/pending-hint key is the bare path a
-    // plain-path lookup expects — otherwise a range read's filePath still carries the @N-M
-    // suffix and never matches the file it actually reads.
+    // A `read` spec may carry a `@N-M`/`@N` line-range suffix (read_commands.ts's own parseLineRange, mirrored here so the split stays in sync) ahead of any `::symbol` split. Strip it before extracting the file path so the dedup/pending-hint key is the bare path a plain-path lookup expects — otherwise a range read's filePath still carries the @N-M suffix and never matches the file it actually reads.
     const rangeMatch = /^(.+)@(\d+)(?:-(\d+))?$/.exec(rawSpec)
     const rangeSuffix = rangeMatch !== null ? '@' + rangeMatch[2] + (rangeMatch[3] !== undefined ? '-' + rangeMatch[3] : '') : ''
     const specWithoutRange = rangeMatch !== null ? rangeMatch[1]! : rawSpec
     const colonIdx = specWithoutRange.indexOf('::')
     const rawFilePath = colonIdx === -1 ? specWithoutRange : specWithoutRange.slice(0, colonIdx)
-    // Resolve against the command's cwd (falling back to this hook process's own cwd, which is
-    // wrong but the best available signal, when the event carries none) before normalizing: a
-    // relative spec run from two different directories must NOT collide under one dedup key, and
-    // a relative spec run twice from the SAME directory must — bare normalizePath does neither,
-    // since it only canonicalizes drive-letter case and slash direction, never resolves cwd.
+    // Resolve against the command's cwd (falling back to this hook process's own cwd, which is wrong but the best available signal, when the event carries none) before normalizing: a relative spec run from two different directories must NOT collide under one dedup key, and a relative spec run twice from the SAME directory must — bare normalizePath does neither, since it only canonicalizes drive-letter case and slash direction, never resolves cwd.
     filePath = resolveIndexPath(rawFilePath, cwd ?? process.cwd())
     spec = (colonIdx === -1 ? filePath : filePath + specWithoutRange.slice(colonIdx)) + rangeSuffix
   }
@@ -1077,17 +1047,13 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
 
     // Bare code (outside quotes)
 
-    // Backslash-escapes the next character (real bash semantics outside a string): a `\"`
-    // or `\'` here is a literal character, not a quote open — skip both without toggling
-    // any quote state.
+    // Backslash-escapes the next character (real bash semantics outside a string): a `\"` or `\'` here is a literal character, not a quote open — skip both without toggling any quote state.
     if (ch === '\\' && i + 1 < cmd.length) {
       i += 2
       continue
     }
 
-    // Arithmetic expansion `$(( ... ))`: skip the whole span as opaque (tracking nested
-    // parens) so a shift operator like `<<`/`>>` inside it is never mistaken for a heredoc
-    // redirect.
+    // Arithmetic expansion `$(( ... ))`: skip the whole span as opaque (tracking nested parens) so a shift operator like `<<`/`>>` inside it is never mistaken for a heredoc redirect.
     if (ch === '$' && cmd[i + 1] === '(' && cmd[i + 2] === '(') {
       let depth = 2
       let j = i + 3
@@ -1100,9 +1066,7 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
       continue
     }
 
-    // A `#` that starts a word (preceded by whitespace, or at the very start of the command)
-    // opens a real shell comment running to end of line — quote-like characters in it (e.g.
-    // an apostrophe in "don't") are literal text, not shell syntax.
+    // A `#` that starts a word (preceded by whitespace, or at the very start of the command) opens a real shell comment running to end of line — quote-like characters in it (e.g. an apostrophe in "don't") are literal text, not shell syntax.
     if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1] ?? ''))) {
       const nl = cmd.indexOf('\n', i)
       i = nl === -1 ? cmd.length : nl + 1
@@ -1166,10 +1130,7 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
         // Extract the delimiter word
         const delimiter = cmd.slice(delimStart, j).replace(/["']/g, '')
         if (delimiter) {
-          // Scan line-by-line from the end of the opener to find the terminator,
-          // tracking exact offsets so a match lets us skip the whole heredoc body.
-          // The body is literal shell text, not shell syntax — a stray apostrophe
-          // in prose like "it's" must not be rescanned as a quote delimiter.
+          // Scan line-by-line from the end of the opener to find the terminator, tracking exact offsets so a match lets us skip the whole heredoc body. The body is literal shell text, not shell syntax — a stray apostrophe in prose like "it's" must not be rescanned as a quote delimiter.
           let scanPos = j
           let terminatorEnd = -1
           while (scanPos <= cmd.length) {
@@ -1223,9 +1184,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCdPrefix(rawCmd)
   const cdStripped = cmd !== rawCmd
-  // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell
-  // itself would — hoisted here (rather than computed right before its first use) so every
-  // path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
+  // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell itself would — hoisted here (rather than computed right before its first use) so every path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = getCwd(event) ?? null
   // When a cd prefix was stripped, path-based hints below resolve their filePath against the
   // directory that cd would actually leave the shell in, not this hook's own cwd.
@@ -1295,13 +1254,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (sedRange !== null) {
     const { filePath, ranges } = sedRange
     recordStat('session_hint', 0, 0)
-    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-
-    // cased) — a relative and an absolute reference to the same file must collide under one
-    // key, matching how the CLI surgical-read dedup above already resolves paths. The raw
-    // filePath is kept for the hint text itself so existing relative-path hints are unchanged.
-    // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one
-    // combined min-max span) so a gap between ranges that was already read separately doesn't
-    // get misreported as newly-overlapping, and so each range's own history is tracked.
+    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. The raw filePath is kept for the hint text itself so existing relative-path hints are unchanged.
+    // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
     const sedDedupKey = resolveIndexPath(filePath, preHookCwd ?? process.cwd())
     const overlapHints: string[] = []
     const freshRanges: Array<readonly [number, number]> = []
@@ -1409,49 +1363,29 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
     const { filePath, isDoc, isConfig } = tailResult
-    const hint = isConfig
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-      : isDoc
-        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
-    return contextOutput('`tail` bypasses read hooks. ' + hint)
+    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
   }
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
     const { filePath, isDoc, isConfig } = headResult
-    const hint = isConfig
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-      : isDoc
-        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
-    return contextOutput('`head` bypasses read hooks. ' + hint)
+    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
   }
 
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
     const { filePath, isDoc, isConfig } = gcTailResult
-    const hint = isConfig
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-      : isDoc
-        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + hint)
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
     const { filePath, isDoc, isConfig } = gcSelectResult
-    const hint = isConfig
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-      : isDoc
-        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Select-Object -First` bypasses read hooks. ' + hint)
+    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
@@ -1592,14 +1526,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or
-  // `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the
-  // working tree changes. The `gitMutable` fingerprint already attached in
-  // computeBashFingerprints (HEAD sha + `git status --porcelain` hash) invalidates the
-  // instant either happens — including an edit to the scoped path recorded through the
-  // normal postEditHandler/dirty-queue flow, since that edit shows up in `git status
-  // --porcelain` regardless of whether the reindex queue has drained yet — so this reuses
-  // the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
+  // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the working tree changes. The `gitMutable` fingerprint already attached in computeBashFingerprints (HEAD sha + `git status --porcelain` hash) invalidates the instant either happens — including an edit to the scoped path recorded through the normal postEditHandler/dirty-queue flow, since that edit shows up in `git status --porcelain` regardless of whether the reindex queue has drained yet — so this reuses the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
   if (isScopedGitStatusOrDiffStatCommand(cmd)) {
     const gitScopedHash = shortFingerprint(stripOutputPipeline(cmd))
     const gitScopedOutputId = getBashOutputId(gitScopedHash)
@@ -1738,16 +1665,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const output = extractBashOutput(event.raw)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
-    // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an
-    // untouched install sees identical behavior; a configured cache_min_bytes now
-    // actually moves the floor instead of being silently ignored.
+    // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
 
-    // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming
-    // the download actually succeeded. Recording it unconditionally (before checking exit code
-    // or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got
-    // recorded as if it succeeded, and the recall-deny above would then block the user from
-    // ever retrying the same download.
+    // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
       const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cwd ?? process.cwd())
@@ -1762,12 +1683,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const tgRead = extractTgSurgicalRead(cmd, cwd)
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
-      // Record a surgical (symbol/section/range-scoped) read against the file's
-      // session entry so compact.ts's symbolsBonus can reward narrowly-engaged
-      // files. `spec` for read/section is `filePath` + a narrowing suffix
-      // (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a
-      // whole-file `token-goat read <file>`, which is not symbol-scoped and is
-      // left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
+      // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
       if (tgRead.filePath !== null) {
         const narrowing = tgRead.spec.slice(tgRead.filePath.length)
         if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
@@ -1805,11 +1721,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
     }
 
-    // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical
-    // call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above).
-    // Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is
-    // enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints
-    // (HEAD sha + `git status --porcelain` hash), not a separate mechanism.
+    // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha + `git status --porcelain` hash), not a separate mechanism.
     if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
       const gitScopedCacheHash = shortFingerprint(stripOutputPipeline(cmd))
       const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
@@ -1825,20 +1737,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
-    // Item F: cross-run delta folding. Capture whatever was cached under this exact command's
-    // id BEFORE storeBashOutput overwrites it — the id is stable per normalized command
-    // (commandHash), so a hit here means this exact command already ran and cached output
-    // earlier. storeBashOutput always still runs unconditionally below: the full new output
-    // stays cached and recallable via `bash-output <id>` regardless of whether a delta hint
-    // fires: the delta is an additive summary, never a replacement for the underlying data.
+    // Item F: cross-run delta folding. Capture whatever was cached under this exact command's id BEFORE storeBashOutput overwrites it — the id is stable per normalized command (commandHash), so a hit here means this exact command already ran and cached output earlier. storeBashOutput always still runs unconditionally below: the full new output stays cached and recallable via `bash-output <id>` regardless of whether a delta hint fires: the delta is an additive summary, never a replacement for the underlying data.
     const priorId = await commandHash(cmd, cwd)
     const priorEntry = getBashOutput(priorId)
     const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
     if (priorEntry !== null) {
-      // Item G: a store call just overwrote an already-present cached entry under this exact
-      // key -- record it so hooks_compact.ts's SAFE_TO_DISCARD manifest section can name the
-      // now-superseded prior run as provably safe to drop from context.
+      // Item G: a store call just overwrote an already-present cached entry under this exact key -- record it so hooks_compact.ts's SAFE_TO_DISCARD manifest section can name the now-superseded prior run as provably safe to drop from context.
       recordBashRerun(simpleHash)
       const delta = summarizeOutputDelta(priorEntry.output, output)
       if (delta !== null) {

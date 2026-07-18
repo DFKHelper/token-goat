@@ -146,9 +146,7 @@ export function kindToSource(kind: string): string {
   return SOURCE_OTHER
 }
 
-// Formats a Date's local (not UTC) calendar day as YYYY-MM-DD. Stats are bucketed and
-// displayed by the user's wall-clock day, so a UTC-based toISOString() split would push
-// any event recorded after local midnight-minus-UTC-offset into the next day's bucket.
+// Formats a Date's local (not UTC) calendar day as YYYY-MM-DD. Stats are bucketed and displayed by the user's wall-clock day, so a UTC-based toISOString() split would push any event recorded after local midnight-minus-UTC-offset into the next day's bucket.
 export function toLocalDateKey(d: Date): string {
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
@@ -300,10 +298,7 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database, h
     .map(([date, bucket]) => ({ ...bucket, date }))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
-  // Always empty by design, not a bug: the `stats` table has no project-identifying
-  // column (see GLOBAL_SCHEMA_SQL), so there is no data source to aggregate by project
-  // from. Kept on StatsSummary/the `--json` output for shape compatibility — see the
-  // module docstring above.
+  // Always empty by design, not a bug: the `stats` table has no project-identifying column (see GLOBAL_SCHEMA_SQL), so there is no data source to aggregate by project from. Kept on StatsSummary/the `--json` output for shape compatibility — see the module docstring above.
   const byProjectList: ProjectRow[] = []
 
   const t1 = Date.now()
@@ -488,10 +483,7 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string;
     return
   }
 
-  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent
-  // caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it
-  // can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still
-  // wins even when forced: an explicit no-color preference should never be overridden.
+  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still wins even when forced: an explicit no-color preference should never be overridden.
   const useTty = process.env['NO_COLOR'] ? false : opts?.force === true ? true : _useRichStats()
   if (!useTty) {
     _renderShortTotals(summary)
