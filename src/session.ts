@@ -72,6 +72,10 @@ let _bashOutputs = new Map<string, string>()
 // recall (an identical Grep repeated later in the session, above hints.grep_dedup_min_matches).
 let _grepQueries = new Map<string, number>()
 
+// `[pattern, path]` signature -> match count, for Glob dedup-hint recall (an identical Glob
+// repeated later in the session, above hints.glob_dedup_min_matches). Mirrors _grepQueries.
+let _globQueries = new Map<string, number>()
+
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null
 // Command hashes (same key space as _bashOutputs, i.e. the stripped-command hash used by recordBashOutput/getBashOutputId) for which a store call overwrote an already-present entry this session -- i.e. an older cached run under this exact key was beaten by a newer one. Used only by hooks_compact.ts's SAFE_TO_DISCARD manifest section to identify raw transcript copies that are provably superseded by the surviving cached id.
@@ -373,6 +377,16 @@ export function getGrepMatchCount(signature: string): number | null {
   return _grepQueries.get(signature) ?? null
 }
 
+/** Record a Glob query's match count: `signature` -> matchCount, for dedup-hint recall. */
+export function recordGlobQuery(signature: string, matchCount: number): void {
+  _globQueries.set(signature, matchCount)
+}
+
+/** Return the previously recorded match count for `signature`, or null if never seen this session. */
+export function getGlobMatchCount(signature: string): number | null {
+  return _globQueries.get(signature) ?? null
+}
+
 /** Record the most recent "Tab Context:" block text seen this session, for hooks_browser_image.ts's dedup. */
 export function setLastTabContext(text: string): void {
   _lastTabContext = text
@@ -492,6 +506,7 @@ export interface SerializedSession {
   cliReads?: string[]
   pendingLargeFileHints?: Array<[string, number]>
   grepQueries?: Array<[string, number]>
+  globQueries?: Array<[string, number]>
   lastTabContext?: string
   /**
    * Unix time in *seconds* at which this session's on-disk cache was first
@@ -515,6 +530,7 @@ export function exportSessionState(): SerializedSession {
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
     grepQueries: Array.from(_grepQueries.entries()),
+    globQueries: Array.from(_globQueries.entries()),
     ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
   }
 }
@@ -543,6 +559,7 @@ export function importSessionState(s: SerializedSession): void {
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
   _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
   _grepQueries = new Map(s.grepQueries ?? [])
+  _globQueries = new Map(s.globQueries ?? [])
   _lastTabContext = s.lastTabContext ?? null
 }
 
@@ -559,6 +576,7 @@ registerReset(() => {
   _pendingLargeFileHints = new Map()
   _pendingLargeFileHintsAtLoad = new Map()
   _grepQueries = new Map()
+  _globQueries = new Map()
   _lastTabContext = null
   _sessionId = null
 })
