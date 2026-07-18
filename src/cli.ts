@@ -51,6 +51,7 @@ import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
+import { installGrok, uninstallGrok } from './bridges/grok_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -317,6 +318,7 @@ async function cmdInstall(opts: {
   hermes?: boolean
   openclaw?: boolean
   copilot?: boolean
+  grok?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -397,6 +399,16 @@ async function cmdInstall(opts: {
     }
   }
 
+  // --grok is additive, exactly like --codex above.
+  if (opts.grok === true) {
+    const grokResult = installGrok()
+    if (grokResult.alreadyInstalled) {
+      out(`Grok CLI integration already installed → ${grokResult.configPath}`)
+    } else {
+      out(`Installed token-goat Grok CLI integration → ${grokResult.configPath}, ${grokResult.hookScriptPath}`)
+    }
+  }
+
   // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
@@ -451,6 +463,7 @@ function cmdUninstall(opts: {
   hermes?: boolean
   openclaw?: boolean
   copilot?: boolean
+  grok?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -478,6 +491,7 @@ function cmdUninstall(opts: {
     { flag: opts.openclaw === true, run: uninstallOpenclaw, label: 'OpenClaw integration' },
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
+    { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -2036,6 +2050,7 @@ export function buildProgram(): Command {
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
     .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--copilot', 'also register a Copilot CLI hook config (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js)')
+    .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -2050,6 +2065,7 @@ export function buildProgram(): Command {
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
     .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
     .option('--copilot', 'also remove the Copilot CLI hook config and shim script')
+    .option('--grok', 'also remove the Grok CLI hook config and shim script')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
