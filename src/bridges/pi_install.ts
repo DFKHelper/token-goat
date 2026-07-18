@@ -46,7 +46,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync } from '../util.js'
+import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
 import { PI_EXTENSION_SCRIPT } from './pi.js'
 
 /** Options shared by {@link installPi}, {@link uninstallPi}, and {@link isPiInstalled}. */
@@ -106,31 +106,8 @@ export interface PiInstallResult {
  */
 export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
   const extensionPath = piExtensionPath(opts)
-
-  let existing: string | undefined
-  try {
-    existing = fs.readFileSync(extensionPath, 'utf8')
-  } catch {
-    existing = undefined
-  }
-
-  // process.argv[1] is the absolute path to whichever token-goat entry point
-  // launched this install run. Written unconditionally (even when the
-  // extension itself is already up to date) so re-running install after
-  // moving/upgrading the token-goat install refreshes a stale sidecar too.
-  const entryPath = process.argv[1]
-  if (entryPath) {
-    ensureDirSync(path.dirname(extensionPath))
-    atomicWriteText(piEntrySidecarPath(opts), JSON.stringify({ entryPath }))
-  }
-
-  if (existing === PI_EXTENSION_SCRIPT) {
-    return { extensionPath, alreadyInstalled: true }
-  }
-
-  ensureDirSync(path.dirname(extensionPath))
-  atomicWriteText(extensionPath, PI_EXTENSION_SCRIPT)
-  return { extensionPath, alreadyInstalled: false }
+  const { alreadyInstalled } = installSingleFilePlugin(extensionPath, piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT)
+  return { extensionPath, alreadyInstalled }
 }
 
 /**
@@ -139,18 +116,7 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
  * write occurs in that case).
  */
 function uninstallPiScope(opts: PiScopeOptions): boolean {
-  const extensionPath = piExtensionPath(opts)
-  try {
-    fs.unlinkSync(piEntrySidecarPath(opts))
-  } catch {
-    // no sidecar to remove -- fine, e.g. an install predating this fix
-  }
-  try {
-    fs.unlinkSync(extensionPath)
-    return true
-  } catch {
-    return false
-  }
+  return uninstallSingleFilePlugin(piExtensionPath(opts), piEntrySidecarPath(opts))
 }
 
 // Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain

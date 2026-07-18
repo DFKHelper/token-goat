@@ -47,7 +47,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, ensureDirSync } from '../util.js'
+import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
 import { OPENCODE_PLUGIN_SCRIPT } from './opencode.js'
 
 /** Resolves opencode's global plugin directory, matching `Global.Path.config` (see module doc comment). */
@@ -88,46 +88,12 @@ export interface OpencodeInstallResult {
 
 export function installOpencode(): OpencodeInstallResult {
   const pluginPath = opencodePluginPath()
-
-  let existing: string | undefined
-  try {
-    existing = fs.readFileSync(pluginPath, 'utf8')
-  } catch {
-    existing = undefined
-  }
-
-  // process.argv[1] is the absolute path to whichever token-goat entry point
-  // launched this install run. Written unconditionally (even when the plugin
-  // itself is already up to date) so re-running install after
-  // moving/upgrading the token-goat install refreshes a stale sidecar too.
-  const entryPath = process.argv[1]
-  if (entryPath) {
-    ensureDirSync(path.dirname(pluginPath))
-    atomicWriteText(opencodeEntrySidecarPath(), JSON.stringify({ entryPath }))
-  }
-
-  if (existing === OPENCODE_PLUGIN_SCRIPT) {
-    return { pluginPath, alreadyInstalled: true }
-  }
-
-  ensureDirSync(path.dirname(pluginPath))
-  atomicWriteText(pluginPath, OPENCODE_PLUGIN_SCRIPT)
-  return { pluginPath, alreadyInstalled: false }
+  const { alreadyInstalled } = installSingleFilePlugin(pluginPath, opencodeEntrySidecarPath(), OPENCODE_PLUGIN_SCRIPT)
+  return { pluginPath, alreadyInstalled }
 }
 
 export function uninstallOpencode(): boolean {
-  const pluginPath = opencodePluginPath()
-  try {
-    fs.unlinkSync(opencodeEntrySidecarPath())
-  } catch {
-    // nothing to remove
-  }
-  try {
-    fs.unlinkSync(pluginPath)
-    return true
-  } catch {
-    return false
-  }
+  return uninstallSingleFilePlugin(opencodePluginPath(), opencodeEntrySidecarPath())
 }
 
 export function isOpencodeInstalled(): boolean {
