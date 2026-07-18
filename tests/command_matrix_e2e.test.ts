@@ -387,6 +387,30 @@ const cases: Record<string, () => void | Promise<void>> = {
     const parsed = JSON.parse(rFiltered.stdout) as { files: Array<{ filePath: string }> }
     expect(parsed.files.map((f) => f.filePath)).toEqual(['src/partial.ts'])
   },
+  conflicts: () => {
+    const dir = mkIsolated('tg-matrix-conflicts-')
+    const dirtyPath = path.join(dir, 'dirty.ts')
+    const cleanPath = path.join(dir, 'clean.ts')
+    fs.writeFileSync(
+      dirtyPath,
+      'before\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> feature-branch\nafter\n',
+    )
+    fs.writeFileSync(cleanPath, 'no markers here\n')
+
+    const r = run(['conflicts', dirtyPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('ours line')
+    expect(r.stdout).toContain('theirs line')
+
+    const rSummary = run(['conflicts', dirtyPath, '--summary'])
+    expect(rSummary.status, rSummary.stderr).toBe(0)
+    expect(rSummary.stdout).not.toContain('ours line')
+
+    const rDir = run(['conflicts', dir, '--json'])
+    expect(rDir.status, rDir.stderr).toBe(0)
+    const parsed = JSON.parse(rDir.stdout) as Array<{ filePath: string }>
+    expect(parsed.map((f) => f.filePath)).toEqual([dirtyPath])
+  },
   'pdf-extract': () => {
     const dir = mkIsolated('tg-matrix-pdf-')
     const pdfPath = path.join(dir, 'doc.pdf')

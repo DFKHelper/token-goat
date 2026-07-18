@@ -88,6 +88,7 @@ import {
   runSqliteSchema,
   runSqliteQuery,
   runCoverageReportGaps,
+  runConflicts,
 
   runPdfExtractText,
   runPdfMeta,
@@ -1039,6 +1040,14 @@ function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boole
     file,
     ...(opts.file !== undefined ? { fileFilter: opts.file } : {}),
     ...(opts.json === true ? { json: true } : {}),
+  })
+}
+
+function cmdConflicts(targetPath: string | undefined, opts: { json?: boolean; summary?: boolean }) {
+  process.exitCode = runConflicts({
+    ...(targetPath !== undefined ? { path: targetPath } : {}),
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.summary === true ? { summary: true } : {}),
   })
 }
 
@@ -3073,6 +3082,17 @@ export function buildProgram(): Command {
     .option('--file <path>', "narrow to one source file's gaps (matched exact or as a path suffix against the report's own file keys)")
     .option('--json', 'emit the gap report as JSON instead of text')
     .action(guard(cmdCoverageReportGaps))
+
+  program
+    .command('conflicts [path]')
+    .description(
+      'unresolved git merge-conflict markers (<<<<<<< / ||||||| / ======= / >>>>>>>, two-way or diff3 three-way) instead of a raw Read or grep\n\n' +
+        'path may be a single file, a directory (scanned recursively), or omitted entirely (scans the whole project from the current directory); ' +
+        'only files with at least one conflict region or malformed-marker warning are reported',
+    )
+    .option('--summary', 'line ranges and ours/base/theirs labels only, omitting the conflict content')
+    .option('--json', 'emit the results as JSON instead of text')
+    .action(guard(cmdConflicts))
 
   program
     .command('screenshot <url> <destPath>')
