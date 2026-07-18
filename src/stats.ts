@@ -72,6 +72,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   image_shrink: SOURCE_IMAGE,
   image_shrink_cache_hit: SOURCE_IMAGE,
   image_shrink_skipped: SOURCE_IMAGE,
+  image_ocr: SOURCE_IMAGE,
   webfetch_image: SOURCE_IMAGE,
   gdrive_image: SOURCE_IMAGE,
   session_hint: SOURCE_HINT,
