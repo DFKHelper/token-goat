@@ -1368,6 +1368,33 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['trace'], { input: tb, cwd: repo })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // Mixed CI log flexing the built bundle's Node/Rust/JVM/.NET grammar support (not just
+    // Python), one combined case per the "or one combined multi-grammar case" allowance.
+    const mixed = [
+      'Error: boom',
+      '    at helper (main.js:12:34)',
+      '    at Object.<anonymous> (node:internal/modules/cjs/loader:1105:14)',
+      '',
+      "thread 'main' panicked at src/main.rs:10:5:",
+      'called `Option::unwrap()` on a `None` value',
+      'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace',
+      '',
+      'Exception in thread "main" java.lang.NullPointerException: boom',
+      '\tat com.example.MyClass.doWork(MyClass.java:42)',
+      '',
+      'Unhandled exception. System.NullReferenceException: boom',
+      '   at MyApp.Program.DoWork() in Program.cs:line 42',
+    ].join('\n')
+    const rj = run(['trace', '--json'], { input: mixed, cwd: repo })
+    expect(rj.status, rj.stderr).toBe(0)
+    expect(rj.stdout + rj.stderr).not.toMatch(/unknown command|is not a function/)
+    const parsed = JSON.parse(rj.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(4)
+    expect(parsed.tracebacks.some((t) => t.frames.some((f) => f.file === 'main.js'))).toBe(true)
+    expect(parsed.tracebacks.some((t) => t.frames.some((f) => f.file === 'src/main.rs'))).toBe(true)
+    expect(parsed.tracebacks.some((t) => t.frames.some((f) => f.file === 'MyClass.java'))).toBe(true)
+    expect(parsed.tracebacks.some((t) => t.frames.some((f) => f.file === 'Program.cs'))).toBe(true)
   },
   logfold: () => {
     const input = 'added 5 packages in 1s\n[12:00:01] hit\n[12:00:02] hit\n'

@@ -197,51 +197,292 @@ interface TraceBlock {
   exception: string
 }
 
+/**
+ * Result of attempting to parse one grammar's block starting at `nextIndex`'s line.
+ * `block` is `null` when the grammar's marker matched but nothing should be emitted (Python's
+ * zero-frame block immediately superseded by another "Traceback (...)" header) -- the caller
+ * still must resume scanning from `nextIndex`, not push anything, and not re-consume the line
+ * that ended the (empty) block.
+ */
+interface TraceParseResult {
+  block: TraceBlock | null
+  nextIndex: number
+}
+
+/**
+ * Parses one Python `Traceback (most recent call last):` block starting at `lines[start]`.
+ * Returns `null` when `lines[start]` isn't a Python traceback header at all (so the dispatcher
+ * can fall through to the other grammars) -- this is the pre-existing Python-only parser,
+ * extracted unchanged from the old single-grammar `parseTracebacks` body.
+ */
+function parsePythonBlock(lines: string[], start: number): TraceParseResult | null {
+  if (!/^Traceback \(most recent call last\):/.test(lines[start] ?? '')) return null
+  let i = start + 1
+  const frames: TraceFrame[] = []
+  let block: TraceBlock | null = null
+  while (i < lines.length) {
+    const fl = lines[i] ?? ''
+    const fm = /^\s{2}File "([^"]+)", line (\d+), in (\S+)/.exec(fl)
+    if (fm !== null) {
+      i++
+      const peek = lines[i]?.trim()
+      // A frame with no printed source line is immediately followed by the next frame's
+      // "File ..." header (or the block's Traceback marker) rather than a context line --
+      // in that case leave this frame's context empty instead of consuming/borrowing the
+      // next frame's header text.
+      const hasContext = peek !== undefined && !peek.startsWith('File ') && !peek.startsWith('Traceback')
+      if (hasContext) i++
+      frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: hasContext ? (peek ?? '') : '' })
+      continue
+    }
+    // A "Traceback (most recent call last):" line reached while scanning for this block's
+    // exception text marks the start of the NEXT traceback, not this block's exception --
+    // hand control back to the dispatcher (without consuming the line) instead of swallowing
+    // it as exception text, or a zero-frame block adjacent to a real traceback silently
+    // discards the real one.
+    if (/^Traceback \(most recent call last\):/.test(fl)) {
+      break
+    }
+    if (!/^\s/.test(fl) && fl.trim() !== '') {
+      block = { frames, exception: fl.trim() }
+      i++
+      break
+    }
+    i++
+  }
+  // Scoped to THIS block, not the global blocks array: a later traceback whose frames run to
+  // EOF with no exception line must still be flushed even though an earlier block already pushed.
+  if (frames.length > 0 && block === null) {
+    block = { frames, exception: '' }
+  }
+  return { block, nextIndex: i }
+}
+
+const NODE_FRAME_WITH_FUNC_RE = /^\s+at\s+(.+?)\s+\(([^)]+)\)\s*$/
+const NODE_FRAME_ANON_RE = /^\s+at\s+([^\s()][^()]*)\s*$/
+const NODE_LOC_RE = /^(.*):(\d+):(\d+)$/
+
+/**
+ * Parses one Node/V8 stack-trace frame line, either the named form
+ * `at functionName (/path/to/file.js:12:34)` or the anonymous form
+ * `at /path/to/file.js:12:34` (no function name, no parens). `col` is discarded --
+ * TraceFrame has no column field, matching Python's file+line-only shape.
+ */
+function parseNodeFrameLine(line: string): TraceFrame | null {
+  const withFunc = NODE_FRAME_WITH_FUNC_RE.exec(line)
+  if (withFunc !== null) {
+    const loc = NODE_LOC_RE.exec(withFunc[2] ?? '')
+    if (loc === null) return null
+    return { file: loc[1] ?? '', lineNo: Number.parseInt(loc[2] ?? '0', 10), func: withFunc[1] ?? '' }
+  }
+  const anon = NODE_FRAME_ANON_RE.exec(line)
+  if (anon !== null) {
+    const loc = NODE_LOC_RE.exec((anon[1] ?? '').trim())
+    if (loc === null) return null
+    return { file: loc[1] ?? '', lineNo: Number.parseInt(loc[2] ?? '0', 10), func: '' }
+  }
+  return null
+}
+
+/**
+ * Parses one Node/V8 stack trace starting at `lines[start]` (the `<ErrorName>: <message>` or
+ * bare-message header line). Detection requires the very next line to already match the strict
+ * `at <file>:<line>:<col>` / `at <func> (<file>:<line>:<col>)` frame shape -- a bare line
+ * starting with whitespace + "at " that DOESN'T carry that exact file:line:col suffix (e.g. a
+ * JVM or .NET frame, which only ever have one trailing line number, not two) is deliberately
+ * rejected here so grammar detection stays unambiguous per the codebase's per-block-marker
+ * dispatch model, rather than misclassifying another language's frame as Node's.
+ */
+function parseNodeBlock(lines: string[], start: number): TraceParseResult | null {
+  const header = (lines[start] ?? '').trim()
+  if (header === '') return null
+  const firstFrame = parseNodeFrameLine(lines[start + 1] ?? '')
+  if (firstFrame === null) return null
+  const frames: TraceFrame[] = [firstFrame]
+  let i = start + 2
+  while (i < lines.length) {
+    const f = parseNodeFrameLine(lines[i] ?? '')
+    if (f === null) break
+    frames.push(f)
+    i++
+  }
+  return { block: { frames, exception: header }, nextIndex: i }
+}
+
+const RUST_PANIC_HEADER_RE = /^thread '[^']*' panicked at (.+):(\d+):(\d+):\s*$/
+const RUST_BACKTRACE_NOTE_RE = /^note: run with `RUST_BACKTRACE=1`/
+const RUST_BACKTRACE_NUM_RE = /^\s*\d+:\s+(.+)$/
+const RUST_BACKTRACE_AT_RE = /^\s+at\s+(.+):(\d+):(\d+)\s*$/
+
+/**
+ * Parses one Rust panic starting at `lines[start]`'s `thread '<name>' panicked at <file>:<line>:
+ * <col>:` header (the modern, current-stable panic format). That header line alone gives the
+ * panic site's frame directly. If a `stack backtrace:` section follows (only present when
+ * `RUST_BACKTRACE=1` was set), its parsed frames are used instead -- richer/more accurate than
+ * the single panic-site frame -- mirroring how a real Rust backtrace supersedes the bare panic
+ * line for debugging. rustc-internal (`/rustc/...`) and Cargo-registry dependency frames aren't
+ * filtered here; that's `isProjectFrame`'s job, matching how Python's stdlib/site-packages
+ * frames are parsed as ordinary frames and filtered downstream rather than dropped at parse time.
+ */
+function parseRustBlock(lines: string[], start: number): TraceParseResult | null {
+  const header = lines[start] ?? ''
+  const hm = RUST_PANIC_HEADER_RE.exec(header)
+  if (hm === null) return null
+  const panicFrame: TraceFrame = { file: hm[1] ?? '', lineNo: Number.parseInt(hm[2] ?? '0', 10), func: '' }
+
+  let i = start + 1
+  const msgLines: string[] = []
+  while (i < lines.length) {
+    const l = lines[i] ?? ''
+    if (l.trim() === '') { i++; break }
+    if (RUST_BACKTRACE_NOTE_RE.test(l)) { i++; break }
+    if (l.trim() === 'stack backtrace:') break
+    msgLines.push(l.trim())
+    i++
+  }
+  const exception = msgLines.join(' ')
+
+  if ((lines[i] ?? '').trim() === 'stack backtrace:') {
+    i++
+    const frames: TraceFrame[] = []
+    while (i < lines.length) {
+      const numMatch = RUST_BACKTRACE_NUM_RE.exec(lines[i] ?? '')
+      if (numMatch === null) break
+      const atMatch = RUST_BACKTRACE_AT_RE.exec(lines[i + 1] ?? '')
+      if (atMatch === null) break
+      frames.push({ file: atMatch[1] ?? '', lineNo: Number.parseInt(atMatch[2] ?? '0', 10), func: (numMatch[1] ?? '').trim() })
+      i += 2
+    }
+    if (frames.length > 0) {
+      return { block: { frames, exception }, nextIndex: i }
+    }
+  }
+  return { block: { frames: [panicFrame], exception }, nextIndex: i }
+}
+
+const JVM_HEADER_RE = /^(?:Exception in thread "[^"]*" )?(?:Caused by: )?((?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*): (.*)$/
+const JVM_FRAME_RE = /^\s+at\s+(\S+)\(([^)]*)\)\s*$/
+const JVM_MORE_RE = /^\s*\.\.\.\s+\d+\s+more\s*$/
+
+/**
+ * Parses one JVM frame line `at <fully.qualified.Method>(<File>.java:<line>)` (also `.kt`,
+ * `.scala`, or the no-source-info forms `Native Method`/`Unknown Source`). For the no-source
+ * forms `file` becomes the literal parenthesized text and `lineNo` is 0 -- there's nothing to
+ * resolve a symbol from, matching the same "no symbol covers this" fallthrough `resolveFrameSymbol`
+ * already handles for any unresolvable frame.
+ */
+function parseJvmFrameLine(line: string): TraceFrame | null {
+  const m = JVM_FRAME_RE.exec(line)
+  if (m === null) return null
+  const func = m[1] ?? ''
+  const inner = m[2] ?? ''
+  if (inner === 'Native Method' || inner === 'Unknown Source') {
+    return { file: inner, lineNo: 0, func }
+  }
+  const lm = /^(.+):(\d+)$/.exec(inner)
+  if (lm === null) return null
+  return { file: lm[1] ?? '', lineNo: Number.parseInt(lm[2] ?? '0', 10), func }
+}
+
+/**
+ * Parses one JVM (Java/Kotlin/Scala) exception starting at `lines[start]`, which may be the
+ * top-level `Exception in thread "<thread>" <FQClass>: <message>` form, a bare
+ * `<FQClass>: <message>` form, or a chained `Caused by: <FQClass>: <message>` form -- all three
+ * share this parser since a `Caused by:` section is just the same grammar starting a new
+ * `TraceBlock`, exactly like a second Python `Traceback (...)` block in one input. A trailing
+ * `\t... N more` line means further frames are elided (shared with the enclosing exception);
+ * parsing simply stops there rather than trying to recover them.
+ */
+function parseJvmBlock(lines: string[], start: number): TraceParseResult | null {
+  const header = lines[start] ?? ''
+  if (JVM_HEADER_RE.exec(header) === null) return null
+  const firstFrame = parseJvmFrameLine(lines[start + 1] ?? '')
+  if (firstFrame === null) return null
+  const frames: TraceFrame[] = [firstFrame]
+  let i = start + 2
+  while (i < lines.length) {
+    const l = lines[i] ?? ''
+    if (JVM_MORE_RE.test(l)) { i++; break }
+    const f = parseJvmFrameLine(l)
+    if (f === null) break
+    frames.push(f)
+    i++
+  }
+  return { block: { frames, exception: header.trim() }, nextIndex: i }
+}
+
+const DOTNET_HEADER_RE = /^(?:Unhandled exception\. )?((?:[A-Za-z_][\w]*\.)+[A-Za-z_][\w]*): (.*)$/
+const DOTNET_FRAME_WITH_LOC_RE = /^\s+at\s+(.+?)\s+in\s+(.+):line\s+(\d+)\s*$/
+const DOTNET_FRAME_NO_LOC_RE = /^\s+at\s+(.+)$/
+
+/**
+ * Parses one .NET frame line `at <Namespace.Class.Method(args)> in <file>:line <N>`, or, for
+ * external/framework frames with no source mapping, the bare `at <Namespace.Class.Method(args)>`
+ * form (file becomes empty, lineNo becomes 0). The no-location form is deliberately permissive
+ * (matches anything after "at ") -- it's only ever reached once a block has already been
+ * confirmed .NET-shaped by its header plus a location-bearing first frame, so it can't
+ * misclassify another grammar's frame as .NET on its own.
+ */
+function parseDotnetFrameLine(line: string): TraceFrame | null {
+  const withLoc = DOTNET_FRAME_WITH_LOC_RE.exec(line)
+  if (withLoc !== null) {
+    return { file: withLoc[2] ?? '', lineNo: Number.parseInt(withLoc[3] ?? '0', 10), func: withLoc[1] ?? '' }
+  }
+  const noLoc = DOTNET_FRAME_NO_LOC_RE.exec(line)
+  if (noLoc !== null) {
+    return { file: '', lineNo: 0, func: (noLoc[1] ?? '').trim() }
+  }
+  return null
+}
+
+/**
+ * Parses one .NET exception starting at `lines[start]`, either the top-level
+ * `Unhandled exception. <FQClass>: <message>` form or a bare `<FQClass>: <message>` form (a
+ * caught-and-logged exception). Only the single top-level exception + its frames is required;
+ * "Inner exception" chaining (`---> System.XException: ...` / `--- End of inner exception stack
+ * trace ---`) isn't parsed into its own chained block here. The first frame must carry a
+ * `in <file>:line <N>` location to confirm this is really .NET's grammar (see
+ * `parseDotnetFrameLine`'s doc comment for why the no-location form alone isn't a safe detector).
+ */
+function parseDotnetBlock(lines: string[], start: number): TraceParseResult | null {
+  const header = lines[start] ?? ''
+  if (DOTNET_HEADER_RE.exec(header) === null) return null
+  const firstFrame = DOTNET_FRAME_WITH_LOC_RE.exec(lines[start + 1] ?? '') !== null ? parseDotnetFrameLine(lines[start + 1] ?? '') : null
+  if (firstFrame === null) return null
+  const frames: TraceFrame[] = [firstFrame]
+  let i = start + 2
+  while (i < lines.length) {
+    const f = parseDotnetFrameLine(lines[i] ?? '')
+    if (f === null) break
+    frames.push(f)
+    i++
+  }
+  return { block: { frames, exception: header.trim() }, nextIndex: i }
+}
+
+/**
+ * Dispatches each block-start marker to its grammar-specific parser (Python, Rust, Node, JVM,
+ * .NET, in that order) and keeps scanning the rest of the input the same way, producing the
+ * same `TraceBlock[]` shape regardless of which grammar(s) a given input mixes (e.g. a CI log
+ * containing both a Python traceback and a Node stack trace). Order matters for disambiguation:
+ * Node's frame shape (two trailing numbers, `file:line:col`) is stricter than JVM's (one trailing
+ * number) which is in turn stricter than .NET's permissive no-location fallback, so trying them
+ * loosest-last prevents a stricter grammar's frames from being swallowed by a looser one.
+ */
 function parseTracebacks(text: string): TraceBlock[] {
   const lines = splitLines(text)
   const blocks: TraceBlock[] = []
   let i = 0
   while (i < lines.length) {
-    if (!/^Traceback \(most recent call last\):/.test(lines[i] ?? '')) { i++; continue }
-    i++
-    const frames: TraceFrame[] = []
-    let blockPushed = false
-    while (i < lines.length) {
-      const fl = lines[i] ?? ''
-      const fm = /^\s{2}File "([^"]+)", line (\d+), in (\S+)/.exec(fl)
-      if (fm !== null) {
-        i++
-        const peek = lines[i]?.trim()
-        // A frame with no printed source line is immediately followed by the next frame's
-        // "File ..." header (or the block's Traceback marker) rather than a context line --
-        // in that case leave this frame's context empty instead of consuming/borrowing the
-        // next frame's header text.
-        const hasContext = peek !== undefined && !peek.startsWith('File ') && !peek.startsWith('Traceback')
-        if (hasContext) i++
-        frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: hasContext ? (peek ?? '') : '' })
-        continue
-      }
-      // A "Traceback (most recent call last):" line reached while scanning for this block's
-      // exception text marks the start of the NEXT traceback, not this block's exception --
-      // hand control back to the outer loop (without consuming the line) instead of swallowing
-      // it as exception text, or a zero-frame block adjacent to a real traceback silently
-      // discards the real one.
-      if (/^Traceback \(most recent call last\):/.test(fl)) {
-        break
-      }
-      if (!/^\s/.test(fl) && fl.trim() !== '') {
-        blocks.push({ frames, exception: fl.trim() })
-        blockPushed = true
-        i++
-        break
-      }
-      i++
-    }
-    // Scoped to THIS block, not the global blocks array: a later traceback whose frames run to
-    // EOF with no exception line must still be flushed even though an earlier block already pushed.
-    if (frames.length > 0 && !blockPushed) {
-      blocks.push({ frames, exception: '' })
-    }
+    const result =
+      parsePythonBlock(lines, i) ??
+      parseRustBlock(lines, i) ??
+      parseNodeBlock(lines, i) ??
+      parseJvmBlock(lines, i) ??
+      parseDotnetBlock(lines, i)
+    if (result === null) { i++; continue }
+    if (result.block !== null) blocks.push(result.block)
+    i = result.nextIndex
   }
   return blocks
 }
@@ -262,6 +503,14 @@ function isPathUnderRoot(normalPath: string, normalRoot: string): boolean {
 }
 
 function isProjectFrame(framePath: string, cwd: string): boolean {
+  // Node's own internal-module "protocol" paths (node:internal/modules/cjs/loader) have no real
+  // file on disk and no leading path separator, so canonicalize()/path.resolve() treat the
+  // "node:internal/..." text as a plain relative path and join it under cwd -- landing it
+  // (wrongly) inside the project root before the below root-boundary check even runs. Reject it
+  // up front, on the raw framePath, before canonicalizing -- excluded the same way Python's
+  // stdlib/site-packages frames are excluded below, just earlier because this one can't survive
+  // the same ordering.
+  if (framePath.startsWith('node:')) return false
   // Route through canonicalize (project.ts) so a WSL/MSYS-style frame path (e.g.
   // /mnt/c/Projects/token-goat/...) is recognized as the same file as its native
   // Windows drive-letter form, instead of being compared as a raw resolved string.
@@ -274,6 +523,12 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
     return true
   }
   if (framePath.includes('site-packages') || framePath.includes('lib/python')) return false
+  // Rust panic backtraces route through the toolchain's own vendored std/core sources
+  // (/rustc/<hash>/library/...) and third-party crates fetched into the local Cargo registry
+  // cache (~/.cargo/registry/... or its Windows equivalent) -- neither is part of the project,
+  // so exclude both the same way Python's site-packages/stdlib frames are excluded above.
+  if (framePath.includes('/rustc/')) return false
+  if (framePath.includes('.cargo/registry') || framePath.includes('.cargo\\registry')) return false
   if (/^<.+>$/.test(framePath)) return false
   if (!path.isAbsolute(framePath) && !framePath.startsWith('..')) return true
   return false
