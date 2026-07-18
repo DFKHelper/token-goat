@@ -23,12 +23,7 @@ export function* eachUnfencedLine(lines: readonly string[]): Generator<[number, 
         // An opening fence may carry an info string (e.g. ```js).
         fence = { ch, len: run.length }
       } else if (ch === fence.ch && run.length >= fence.len && rest.trim() === '') {
-        // Per CommonMark, a fence only closes on a run of the same character
-        // with length >= the opening run's length AND no trailing info string.
-        // A shorter same-char run, a mismatched char, or a marker-looking line
-        // with trailing content (e.g. a ```js line immediately following an
-        // already-open fence) is literal fenced content, not a closing
-        // delimiter, and must not desync the open/closed state.
+        // Per CommonMark, a fence only closes on a run of the same character with length >= the opening run's length AND no trailing info string. A shorter same-char run, a mismatched char, or a marker-looking line with trailing content (e.g. a ```js line immediately following an already-open fence) is literal fenced content, not a closing delimiter, and must not desync the open/closed state.
         fence = null
       }
       continue

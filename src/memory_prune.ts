@@ -25,9 +25,7 @@ import { atomicWriteText, foldPath } from './util.js'
 // Entry regex: matches markdown link entries in MEMORY.md.
 const ENTRY_RE = /^\s*-\s*\[(?<title>[^\]]+)\]\((?<target>[^)]+?\.md)\)/
 
-// A target with a URL scheme (https://, mailto:, etc.) is never a local
-// sibling file -- it can't be "dead" in the local-filesystem sense, so it
-// must always be treated as valid rather than fs.existsSync-checked.
+// A target with a `scheme://` URL prefix (https://, etc.) is never a local sibling file -- it can't be "dead" in the local-filesystem sense, so it must always be treated as valid rather than fs.existsSync-checked. Requires `://`, so a scheme without it (e.g. mailto:) wouldn't match here, but ENTRY_RE above only ever captures targets ending in `.md`, so a non-`//` scheme link is never captured as an entry in the first place.
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 
 /**

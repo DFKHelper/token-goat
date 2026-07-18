@@ -65,14 +65,7 @@ async function loadWorkbook(filePath: string): Promise<ExcelWorkbook> {
   try {
     await wb.xlsx.readFile(filePath)
   } catch (err) {
-    // ExcelJS's own "File not found: <path>" message (thrown before it ever touches the
-    // underlying jszip parser) is already clean and useful -- pass it through unchanged.
-    // Anything else here is jszip's raw internal parse error surfacing through ExcelJS for a
-    // non-.xlsx or corrupt file (e.g. "Can't find end of central directory : is this a zip
-    // file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html"),
-    // which leaks library internals and a docs URL straight to the CLI user instead of a clear
-    // message. Shared by every xlsx-* command (listSheets, headSheet, rangeSheet, querySheet
-    // all call loadWorkbook), so this one fix covers all four.
+    // ExcelJS's own "File not found: <path>" message (thrown before it ever touches the underlying jszip parser) is already clean and useful -- pass it through unchanged. Anything else here is jszip's raw internal parse error surfacing through ExcelJS for a non-.xlsx or corrupt file (e.g. "Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html"), which leaks library internals and a docs URL straight to the CLI user instead of a clear message. Shared by every xlsx-* command (listSheets, headSheet, rangeSheet, querySheet all call loadWorkbook), so this one fix covers all four.
     const msg = extractErrorMessage(err)
     if (msg.startsWith('File not found:')) throw err
     throw new Error(`not a valid .xlsx file: ${filePath}`, { cause: err })
@@ -119,11 +112,7 @@ function decodeRange(ref: string): { s: { r: number; c: number }; e: { r: number
   const endRef: string = parts[1] !== undefined && parts[1] !== '' ? parts[1] : startRef
   const start = decodeCellRef(startRef)
   const end = decodeCellRef(endRef)
-  // A reversed range (e.g. B5:A1, where the start corner is below/right of the end corner)
-  // must not silently produce zero rows: the r <= e.r / c <= e.c loops in rangeSheet would
-  // never execute, returning an empty result that looks identical to "this range covers no
-  // data". Excel itself treats a reversed selection as equivalent to its normalized form, so
-  // normalize per axis here rather than error -- callers get the data they asked for either way.
+  // A reversed range (e.g. B5:A1, where the start corner is below/right of the end corner) must not silently produce zero rows: the r <= e.r / c <= e.c loops in rangeSheet would never execute, returning an empty result that looks identical to "this range covers no data". Excel itself treats a reversed selection as equivalent to its normalized form, so normalize per axis here rather than error -- callers get the data they asked for either way.
   return {
     s: { r: Math.min(start.r, end.r), c: Math.min(start.c, end.c) },
     e: { r: Math.max(start.r, end.r), c: Math.max(start.c, end.c) },
@@ -134,13 +123,7 @@ function encodeCell(cell: { r: number; c: number }): string {
   return `${indexToColLetters(cell.c)}${cell.r}`
 }
 
-// ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell
-// types) its own `cell.text` getter does NOT apply the cell's number format for dates --
-// it just calls `.toString()` on the Date internally, so relying on `cell.text` here would
-// still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000
-// (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a
-// clean ISO date when the value carries no time-of-day component (the common case for a
-// date-formatted cell), a full ISO datetime otherwise.
+// ExcelJS returns a native JS `Date` for date-formatted cells, and (unlike other cell types) its own `cell.text` getter does NOT apply the cell's number format for dates -- it just calls `.toString()` on the Date internally, so relying on `cell.text` here would still emit the same full locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT+0000 (Coordinated Universal Time)") this fix exists to avoid. Format directly instead: a clean ISO date when the value carries no time-of-day component (the common case for a date-formatted cell), a full ISO datetime otherwise.
 function formatDateCell(d: Date): string {
   const isDateOnly =
     d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
@@ -154,10 +137,7 @@ function cellText(cell: ExcelCell): string {
   if (typeof v === 'object' && v !== null) {
     const obj = v as { result?: unknown; text?: unknown; richText?: { text: string }[]; error?: unknown }
     if (Array.isArray(obj.richText)) return obj.richText.map((t) => t.text).join('')
-    // A plain (non-formula) error cell, e.g. #N/A entered directly, is shaped
-    // `{ error: '#N/A' }` with no richText/result/text key. Return the error text directly
-    // instead of falling through to the generic text/String(value) path below, which would
-    // stringify the object itself.
+    // A plain (non-formula) error cell, e.g. #N/A entered directly, is shaped `{ error: '#N/A' }` with no richText/result/text key. Return the error text directly instead of falling through to the generic text/String(value) path below, which would stringify the object itself.
     if (typeof obj.error === 'string') return obj.error
     if (obj.result !== undefined) {
       if (obj.result instanceof Date) return formatDateCell(obj.result)
@@ -168,9 +148,7 @@ function cellText(cell: ExcelCell): string {
     }
     if (obj.text !== undefined) return String(obj.text)
   }
-  // Plain (non-rich, non-formula, non-Date) values: prefer ExcelJS's pre-formatted display
-  // text (`cell.text`) over stringifying the raw value, e.g. so a number's display formatting
-  // (thousands separators, currency symbols) survives.
+  // Plain (non-rich, non-formula, non-Date) values: prefer ExcelJS's pre-formatted display text (`cell.text`) over stringifying the raw value, e.g. so a number's display formatting (thousands separators, currency symbols) survives.
   return cell.text !== '' ? cell.text : String(cell.value)
 }
 
@@ -219,9 +197,7 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
   const ws = requireSheet(wb, sheetName)
   const rowCount = ws.rowCount || 0
   const aoa: string[][] = []
-  // Track the sheet-wide max column inline during this row scan instead of calling
-  // usedRange(ws) afterward, which would redo an identical full eachCell pass over every
-  // row just to recompute the same maximum this loop already sees one row at a time.
+  // Track the sheet-wide max column inline during this row scan instead of calling usedRange(ws) afterward, which would redo an identical full eachCell pass over every row just to recompute the same maximum this loop already sees one row at a time.
   let sheetCols = 0
   for (let r = 1; r <= rowCount; r++) {
     const row = ws.getRow(r)
@@ -236,10 +212,7 @@ export async function headSheet(filePath: string, sheetName: string, rows: numbe
     }
     aoa.push(rowVals)
   }
-  // Pad the header AND every data row to the sheet's actual used-column-count (same fix
-  // sheetToCsv already applies below) rather than to the header's own width - a data row
-  // wider than the header (e.g. trailing notes columns) must still line up under a header
-  // cell, or the CSV output desyncs which value belongs to which column.
+  // Pad the header AND every data row to the sheet's actual used-column-count (same fix sheetToCsv already applies below) rather than to the header's own width - a data row wider than the header (e.g. trailing notes columns) must still line up under a header cell, or the CSV output desyncs which value belongs to which column.
   const header = Array.from({ length: sheetCols }, (_, i) => String(aoa[0]?.[i] ?? ''))
   const dataRows = aoa.slice(1, 1 + rows).map((r) =>
     Array.from({ length: sheetCols }, (_, i) => String(r[i] ?? '')),
@@ -288,11 +261,7 @@ export function formatXlsxRange(result: XlsxRangeResult): string {
 /** Hand-rolled sheet_to_csv equivalent: ExcelJS has no direct API for this. */
 async function sheetToCsv(ws: ExcelWorksheet): Promise<string> {
   const rowCount = ws.rowCount || 0
-  // Every emitted row must have the same field count, or csv-parse's default strict mode
-  // throws "Invalid Record Length" on any row that happens to have empty trailing cells
-  // (row.eachCell({includeEmpty:false}) stops at that row's own last populated column, which
-  // is not necessarily the sheet's widest column). Pad every row out to the sheet's actual
-  // used-column-count, same as headSheet does.
+  // Every emitted row must have the same field count, or csv-parse's default strict mode throws "Invalid Record Length" on any row that happens to have empty trailing cells (row.eachCell({includeEmpty:false}) stops at that row's own last populated column, which is not necessarily the sheet's widest column). Pad every row out to the sheet's actual used-column-count, same as headSheet does.
   const { cols: sheetCols } = usedRange(ws)
   const lines: string[] = []
   for (let r = 1; r <= rowCount; r++) {
