@@ -99,6 +99,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
   skill_oversized_first_load: SOURCE_SKILL,
+  secret_redacted: SOURCE_OTHER,
 }
 
 const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
