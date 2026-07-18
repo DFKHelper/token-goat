@@ -82,6 +82,19 @@ function toRefEntry(row: RefRow): RefEntry {
  * in the current project", since `dbPath` (typically `global.db`) is a single
  * machine-wide index shared across every project ever indexed (constants.ts).
  */
+/** Push {@link projectScopeClause}'s clause onto `where`/`param` onto `params` when `rootDir` is set. Shared by querySymbols/queryRefs/queryRefCounts, which all need the same "scope to files under this project root" filter against different WHERE-clause shapes. */
+function applyRootDirScope(
+  rootDir: string | undefined,
+  column: string,
+  where: string[],
+  params: (string | number)[],
+): void {
+  if (rootDir === undefined) return
+  const { clause, param } = projectScopeClause(column)
+  where.push(clause)
+  params.push(param(rootDir))
+}
+
 export function querySymbols(
   opts: {
     name?: string
@@ -107,11 +120,7 @@ export function querySymbols(
     where.push('kind = ?')
     params.push(opts.kind)
   }
-  if (opts.rootDir !== undefined) {
-    const { clause, param } = projectScopeClause('file_path')
-    where.push(clause)
-    params.push(param(opts.rootDir))
-  }
+  applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
   const limit = opts.limit ?? 100
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
@@ -150,11 +159,7 @@ export function queryRefs(
     where.push(pathEq('file_path'))
     params.push(foldPath(opts.filePath))
   }
-  if (opts.rootDir !== undefined) {
-    const { clause, param } = projectScopeClause('file_path')
-    where.push(clause)
-    params.push(param(opts.rootDir))
-  }
+  applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
   const limit = opts.limit ?? 100
   const sql =
@@ -187,12 +192,9 @@ export function queryRefCounts(
   const db = getDb(dbPath)
   const placeholders = names.map(() => '?').join(', ')
   const params: (string | number)[] = [...names]
-  let scopeSql = ''
-  if (rootDir !== undefined) {
-    const { clause, param } = projectScopeClause('file_path')
-    scopeSql = ` AND ${clause}`
-    params.push(param(rootDir))
-  }
+  const scopeWhere: string[] = []
+  applyRootDirScope(rootDir, 'file_path', scopeWhere, params)
+  const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
   const sql = `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${placeholders})${scopeSql} GROUP BY name`
   const rows = db.prepare(sql).all(...params) as Array<{ name: string; c: number }>
   for (const row of rows) {
