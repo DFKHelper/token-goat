@@ -634,7 +634,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           compactBody +
           '\n\nUse `token-goat compact-doc "' + normalized + '" --force` to rebuild it, ' +
           'or `token-goat compact-doc "' + normalized + '" --show` to view it directly. ' +
-          'To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+          editAnywayHint(normalized),
         )
       }
     }
@@ -665,7 +665,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'Serving the output-stripped notebook in place of the full file ' +
           '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
           sidecarContent +
-          '\n\nTo edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+          '\n\n' + editAnywayHint(normalized),
         )
       }
     } catch {
@@ -737,7 +737,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           if (alreadyRead) {
             recordActualRead(event, normalized)
           }
-          message += ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+          message += ' ' + editAnywayHint(normalized)
           return denyOutput(message)
         }
         recordActualRead(event, normalized)
@@ -958,7 +958,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
-          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+          ' ' + editAnywayHint(normalized),
         )
       }
 
@@ -969,7 +969,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
         return denyOutput(
           'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
-          ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+          ' ' + editAnywayHint(normalized),
         )
       }
     }
@@ -981,7 +981,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        ' ' + editAnywayHint(normalized),
       )
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently
@@ -1028,7 +1028,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', size, Math.round(size / 4))
       return denyOutput(
         normalized + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
-        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
+        ' ' + editAnywayHint(normalized),
       )
     }
     recordActualRead(event, normalized)
@@ -1130,10 +1130,16 @@ function estimateTruncatedLineCount(normalized: string): number {
   return Infinity
 }
 
+function editAnywayHint(normalized: string): string {
+  return (
+    'To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+  )
+}
+
 function truncatedReadDenyMessage(normalized: string): string {
   return (
     'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
-    ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --from <newfile>` to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+    ' ' + editAnywayHint(normalized)
   )
 }
 
