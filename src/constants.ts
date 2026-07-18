@@ -136,6 +136,14 @@ export function configPath(): string {
   return path.join(DATA_DIR, 'config.toml')
 }
 
+/** Filename of the optional per-project config override, checked at the project root. */
+export const PROJECT_CONFIG_FILENAME = '.token-goat.toml'
+
+/** Path to a project's optional `.token-goat.toml` config override file. */
+export function projectConfigPath(projectRoot: string): string {
+  return path.join(projectRoot, PROJECT_CONFIG_FILENAME)
+}
+
 /**
  * Canonical TOKEN_GOAT_* environment-variable names.
  *

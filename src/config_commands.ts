@@ -14,7 +14,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -179,13 +179,34 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
 
   if (action === 'list') {
     const cfg = loadConfig() as unknown as Record<string, unknown>
+    // "What's actually in effect and why": a per-project .token-goat.toml overrides the
+    // global config.toml for the keys it sets, so surface which keys (if any) came from it
+    // alongside the effective values loadConfig() already merged in.
+    const projectInfo = getProjectConfigInfo()
     if (opts.json === true) {
-      emit(JSON.stringify(cfg, null, 2))
+      const payload: Record<string, unknown> = { ...cfg }
+      if (projectInfo !== null) {
+        payload['_project_override'] = {
+          path: projectInfo.path,
+          keys: projectInfo.keys,
+          parse_error: projectInfo.parseError,
+        }
+      }
+      emit(JSON.stringify(payload, null, 2))
       return
     }
     const pairs = flattenConfig(cfg)
     for (const [k, v] of pairs) {
-      emit(`${k} = ${JSON.stringify(v)}`)
+      const fromProject = projectInfo !== null && projectInfo.keys.includes(k)
+      emit(`${k} = ${JSON.stringify(v)}${fromProject ? '  # from .token-goat.toml' : ''}`)
+    }
+    if (projectInfo !== null) {
+      emit('')
+      emit(
+        projectInfo.parseError !== null
+          ? `# project override ${projectInfo.path} failed to parse (${projectInfo.parseError}); ignored`
+          : `# project override: ${projectInfo.path}`,
+      )
     }
     return
   }
