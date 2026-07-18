@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.16] - 2026-07-18
+
 ### Added
 
 - **`token-goat hint-stats` tracks whether discretionary hint hooks are actually followed.** Each `context`-output hint from the Bash/Read/Edit hooks (`bash_redirect`, `bash_recall`, `read_reread_dedup`, `read_structural_nav`, `edit_reread_suggest`) is mined for the specific file path or cached-output id it pointed at; a `post_tool_use` advisory handler then checks up to 5 subsequent tool calls in the same session for a Bash command that both invokes `token-goat` and references that exact correlator, crediting real follow-through rather than any unrelated token-goat call. Hints with no extractable correlator are honestly counted as emitted with no automatic "acted on" credit rather than guessed. A category is auto-suppressed per `(category, harness)` once it has at least `hint_stats.min_sample_size` emissions (default 5) and its efficacy falls below `hint_stats.suppress_threshold_pct` (default 15%), until `token-goat hint-stats --reset` clears tracked data. `--mark-effective <category>`/`--mark-ineffective <category>` record a separate manual vote that supplements but never blends into the automatic signal. Schema-version bumped 4 -> 5 (purely additive: new `hint_emissions`/`hint_manual_marks` tables). See [src/hint_stats.ts](src/hint_stats.ts), [src/cli_hint_stats.ts](src/cli_hint_stats.ts), [src/db.ts](src/db.ts), [src/config.ts](src/config.ts), [src/hooks_bash.ts](src/hooks_bash.ts), [src/hooks_read.ts](src/hooks_read.ts), [src/hooks_edit.ts](src/hooks_edit.ts); regression-tested in [tests/hint_stats.test.ts](tests/hint_stats.test.ts), [tests/cli_hint_stats.test.ts](tests/cli_hint_stats.test.ts).
