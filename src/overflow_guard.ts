@@ -6,19 +6,8 @@
  */
 
 import { stripAnsiCodes } from './bash_compress.js'
+import { safeSlice } from './util.js'
 
-
-const safeSlice = (str: string, endIndex: number): string => {
-  // Ensure we don't split a UTF-16 surrogate pair. If the code unit at endIndex
-  // is a low surrogate (0xDC00-0xDFFF), back up one so the high surrogate stays with it.
-  if (endIndex > 0 && endIndex < str.length) {
-    const codeUnit = str.charCodeAt(endIndex)
-    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      endIndex--
-    }
-  }
-  return str.slice(0, endIndex)
-}
 /**
  * Estimate tokens from text: ~3 chars/token (conservative).
  * Strips ANSI color codes before counting to avoid inflating token estimates.

@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -565,5 +565,33 @@ describe('stripOwnHooksFromMap', () => {
     }
     stripOwnHooksFromMap(hooks, (c) => c.includes('token-goat'))
     expect(hooks['PreToolUse']).toBeUndefined()
+  })
+})
+
+describe('safeSlice', () => {
+  it('slices normally when the cut point is not inside a surrogate pair', () => {
+    expect(safeSlice('hello world', 5)).toBe('hello')
+  })
+
+  // Regression: a naive str.slice(0, n) can land exactly between a UTF-16 surrogate
+  // pair's high and low code units (astral-plane characters, e.g. emoji, are
+  // represented as two code units), producing a lone unpaired surrogate -- an
+  // invalid/malformed string. safeSlice must back up one index so the pair stays intact.
+  it('backs up one index when the cut point splits a surrogate pair', () => {
+    const astral = '\u{1F600}' // 😀 -- a single code point, two UTF-16 code units
+    const str = 'ab' + astral + 'cd'
+    // str.charCodeAt(3) is the low surrogate of the pair (high surrogate is at index 2).
+    expect(str.charCodeAt(3)).toBeGreaterThanOrEqual(0xdc00)
+    expect(str.charCodeAt(3)).toBeLessThanOrEqual(0xdfff)
+
+    const sliced = safeSlice(str, 3)
+    // Must not end on a lone unpaired surrogate.
+    expect(sliced).toBe('ab')
+    expect(sliced.charCodeAt(sliced.length - 1)).not.toBeGreaterThanOrEqual(0xd800)
+  })
+
+  it('is a no-op when endIndex is 0 or >= the string length', () => {
+    expect(safeSlice('hello', 0)).toBe('')
+    expect(safeSlice('hello', 100)).toBe('hello')
   })
 })
