@@ -32,6 +32,7 @@ import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
+import { listZipEntries, extractZipEntry, formatZipList } from './archive_query.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -79,6 +80,24 @@ function readFileText(p: string): string | null {
   } catch {
     return null
   }
+}
+
+/** Raw-bytes counterpart to {@link readFileText}, for binary formats (zip-format archives)
+ * that must never be decoded as UTF-8 before parsing -- decoding first would corrupt any byte
+ * sequence that isn't valid UTF-8, which is the common case for compressed/binary member data. */
+function readFileBytes(p: string): Buffer | null {
+  try {
+    return fs.readFileSync(p)
+  } catch {
+    return null
+  }
+}
+
+/** True when re-encoding `buf`'s lossy UTF-8 decode reproduces the exact original bytes --
+ * i.e. `buf` is valid UTF-8 text, not binary data that merely decodes without throwing (Node's
+ * UTF-8 decoder never throws; it substitutes U+FFFD for invalid sequences instead). */
+function isValidUtf8(buf: Buffer): boolean {
+  return Buffer.compare(Buffer.from(buf.toString('utf-8'), 'utf-8'), buf) === 0
 }
 
 /**
@@ -1364,6 +1383,85 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
     emit(JSON.stringify(match))
   } else {
     emitGuarded(formatOperationDetail(match), 'openapi-op')
+  }
+  return 0
+}
+
+export interface ZipListCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat zip-list archive``: entry paths + sizes inside a zip-format archive
+ * (.zip/.jar/.whl/.vsix/.nupkg are all zip containers under the hood) instead of a raw Read
+ * or an unzip -l shell-out. Reads the archive's central directory only -- no member is
+ * decompressed just to list it. */
+export function runZipList(opts: ZipListCliOptions): number {
+  const data = readFileBytes(opts.file)
+  if (data === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let entries: ReturnType<typeof listZipEntries>
+  try {
+    entries = listZipEntries(data)
+  } catch {
+    emitErr(`Failed to read archive (not a valid zip-format file): ${opts.file}`)
+    return 1
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(entries))
+  } else {
+    emitGuarded(formatZipList(entries), 'zip-list')
+  }
+  return 0
+}
+
+export interface ZipReadCliOptions {
+  file: string
+  entry: string
+  json?: boolean
+}
+
+/** Handle ``token-goat zip-read archive entry``: extract and print exactly one entry's text
+ * content from a zip-format archive instead of extracting the whole archive to disk. A binary
+ * member (content that isn't valid UTF-8 text) is reported with the same
+ * `[binary content elided by token-goat]` marker filters.ts uses for binary output elsewhere in
+ * this codebase, rather than dumping raw bytes or crashing on the utf-8 decode. */
+export function runZipRead(opts: ZipReadCliOptions): number {
+  const data = readFileBytes(opts.file)
+  if (data === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let entries: ReturnType<typeof listZipEntries>
+  let content: Uint8Array | undefined
+  try {
+    entries = listZipEntries(data)
+    content = extractZipEntry(data, opts.entry)
+  } catch {
+    emitErr(`Failed to read archive (not a valid zip-format file): ${opts.file}`)
+    return 1
+  }
+
+  if (content === undefined) {
+    const messages = [`Entry '${opts.entry}' not found in '${opts.file}'`]
+    const closes = entries.map((e) => e.path)
+    if (closes.length > 0) messages.push(didYouMean(closes))
+    emitErr(messages.join('\n'))
+    return 1
+  }
+
+  const buf = Buffer.from(content)
+  const text = isValidUtf8(buf) ? buf.toString('utf-8') : '[binary content elided by token-goat]'
+
+  if (opts.json === true) {
+    emit(JSON.stringify({ path: opts.entry, text }))
+  } else {
+    emitGuarded(text, 'zip-read')
   }
   return 0
 }
