@@ -35,7 +35,7 @@ const DEFAULT_REF_QUERY_LIMIT = 500
 
 /** Symbol-query cap for "every symbol in one file" lookups -- large enough that no real file
  * gets truncated, shared so every call site stays in sync. */
-const ALL_SYMBOLS_IN_FILE_LIMIT = 10000
+export const ALL_SYMBOLS_IN_FILE_LIMIT = 10000
 
 function emit(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)

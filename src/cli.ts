@@ -2621,8 +2621,9 @@ export function buildProgram(): Command {
     .command('trace [src]')
     .description('condense a Python traceback to project frames only')
     .option('--keep <n>', 'keep last N project frames (default: all)')
+    .option('--bodies', 'resolve each frame to its enclosing symbol and include the full body inline')
     .option('-j, --json', 'output as JSON')
-    .action((src: string | undefined, opts: { keep?: string; json?: boolean }) =>
+    .action((src: string | undefined, opts: { keep?: string; bodies?: boolean; json?: boolean }) =>
       guard(() => cmdTrace(src, opts))(),
     )
 

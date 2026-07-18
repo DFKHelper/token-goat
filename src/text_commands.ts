@@ -12,9 +12,12 @@ import { walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
-import { normalizeDarwinSystemAlias } from './paths.js'
+import { ALL_SYMBOLS_IN_FILE_LIMIT, enclosingSymbol } from './graph_commands.js'
+import { querySymbols } from './index_reader.js'
+import { normalizeDarwinSystemAlias, resolveIndexPath } from './paths.js'
 import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
+import { resolveBody } from './read_commands.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, escapeRegExp, requireNonNegativeStrictInt } from './util.js'
 
@@ -276,7 +279,59 @@ function isProjectFrame(framePath: string, cwd: string): boolean {
   return false
 }
 
-export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: boolean }): void {
+/**
+ * Resolves a traceback frame's file:line to its enclosing symbol via the same index-backed
+ * mechanism `token-goat scope <file:line>` uses (querySymbols + enclosingSymbol from
+ * graph_commands.ts), then formats its body the way `token-goat read`/`token-goat brief` do
+ * (resolveBody from read_commands.ts). Returns null when nothing resolves -- a frame into an
+ * unindexed third-party file (site-packages, node_modules), a file that no longer exists, or a
+ * file:line with no covering symbol all fall through to querySymbols/enclosingSymbol returning
+ * no match, so this needs no separate existence check.
+ */
+function resolveFrameSymbol(frame: TraceFrame, projectRoot: string): { key: string; name: string; kind: string; filePath: string; lineStart: number; lineEnd: number; body: string } | null {
+  const filePath = resolveIndexPath(frame.file, projectRoot)
+  const syms = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
+  const match = enclosingSymbol(syms, frame.lineNo)
+  if (match === null) return null
+  return {
+    key: `${match.filePath}::${match.name}`,
+    name: match.name,
+    kind: match.kind,
+    filePath: match.filePath,
+    lineStart: match.lineStart,
+    lineEnd: match.lineEnd,
+    body: resolveBody(match),
+  }
+}
+
+/**
+ * Formats the `--bodies` block for one frame, mirroring `brief`'s `# name  kind  file:start-end`
+ * metadata-line convention (read_commands.ts's runBrief) so the body is delimited the same way
+ * other commands in this codebase already combine "symbol body + context" into one response.
+ * Same file::symbol resolved more than once in the same `--bodies` run (recursion) is shown once
+ * and referenced by name on repeats -- printing the identical body text again for every recursive
+ * frame would be pure noise, and this codebase has no existing whole-block content-dedup
+ * convention for CLI text output to mirror instead (the precedents found, bash_compress's
+ * dedupeConsecutiveLines and the read/session re-read hints, both dedupe on "already seen this
+ * session" state or consecutive identical *lines*, not a named block repeated non-consecutively
+ * within one command's own output).
+ */
+function formatFrameBody(frame: TraceFrame, projectRoot: string, seen: Map<string, boolean>): string[] {
+  const resolved = resolveFrameSymbol(frame, projectRoot)
+  if (resolved === null) {
+    // Mirrors runScope's exact miss wording (graph_commands.ts) for "no symbol covers this
+    // file:line", the same phrasing `token-goat scope` itself reports.
+    return [`    # body: No symbols enclosing line ${frame.lineNo} in '${frame.file}'`]
+  }
+  const header = `    # body: ${resolved.name}  ${resolved.kind}  ${resolved.filePath}:${resolved.lineStart}-${resolved.lineEnd}`
+  if (seen.has(resolved.key)) {
+    return [`${header} (same as above)`]
+  }
+  seen.set(resolved.key, true)
+  return [header, resolved.body]
+}
+
+export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: boolean; bodies?: boolean }): void {
   const text = readInput(src)
   const blocks = parseTracebacks(text)
   if (blocks.length === 0) {
@@ -294,9 +349,39 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
   })
 
   if (opts.json === true) {
-    process.stdout.write(JSON.stringify({ tracebacks: filtered }, null, 2) + '\n')
+    if (opts.bodies !== true) {
+      process.stdout.write(JSON.stringify({ tracebacks: filtered }, null, 2) + '\n')
+      return
+    }
+    // Same resolution + dedup-by-reference as the text path below, just shaped as JSON fields
+    // (bodySymbol/body on first occurrence, bodyDuplicateOf pointing back to it on a repeat)
+    // instead of interleaved lines.
+    const seenJson = new Map<string, boolean>()
+    const withBodies = filtered.map((b) => ({
+      ...b,
+      frames: b.frames.map((f) => {
+        const resolved = resolveFrameSymbol(f, cwd)
+        if (resolved === null) return { ...f }
+        if (seenJson.has(resolved.key)) {
+          return { ...f, bodyDuplicateOf: resolved.key }
+        }
+        seenJson.set(resolved.key, true)
+        return {
+          ...f,
+          bodySymbol: { name: resolved.name, kind: resolved.kind, filePath: resolved.filePath, lineStart: resolved.lineStart, lineEnd: resolved.lineEnd },
+          body: resolved.body,
+        }
+      }),
+    }))
+    process.stdout.write(JSON.stringify({ tracebacks: withBodies }, null, 2) + '\n')
     return
   }
+
+  // Dedup state spans the whole command's output (not just one block/frame) so a recursive
+  // function that reappears across multiple tracebacks in the same input still only prints its
+  // body once, consistent with "the same content already shown this output" rather than
+  // "this block".
+  const seenBodies = new Map<string, boolean>()
 
   for (const block of filtered) {
     process.stdout.write('Traceback (most recent call last):\n')
@@ -309,6 +394,9 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       // original traceback. Match the truthiness check already used for `block.exception`
       // below.
       if (f.context) process.stdout.write(`    ${f.context}\n`)
+      if (opts.bodies === true) {
+        for (const line of formatFrameBody(f, cwd, seenBodies)) process.stdout.write(`${line}\n`)
+      }
     }
     if (block.exception) process.stdout.write(`${block.exception}\n`)
     process.stdout.write('\n')
