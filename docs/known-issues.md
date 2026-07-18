@@ -3,7 +3,19 @@
 Latent issues found but not yet fixed, recorded so the next person has the
 measurement and the root cause instead of rediscovering them.
 
-## Cross-session cache-hit asymmetry: Bash file-reads vs native `Read` — OPEN (low severity)
+## Cross-session cache-hit asymmetry: Bash file-reads vs native `Read` — RESOLVED
+
+**Update (2026-07-17):** resolved by `hooks_read.ts`'s `scanCrossSessionManifests`
+(gated by `config.hints.cross_session_read_dedup`), which gives native `Read` its
+own cross-session ledger via sibling-session manifests instead of the Bash-style
+on-disk sidecar this note originally proposed. The codebase has since been
+rewritten from Python to TypeScript — every `.py` file this note cites below
+(`hints.py`, `bash_cache.py`, `hooks_read.py`) no longer exists; the equivalent
+logic now lives in `hints.ts`/`hooks_bash.ts`/`hooks_read.ts`. Left below verbatim
+as the original analysis/history rather than rewritten, since the underlying
+symptom is gone.
+
+**Original write-up** (pre-TypeScript-rewrite, file names below are historical):
 
 **Symptom:** identical file content is treated inconsistently across sessions
 depending on *which tool* surfaced it. A file read issued as a Bash command
