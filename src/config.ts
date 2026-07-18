@@ -121,6 +121,8 @@ export interface HintsConfig {
   web_dedup_min_bytes: number
   grep_dedup_min_matches: number
   glob_dedup_min_matches: number
+  write_rewrite_min_lines: number
+  write_rewrite_unchanged_pct: number
   serve_diff_on_reread: boolean
   backoff_thresholds: number[]
   git_hint_max_ms: number
@@ -319,6 +321,15 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     web_dedup_min_bytes: 200,
     grep_dedup_min_matches: 5,
     glob_dedup_min_matches: 5,
+    // Existing on-disk file must have at least this many lines before a Write rewrite is even
+    // considered -- rewriting a small file whole is fine, so hooks_write.ts's detector skips
+    // comparison entirely below this floor rather than firing on trivial files.
+    write_rewrite_min_lines: 40,
+    // Minimum percentage of the existing file's lines that must survive unchanged (by LCS) in
+    // the incoming Write content for hooks_write.ts to advise Edit instead. High by design: this
+    // is only meant to catch the "mostly untouched, a few lines changed" case, not a genuine
+    // rewrite that happens to share some boilerplate.
+    write_rewrite_unchanged_pct: 75,
     serve_diff_on_reread: false,
     backoff_thresholds: [1, 3, 10, 30],
     git_hint_max_ms: 50,
@@ -505,6 +516,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hints.web_dedup_min_bytes': {min: 0, max: 100_000},
   'hints.grep_dedup_min_matches': {min: 0, max: 100_000},
   'hints.glob_dedup_min_matches': {min: 0, max: 100_000},
+  'hints.write_rewrite_min_lines': {min: 0, max: 1_000_000},
+  'hints.write_rewrite_unchanged_pct': {min: 0, max: 100},
   'hints.git_hint_max_ms': {min: 0, max: 10000},
   'hints.min_session_hint_savings_bytes': {min: 0, max: 1_000_000},
   'hints.diff_hint_min_tokens_saved': {min: 0, max: 100_000},
@@ -635,6 +648,8 @@ const ENV_KEYS = [
   'TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES',
   'TOKEN_GOAT_WEB_CACHE_MAX_FILES',
   'TOKEN_GOAT_WEB_CACHE_MAX_BYTES',
+  'TOKEN_GOAT_WRITE_REWRITE_MIN_LINES',
+  'TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT',
 ]
 
 export function configEnvFingerprint(): string {
@@ -933,6 +948,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.grep_dedup_min_matches = envInt('TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES', hi.grep_dedup_min_matches, ...boundsOf('hints.grep_dedup_min_matches'))
   hi.glob_dedup_min_matches = validatedInt(hi_raw['glob_dedup_min_matches'], hi.glob_dedup_min_matches, ...boundsOf('hints.glob_dedup_min_matches'))
   hi.glob_dedup_min_matches = envInt('TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES', hi.glob_dedup_min_matches, ...boundsOf('hints.glob_dedup_min_matches'))
+  hi.write_rewrite_min_lines = validatedInt(hi_raw['write_rewrite_min_lines'], hi.write_rewrite_min_lines, ...boundsOf('hints.write_rewrite_min_lines'))
+  hi.write_rewrite_min_lines = envInt('TOKEN_GOAT_WRITE_REWRITE_MIN_LINES', hi.write_rewrite_min_lines, ...boundsOf('hints.write_rewrite_min_lines'))
+  hi.write_rewrite_unchanged_pct = validatedInt(hi_raw['write_rewrite_unchanged_pct'], hi.write_rewrite_unchanged_pct, ...boundsOf('hints.write_rewrite_unchanged_pct'))
+  hi.write_rewrite_unchanged_pct = envInt('TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT', hi.write_rewrite_unchanged_pct, ...boundsOf('hints.write_rewrite_unchanged_pct'))
   hi.serve_diff_on_reread = validatedBool(hi_raw['serve_diff_on_reread'], hi.serve_diff_on_reread)
   hi.backoff_thresholds = validatedIntList(hi_raw['backoff_thresholds'], hi.backoff_thresholds)
   hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
@@ -1100,6 +1119,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.web_dedup_min_bytes': ['TOKEN_GOAT_WEB_DEDUP_MIN_BYTES'],
   'hints.grep_dedup_min_matches': ['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'],
   'hints.glob_dedup_min_matches': ['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'],
+  'hints.write_rewrite_min_lines': ['TOKEN_GOAT_WRITE_REWRITE_MIN_LINES'],
+  'hints.write_rewrite_unchanged_pct': ['TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
@@ -1210,6 +1231,8 @@ export function saveConfig(config: Config): void {
       web_dedup_min_bytes: config.hints.web_dedup_min_bytes,
       grep_dedup_min_matches: config.hints.grep_dedup_min_matches,
       glob_dedup_min_matches: config.hints.glob_dedup_min_matches,
+      write_rewrite_min_lines: config.hints.write_rewrite_min_lines,
+      write_rewrite_unchanged_pct: config.hints.write_rewrite_unchanged_pct,
       serve_diff_on_reread: config.hints.serve_diff_on_reread,
       backoff_thresholds: config.hints.backoff_thresholds,
       git_hint_max_ms: config.hints.git_hint_max_ms,
