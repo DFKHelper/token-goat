@@ -30,6 +30,7 @@ import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_gua
 import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
+import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
@@ -1171,6 +1172,101 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       return 0
     }
     emit(formatCsvProfile(profiles))
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+export interface JsonOutlineCliOptions {
+  file: string
+  json?: boolean
+}
+
+/** Handle ``token-goat json-outline file``: structural summary of a JSON document without
+ * dumping it -- element count + key/type shape for an array, top-level key types/sizes for
+ * an object. */
+export function runJsonOutline(opts: JsonOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    emitErr(`Failed to parse JSON: ${opts.file}`)
+    return 1
+  }
+
+  const outline = outlineJson(data)
+  if (opts.json === true) {
+    emit(JSON.stringify(outline))
+  } else {
+    emit(formatJsonOutline(outline))
+  }
+  return 0
+}
+
+export interface JsonQueryCliOptions {
+  file: string
+  path: string
+  head?: string
+  json?: boolean
+}
+
+/** Handle ``token-goat json-query file path``: extract one value or a projected/filtered
+ * subset from a JSON document by dot-path spec (`[n]` index, `[*]` wildcard,
+ * `[field=value]` filter), instead of a raw Read. */
+export function runJsonQuery(opts: JsonQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    emitErr(`Failed to parse JSON: ${opts.file}`)
+    return 1
+  }
+
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const result = queryJson(data, opts.path)
+
+    if (!result.fanned) {
+      const value = result.items[0]
+      emit(opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2))
+      return 0
+    }
+
+    const totalCount = result.items.length
+    const limited = head !== undefined ? result.items.slice(0, head) : result.items
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const capped = guardJsonRows(limited)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }))
+    } else {
+      const lines = limited.map((item) => JSON.stringify(item))
+      if (headTruncated) {
+        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+      }
+      emitGuarded(lines.join('\n'), 'json-query')
+    }
     return 0
   } catch (e) {
     emitErr(extractErrorMessage(e))

@@ -62,6 +62,8 @@ import {
   runConfigGet,
   runCsvProfile,
   runCsvQuery,
+  runJsonOutline,
+  runJsonQuery,
 
   runExports,
   runChanged,
@@ -1909,6 +1911,193 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { code = runCsvProfile({ file: f }) })
       expect(stdout).toContain(`No data rows found in ${f}`)
       expect(code).toBe(0)
+    })
+  })
+
+  // ---- runJsonOutline ---------------------------------------------------
+
+  describe('runJsonOutline', () => {
+    it('summarizes an array of objects: length, element type, and merged key/type shape', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, JSON.stringify([
+        { id: 1, name: 'Alice', tags: ['a', 'b'] },
+        { id: 2, name: 'Bob', tags: [] },
+        { id: 3, name: 'Carol', tags: ['c'] },
+      ]))
+      const { stdout } = capture(() => { runJsonOutline({ file: f }) })
+      expect(stdout).toContain('array of 3 elements (object)')
+      expect(stdout).toContain('id: number')
+      expect(stdout).toContain('name: string')
+      expect(stdout).toContain('tags: array (2)')
+    })
+
+    it('flags a heterogeneous array whose sampled elements have different key sets', () => {
+      const f = path.join(tempDir, 'mixed.json')
+      fs.writeFileSync(f, JSON.stringify([{ a: 1, b: 2 }, { a: 1, c: 3 }]))
+      const { stdout } = capture(() => { runJsonOutline({ file: f }) })
+      expect(stdout).toContain('shape varies across sample')
+    })
+
+    it('summarizes a top-level object as top-level keys with type and size', () => {
+      const f = path.join(tempDir, 'config.json')
+      fs.writeFileSync(f, JSON.stringify({ name: 'app', version: '1.0.0', deps: { a: 1, b: 2 }, items: [1, 2, 3] }))
+      const { stdout } = capture(() => { runJsonOutline({ file: f }) })
+      expect(stdout).toContain('name: string')
+      expect(stdout).toContain('deps: object (2)')
+      expect(stdout).toContain('items: array (3)')
+    })
+
+    it('summarizes a top-level scalar as a primitive', () => {
+      const f = path.join(tempDir, 'scalar.json')
+      fs.writeFileSync(f, '42')
+      const { stdout } = capture(() => { runJsonOutline({ file: f }) })
+      expect(stdout).toContain('(scalar number)')
+    })
+
+    it('emits a structured outline object under --json', () => {
+      const f = path.join(tempDir, 'people2.json')
+      fs.writeFileSync(f, JSON.stringify([{ id: 1 }, { id: 2 }]))
+      const { stdout } = capture(() => { runJsonOutline({ file: f, json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.kind).toBe('array')
+      expect(parsed.length).toBe(2)
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runJsonOutline({ file: path.join(tempDir, 'missing.json') })
+      expect(code).toBe(1)
+    })
+
+    it('returns 1 with a clear message on invalid JSON', () => {
+      const f = path.join(tempDir, 'bad.json')
+      fs.writeFileSync(f, '{ not valid json')
+      let code = -1
+      const { stderr } = capture(() => { code = runJsonOutline({ file: f }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('Failed to parse JSON')
+    })
+  })
+
+  // ---- runJsonQuery ------------------------------------------------------
+
+  describe('runJsonQuery', () => {
+    const PEOPLE = JSON.stringify({
+      items: [
+        { id: 1, name: 'Alice', status: 'active' },
+        { id: 2, name: 'Bob', status: 'inactive' },
+        { id: 3, name: 'Carol', status: 'active' },
+      ],
+    })
+
+    it('extracts a single value at a dot-path', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[0].name' }) })
+      expect(stdout.trim()).toBe('"Alice"')
+    })
+
+    it('extracts a nested object as pretty-printed JSON text by default', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[1]' }) })
+      expect(stdout).toContain('"name": "Bob"')
+    })
+
+    it('projects a field across every array element with [*]', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[*].name' }) })
+      expect(stdout).toContain('"Alice"')
+      expect(stdout).toContain('"Bob"')
+      expect(stdout).toContain('"Carol"')
+    })
+
+    it('filters array elements by field value with [field=value]', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[status=active]' }) })
+      expect(stdout).toContain('Alice')
+      expect(stdout).toContain('Carol')
+      expect(stdout).not.toContain('Bob')
+    })
+
+    it('emits a JSON envelope with items/truncated/totalCount for a fanned result under --json', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[*].id', json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toEqual([1, 2, 3])
+      expect(parsed.totalCount).toBe(3)
+      expect(parsed.truncated).toBe(false)
+    })
+
+    it('caps a fanned result to --head, reporting the real total and an elision note in text mode', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[*].id', head: '1' }) })
+      expect(stdout).toContain('2 more items elided')
+    })
+
+    it('caps a fanned --json result to --head, reflecting the head cut in truncated/totalCount', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[*].id', head: '1', json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toEqual([1])
+      expect(parsed.totalCount).toBe(3)
+      expect(parsed.truncated).toBe(true)
+    })
+
+    it('caps an oversized text-mode fanned result at overflow_guard.max_tokens', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 20 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const items = Array.from({ length: 500 }, (_, i) => ({ id: i, name: `person-${i}-`.repeat(5) }))
+      const f = path.join(tempDir, 'big.json')
+      fs.writeFileSync(f, JSON.stringify({ items }))
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items[*]' }) })
+      expect(stdout).toContain('output capped at')
+    })
+
+    it('returns 1 with a clear error for a missing key on a non-fanned path', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      let code = -1
+      const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'items[0].doesNotExist' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('path not found')
+    })
+
+    it('returns 1 with a clear error for an out-of-range array index', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      let code = -1
+      const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'items[99]' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('out of range')
+    })
+
+    it('returns 1 with a clear error for an invalid path spec', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      let code = -1
+      const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'items[unterminated' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('invalid path spec')
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runJsonQuery({ file: path.join(tempDir, 'missing.json'), path: 'foo' })
+      expect(code).toBe(1)
+    })
+
+    it('returns 1 with a clear message on invalid JSON', () => {
+      const f = path.join(tempDir, 'bad.json')
+      fs.writeFileSync(f, '{ not valid json')
+      let code = -1
+      const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'foo' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('Failed to parse JSON')
     })
   })
 
