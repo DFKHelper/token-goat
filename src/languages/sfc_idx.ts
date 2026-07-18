@@ -144,6 +144,52 @@ function stripJsComments(content: string): string {
   return out
 }
 
+/**
+ * Blanks the CONTENT of JS/TS string and backtick-template-literal spans (each non-newline
+ * character replaced with a space; a real newline inside a backtick span is preserved as-is so
+ * line numbers stay in sync) -- same quote-tracking shape as `stripJsComments` above, but
+ * blanking string/template BODIES instead of passing them through untouched. `stripJsComments`
+ * deliberately leaves string/template content verbatim (its own doc: "leaving quoted-string and
+ * backtick template-literal spans untouched"), so a frontmatter script containing something like
+ * `` const sep = `\n---\n` `` -- a template literal whose escaped `\n` sequences are literal
+ * backslash-n characters, all on one physical line -- would still hand `detectAstroFrontmatter`
+ * a raw `---` substring inside that quoted span. This function is what actually neutralizes it;
+ * `detectAstroFrontmatter` runs both this and `stripJsComments` before its line-exact fence scan.
+ */
+function blankJsStringLiterals(content: string): string {
+  let out = ''
+  let i = 0
+  const n = content.length
+  while (i < n) {
+    const ch = content[i]
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch
+      let j = i + 1
+      while (j < n) {
+        if (content[j] === '\\' && j + 1 < n) {
+          j += 2
+          continue
+        }
+        if (content[j] === quote) {
+          j++
+          break
+        }
+        if (quote !== '`' && content[j] === '\n') {
+          j++
+          break
+        }
+        j++
+      }
+      out += content[i] + content.slice(i + 1, j).replace(/[^\n]/g, ' ')
+      i = j
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
 // Top-level (depth-0) declaration matchers. Only genuinely top-level `function`/`const`/`class`
 // declarations, optionally `export`ed/`default`-exported -- no attempt at Vue Options API
 // (`methods: { ... }`) member extraction, per task scope.
@@ -351,8 +397,13 @@ function detectAstroFrontmatter(content: string): AstroFrontmatter | null {
   if ((lines[0] ?? '').trim() === '') openLine = 1
   const fenceLine = lines[openLine]
   if (fenceLine === undefined || fenceLine.replace(/\r$/, '') !== '---') return null
+  // Blank comment text and string/template-literal bodies before scanning for the closing fence,
+  // so a `---`-shaped line that only exists inside the frontmatter script's own comment or
+  // string/template literal is never mistaken for the real closing `---` (see
+  // blankJsStringLiterals's doc for the concrete repro this guards against).
+  const masked = blankJsStringLiterals(stripJsComments(content)).split('\n')
   for (let j = openLine + 1; j < lines.length; j++) {
-    if ((lines[j] ?? '').replace(/\r$/, '') === '---') {
+    if ((masked[j] ?? '').replace(/\r$/, '') === '---') {
       return { openLine, closeLine: j }
     }
   }

@@ -115,6 +115,25 @@ this is not frontmatter, just markup
 <Widget />
 `
 
+// Frontmatter whose own script contains a multi-line backtick template literal with a
+// `---`-only line inside it (line 3), followed by the REAL closing fence (line 5) and a
+// declaration + markup ref that only survive if the real fence, not the fake one, is found.
+// Regression: detectAstroFrontmatter's naive line-exact `=== '---'` scan had no string/template
+// awareness and would misdetect the template literal's inner `---` line as the closing fence,
+// truncating the frontmatter parse (and the `title` const, greet declaration) before it ever
+// reached the real close.
+const ASTRO_TEMPLATE_LITERAL_DASHES = `---
+const sep = \`
+---
+\`
+const title = 'Home'
+---
+
+<Layout title={title}>
+  <MainHero>hi</MainHero>
+</Layout>
+`
+
 // ---------------------------------------------------------------------------
 // detectLanguage / EXTENSION_LANGUAGE wiring
 // ---------------------------------------------------------------------------
@@ -290,5 +309,20 @@ describe('astro adapter', () => {
     } finally {
       fs.rmSync(path.dirname(file), { recursive: true, force: true })
     }
+  })
+
+  it('does not misdetect a `---`-only line inside the frontmatter script\'s own template literal as the closing fence (regression: detectAstroFrontmatter\'s naive line-exact scan had no string/template-literal awareness)', () => {
+    const { symbols, refs } = extractAstro(ASTRO_TEMPLATE_LITERAL_DASHES, 'Home2.astro')
+
+    // The real closing fence is on line 6, past the template literal's inner `---` on line 3 --
+    // `title` (declared after the template literal, before the real fence) proves the frontmatter
+    // parse ran all the way to the real close.
+    const title = symbols.find((s) => s.name === 'title')
+    expect(title).toMatchObject({ kind: 'sfc_script_const', lineStart: 5, lineEnd: 5 })
+
+    // Markup after the real fence is still reached and scanned for component refs.
+    const refNames = refs.map((r) => r.name)
+    expect(refNames).toContain('Layout')
+    expect(refNames).toContain('MainHero')
   })
 })
