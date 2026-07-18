@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **`token-goat statusline` showed the full `current_dir` instead of just the project name when the payload's path used backslash separators on a non-Windows CI runner.** `buildStatuslineData` derived `project` via `path.basename(cwd)`, which uses the host platform's separator convention -- so a Windows-style `C:\Projects\token-goat` path rendered unchanged on Linux instead of extracting `token-goat`. Surfaced as a `test` (ubuntu-latest) CI failure on the v2.6.16 release; `lint` and `test-windows` had already passed. Now splits on both `/` and `\` explicitly, independent of the host platform. See [src/cli_statusline.ts](src/cli_statusline.ts); regression-tested in [tests/cli_statusline.test.ts](tests/cli_statusline.test.ts).
+
 ## [2.6.16] - 2026-07-18
 
 ### Added
