@@ -42,6 +42,7 @@ import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { extractIni, extractEnv } from './languages/ini_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
+import { extractTerraform } from './languages/terraform_idx.js'
 
 import { extractPowershell } from './languages/powershell_idx.js'
 import { extractApex } from './languages/apex.js'
@@ -1661,6 +1662,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   ini: extractIni,
   makefile: extractMakefile,
   proto: (content, filePath) => extractProto(content, filePath).symbols,
+  terraform: extractTerraform,
   powershell: (content, filePath) => extractPowershell(content, filePath).symbols,
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,

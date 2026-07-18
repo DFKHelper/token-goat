@@ -14,6 +14,7 @@ import { extractSql } from '../src/languages/sql_idx.js'
 import { extractIni, extractEnv } from '../src/languages/ini_idx.js'
 import { extractMakefile } from '../src/languages/makefile_idx.js'
 import { extractProto } from '../src/languages/proto_idx.js'
+import { extractTerraform } from '../src/languages/terraform_idx.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
 
 // ---------------------------------------------------------------------------
@@ -3509,4 +3510,193 @@ function AfterSetup {
     expect(names).toContain('AfterSetup')
   })
 })
+})
+
+// ---------------------------------------------------------------------------
+// Terraform / HCL
+// ---------------------------------------------------------------------------
+
+describe('terraform adapter', () => {
+  it('extracts resource, data, variable, output, module, provider, and locals with Terraform addressing names', () => {
+    const content = `resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+}
+
+variable "region" {
+  default = "us-east-1"
+}
+
+output "instance_id" {
+  value = aws_instance.web.id
+}
+
+module "vpc" {
+  source = "./modules/vpc"
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+locals {
+  common_tags = {
+    Team = "infra"
+  }
+}
+`
+    const symbols = extractTerraform(content, 'main.tf')
+    const byName = (name: string) => symbols.find((s) => s.name === name)
+
+    expect(byName('aws_instance.web')?.kind).toBe('tf_resource')
+    expect(byName('aws_instance.web')).toMatchObject({ lineStart: 1, lineEnd: 3 })
+
+    expect(byName('data.aws_ami.ubuntu')?.kind).toBe('tf_data')
+    expect(byName('data.aws_ami.ubuntu')).toMatchObject({ lineStart: 5, lineEnd: 7 })
+
+    expect(byName('var.region')?.kind).toBe('tf_variable')
+    expect(byName('var.region')).toMatchObject({ lineStart: 9, lineEnd: 11 })
+
+    expect(byName('output.instance_id')?.kind).toBe('tf_output')
+    expect(byName('output.instance_id')).toMatchObject({ lineStart: 13, lineEnd: 15 })
+
+    expect(byName('module.vpc')?.kind).toBe('tf_module')
+    expect(byName('module.vpc')).toMatchObject({ lineStart: 17, lineEnd: 19 })
+
+    expect(byName('provider.aws')?.kind).toBe('tf_provider')
+    expect(byName('provider.aws')).toMatchObject({ lineStart: 21, lineEnd: 23 })
+
+    // locals contains its own nested `{ }` (the common_tags map literal) -- proves the block's
+    // own end line is found via true brace matching, not truncated at the first nested `{`.
+    expect(byName('locals')?.kind).toBe('tf_locals')
+    expect(byName('locals')).toMatchObject({ lineStart: 25, lineEnd: 29 })
+  })
+
+  it('returns an empty array for empty input', () => {
+    expect(extractTerraform('', 'empty.tf')).toHaveLength(0)
+  })
+
+  it('detects .tf, .tfvars, and .hcl language via parseFile', async () => {
+    const tfFile = tmp('main.tf', 'resource "aws_instance" "web" {}')
+    const tfvarsFile = tmp('terraform.tfvars', 'region = "us-east-1"')
+    const hclFile = tmp('config.hcl', 'block "x" {}')
+    try {
+      expect((await parseFile(tfFile)).language).toBe('terraform')
+      expect((await parseFile(tfvarsFile)).language).toBe('terraform')
+      expect((await parseFile(hclFile)).language).toBe('terraform')
+    } finally {
+      fs.rmSync(path.dirname(tfFile), { recursive: true, force: true })
+      fs.rmSync(path.dirname(tfvarsFile), { recursive: true, force: true })
+      fs.rmSync(path.dirname(hclFile), { recursive: true, force: true })
+    }
+  })
+
+  it('gives an outer resource its own end line past a nested lifecycle/dynamic sub-block, and does not mis-parent the next sibling', () => {
+    const content = `resource "aws_instance" "web" {
+  ami = "ami-123"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  dynamic "ebs_block_device" {
+    for_each = var.extra_disks
+    content {
+      device_name = ebs_block_device.value
+    }
+  }
+}
+
+resource "aws_instance" "db" {
+  ami = "ami-456"
+}
+`
+    const symbols = extractTerraform(content, 'nested.tf')
+    const names = symbols.map((s) => s.name)
+    // Regression guard: nested lifecycle/dynamic sub-blocks are not themselves resource/data/
+    // variable/output/module/provider/locals blocks and must never be emitted as symbols.
+    expect(names).not.toContain('ebs_block_device')
+    expect(names).not.toContain('lifecycle')
+
+    const web = symbols.find((s) => s.name === 'aws_instance.web')
+    const db = symbols.find((s) => s.name === 'aws_instance.db')
+    // Without true brace matching, the flat "ends where the next section starts" model would
+    // truncate web's range or let it swallow db entirely.
+    expect(web).toMatchObject({ lineStart: 1, lineEnd: 14 })
+    expect(db).toMatchObject({ lineStart: 16, lineEnd: 18 })
+  })
+
+  it('does not let a # / // / block comment containing a brace corrupt brace counting or fabricate a symbol from commented-out HCL', () => {
+    const content = `# resource "fake" "not_real" { this is a comment with a brace }
+resource "aws_instance" "web" {
+  // ami = "old-ami" { legacy }
+  ami = "ami-123" /* block comment with { brace */
+}
+`
+    const symbols = extractTerraform(content, 'comments.tf')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('fake.not_real')
+    expect(names).toContain('aws_instance.web')
+    const web = symbols.find((s) => s.name === 'aws_instance.web')
+    expect(web).toMatchObject({ lineStart: 2, lineEnd: 5 })
+  })
+
+  it('does not let a brace character inside a string literal default value corrupt brace counting', () => {
+    const content = `variable "config" {
+  default = "{}"
+}
+
+variable "next" {
+  default = "ok"
+}
+`
+    const symbols = extractTerraform(content, 'string_brace.tf')
+    const configVar = symbols.find((s) => s.name === 'var.config')
+    const nextVar = symbols.find((s) => s.name === 'var.next')
+    // Regression: an unbalanced-looking "{" / "}" inside a quoted default value must not be
+    // counted as real block nesting -- if it were, var.config would swallow var.next's range.
+    expect(configVar).toMatchObject({ lineStart: 1, lineEnd: 3 })
+    expect(nextVar).toMatchObject({ lineStart: 5, lineEnd: 7 })
+  })
+
+  it('does not let braces/quotes inside a heredoc body corrupt brace counting for the block or the next sibling', () => {
+    const content = `resource "aws_iam_policy" "example" {
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow"}]
+}
+EOF
+}
+
+resource "aws_instance" "after" {
+  ami = "ami-789"
+}
+`
+    const symbols = extractTerraform(content, 'heredoc.tf')
+    const policy = symbols.find((s) => s.name === 'aws_iam_policy.example')
+    const after = symbols.find((s) => s.name === 'aws_instance.after')
+    // Regression: an unmasked heredoc body has unbalanced braces and stray quote characters
+    // that would desync brace/quote tracking for the rest of the file if not masked out first.
+    expect(policy).toMatchObject({ lineStart: 1, lineEnd: 8 })
+    expect(after).toMatchObject({ lineStart: 10, lineEnd: 12 })
+  })
+
+  it('supports hyphens and underscores in resource/variable names', () => {
+    const content = `resource "aws_instance" "web-server_1" {
+  ami = "ami-1"
+}
+
+variable "db_password-v2" {
+  default = "x"
+}
+`
+    const symbols = extractTerraform(content, 'names.tf')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('aws_instance.web-server_1')
+    expect(names).toContain('var.db_password-v2')
+  })
 })

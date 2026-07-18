@@ -604,6 +604,48 @@ describe('drainOnce', () => {
       closeDb(projectDb)
     }
   })
+
+  // End-to-end proof for the Terraform/HCL adapter (feature-queue #310): drives the real
+  // shipping path (drainOnce with no injected index callback -> indexFileSync ->
+  // extractTerraform) rather than calling extractTerraform directly, per CLAUDE.md's
+  // injected-seam-trap warning -- a unit test on the extractor alone would never catch a
+  // registration gap (missing Language union entry, missing EXTENSION_LANGUAGE mapping, or
+  // missing NO_TREE_SITTER_EXTRACTORS wiring) that leaves .tf files unreachable via the real
+  // drain -> index -> symbols table path even though the extractor itself works in isolation.
+  it('default path indexes a real .tf file into global.db, resolving Terraform-addressed symbols (no injected callback)', () => {
+    const src = path.join(DIR, 'main.tf')
+    fs.writeFileSync(
+      src,
+      'resource "aws_instance" "web" {\n' +
+        '  ami = "ami-123"\n' +
+        '}\n' +
+        '\n' +
+        'variable "region" {\n' +
+        '  default = "us-east-1"\n' +
+        '}\n',
+    )
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    const count = drainOnce(DIR)
+    expect(count).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      const resource = querySymbols({ name: 'aws_instance.web', limit: 10 }, projectDb)
+      expect(resource.length).toBeGreaterThan(0)
+      expect(resource[0]?.kind).toBe('tf_resource')
+      expect(resource[0]?.lineStart).toBe(1)
+      expect(resource[0]?.lineEnd).toBe(3)
+
+      const variable = querySymbols({ name: 'var.region', limit: 10 }, projectDb)
+      expect(variable.length).toBeGreaterThan(0)
+      expect(variable[0]?.kind).toBe('tf_variable')
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
   // Regression: the incremental drain must reconcile DELETIONS, not just edits. The shipping path is `drainOnce(dir)` with no injected callbacks; before the fix a dirty path whose file was gone was skipped, orphaning its symbol/ref rows forever. This drives the real default path: index a file, delete it, re-queue its path, drain again, and asserts the symbol is gone from the project's global.db. It fails pre-fix (row survives) and passes post-fix.
   it('default path prunes a deleted file\'s rows on re-drain (no injected callback)', () => {
     const src = path.join(DIR, 'doomed.ts')
