@@ -1,0 +1,241 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import type * as NodeOs from 'node:os'
+
+// vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/resolveSessionTranscript resolve
+// against an isolated fake home instead of the real developer machine's
+// ~/.claude/projects/, which this test must never read from or write into.
+vi.mock('node:os', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeOs>()
+  return {
+    ...original,
+    homedir: vi.fn((...args: Parameters<typeof original.homedir>) => original.homedir(...args)),
+  }
+})
+
+import {
+  buildSessionOutline,
+  formatSessionOutline,
+  formatSessionSlice,
+  parseTurnRange,
+  resolveSessionTranscript,
+  sliceSessionTurns,
+} from '../src/session_read.js'
+import { projectTranscriptsDir } from '../src/waste.js'
+import { resolveProjectRoot } from '../src/project.js'
+import { clearModuleCaches } from '../src/reset.js'
+
+let tempDir: string
+let fakeHome: string
+let projectRoot: string
+let transcriptsDir: string
+
+beforeEach(() => {
+  clearModuleCaches()
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-read-test-'))
+  fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-read-home-'))
+  const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+  homedirMock.mockReturnValue(fakeHome)
+  projectRoot = path.join(tempDir, 'proj')
+  fs.mkdirSync(projectRoot, { recursive: true })
+  // resolveSessionTranscript resolves --project through resolveProjectRoot (same as
+  // cli_waste.ts's runWasteCommand) before slugifying it into a transcripts dir, so the
+  // fixture must be written under that resolved root's dir, not the raw tempDir path
+  // (resolveProjectRoot's canonicalize() can normalize drive-letter casing on Windows).
+  transcriptsDir = projectTranscriptsDir(resolveProjectRoot({ project: projectRoot }))
+  fs.mkdirSync(transcriptsDir, { recursive: true })
+})
+
+afterEach(() => {
+  clearModuleCaches()
+  fs.rmSync(tempDir, { recursive: true, force: true })
+  fs.rmSync(fakeHome, { recursive: true, force: true })
+  const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+  homedirMock.mockReset()
+})
+
+/** A realistic multi-turn synthetic transcript: user text, assistant tool_use, tool_result, another assistant turn -- plus a mix of non-turn bookkeeping lines that must be skipped. */
+function fixtureLines(): unknown[] {
+  return [
+    { type: 'custom-title', customTitle: 'test session' },
+    { type: 'mode', mode: 'normal' },
+    { type: 'user', message: { role: 'user', content: 'Please read config.ts and summarize it.' } },
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should read the file first.' },
+          { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/repo/config.ts' } },
+        ],
+      },
+    },
+    { type: 'attachment', foo: 'bar' },
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'export const X = 1\n'.repeat(20) }] }],
+      },
+    },
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'config.ts exports a single constant X set to 1.' }],
+      },
+    },
+  ]
+}
+
+function writeFixture(lines: unknown[], name = 'session.jsonl'): string {
+  const file = path.join(transcriptsDir, name)
+  fs.writeFileSync(file, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`, 'utf-8')
+  return file
+}
+
+describe('resolveSessionTranscript', () => {
+  it('resolves an explicit existing file path directly', () => {
+    const file = writeFixture(fixtureLines())
+    expect(resolveSessionTranscript(file, { project: projectRoot })).toBe(file)
+  })
+
+  it('resolves a bare session id against the project transcripts dir', () => {
+    const file = writeFixture(fixtureLines(), 'abc-123.jsonl')
+    expect(resolveSessionTranscript('abc-123', { project: projectRoot })).toBe(file)
+  })
+
+  it('defaults to the most-recently-modified transcript when no arg is given', () => {
+    const older = writeFixture(fixtureLines(), 'older.jsonl')
+    const newer = writeFixture(fixtureLines(), 'newer.jsonl')
+    const now = Date.now()
+    fs.utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+    fs.utimesSync(newer, new Date(now), new Date(now))
+    expect(resolveSessionTranscript(undefined, { project: projectRoot })).toBe(newer)
+  })
+
+  it('returns null for an unknown session id', () => {
+    expect(resolveSessionTranscript('does-not-exist', { project: projectRoot })).toBeNull()
+  })
+
+  it('returns null when no transcripts exist and no arg is given', () => {
+    expect(resolveSessionTranscript(undefined, { project: path.join(tempDir, 'no-such-project') })).toBeNull()
+  })
+})
+
+describe('buildSessionOutline', () => {
+  it('shows turn structure without full tool_result/text content', async () => {
+    const file = writeFixture(fixtureLines())
+    const turns = await buildSessionOutline(file)
+
+    // Only the 4 real user/assistant turns are numbered -- custom-title/mode/attachment are skipped.
+    expect(turns).toHaveLength(4)
+    expect(turns.map((t) => t.turn)).toEqual([1, 2, 3, 4])
+    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+
+    const toolTurn = turns[1]
+    expect(toolTurn?.toolCalls).toEqual(['Read'])
+
+    const resultTurn = turns[2]
+    // Preview must not contain the full 20-line repeated body -- it's truncated.
+    expect(resultTurn?.preview.length).toBeLessThan(200)
+    expect(resultTurn?.preview).not.toContain('export const X = 1\nexport const X = 1\nexport const X = 1')
+
+    for (const t of turns) {
+      expect(t.tokens).toBeGreaterThan(0)
+      expect(t.bytes).toBeGreaterThan(0)
+      expect(t.lineNumber).toBeGreaterThan(0)
+    }
+  })
+
+  it('returns an empty array for a transcript with no user/assistant turns', async () => {
+    const file = writeFixture([{ type: 'custom-title', customTitle: 'x' }, { type: 'mode', mode: 'normal' }])
+    expect(await buildSessionOutline(file)).toEqual([])
+  })
+
+  it('skips malformed JSON lines instead of throwing', async () => {
+    const file = path.join(transcriptsDir, 'malformed.jsonl')
+    fs.writeFileSync(
+      file,
+      'not json\n\n' + JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }) + '\n',
+      'utf-8',
+    )
+    const turns = await buildSessionOutline(file)
+    expect(turns).toHaveLength(1)
+  })
+})
+
+describe('sliceSessionTurns', () => {
+  it('extracts full content for the requested turn range only', async () => {
+    const file = writeFixture(fixtureLines())
+    const slice = await sliceSessionTurns(file, 2, 3)
+
+    expect(slice.map((t) => t.turn)).toEqual([2, 3])
+
+    const toolUseTurn = slice[0]
+    const toolUseBlock = toolUseTurn?.blocks.find((b) => b.type === 'tool_use')
+    expect(toolUseBlock?.name).toBe('Read')
+    expect(toolUseBlock?.input).toEqual({ file_path: '/repo/config.ts' })
+
+    const resultTurn = slice[1]
+    const resultBlock = resultTurn?.blocks.find((b) => b.type === 'tool_result')
+    // Full content, not truncated -- 20 repeats of a 19-char line.
+    expect(resultBlock?.resultText).toBe('export const X = 1\n'.repeat(20))
+  })
+
+  it('returns an empty array when the range is entirely past the end of the transcript', async () => {
+    const file = writeFixture(fixtureLines())
+    expect(await sliceSessionTurns(file, 50, 60)).toEqual([])
+  })
+
+  it('a single-turn range extracts exactly one turn', async () => {
+    const file = writeFixture(fixtureLines())
+    const slice = await sliceSessionTurns(file, 1, 1)
+    expect(slice).toHaveLength(1)
+    expect(slice[0]?.role).toBe('user')
+    expect(slice[0]?.blocks[0]?.text).toBe('Please read config.ts and summarize it.')
+  })
+})
+
+describe('parseTurnRange', () => {
+  it('parses a single number as a one-turn range', () => {
+    expect(parseTurnRange('5')).toEqual({ start: 5, end: 5 })
+  })
+
+  it('parses an N-M range', () => {
+    expect(parseTurnRange('3-7')).toEqual({ start: 3, end: 7 })
+  })
+
+  it('rejects an inverted range', () => {
+    expect(() => parseTurnRange('7-3')).toThrow(/invalid --range spec/)
+  })
+
+  it('rejects a non-numeric spec', () => {
+    expect(() => parseTurnRange('abc')).toThrow(/invalid --range spec/)
+  })
+})
+
+describe('formatSessionOutline / formatSessionSlice', () => {
+  it('formats an outline as one line per turn with turn number, role, and tool calls', async () => {
+    const file = writeFixture(fixtureLines())
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).toContain('1. [user]')
+    expect(text).toContain('2. [assistant]')
+    expect(text).toContain('[tools: Read]')
+  })
+
+  it('formats a slice as full turn content', async () => {
+    const file = writeFixture(fixtureLines())
+    const text = formatSessionSlice(await sliceSessionTurns(file, 2, 3))
+    expect(text).toContain('Turn 2 [assistant]')
+    expect(text).toContain('tool_use: Read')
+    expect(text).toContain('export const X = 1')
+  })
+
+  it('reports no turns found / no turns in range for empty inputs', () => {
+    expect(formatSessionOutline([])).toBe('(no turns found)')
+    expect(formatSessionSlice([])).toBe('(no turns in range)')
+  })
+})
