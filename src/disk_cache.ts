@@ -12,7 +12,10 @@
  * resolved lazily per call so tests can redirect it. Every operation is
  * fail-soft: a disk error never throws into a hook. Blobs are content-addressed,
  * so two processes that store the same id write identical bytes — concurrent
- * writers cannot corrupt each other.
+ * writers cannot corrupt each other. `storeBlob()` also runs every value
+ * through {@link file://./secret_redact.ts}'s `redactSecrets()` before it
+ * touches disk, so a credential accidentally echoed into cached tool output
+ * never gets persisted in plaintext.
  */
 
 import * as fs from 'node:fs'
@@ -21,6 +24,8 @@ import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
 import { atomicWriteText, sanitizeIdForFilename } from './util.js'
+import { redactSecrets } from './secret_redact.js'
+import { recordStat } from './stats.js'
 
 /** Default cap on blobs kept per subdir before the oldest are evicted. */
 export const DEFAULT_MAX_COUNT = 200
@@ -116,7 +121,24 @@ export function storeBlob(
   if (!p) return false
   const defaults = subdirCacheDefaults(subdir)
   const maxBytesPerItem = opts.maxBytesPerItem ?? defaults.maxBytesPerItem
-  const json = JSON.stringify(value)
+  const rawJson = JSON.stringify(value)
+  // Defense-in-depth: scan every blob for high-confidence secret patterns
+  // (API keys, tokens, private-key blocks) before it ever reaches disk, so a
+  // credential accidentally echoed into cached tool output isn't persisted
+  // in plaintext. This is the single funnel every blob-persisting caller
+  // (bash-output, web-output, mcp-output) goes through. Fail-safe, not
+  // fail-open: if the redaction pass itself throws, skip caching this blob
+  // entirely rather than risk writing unredacted content — consistent with
+  // every other failure path in this function (oversized blob, mkdir
+  // failure, write failure all return false without persisting).
+  let json: string
+  try {
+    const result = redactSecrets(rawJson)
+    json = result.text
+    if (result.count > 0) recordStat('secret_redacted', 0, result.count, undefined, subdir)
+  } catch {
+    return false
+  }
   if (Number.isFinite(maxBytesPerItem) && Buffer.byteLength(json, 'utf-8') > maxBytesPerItem) return false
   try {
     const dir = path.dirname(p)

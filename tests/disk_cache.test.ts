@@ -16,10 +16,36 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
+// vi.mock is hoisted — wraps the real redactSecrets in a spy (calls through by
+// default) so tests can both assert it ran and force a one-off throw to exercise
+// storeBlob()'s fail-safe path, without duplicating the real redaction logic.
+vi.mock('../src/secret_redact.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['redactSecrets'] as (text: string) => { text: string; count: number }
+  return {
+    ...original,
+    redactSecrets: vi.fn((text: string) => real(text)),
+  }
+})
+
+// vi.mock is hoisted — wraps the real recordStat in a spy (calls through by
+// default) so tests can assert a 'secret_redacted' stat fired without needing a
+// real global.db fixture. Mirrors tests/hooks_glob.test.ts's recordStat spy.
+vi.mock('../src/stats.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['recordStat'] as (...args: unknown[]) => void
+  return {
+    ...original,
+    recordStat: vi.fn((...args: unknown[]) => real(...args)),
+  }
+})
+
 const _testConfigPath = path.join(os.tmpdir(), `tg-disk-cache-config-test-${process.pid}.toml`)
 
 import { storeBlob, loadBlob, pruneBlobs, tokenGoatHome } from '../src/disk_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { redactSecrets } from '../src/secret_redact.js'
+import { recordStat, kindToSource, SOURCE_OTHER } from '../src/stats.js'
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -28,6 +54,8 @@ beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-blob-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
+  vi.mocked(redactSecrets).mockClear()
+  vi.mocked(recordStat).mockClear()
 })
 
 afterEach(() => {
@@ -261,5 +289,96 @@ describe('storeBlob — does not self-evict the blob it just wrote', () => {
 
     expect(ok).toBe(true)
     expect(loadBlob('bash_outputs', 'victim2')).not.toBeNull()
+  })
+})
+
+// Coverage for the redaction pass wired into storeBlob() (src/disk_cache.ts) as
+// the single choke point every blob-persisting caller (bash-output, web-output,
+// mcp-output) funnels through — see src/secret_redact.ts.
+describe('storeBlob — secret redaction choke point', () => {
+  it('redacts a secret before it ever reaches disk', () => {
+    const ok = storeBlob('bash_outputs', 'secret1', {
+      stdout: 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+    })
+
+    expect(ok).toBe(true)
+    const loaded = loadBlob('bash_outputs', 'secret1') as { stdout: string }
+    expect(loaded.stdout).toBe('AWS_ACCESS_KEY_ID=[REDACTED:aws_access_key]')
+    expect(loaded.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
+
+    // The raw bytes on disk never contain the secret either — not just the
+    // parsed-back value.
+    const p = path.join(tmpHome, 'bash_outputs', 'secret1.json')
+    const raw = fs.readFileSync(p, 'utf8')
+    expect(raw).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  })
+
+  it('leaves content with no secrets byte-for-byte unmodified', () => {
+    const value = { stdout: 'Build succeeded. 3 files changed.', exitCode: 0 }
+    const ok = storeBlob('bash_outputs', 'nosecret', value)
+
+    expect(ok).toBe(true)
+    expect(loadBlob('bash_outputs', 'nosecret')).toEqual(value)
+    const p = path.join(tmpHome, 'bash_outputs', 'nosecret.json')
+    expect(fs.readFileSync(p, 'utf8')).toBe(JSON.stringify(value))
+  })
+
+  it('redacts multiple distinct secrets within one blob and leaves the rest intact', () => {
+    const ok = storeBlob('web_outputs', 'multi', {
+      content:
+        'env dump:\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nGITHUB_TOKEN=ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8\ndone.',
+    })
+
+    expect(ok).toBe(true)
+    const loaded = loadBlob('web_outputs', 'multi') as { content: string }
+    expect(loaded.content).toBe(
+      'env dump:\nAWS_ACCESS_KEY_ID=[REDACTED:aws_access_key]\nGITHUB_TOKEN=[REDACTED:github_token]\ndone.',
+    )
+  })
+
+  it('records a secret_redacted stat when redaction fires, and that kind is registered in stats.ts (KIND_TO_SOURCE)', () => {
+    storeBlob('bash_outputs', 'stat1', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
+    expect(call).toBeDefined()
+    // Never left unregistered in KIND_TO_SOURCE -- a recurring bug class in this
+    // codebase per CLAUDE.md. Falling through to the generic default (SOURCE_OTHER)
+    // silently for an unregistered kind would also pass this loose an assertion,
+    // so assert the kind resolves to the intentionally-chosen source rather than
+    // merely "some source".
+    expect(kindToSource('secret_redacted')).toBe(SOURCE_OTHER)
+  })
+
+  it('does not record a stat when a blob has no secrets', () => {
+    storeBlob('bash_outputs', 'stat2', { stdout: 'nothing to see here' })
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'secret_redacted')
+    expect(call).toBeUndefined()
+  })
+
+  it('fails safe (skips caching this blob) when the redaction pass itself throws', () => {
+    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+
+    const ok = storeBlob('bash_outputs', 'redaction-failure', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+
+    expect(ok).toBe(false)
+    expect(loadBlob('bash_outputs', 'redaction-failure')).toBeNull()
+    const dir = path.join(tmpHome, 'bash_outputs')
+    const remaining = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    expect(remaining).toHaveLength(0)
+  })
+
+  it('recovers on the next call after a one-off redaction failure (the mocked throw does not persist)', () => {
+    vi.mocked(redactSecrets).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+    expect(storeBlob('bash_outputs', 'recover1', { stdout: 'AKIAIOSFODNN7EXAMPLE' })).toBe(false)
+
+    const ok = storeBlob('bash_outputs', 'recover2', { stdout: 'AKIAIOSFODNN7EXAMPLE' })
+    expect(ok).toBe(true)
+    const loaded = loadBlob('bash_outputs', 'recover2') as { stdout: string }
+    expect(loaded.stdout).toBe('[REDACTED:aws_access_key]')
   })
 })
