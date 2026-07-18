@@ -699,6 +699,23 @@ export function normalizePathForwardSlash(p: string, toLowerCase?: boolean): str
   return result
 }
 
+/**
+ * Slice `str` at `endIndex` without splitting a UTF-16 surrogate pair -- if the code
+ * unit at `endIndex` is a low surrogate (0xDC00-0xDFFF), back up one so the high
+ * surrogate stays with it. Extracted from byte-identical private copies in
+ * bash_compress.ts and overflow_guard.ts.
+ */
+export function safeSlice(str: string, endIndex: number): string {
+  let idx = endIndex
+  if (idx > 0 && idx < str.length) {
+    const codeUnit = str.charCodeAt(idx)
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      idx--
+    }
+  }
+  return str.slice(0, idx)
+}
+
 /** Return true when a path looks like a test file (tests/ dir or .test./.spec./_test. suffix). Moved here from graph_commands.ts (re-exported there) so other file-walk consumers (repomap, baseline) can share the same heuristic without a circular import. */
 export function isTestFile(p: string): boolean {
   return /(^|[/\\])(tests?)[/\\]/i.test(p) || /\.(test|spec)\.|_test\.|(^|[/\\])test_/i.test(p)

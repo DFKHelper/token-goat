@@ -2,7 +2,7 @@
 import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
 import { resolveProjectRoot } from './project.js'
-import { runGit } from './util.js'
+import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 
 export const MAX_RESUME_TOKENS = 2000
@@ -70,5 +70,5 @@ export function buildResumePacket(sessionId: string): string | null {
 
   const text = lines.join('\n')
   if (text.length <= MAX_RESUME_CHARS) return text
-  return text.slice(0, MAX_RESUME_CHARS) + '\n... (truncated to cap)\n'
+  return safeSlice(text, MAX_RESUME_CHARS) + '\n... (truncated to cap)\n'
 }
