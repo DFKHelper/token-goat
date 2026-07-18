@@ -138,6 +138,7 @@ import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from 
 import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
+import { buildSessionOutline, formatSessionOutline, formatSessionSlice, parseTurnRange, resolveSessionTranscript, sliceSessionTurns } from './session_read.js'
 import { runMcpAuditCommand } from './cli_mcp_audit.js'
 import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
@@ -557,6 +558,44 @@ function cmdWaste(opts: { project?: string; transcript?: string; json?: boolean;
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
   })
+}
+
+async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
+  const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  if (transcriptPath === null) {
+    throw new CliError(
+      sessionIdOrPath !== undefined
+        ? `no session transcript found for '${sessionIdOrPath}'`
+        : 'no session transcript found for the current project; pass a session id or path explicitly',
+    )
+  }
+  const turns = await buildSessionOutline(transcriptPath)
+  if (opts.json === true) {
+    out(JSON.stringify({ transcriptPath, turns }))
+    return
+  }
+  out(`Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`)
+}
+
+async function cmdSessionSlice(
+  sessionIdOrPath: string | undefined,
+  opts: { project?: string; range: string; json?: boolean },
+): Promise<void> {
+  const transcriptPath = resolveSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  if (transcriptPath === null) {
+    throw new CliError(
+      sessionIdOrPath !== undefined
+        ? `no session transcript found for '${sessionIdOrPath}'`
+        : 'no session transcript found for the current project; pass a session id or path explicitly',
+    )
+  }
+  const { start, end } = parseTurnRange(opts.range)
+  const turns = await sliceSessionTurns(transcriptPath, start, end)
+  if (opts.json === true) {
+    out(JSON.stringify({ transcriptPath, turns }))
+    return
+  }
+  out(formatSessionSlice(turns))
 }
 
 function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
@@ -2057,7 +2096,20 @@ export function buildProgram(): Command {
     .option('--json', 'output JSON')
     .action(guard(cmdWaste))
 
+  program
+    .command('session-outline [session-id-or-path]')
+    .description('turn-by-turn structure (role, preview, tool calls, approx size) of a Claude Code session JSONL transcript, instead of a raw Read; defaults to the current project\'s most recent session')
+    .option('--project <path>', 'project root to resolve the session transcript against')
+    .option('--json', 'output JSON')
+    .action(guard(cmdSessionOutline))
 
+  program
+    .command('session-slice [session-id-or-path]')
+    .description('full content of one turn range from a Claude Code session JSONL transcript (see session-outline for turn numbers), instead of a raw Read')
+    .requiredOption('--range <spec>', 'turn range, e.g. 5-9 or 12 (see session-outline for turn numbers)')
+    .option('--project <path>', 'project root to resolve the session transcript against')
+    .option('--json', 'output JSON')
+    .action(guard(cmdSessionSlice))
 
   program
     .command('mcp-audit')

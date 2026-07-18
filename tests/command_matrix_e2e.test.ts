@@ -585,6 +585,76 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(parsed.repeatedUncompressedBash.some((c) => c.normalized === 'git status' && c.count === 2)).toBe(true)
   },
 
+  'session-outline': () => {
+    const proj = mkIsolated('tg-matrix-session-outline-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    const lines = [
+      { type: 'custom-title', customTitle: 'not a turn' },
+      { type: 'user', message: { role: 'user', content: 'read config.ts please' } },
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/tmp/config.ts' } }] },
+      },
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'export const X = 1'.repeat(20) }] }] },
+      },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'config.ts exports X.' }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['session-outline', transcript])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Transcript:')
+    expect(r.stdout).toMatch(/^1\. \[user\]/m)
+    expect(r.stdout).toContain('[tools: Read]')
+    expect(r.stdout).not.toContain('export const X = 1'.repeat(20))
+
+    const rj = run(['session-outline', transcript, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { transcriptPath: string; turns: Array<{ turn: number; role: string; toolCalls: string[] }> }
+    expect(parsed.turns).toHaveLength(4)
+    expect(parsed.turns[1]?.toolCalls).toEqual(['Read'])
+
+    // Unknown id/path resolves to nothing and exits non-zero.
+    const rMissing = run(['session-outline', 'no-such-session-id', '--project', proj])
+    expect(rMissing.status).not.toBe(0)
+  },
+
+  'session-slice': () => {
+    const proj = mkIsolated('tg-matrix-session-slice-')
+    const transcript = path.join(proj, 'fake-session.jsonl')
+    const lines = [
+      { type: 'user', message: { role: 'user', content: 'read config.ts please' } },
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/tmp/config.ts' } }] },
+      },
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'export const X = 1' }] }] },
+      },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8')
+
+    const r = run(['session-slice', transcript, '--range', '2-3'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Turn 2 [assistant]')
+    expect(r.stdout).toContain('tool_use: Read')
+    expect(r.stdout).toContain('export const X = 1')
+    expect(r.stdout).not.toContain('read config.ts please')
+
+    const rj = run(['session-slice', transcript, '--range', '1', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { turns: Array<{ turn: number; role: string }> }
+    expect(parsed.turns).toHaveLength(1)
+    expect(parsed.turns[0]?.role).toBe('user')
+
+    // --range is required.
+    const rNoRange = run(['session-slice', transcript])
+    expect(rNoRange.status).not.toBe(0)
+  },
+
   'mcp-audit': () => {
     const proj = mkIsolated('tg-matrix-mcp-audit-')
 
