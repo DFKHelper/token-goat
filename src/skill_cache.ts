@@ -32,6 +32,7 @@ export const SKILLS_OUTPUT_SUBDIR = 'skills'
 
 let _skillOutputsDirOverride: string | null = null
 let _skillsSourceDirOverride: string | null = null
+let _pluginsManifestPathOverride: string | null = null
 
 export function setSkillOutputsDirForTesting(dir: string | null): void {
   _skillOutputsDirOverride = dir
@@ -41,9 +42,14 @@ export function setSkillsSourceDirForTesting(dir: string | null): void {
   _skillsSourceDirOverride = dir
 }
 
+export function setPluginsManifestPathForTesting(p: string | null): void {
+  _pluginsManifestPathOverride = p
+}
+
 registerReset(() => {
   _skillOutputsDirOverride = null
   _skillsSourceDirOverride = null
+  _pluginsManifestPathOverride = null
 })
 
 export interface SkillMeta {
@@ -768,10 +774,55 @@ export async function getSkillFilePath(skillName: string): Promise<string | null
   }
 }
 
-// Resolve the on-disk install path of a skill (~/.claude/skills/<name>/SKILL.md) if it exists, else null. `name` is sanitized by safeSkillName (no slash or dot), so there is no path-traversal risk. Shared by getSkillFilePath's cache-miss fallback and the Skill hook's sourcePath resolution.
+// Resolve a `plugin:skill`-scoped name's on-disk SKILL.md via `~/.claude/plugins/installed_plugins.json`. Plugin skills live at `<installPath>/skills/<skillSlug>/SKILL.md`, where `<installPath>` (e.g. `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`) is only discoverable through this manifest -- unlike ~/.claude/skills/<name>/, there is no fixed directory shape to guess. The manifest's `plugins` map is keyed `<pluginName>@<marketplace>`, one or more entries per key (one per install scope); every entry whose plugin-name segment matches is tried until one resolves. Fails soft (null) on a missing/malformed manifest or an unmatched plugin, matching every other cache-reading path in this file.
+async function resolvePluginSkillPath(pluginName: string, skillSlug: string): Promise<string | null> {
+  const manifestPath = _pluginsManifestPathOverride ?? resolve(homedir(), '.claude', 'plugins', 'installed_plugins.json')
+  let raw: string
+  try {
+    raw = await fs.readFile(manifestPath, 'utf8')
+  } catch {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const plugins = (parsed as Record<string, unknown>)['plugins']
+  if (typeof plugins !== 'object' || plugins === null) return null
+
+  for (const [key, entries] of Object.entries(plugins as Record<string, unknown>)) {
+    if (key !== pluginName && !key.startsWith(pluginName + '@')) continue
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const installPath = (entry as Record<string, unknown>)['installPath']
+      if (typeof installPath !== 'string' || installPath === '') continue
+      const diskPath = resolve(installPath, 'skills', skillSlug, 'SKILL.md')
+      try {
+        await fs.access(diskPath)
+        return diskPath
+      } catch {
+        continue
+      }
+    }
+  }
+  return null
+}
+
+// Resolve the on-disk install path of a skill (~/.claude/skills/<name>/SKILL.md, or a plugin-scoped `plugin:skill`'s manifest-resolved path) if it exists, else null. `name` is sanitized by safeSkillName (no slash or dot), so there is no path-traversal risk. Shared by getSkillFilePath's cache-miss fallback and the Skill hook's sourcePath resolution.
 export async function installedSkillPath(skillName: string): Promise<string | null> {
   const name = safeSkillName(skillName)
   if (!name) return null
+
+  const colonIdx = name.indexOf(':')
+  if (colonIdx > 0 && colonIdx < name.length - 1) {
+    const pluginPath = await resolvePluginSkillPath(name.slice(0, colonIdx), name.slice(colonIdx + 1))
+    if (pluginPath !== null) return pluginPath
+  }
+
   const diskPath = resolve(skillsSourceDir(), name, 'SKILL.md')
   try {
     await fs.access(diskPath)
