@@ -59,9 +59,9 @@ export const RESET = `${_E}[0m`
 const _ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[PX^_].*?\x1B\\|\x1B[@-_]/gs
 
 /**
- * Unicode Private Use Area regex: strips U+E000–U+F8FF (BMP) and U+F0000–U+FFFDD (supplementary).
+ * Unicode Private Use Area regex: strips U+E000–U+F8FF (BMP) and U+F0000–U+FFFFD (supplementary).
  */
-const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFDD}]/gu
+const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/gu
 
 /**
  * Remove all ANSI/VT escape sequences from *s*.
@@ -69,7 +69,7 @@ const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFDD}]/gu
  * - CSI colour/cursor sequences
  * - OSC hyperlinks and title sequences
  * - DCS/SOS/PM/APC strings
- * - Unicode Private Use Area characters (U+E000–U+F8FF, U+F0000–U+FFFDD)
+ * - Unicode Private Use Area characters (U+E000–U+F8FF, U+F0000–U+FFFFD)
  */
 export function stripAnsi(s: string): string {
   if (!s.includes('\x1b')) {
