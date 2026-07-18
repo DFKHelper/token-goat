@@ -1,10 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, runDoctor } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
+import type * as CliContextStats from '../src/cli_context_stats.js'
+
+// runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context
+// path used to call it fire-and-forget with no await, which turned a synchronous throw into a
+// silently-swallowed unhandled promise rejection instead of propagating like every other doctor
+// error. Mock it to throw so we can assert runDoctorAndExit's own returned promise rejects.
+vi.mock('../src/cli_context_stats.js', async (importOriginal) => {
+  const original = await importOriginal<typeof CliContextStats>()
+  return { ...original, runContextStats: vi.fn(original.runContextStats) }
+})
 
 describe('cli_doctor', () => {
   let tempDir: string
@@ -371,6 +381,23 @@ describe('cli_doctor', () => {
       } finally {
         Object.defineProperty(process, 'platform', { value: originalPlatform })
       }
+    })
+  })
+
+  describe('runDoctorAndExit --context error propagation', () => {
+    it('propagates a runContextStats rejection instead of an unhandled promise rejection', async () => {
+      const contextStats = await import('../src/cli_context_stats.js')
+      const mocked = contextStats.runContextStats as unknown as ReturnType<typeof vi.fn>
+      // mockRejectedValueOnce is self-limiting -- it only intercepts this one call, then falls
+      // back to the wrapped real implementation for every subsequent call, so no manual restore
+      // is needed.
+      mocked.mockRejectedValueOnce(new Error('boom from context stats'))
+      await expect(runDoctorAndExit({ dataDir: tempDir, context: true })).rejects.toThrow('boom from context stats')
+    })
+
+    it('resolves normally with --context when runContextStats succeeds', async () => {
+      const code = await runDoctorAndExit({ dataDir: tempDir, context: true })
+      expect(typeof code).toBe('number')
     })
   })
 })

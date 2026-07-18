@@ -530,12 +530,12 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-function cmdDoctor(opts: { context?: boolean }): void {
+async function cmdDoctor(opts: { context?: boolean }): Promise<void> {
   const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean } = {}
   if (opts.context === true) {
     doctorOpts.context = true
   }
-  const code = runDoctorAndExit(doctorOpts)
+  const code = await runDoctorAndExit(doctorOpts)
   if (code !== 0) {
     throw new CliError('doctor checks failed')
   }
