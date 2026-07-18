@@ -164,6 +164,7 @@ import { runRecallCommand } from './cli_recall.js'
 import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { isHintCategory } from './hint_stats.js'
+import { runStatuslineCommand } from './cli_statusline.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -659,6 +660,10 @@ function cmdRecall(query: string, opts: { type?: string; limit?: string; json?: 
     ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
     ...(opts.json === true ? { json: true } : {}),
   })
+}
+
+function cmdStatusline(opts: { json?: boolean } = {}): Promise<void> {
+  return runStatuslineCommand({ ...(opts.json === true ? { json: true } : {}) })
 }
 
 function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: string; markIneffective?: string } = {}): void {
@@ -2236,6 +2241,12 @@ export function buildProgram(): Command {
     .option('--mark-effective <category>', 'record a manual "effective" vote for a hint category')
     .option('--mark-ineffective <category>', 'record a manual "ineffective" vote for a hint category')
     .action(guard(cmdHintStats))
+
+  program
+    .command('statusline')
+    .description('render one line of terminal status text from a harness statusline payload on stdin (Claude Code statusLine.command)')
+    .option('--json', 'emit the underlying data as JSON instead of a rendered line (debug)')
+    .action(guard(cmdStatusline))
 
   program
     .command('bash-output [id]')
