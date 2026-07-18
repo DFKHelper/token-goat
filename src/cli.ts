@@ -84,6 +84,7 @@ import {
   runJsonQuery,
   runOpenApiOutline,
   runOpenApiOp,
+  runPrSlice,
   runSqliteSchema,
   runSqliteQuery,
 
@@ -1004,6 +1005,10 @@ function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
 
 function cmdOpenApiOp(file: string, operation: string, opts: { json?: boolean }) {
   process.exitCode = runOpenApiOp({ file, operation, ...opts })
+}
+
+function cmdPrSlice(pr: string, slice: string, opts: { repo?: string; json?: boolean }) {
+  process.exitCode = runPrSlice({ pr, slice, ...opts })
 }
 
 function cmdSqliteSchema(file: string, opts: { json?: boolean }) {
@@ -2990,6 +2995,17 @@ export function buildProgram(): Command {
     )
     .option('--json', 'emit the operation detail as JSON instead of text')
     .action(guard(cmdOpenApiOp))
+
+  program
+    .command('pr-slice <pr> <slice>')
+    .description(
+      'one slice of a GitHub PR (files / one file\'s diff / review comments / description) via `gh` instead of a full `gh pr view`/`gh pr diff` dump\n\n' +
+        'pr is a PR number or URL. slice is one of: files (changed files with +/- counts), ' +
+        "diff:<path> (one file's diff hunk), comments (review comments), description (title/body/metadata)",
+    )
+    .option('--repo <owner/repo>', "target repo (default: resolved from the current directory's git remote 'origin')")
+    .option('--json', 'emit the slice as JSON instead of text')
+    .action(guard(cmdPrSlice))
 
   program
     .command('sqlite-schema <file>')

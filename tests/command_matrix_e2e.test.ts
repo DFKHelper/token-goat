@@ -325,6 +325,15 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('GET /users/{id}')
     expect(r.stdout).toContain('404:')
   },
+  'pr-slice': () => {
+    // gh's presence/auth state varies by machine and CI image (and this suite must stay
+    // hermetic -- no real gh/network calls) -- verify dispatch via --help reachability rather
+    // than full behavioral output, same pattern as video-chapters/fetch-image.
+    const r = run(['pr-slice', '--help'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/files|diff|comments|description/i)
+  },
   'sqlite-schema': () => {
     const dir = mkIsolated('tg-matrix-sqliteschema-')
     const dbPath = path.join(dir, 'fixture.db')
