@@ -345,6 +345,230 @@ describe('trace command', () => {
       expect(frames[0]?.file).toBe(upperFrame)
     },
   )
+
+  // ── Node.js grammar ──────────────────────────────────────────────────────
+
+  const SAMPLE_NODE = [
+    'Error: boom',
+    '    at helper (main.js:12:34)',
+    '    at Object.<anonymous> (node:internal/modules/cjs/loader:1105:14)',
+  ].join('\n')
+
+  it('parses a Node/V8 stack trace into the expected TraceBlock/TraceFrame shape', () => {
+    // cmdTrace filters every frame through isProjectFrame before printing (node:internal/...
+    // gets dropped -- covered separately below), so only the project-owned frame is expected
+    // to survive here; the with-func parse itself is asserted directly.
+    const r = run(['trace', '--json'], { input: SAMPLE_NODE, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(1)
+    expect(parsed.tracebacks[0]?.exception).toBe('Error: boom')
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(1)
+    expect(frames[0]).toMatchObject({ file: 'main.js', lineNo: 12, func: 'helper' })
+  })
+
+  it('filters Node internal-protocol frames (node:internal/...) via isProjectFrame, keeping project frames', () => {
+    const r = run(['trace'], { input: SAMPLE_NODE, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('main.js')
+    expect(r.stdout).not.toContain('node:internal')
+  })
+
+  it('parses the anonymous Node frame form (no function name/parens)', () => {
+    const anon = ['Error: anon boom', '    at main.js:3:1'].join('\n')
+    const r = run(['trace', '--json'], { input: anon, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(1)
+    expect(frames[0]).toMatchObject({ file: 'main.js', lineNo: 3, func: '' })
+  })
+
+  // ── Rust grammar ──────────────────────────────────────────────────────────
+
+  const SAMPLE_RUST_NO_BACKTRACE = [
+    "thread 'main' panicked at src/main.rs:10:5:",
+    'called `Option::unwrap()` on a `None` value',
+    'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace',
+  ].join('\n')
+
+  const SAMPLE_RUST_WITH_BACKTRACE = [
+    "thread 'main' panicked at src/main.rs:10:5:",
+    'called `Option::unwrap()` on a `None` value',
+    'stack backtrace:',
+    '   0: rust_begin_unwind',
+    '             at /rustc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/library/std/src/panicking.rs:665:5',
+    '   1: my_crate::helper',
+    '             at src/helper.rs:20:9',
+    '   2: my_crate::main',
+    '             at src/main.rs:10:5',
+    '   3: core::ops::function::FnOnce::call_once',
+    '             at /rustc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/library/core/src/ops/function.rs:250:5',
+  ].join('\n')
+
+  it('parses a Rust panic with no backtrace section into a single panic-site frame', () => {
+    const r = run(['trace', '--json'], { input: SAMPLE_RUST_NO_BACKTRACE, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(1)
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(1)
+    expect(frames[0]).toMatchObject({ file: 'src/main.rs', lineNo: 10 })
+    expect(parsed.tracebacks[0]?.exception).toBe('called `Option::unwrap()` on a `None` value')
+  })
+
+  it('prefers the parsed stack-backtrace frames over the single panic-site frame when RUST_BACKTRACE output is present (cmdTrace filters to project frames, so this proves the multi-frame backtrace -- not just the single panic-site frame -- was parsed: a fallback to the single frame would yield only 1 project frame here, not 2)', () => {
+    const r = run(['trace', '--json'], { input: SAMPLE_RUST_WITH_BACKTRACE, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(2)
+    expect(frames[0]).toMatchObject({ file: 'src/helper.rs', lineNo: 20, func: 'my_crate::helper' })
+    expect(frames[1]).toMatchObject({ file: 'src/main.rs', lineNo: 10, func: 'my_crate::main' })
+  })
+
+  it('filters rustc-internal (/rustc/...) frames via isProjectFrame, keeping the project frame', () => {
+    const r = run(['trace'], { input: SAMPLE_RUST_WITH_BACKTRACE, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('main.rs')
+    expect(r.stdout).not.toContain('/rustc/')
+  })
+
+  it('filters a Cargo-registry dependency frame via isProjectFrame', () => {
+    const withDep = [
+      "thread 'main' panicked at src/main.rs:10:5:",
+      'boom',
+      'stack backtrace:',
+      '   0: some_dep::do_thing',
+      '             at /home/user/.cargo/registry/src/index.crates.io/some_dep-1.0.0/src/lib.rs:5:1',
+      '   1: my_crate::main',
+      '             at ./src/main.rs:10:5',
+    ].join('\n')
+    const r = run(['trace'], { input: withDep, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('main.rs')
+    expect(r.stdout).not.toContain('.cargo')
+  })
+
+  // ── JVM grammar ─────────────────────────────────────────────────────────
+
+  const SAMPLE_JVM = [
+    'Exception in thread "main" java.lang.NullPointerException: Cannot invoke "String.length()" because "s" is null',
+    '\tat com.example.MyClass.doWork(MyClass.java:42)',
+    '\tat com.example.External.doThing(/opt/vendor/External.java:5)',
+    'Caused by: java.lang.IllegalStateException: root cause',
+    '\tat com.example.Other.method(Other.java:5)',
+    '\t... 3 more',
+  ].join('\n')
+
+  it('parses a JVM exception into the expected TraceBlock/TraceFrame shape, including a Caused by chain as its own block', () => {
+    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every
+    // frame through isProjectFrame before printing, so a frame this test doesn't want dropped
+    // must itself resolve as project-owned.
+    const shapeOnly = [
+      'Exception in thread "main" java.lang.NullPointerException: Cannot invoke "String.length()" because "s" is null',
+      '\tat com.example.MyClass.doWork(MyClass.java:42)',
+      '\tat com.example.MyClass.main(MyClass.java:10)',
+      'Caused by: java.lang.IllegalStateException: root cause',
+      '\tat com.example.Other.method(Other.java:5)',
+      '\t... 3 more',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: shapeOnly, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(2)
+    expect(parsed.tracebacks[0]?.exception).toContain('NullPointerException')
+    const firstFrames = parsed.tracebacks[0]?.frames ?? []
+    expect(firstFrames.length).toBe(2)
+    expect(firstFrames[0]).toMatchObject({ file: 'MyClass.java', lineNo: 42, func: 'com.example.MyClass.doWork' })
+    expect(parsed.tracebacks[1]?.exception).toContain('Caused by: java.lang.IllegalStateException')
+    const secondFrames = parsed.tracebacks[1]?.frames ?? []
+    expect(secondFrames.length).toBe(1)
+    expect(secondFrames[0]).toMatchObject({ file: 'Other.java', lineNo: 5 })
+  })
+
+  it('filters a JVM frame with an absolute out-of-project file path via isProjectFrame, keeping the relative in-project frame', () => {
+    const r = run(['trace'], { input: SAMPLE_JVM, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('MyClass.java')
+    expect(r.stdout).not.toContain('External.java')
+  })
+
+  it('handles the Native Method/Unknown Source no-source-info JVM frame forms without crashing', () => {
+    const noSource = [
+      'java.lang.RuntimeException: boom',
+      '\tat java.base/java.lang.Thread.run(Native Method)',
+      '\tat com.example.MyClass.run(MyClass.java:7)',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: noSource, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number }> }> }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.some((f) => f.file === 'Native Method' && f.lineNo === 0)).toBe(true)
+  })
+
+  // ── .NET grammar ────────────────────────────────────────────────────────
+
+  const SAMPLE_DOTNET = [
+    'Unhandled exception. System.NullReferenceException: Object reference not set to an instance of an object.',
+    '   at MyApp.Program.DoWork() in Program.cs:line 42',
+    '   at MyApp.Program.External() in /opt/vendor/External.cs:line 5',
+  ].join('\n')
+
+  it('parses a .NET exception into the expected TraceBlock/TraceFrame shape', () => {
+    // No out-of-project frame here (that's covered separately below) -- cmdTrace filters every
+    // frame through isProjectFrame before printing, so a frame this test doesn't want dropped
+    // must itself resolve as project-owned.
+    const shapeOnly = [
+      'Unhandled exception. System.NullReferenceException: Object reference not set to an instance of an object.',
+      '   at MyApp.Program.DoWork() in Program.cs:line 42',
+      '   at MyApp.Program.Main(String[] args) in Program.cs:line 10',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: shapeOnly, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(1)
+    expect(parsed.tracebacks[0]?.exception).toContain('NullReferenceException')
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(2)
+    expect(frames[0]).toMatchObject({ file: 'Program.cs', lineNo: 42, func: 'MyApp.Program.DoWork()' })
+  })
+
+  it('filters a .NET frame with an absolute out-of-project file path via isProjectFrame, keeping the relative in-project frame', () => {
+    const r = run(['trace'], { input: SAMPLE_DOTNET, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Program.cs')
+    expect(r.stdout).not.toContain('External.cs')
+  })
+
+  it('parses a bare .NET exception (no "Unhandled exception." prefix) and handles a frame with no source location', () => {
+    const bare = [
+      'System.InvalidOperationException: bad state',
+      '   at MyApp.Program.DoWork() in Program.cs:line 9',
+      '   at MyApp.Program.Main(String[] args)',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: bare, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames.length).toBe(2)
+    expect(frames[1]).toMatchObject({ file: '', lineNo: 0, func: 'MyApp.Program.Main(String[] args)' })
+  })
+
+  // ── mixed grammars in one input ────────────────────────────────────────
+
+  it('parses both a Python traceback and a Node stack trace present in the same input (mixed CI log)', () => {
+    const mixed = [SAMPLE_TRACEBACK, '', SAMPLE_NODE].join('\n')
+    const r = run(['trace', '--json'], { input: mixed, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(2)
+    expect(parsed.tracebacks[0]?.exception).toContain('ValueError')
+    expect(parsed.tracebacks[0]?.frames.some((f) => f.file === 'main.py')).toBe(true)
+    expect(parsed.tracebacks[1]?.exception).toBe('Error: boom')
+    expect(parsed.tracebacks[1]?.frames.some((f) => f.file === 'main.js')).toBe(true)
+  })
 })
 
 // ── logfold ─────────────────────────────────────────────────────────────────
