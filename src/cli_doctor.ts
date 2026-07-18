@@ -363,14 +363,14 @@ export function printDoctorResults(results: DoctorResult[]): void {
 /**
  * Run doctor and return exit code (0 for success, 1 for failures).
  */
-export function runDoctorAndExit(opts?: { dataDir?: string; configPath?: string; context?: boolean }): number {
+export async function runDoctorAndExit(opts?: { dataDir?: string; configPath?: string; context?: boolean }): Promise<number> {
   const results = runDoctor(opts?.dataDir, opts?.configPath)
   printDoctorResults(results)
 
   if (opts?.context === true) {
     console.log('\n## Context footprint\n')
     // Call runContextStats to show the context breakdown.
-    runContextStats({})
+    await runContextStats({})
     console.log()
 
     // Add pregen-gap check: if pregen.json exists, check for skills on disk missing from pregen names.
