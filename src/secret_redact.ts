@@ -37,8 +37,17 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // ("sk-ant-"), so they're matched first — the generic OpenAI pattern's
   // negative lookahead below is defense in depth, not the sole guard.
   ['anthropic_api_key', /sk-ant-[A-Za-z0-9_-]{20,}/g],
-  ['openai_api_key', /sk-(?!ant-)[A-Za-z0-9]{20,}/g],
+  // Modern (post-2024, now the default) OpenAI project keys: "sk-proj-" followed by a long
+  // base64url-ish body that legitimately contains '-' and '_' -- the generic pattern below
+  // deliberately excludes those characters (hyphenated prose would false-fire), so this needs
+  // its own entry with the more specific prefix matched first, like sk-ant- above.
+  ['openai_project_key', /sk-proj-[A-Za-z0-9_-]{20,}/g],
+  ['openai_api_key', /sk-(?!ant-|proj-)[A-Za-z0-9]{20,}/g],
   ['aws_access_key', /AKIA[0-9A-Z]{16}/g],
+  // Fine-grained PATs ("github_pat_...") are matched before the classic gh[oprsu]_ pattern so
+  // the full token is always consumed as one match -- a fine-grained token's own body can
+  // contain '_' and could otherwise partially match the classic pattern.
+  ['github_token', /github_pat_[A-Za-z0-9_]{22,}/g],
   ['github_token', /gh[oprsu]_[A-Za-z0-9]{36,}/g],
   ['slack_token', /xox[baprs]-[A-Za-z0-9-]+/g],
   // Matches the full block (BEGIN marker through its matching END marker), not just the

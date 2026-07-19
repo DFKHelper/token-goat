@@ -245,6 +245,22 @@ describe('parseLcov', () => {
     expect(x!.uncoveredBranches).toEqual([{ line: 1 }])
   })
 
+  it('joins an LCOV v2 three-field FN record (FN:<start>,<end>,<name>) with its FNDA by name', () => {
+    // Regression: lcov >= 2.0 (geninfo) may emit an optional end-line field in FN records.
+    // Keying fnLines by everything after the first comma ("10,foo") while FNDA keys by the bare
+    // name ("foo") made every function in a v2 report a phantom uncovered function.
+    const r = parseLcov('SF:src/v2.ts\nFN:5,10,foo\nFNDA:3,foo\nDA:5,3\nend_of_record\n')
+    const f = r.files.find((f2) => f2.filePath === 'src/v2.ts')
+    // foo was hit 3 times -- the file has no gaps at all and must be omitted entirely.
+    expect(f).toBeUndefined()
+
+    // And an actually-uncovered v2-format function is still reported, at its start line.
+    const r2 = parseLcov('SF:src/v2b.ts\nFN:7,12,bar\nFNDA:0,bar\nDA:7,1\nend_of_record\n')
+    const f2b = r2.files.find((x) => x.filePath === 'src/v2b.ts')
+    expect(f2b).toBeDefined()
+    expect(f2b!.uncoveredFunctions).toEqual([{ name: 'bar', line: 7 }])
+  })
+
   it('sorts files worst-offenders-first by uncovered-line-count descending', () => {
     // partial.ts has 7 uncovered lines; branchy.ts and untested.ts have 0 uncovered lines but
     // still appear (branch/function gaps), so partial.ts must sort first.
