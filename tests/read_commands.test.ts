@@ -28,7 +28,7 @@ vi.mock('../src/parser.js', () => ({
 }))
 
 vi.mock('../src/hooks_index.js', () => ({
-  appendDirtyPath: vi.fn(),
+  enqueueDirtyPathSafe: vi.fn(),
 }))
 
 vi.mock('../src/constants.js', () => ({
@@ -91,11 +91,11 @@ import { indexFileSync } from '../src/parser.js'
 import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
-import { appendDirtyPath } from '../src/hooks_index.js'
+import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
-const mockAppendDirtyPath = vi.mocked(appendDirtyPath)
+const mockAppendDirtyPath = vi.mocked(enqueueDirtyPathSafe)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
 const mockGetFileEntry = vi.mocked(getFileEntry)
 const mockFindContainingSection = vi.mocked(findContainingSection)
@@ -276,7 +276,7 @@ describe('read_commands', () => {
       // Fix: a stale sha triggers an inline reparse (indexFileSync) before the query runs,
       // instead of just prepending a warning telling the agent to burn a full-file read.
       expect(mockIndexFileSync).toHaveBeenCalled()
-      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f))
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       expect(stdout).not.toContain('STALE')
       expect(stdout).toContain('foo')
     })
@@ -779,7 +779,7 @@ describe('read_commands', () => {
         // file for the worker to re-embed -- token-goat semantic would then serve stale embedded
         // content (or match nothing) for this file indefinitely. Mirrors cmdReplace's (cli.ts)
         // enqueueDirtyPathSafe call after its own write.
-        expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f))
+        expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       })
 
       it('does not enqueue the dirty queue when --force-refresh is not set', () => {
@@ -939,7 +939,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       runSkeleton({ file: 'a.ts', forceRefresh: true })
       expect(mockIndexFileSync).toHaveBeenCalled()
-      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('a.ts', process.cwd()))
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('a.ts', process.cwd()), { alreadyResolved: true })
     })
 
     it('does not enqueue the dirty queue without --force-refresh', () => {
@@ -1077,7 +1077,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       runOutline({ file: 'f.ts', forceRefresh: true })
       expect(mockIndexFileSync).toHaveBeenCalled()
-      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('f.ts', process.cwd()))
+      expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath('f.ts', process.cwd()), { alreadyResolved: true })
     })
 
     it('does not enqueue the dirty queue without --force-refresh', () => {

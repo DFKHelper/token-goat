@@ -19,6 +19,7 @@ import { dataDir } from './constants.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
+import { resolveIndexPath } from './paths.js'
 import { atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
 import { parseDirtyQueueLines } from './worker.js'
@@ -67,6 +68,20 @@ export function appendDirtyPath(normalizedPath: string): void {
   // fingerprint again on the very first drain immediately following this edit: it will not be
   // requeued that one cycle, but the next edit re-enqueues it and the cycle repeats -- it is
   // never permanently lost, only occasionally slower to recover a mid-collision retry.
+}
+
+/**
+ * Enqueue `filePath` for background reindexing, never letting a queue-append failure block the
+ * write/read it follows. Pass `alreadyResolved: true` when the caller has already run the path
+ * through {@link resolveIndexPath} (avoids re-resolving); omitted or `false` resolves it here.
+ */
+export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?: boolean }): void {
+  try {
+    appendDirtyPath(opts?.alreadyResolved === true ? filePath : resolveIndexPath(filePath))
+  } catch {
+    // Fail-soft: the file write/reparse already landed either way, just not reindexed until the
+    // next `token-goat index` or edit touches this file again.
+  }
 }
 
 /**
