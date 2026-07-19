@@ -16,10 +16,12 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return {
     ...original,
     configPath: () => _testConfigPath,
+    projectConfigPath: () => _testProjectConfigPath,
   }
 })
 
 const _testConfigPath = path.join(os.tmpdir(), `tg-compact-test-config-${process.pid}.toml`)
+const _testProjectConfigPath = path.join(os.tmpdir(), `tg-compact-test-project-config-${process.pid}.toml`)
 
 import {
   CATALOG_TOKENS,
@@ -247,6 +249,50 @@ auto_trigger_multiplier = 2.0
           fs.unlinkSync(_testConfigPath)
         } catch {
           // best-effort cleanup
+        }
+      }
+    })
+
+    // Regression: isAutoTriggerMultiplierExplicit() only read the raw global config.toml,
+    // never the per-project .token-goat.toml override. A project that sets
+    // auto_trigger_multiplier solely via its .token-goat.toml (no global config.toml entry at
+    // all) had that explicit value misdetected as "still the default", so
+    // getEffectiveAutoTriggerWindow() discarded it in favor of the harness's own default
+    // multiplier -- the same "explicit vs default" bug the sibling test above covers, but for
+    // the per-project override file instead of the global one. This writes a real
+    // .token-goat.toml (via the mocked projectConfigPath()) with harness = 'gemini' and an
+    // explicit auto_trigger_multiplier = 2.0, and a global config.toml that sets neither, then
+    // drives the real getContextPressure() path: it fails against a reader that only checks the
+    // global file and passes once the per-project file is checked too.
+    it('respects an explicit auto_trigger_multiplier set only via the per-project .token-goat.toml override', () => {
+      fs.writeFileSync(_testConfigPath, '', 'utf8')
+      fs.writeFileSync(
+        _testProjectConfigPath,
+        `[compact_assist]
+harness = "gemini"
+auto_trigger_multiplier = 2.0
+`,
+        'utf8',
+      )
+      invalidateConfigCache()
+      try {
+        const cache = {
+          loadedSkillTotalTokens: 100,
+          observedToolTokens: 500_000,
+          pressureBaselineTokens: 0,
+        }
+        const pressure = getContextPressure(cache)
+        // Explicit 2.0 (from the project override) must win over gemini's 3.0 harness default.
+        const expected = (100 + CATALOG_TOKENS + 500_000) / (CONTEXT_AUTOCOMPACT_TOKENS * 2.0)
+        expect(pressure.fillFraction).toBeCloseTo(expected, 5)
+      } finally {
+        invalidateConfigCache()
+        for (const p of [_testConfigPath, _testProjectConfigPath]) {
+          try {
+            fs.unlinkSync(p)
+          } catch {
+            // best-effort cleanup
+          }
         }
       }
     })
