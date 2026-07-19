@@ -902,6 +902,29 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     }
   }
 
+  // Python keyword argument bound to an existing name: foo(on_first_page=myHelperFunction).
+  // argument_list's namedChildren case above only matches a bare `identifier` child, so a
+  // keyword argument's nested value (a keyword_argument node's `value` field) is otherwise
+  // never walked.
+  if (isPy && node.type === 'keyword_argument') {
+    const value = node.childForFieldName('value')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  // Logical/nullish fallback operand bound to an existing name: const fn = override ?? myHelperFunction,
+  // or a fallback called directly: (override ?? myHelperFunction)(x). Restricted to ??/||/&& --
+  // the "pick one of two possible values" idiom this mirrors the ternary/ assignment cases above --
+  // rather than every binary operator, to avoid pulling in unrelated comparison/arithmetic operands.
+  if (isJs && node.type === 'binary_expression') {
+    const operator = node.childForFieldName('operator')?.text
+    if (operator === '??' || operator === '||' || operator === '&&') {
+      const left = node.childForFieldName('left')
+      const right = node.childForFieldName('right')
+      if (left !== null && left.type === 'identifier') result.push(left)
+      if (right !== null && right.type === 'identifier') result.push(right)
+    }
+  }
+
   // Assignment of an existing binding to a variable: const x = myHelperFunction / x = myHelperFunction. Arrow/function-expression values are handled separately by scopeName() as a new scope, not a reference to an existing one, so they're excluded here by only matching a plain `identifier` value.
   if (isJs && (node.type === 'variable_declarator' || node.type === 'assignment_expression')) {
     const value = node.childForFieldName(node.type === 'variable_declarator' ? 'value' : 'right')
