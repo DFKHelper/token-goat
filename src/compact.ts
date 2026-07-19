@@ -6,10 +6,9 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { parse } from 'smol-toml'
 import { detectHarness } from './bridges/index.js'
-import { loadConfig, resolveConfigProjectRoot } from './config.js'
-import { configPath, dataDir, projectConfigPath } from './constants.js'
+import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
+import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
@@ -216,41 +215,6 @@ function getEffectiveAutoTriggerWindow(): number {
       : { configExplicitMultiplier: ca.auto_trigger_multiplier, harness: ca.harness, isConfigDefault },
   )
   return CONTEXT_AUTOCOMPACT_TOKENS * multiplier
-}
-
-/**
- * Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw
- * config.toml, as opposed to it merely holding the (indistinguishable) default value of 2.0.
- * loadConfig()'s merged Config object can't tell these two cases apart, so this reads and
- * parses the raw file directly -- mirroring config.ts's own load path -- to check for the
- * key's real presence.
- */
-// Checks the RAW TOML text of both the global config.toml and any per-project
-// .token-goat.toml override (mirroring loadConfig()'s own two-file layering), since
-// loadConfig().compact_assist.auto_trigger_multiplier can't tell "user explicitly wrote
-// 2.0" apart from "field never touched, still holding the 2.0 default". Checking only
-// the global file (as this used to) meant a project that sets auto_trigger_multiplier
-// solely via .token-goat.toml had its explicit value silently treated as a default and
-// overridden by the harness's own default multiplier -- see getEffectiveAutoTriggerWindow().
-function isAutoTriggerMultiplierExplicit(): boolean {
-  const setsMultiplier = (text: string): boolean => {
-    const raw = parse(text) as Record<string, unknown>
-    const ca_raw = raw['compact_assist']
-    if (ca_raw === null || typeof ca_raw !== 'object' || Array.isArray(ca_raw)) {
-      return false
-    }
-    return (ca_raw as Record<string, unknown>)['auto_trigger_multiplier'] !== undefined
-  }
-  try {
-    if (setsMultiplier(fs.readFileSync(configPath(), 'utf8'))) return true
-  } catch {
-    // no readable global config.toml -- fall through to the per-project check
-  }
-  try {
-    return setsMultiplier(fs.readFileSync(projectConfigPath(resolveConfigProjectRoot()), 'utf8'))
-  } catch {
-    return false
-  }
 }
 
 export function getContextPressure(cache?: SessionCacheObject): ContextPressure {

@@ -841,6 +841,36 @@ export function resolveConfigProjectRoot(): string {
   return root
 }
 
+/**
+ * Whether the user has explicitly set `compact_assist.auto_trigger_multiplier` in their raw
+ * config.toml (or per-project .token-goat.toml), as opposed to it merely holding the
+ * (indistinguishable) default value. loadConfig()'s merged Config object can't tell these two
+ * cases apart, so this reads and parses the raw file text directly to check for the key's real
+ * presence. Checks both the global config.toml and any per-project override (mirroring
+ * loadConfig()'s own two-file layering), since a project that sets the field solely via
+ * .token-goat.toml would otherwise be misread as still holding the default.
+ */
+export function isAutoTriggerMultiplierExplicit(): boolean {
+  const setsMultiplier = (text: string): boolean => {
+    const raw = parse(text) as Record<string, unknown>
+    const ca_raw = raw['compact_assist']
+    if (ca_raw === null || typeof ca_raw !== 'object' || Array.isArray(ca_raw)) {
+      return false
+    }
+    return (ca_raw as Record<string, unknown>)['auto_trigger_multiplier'] !== undefined
+  }
+  try {
+    if (setsMultiplier(fs.readFileSync(configPath(), 'utf8'))) return true
+  } catch {
+    // no readable global config.toml -- fall through to the per-project check
+  }
+  try {
+    return setsMultiplier(fs.readFileSync(projectConfigPath(resolveConfigProjectRoot()), 'utf8'))
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // load / save
 // ---------------------------------------------------------------------------
@@ -1303,13 +1333,23 @@ export function saveConfig(config: Config): void {
   const sp = config.skill_preservation
   const is_cfg = config.image_shrink
 
+  // auto_trigger_multiplier is the one field isAutoTriggerMultiplierExplicit() needs to tell
+  // "user explicitly set this" apart from "still holding the compiled default" by checking
+  // whether the raw TOML literally has the key. Writing it unconditionally below (like every
+  // other field) would bake it into config.toml on every save -- including a save that never
+  // touched this field -- permanently defeating that check. Check explicitness BEFORE this
+  // write lands, and omit the key entirely when it's still an untouched default.
+  const wasExplicit = isAutoTriggerMultiplierExplicit()
+  const defaultMultiplier = (getDefaultConfig('compact_assist') as CompactAssistConfig).auto_trigger_multiplier
+  const keepsMultiplierDefault = !wasExplicit && ca.auto_trigger_multiplier === defaultMultiplier
+
   const data = {
     compact_assist: {
       enabled: ca.enabled,
       triggers: ca.triggers,
       min_events: ca.min_events,
       max_manifest_tokens: ca.max_manifest_tokens,
-      auto_trigger_multiplier: ca.auto_trigger_multiplier,
+      ...(keepsMultiplierDefault ? {} : { auto_trigger_multiplier: ca.auto_trigger_multiplier }),
       compact_skip_ttl_secs: ca.compact_skip_ttl_secs,
       noise_floor_tokens: ca.noise_floor_tokens,
       edited_dir_group_threshold: ca.edited_dir_group_threshold,

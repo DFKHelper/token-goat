@@ -26,6 +26,7 @@ import {
   getLastProjectConfigParseError,
   getProjectConfigInfo,
   invalidateConfigCache,
+  isAutoTriggerMultiplierExplicit,
   loadConfig,
   loadPersistedConfig,
   saveConfig,
@@ -396,6 +397,64 @@ describe('loadConfig', () => {
     expect(loaded.hints.warn_unbalanced_shell_quoting).toBe(cfg.hints.warn_unbalanced_shell_quoting)
     expect(loaded.hints.cross_session_read_dedup).toBe(cfg.hints.cross_session_read_dedup)
     expect(loaded.hints.cross_session_read_dedup_ttl_secs).toBe(cfg.hints.cross_session_read_dedup_ttl_secs)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// saveConfig omits an untouched auto_trigger_multiplier (#323 regression)
+// ---------------------------------------------------------------------------
+
+describe('saveConfig and auto_trigger_multiplier explicitness (#323 regression)', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+    try { fs.unlinkSync(_testProjectConfigPath) } catch { /* ok */ }
+  })
+
+  it('a saveConfig() for an unrelated key does not bake the still-default auto_trigger_multiplier into the raw TOML (regression: saveConfig always resaved every field, so isAutoTriggerMultiplierExplicit() returned true forever after any config set, permanently discarding the harness-tuned default multiplier)', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.min_events = 42 // an unrelated field -- this is the kind of save that used to clobber auto_trigger_multiplier's explicitness
+    saveConfig(cfg)
+
+    const raw = fs.readFileSync(_testConfigPath, 'utf8')
+    expect(raw).not.toMatch(/auto_trigger_multiplier/)
+    expect(isAutoTriggerMultiplierExplicit()).toBe(false)
+  })
+
+  it('a saveConfig() preserves an explicitly-set non-default auto_trigger_multiplier', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nauto_trigger_multiplier = 3.5\n', 'utf8')
+    invalidateConfigCache()
+    expect(isAutoTriggerMultiplierExplicit()).toBe(true)
+
+    const cfg = defaultConfig()
+    cfg.compact_assist.auto_trigger_multiplier = 3.5
+    cfg.compact_assist.min_events = 42 // unrelated save, should not lose the explicit multiplier
+    saveConfig(cfg)
+
+    const raw = fs.readFileSync(_testConfigPath, 'utf8')
+    expect(raw).toMatch(/auto_trigger_multiplier\s*=\s*3\.5/)
+    expect(isAutoTriggerMultiplierExplicit()).toBe(true)
+    expect(loadConfig().compact_assist.auto_trigger_multiplier).toBe(3.5)
+  })
+
+  it('a saveConfig() writes the key when the user explicitly sets the default value itself (2.0 written on purpose is not indistinguishable from never-touched, once isAutoTriggerMultiplierExplicit() already saw it explicit pre-save)', () => {
+    fs.writeFileSync(_testConfigPath, '[compact_assist]\nauto_trigger_multiplier = 2.0\n', 'utf8')
+    invalidateConfigCache()
+    expect(isAutoTriggerMultiplierExplicit()).toBe(true)
+
+    const cfg = defaultConfig()
+    cfg.compact_assist.min_events = 42
+    saveConfig(cfg)
+
+    const raw = fs.readFileSync(_testConfigPath, 'utf8')
+    expect(raw).toMatch(/auto_trigger_multiplier/)
+    expect(isAutoTriggerMultiplierExplicit()).toBe(true)
   })
 })
 
