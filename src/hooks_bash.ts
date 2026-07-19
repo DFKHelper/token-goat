@@ -165,21 +165,21 @@ function extractCommand(event: HookEvent): string | undefined {
   return typeof cmd === 'string' && cmd.trim() !== '' ? cmd.trim() : undefined
 }
 
-/**
- * Matches a git subcommand that can move HEAD and rewrite working-tree file content without
- * ever going through Claude Code's Edit tool (checkout/switch to a ref, pull, merge, rebase,
- * reset, or cherry-pick). Excludes the path-scoped `git checkout -- <file>` / `git checkout
- * <file>` restore forms, since those don't move HEAD -- `HEAD@{1}` only names "where HEAD was
- * before this command" for the ref-moving forms below.
- */
+/** Matches a git subcommand that can move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool (checkout/switch to a ref, pull, merge, rebase, reset, or cherry-pick). Excludes the `--`-delimited path-scoped restore form (`git checkout -- <file>`), since that doesn't move HEAD. A bare `git checkout <file>` (no `--`) is NOT excluded here -- distinguishing it from `git checkout <branch>` would require asking git itself -- but it's harmless: a file-only checkout creates no reflog entry, so the diff below comes back empty, at the cost of one wasted `git diff` spawn. Same reasoning covers a path-scoped `git reset <pathspec>`, which also doesn't move HEAD and also creates no reflog entry -- and `reset` never uses `ORIG_HEAD` as its diff base below, so this ambiguity has no sharper edge (see ORIG_HEAD_ELIGIBLE_GIT_RE). */
 const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick)\b/i
 const PATH_SCOPED_CHECKOUT_RE = /^\s*git\s+checkout\s+(?:.*\s)?--(?:\s|$)/i
 
-function isHeadMovingGitCommand(cmd: string): boolean {
+export function isHeadMovingGitCommand(cmd: string): boolean {
   if (!HEAD_MOVING_GIT_RE.test(cmd)) return false
   if (PATH_SCOPED_CHECKOUT_RE.test(cmd)) return false
   return true
 }
+
+/** `merge`/`rebase`/`pull` are the subcommands where `ORIG_HEAD` earns its keep: they can replay MULTIPLE reflog steps internally (a multi-commit rebase, `pull --rebase`), so `HEAD@{1}` -- which only names "one step back" -- can miss the true starting point or land on the exact same sha as HEAD (a completed rebase's final `rebase (finish)` step is a ref finalize, not a new commit, so `HEAD@{1}` == `HEAD@{0}` and the diff comes back empty -- empirically confirmed). `ORIG_HEAD` survives that churn (verified for reset --hard, merge --no-ff, a multi-commit rebase, and both pull modes). `checkout`/`switch` never set it, and -- contrary to the commonly-assumed "ORIG_HEAD covers cherry-pick too" -- neither does `cherry-pick` (it uses `CHERRY_PICK_HEAD` instead), so both stay on the `HEAD@{1}` fallback below. `reset` is deliberately EXCLUDED even though git's docs list it as an `ORIG_HEAD`-setting command: reset is always a single reflog step, so `ORIG_HEAD` and `HEAD@{1}` are identical for it (zero benefit), while a bare `git reset <pathspec>` shares checkout's ref-vs-path ambiguity (pure downside, since a stale `ORIG_HEAD` from an earlier unrelated reset/merge/rebase could otherwise leak through). Reset keeps using its historically-safe `HEAD@{1}` base unconditionally. */
+const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
+
+/** Matches the HEAD reflog message a real merge/rebase/pull leaves behind -- git's own record of "the last thing that actually happened to HEAD". None of these three take a pathspec, so there's no ref-vs-path ambiguity to guard against (unlike `reset`, deliberately excluded above); this check exists purely so a no-op invocation of one of these (e.g. `git pull` when already up to date, which creates no new reflog entry) falls back to `HEAD@{1}` instead of replaying a stale `ORIG_HEAD` left over from an earlier, unrelated operation of the same family. Empirically confirmed message shapes: `merge <branch>: Merge made by...`, `rebase (finish): returning to...`, `pull [-q] [--rebase] ...: Merge made by...` / `pull [-q] --rebase ... (finish): returning to...`. */
+const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
 
 /** True when the path is a temp file (not indexed by token-goat). */
 function isTempPath(fp: string): boolean {
@@ -1688,21 +1688,26 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
 
-    // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move
-    // HEAD and rewrite working-tree file content without ever going through Claude Code's Edit
-    // tool, so those files never enter queue/dirty.txt via the normal postEditHandler path --
-    // every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep
-    // serving whatever was indexed before the mutation until each file happens to be individually
-    // read. HEAD@{1} is git's own reflog record of "where HEAD was immediately before this
-    // command moved it", so a diff against it names exactly the files this command changed.
+    // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
     if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
       const gitDir = cwd ?? process.cwd()
-      const mutationDiff = runGit(['diff', '--name-only', 'HEAD@{1}', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+      let diffBase = 'HEAD@{1}'
+      if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
+        const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+        if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
+          const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+          if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
+        }
+      }
+      const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
       if (mutationDiff.exitCode === 0) {
+        // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first.
+        const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: gitDir, timeoutMs: 5000 })
+        const repoRoot = toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : gitDir
         for (const rel of mutationDiff.stdout.split('\n')) {
           const trimmed = rel.trim()
           if (trimmed.length === 0) continue
-          enqueueDirtyPathSafe(resolveIndexPath(trimmed, gitDir), { alreadyResolved: true })
+          enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
         }
       }
     }

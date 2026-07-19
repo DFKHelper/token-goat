@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -25,7 +25,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -2965,6 +2965,32 @@ describe('preBashHandler — backgrounded/multi-line commands are never compress
 // queue/dirty.txt via the normal postEditHandler path -- every surgical-read command would
 // otherwise silently keep serving stale symbols/refs computed before the mutation. See the
 // isHeadMovingGitCommand block in postBashHandler.
+describe('isHeadMovingGitCommand — classification table', () => {
+  it.each([
+    ['git checkout feature', true],
+    ['git switch feature', true],
+    ['git switch -c newbranch', true],
+    ['git pull', true],
+    ['git pull --rebase origin main', true],
+    ['git merge feature', true],
+    ['git rebase main', true],
+    ['git reset --hard HEAD~1', true],
+    ['git cherry-pick abc1234', true],
+    ['  git checkout feature', true],
+    ['GIT CHECKOUT feature', true],
+    ['git checkout -- a.txt', false],
+    ['git checkout -- a.txt b.txt', false],
+    ['git checkout main -- a.txt', false],
+    ['git status', false],
+    ['git diff --stat', false],
+    ['git log', false],
+    ['echo git checkout feature', false],
+    ['npm run build', false],
+  ])('%s -> %s', (cmd, expected) => {
+    expect(isHeadMovingGitCommand(cmd)).toBe(expected)
+  })
+})
+
 describe('postBashHandler — git-mutation staleness enqueue', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -3015,6 +3041,81 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
     }
   })
 
+  // Regression: `git diff --name-only` always reports paths relative to the repo TOP-LEVEL, regardless of which directory git was invoked from -- resolving those paths against the raw event cwd (a monorepo subpackage) instead of the actual repo root computed the wrong absolute path and silently enqueued nothing useful for the file that really changed.
+  it('enqueues the correct absolute path when the bash tool cwd is a repo subdirectory, not the repo root', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-gitmutate-subdir-'))
+    const sub = join(dir, 'sub')
+    try {
+      const git = (args: string[], cwd = dir): void => {
+        execFileSync('git', args, { cwd, stdio: 'ignore' })
+      }
+      mkdirSync(sub)
+      writeFileSync(join(sub, 'nested.txt'), 'one\n')
+      git(['init'])
+      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
+
+      git(['checkout', '-b', 'feature'])
+      writeFileSync(join(sub, 'nested.txt'), 'two\n')
+      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change nested.txt'])
+      git(['checkout', originalBranch])
+
+      // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session.
+      await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
+
+      const dirty = getDirtyPaths()
+      // git diff --name-only reports 'sub/nested.txt' relative to the repo TOP-LEVEL (dir), not relative to the subdirectory cwd it was invoked from.
+      const expected = resolveIndexPath('sub/nested.txt', dir)
+      expect(dirty).toContain(expected)
+      // The old, buggy behavior resolved that same 'sub/nested.txt' string onto the subdirectory cwd instead of the repo root, producing a nonexistent 'sub/sub/nested.txt' path -- guard against that regressing back.
+      expect(dirty).not.toContain(resolveIndexPath('sub/nested.txt', sub))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: for a multi-commit rebase, the final `rebase (finish)` reflog step is a ref finalize, not a new commit -- it points at the SAME sha as the last `rebase (pick)` step, so `HEAD@{1}` and `HEAD@{0}` are identical and `git diff --name-only HEAD@{1} HEAD` comes back completely EMPTY, silently enqueuing nothing at all (empirically confirmed). `ORIG_HEAD` survives the internal reflog churn and correctly diffs against the true pre-rebase tip, catching the file that actually changed (content newly pulled in from the rebase target).
+  it('enqueues the changed file after a multi-commit rebase, where HEAD@{1}..HEAD would come back empty', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-gitmutate-rebase-'))
+    try {
+      const git = (args: string[]): void => {
+        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+      }
+      const gitEnv = ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null']
+      writeFileSync(join(dir, 'base.txt'), 'base\n')
+      git(['init'])
+      git([...gitEnv, 'add', '.'])
+      git([...gitEnv, 'commit', '-m', 'init'])
+      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
+
+      git(['checkout', '-b', 'feature'])
+      writeFileSync(join(dir, 'first.txt'), 'first\n')
+      git([...gitEnv, 'add', 'first.txt'])
+      git([...gitEnv, 'commit', '-m', 'add first.txt'])
+      writeFileSync(join(dir, 'second.txt'), 'second\n')
+      git([...gitEnv, 'add', 'second.txt'])
+      git([...gitEnv, 'commit', '-m', 'add second.txt'])
+
+      git(['checkout', originalBranch])
+      writeFileSync(join(dir, 'mainline.txt'), 'mainline\n')
+      git([...gitEnv, 'add', 'mainline.txt'])
+      git([...gitEnv, 'commit', '-m', 'unrelated mainline commit'])
+
+      git(['checkout', 'feature'])
+      execFileSync('git', [...gitEnv, 'rebase', originalBranch], { cwd: dir, stdio: 'ignore' })
+
+      await postBashHandler(makePostBashEvent('git rebase ' + originalBranch, '', dir))
+
+      const dirty = getDirtyPaths()
+      // mainline.txt is the only file whose final working-tree content actually differs from before the rebase (first.txt/second.txt already existed with identical content on feature pre-rebase) -- this is the correct enqueue set, not an incidental one.
+      expect(dirty).toContain(resolveIndexPath('mainline.txt', dir))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('does NOT enqueue anything for a path-scoped `git checkout -- <file>` restore (HEAD never moves)', async () => {
     const dir = initGitRepoForBashTests('tg-gitmutate-scoped-')
     try {
@@ -3055,6 +3156,53 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       })
       await postBashHandler(event)
       expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: `git reset` is deliberately excluded from the ORIG_HEAD-preferring diff base (see ORIG_HEAD_ELIGIBLE_GIT_RE in hooks_bash.ts) because a bare `git reset <pathspec>` shares `git checkout <file>`'s ref-vs-path ambiguity -- always using HEAD@{1} for reset sidesteps that ambiguity entirely rather than trying to heuristically detect it. This test locks in that a reset immediately following a multi-commit rebase (which sets a far-back ORIG_HEAD) still enqueues based on the reset's own single, immediately-prior reflog step, not the rebase's ORIG_HEAD -- proving reset truly never reads ORIG_HEAD, not just that it happens to coincide with HEAD@{1} in the common case.
+  it('enqueues based on the reset itself, not a leftover ORIG_HEAD from an earlier rebase', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-reset-after-rebase-')
+    try {
+      const gitEnv = ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null']
+      const git = (args: string[]): void => {
+        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+      }
+      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
+
+      // Multi-commit rebase sets a far-back ORIG_HEAD (the true pre-rebase feature tip)
+      git(['checkout', '-b', 'feature'])
+      writeFileSync(join(dir, 'first.txt'), 'first\n')
+      git([...gitEnv, 'add', 'first.txt'])
+      git([...gitEnv, 'commit', '-m', 'add first.txt'])
+      writeFileSync(join(dir, 'second.txt'), 'second\n')
+      git([...gitEnv, 'add', 'second.txt'])
+      git([...gitEnv, 'commit', '-m', 'add second.txt'])
+      git(['checkout', originalBranch])
+      writeFileSync(join(dir, 'mainline.txt'), 'mainline\n')
+      git([...gitEnv, 'add', 'mainline.txt'])
+      git([...gitEnv, 'commit', '-m', 'unrelated mainline commit'])
+      git(['checkout', 'feature'])
+      execFileSync('git', [...gitEnv, 'rebase', originalBranch], { cwd: dir, stdio: 'ignore' })
+      const rebaseOrigHead = execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()
+
+      // A real, unambiguous `reset --hard` immediately after: its own reflog step lands right on top of the rebase's finish step, so its own ORIG_HEAD/HEAD@{1} both point at the post-rebase tip -- nothing to do with the rebase's now-superseded ORIG_HEAD.
+      writeFileSync(join(dir, 'third.txt'), 'third\n')
+      git([...gitEnv, 'add', 'third.txt'])
+      git([...gitEnv, 'commit', '-m', 'add third.txt'])
+      const preResetTip = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: dir }).toString().trim()
+      execFileSync('git', [...gitEnv, 'reset', '-q', '--hard', 'HEAD~1'], { cwd: dir, stdio: 'ignore' })
+
+      await postBashHandler(makePostBashEvent('git reset --hard HEAD~1', '', dir))
+
+      expect(execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()).not.toBe(rebaseOrigHead)
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()).toBe(preResetTip)
+      const dirty = getDirtyPaths()
+      // third.txt is what this reset actually reverted -- the correct, narrow enqueue.
+      expect(dirty).toContain(resolveIndexPath('third.txt', dir))
+      // mainline.txt only shows up if the reset had somehow used the rebase's stale, far-back ORIG_HEAD instead of its own immediately-prior state.
+      expect(dirty).not.toContain(resolveIndexPath('mainline.txt', dir))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
