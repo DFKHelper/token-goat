@@ -163,6 +163,23 @@ CREATE TABLE IF NOT EXISTS hint_manual_marks (
   effective_count INTEGER NOT NULL DEFAULT 0,
   ineffective_count INTEGER NOT NULL DEFAULT 0
 );
+
+-- Durable counter backing hint_stats.ts's backoff-threshold probe-recovery schedule: how many
+-- CONSECUTIVE suppressed occasions have elapsed for (category, harness) since a hint in this
+-- category was last actually shown (either organically, because shouldSuppress no longer holds,
+-- or via a prior probe). shouldSuppress itself stays a pure function of hint_emissions -- this
+-- table exists only because a suppressed occasion is deliberately never written to
+-- hint_emissions (see that table's own comment), so without a separate durable counter here
+-- there would be no way to know "how many suppressed occasions have we seen" across the
+-- short-lived hook CLI processes that call applyHintTracking. Keyed by (category, harness), not
+-- category alone, to match shouldSuppress/categoryStats' own per-harness scoping -- unlike
+-- hint_manual_marks (a human-entered vote, deliberately not harness-split).
+CREATE TABLE IF NOT EXISTS hint_suppression_probes (
+  category TEXT NOT NULL,
+  harness TEXT NOT NULL,
+  streak INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (category, harness)
+);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
@@ -216,8 +233,8 @@ CREATE TRIGGER IF NOT EXISTS cache_recall_au AFTER UPDATE ON cache_recall BEGIN
 END;
 `
 
-// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above).
-export const SCHEMA_VERSION = 5 as const
+// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above).
+export const SCHEMA_VERSION = 6 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 
