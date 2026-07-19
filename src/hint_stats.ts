@@ -96,6 +96,31 @@
  * `token-goat hint-stats --reset` is run -- a deliberate, disclosed deviation from a literal
  * "resets every session" reading, chosen because nothing in this codebase's hook-process model
  * could implement true per-session-only suppression honestly.
+ *
+ * ## Probe recovery (`hints.backoff_thresholds`)
+ *
+ * A suppressed category would otherwise stay suppressed forever: {@link logHintEmission} is
+ * only ever reached on the NOT-suppressed branch of {@link applyHintTracking}, so a fully
+ * suppressed category can never accumulate the fresh acted-on signal that would lift it back
+ * above `suppress_threshold_pct`. `hints.backoff_thresholds` (an ascending list of occasion
+ * counts, e.g. `[1, 3, 10, 30]`) fixes this with a classic backoff-retry schedule: while a
+ * category stays suppressed, {@link isProbeOccasion} counts consecutive suppressed occasions
+ * since suppression began (persisted durably in the `hint_suppression_probes` table -- see
+ * db.ts's schema comment -- because hook invocations are short-lived processes with no shared
+ * in-memory counter, same reasoning as `shouldSuppress` above). At the 1st, 3rd, 10th, 30th, ...
+ * matching occasion, the hint is let through as a genuine "probe": shown to the caller AND
+ * logged via `logHintEmission` like any normal emission, so a real acted-on signal can move
+ * `categoryStats` on the very next `shouldSuppress` check. A probe occasion does NOT reset the
+ * streak counter by itself -- only a category actually exiting suppression (the top-level
+ * `shouldSuppress` check returning `false` again) does, via {@link applyHintTracking}'s
+ * not-suppressed branch. This is a deliberate reading of "count occasions since last shown": if
+ * a probe firing reset the counter to 0 every time, the very next suppressed occasion would
+ * immediately re-match the smallest configured threshold (1, by default), turning probing into
+ * "show it every single time" and making the 3rd/10th/30th thresholds unreachable -- an
+ * anchored-at-suppression-onset counter is the only reading under which all four configured
+ * thresholds do anything. An empty `backoff_thresholds` (`[]`) means no probes at all --
+ * suppression is permanent until a manual `--reset`, matching this array's pre-existing
+ * round-trip-tested "empty means off" default-empty-list semantics in config.ts.
  */
 
 import { getDb } from './db.js'
@@ -192,11 +217,69 @@ export function classifyEditHint(text: string): Classification {
 }
 
 /**
+ * Whether `occasion` (a 1-based count of consecutive suppressed occasions since a category last
+ * had a hint actually shown) is a scheduled probe point under `thresholds`. `thresholds` need not
+ * arrive pre-sorted or pre-filtered -- non-positive entries are dropped and the rest sorted
+ * ascending before matching, since `hints.backoff_thresholds` is user-settable via `config set`
+ * with no ordering guarantee. An empty (or all-non-positive) list never probes, preserving the
+ * documented "no probes, suppression is permanent" behavior for `backoff_thresholds: []`. Once
+ * `occasion` exceeds the largest configured threshold, it probes every multiple of that largest
+ * threshold thereafter (e.g. every 30th occasion beyond an initial `[1, 3, 10, 30]` schedule).
+ */
+export function isProbeOccasion(occasion: number, thresholds: readonly number[]): boolean {
+  const sorted = [...new Set(thresholds.filter((t) => t > 0))].sort((a, b) => a - b)
+  if (sorted.length === 0) return false
+  if (sorted.includes(occasion)) return true
+  const last = sorted[sorted.length - 1]!
+  return occasion > last && occasion % last === 0
+}
+
+/**
+ * Increment and return the durable `(category, harness)` suppressed-occasion streak backing
+ * {@link isProbeOccasion} -- see hint_suppression_probes' schema comment in db.ts and this
+ * module's "Probe recovery" doc-comment section for why this counter exists and how it's scoped.
+ * Fail-soft like every other hook-path DB write here: a failure returns 0, which
+ * {@link isProbeOccasion} never treats as a probe match for any non-empty threshold list, so a
+ * transient DB error degrades to "stay suppressed" rather than accidentally probing.
+ */
+function bumpSuppressionStreak(category: HintCategory): number {
+  try {
+    const db = getDb(globalDbPath())
+    const harness = getHarnessName()
+    db.prepare(
+      `INSERT INTO hint_suppression_probes (category, harness, streak) VALUES (@category, @harness, 1)
+       ON CONFLICT(category, harness) DO UPDATE SET streak = streak + 1`,
+    ).run({ category, harness })
+    const row = db.prepare(`SELECT streak FROM hint_suppression_probes WHERE category = ? AND harness = ?`).get(category, harness) as
+      | { streak: number }
+      | undefined
+    return row?.streak ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/** Reset the streak counter for `(category, harness)` back to 0 -- called whenever a category is NOT currently suppressed, so a later suppression episode's backoff schedule starts fresh from occasion 1. A no-op (not an error) when no row exists yet for this category/harness. */
+function resetSuppressionStreak(category: HintCategory): void {
+  try {
+    const db = getDb(globalDbPath())
+    db.prepare(`UPDATE hint_suppression_probes SET streak = 0 WHERE category = ? AND harness = ?`).run(category, getHarnessName())
+  } catch {
+    // Fail-soft, same contract as logHintEmission.
+  }
+}
+
+/**
  * Wrap a hook handler's already-computed {@link HookOutput}: non-`context` outputs pass through
  * untouched (deny/pass/rewrite* are not hints in this module's sense -- see the module doc
  * comment). A `context` output is classified via `classify`, checked against
- * {@link shouldSuppress} (swapped for a silent `passOutput()` if suppressed), logged via
- * {@link logHintEmission} otherwise, and returned unchanged.
+ * {@link shouldSuppress}. When suppressed, this occasion's streak is bumped and checked against
+ * `hints.backoff_thresholds` via {@link isProbeOccasion}: a matching occasion is let through and
+ * logged as a genuine probe (see the module doc comment's "Probe recovery" section); any other
+ * suppressed occasion is swapped for a silent `passOutput()`, same as before probing existed.
+ * When not suppressed, the streak is reset (a fresh suppression episode later starts its backoff
+ * schedule over from occasion 1) and the emission is logged via {@link logHintEmission} as
+ * always.
  *
  * Called from each instrumented hook file's thin public wrapper (e.g. hooks_bash.ts's
  * `preBashHandler` calling into the renamed `preBashHandlerInner`) rather than from inside the
@@ -206,9 +289,6 @@ export function classifyEditHint(text: string): Classification {
 export function applyHintTracking(event: HookEvent, output: HookOutput, classify: (text: string) => Classification): HookOutput {
   if (output.hookType !== 'context') return output
   const { category, correlator } = classify(output.context)
-  if (shouldSuppress(category, event.sessionId)) {
-    return passOutput()
-  }
   // A pre_tool_use-emitted hint (bash_redirect/bash_recall from preBashHandler,
   // read_structural_nav/read_reread_dedup from preReadHandler) is always followed, in a
   // guaranteed-next, separate `token-goat hook post_tool_use` process invocation, by
@@ -221,7 +301,20 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
   // runs earlier in the same runHook pass and never sees a row that handler hasn't inserted yet.
   // Compensate only for the pre_tool_use case so both paths get the documented ACTED_ON_WINDOW
   // worth of genuinely subsequent chances.
-  logHintEmission(category, event.sessionId, correlator, event.eventName === 'pre_tool_use')
+  const compensateSelfResolve = event.eventName === 'pre_tool_use'
+  if (shouldSuppress(category, event.sessionId)) {
+    const occasion = bumpSuppressionStreak(category)
+    const thresholds = loadConfig().hints.backoff_thresholds
+    if (!isProbeOccasion(occasion, thresholds)) {
+      return passOutput()
+    }
+    // Probe occasion: let it through and log it exactly like a normal (non-suppressed) emission
+    // -- see the module doc comment for why the streak is deliberately NOT reset here.
+    logHintEmission(category, event.sessionId, correlator, compensateSelfResolve)
+    return output
+  }
+  resetSuppressionStreak(category)
+  logHintEmission(category, event.sessionId, correlator, compensateSelfResolve)
   return output
 }
 
@@ -401,11 +494,12 @@ export function getHintStatsSummary(): CategoryEfficacy[] {
   })
 }
 
-/** Clear every tracked emission and manual mark — `token-goat hint-stats --reset`. */
+/** Clear every tracked emission, manual mark, and probe-recovery streak — `token-goat hint-stats --reset`. */
 export function resetHintStats(): void {
   const db = getDb(globalDbPath())
   db.exec('DELETE FROM hint_emissions')
   db.exec('DELETE FROM hint_manual_marks')
+  db.exec('DELETE FROM hint_suppression_probes')
 }
 
 function bumpManualMark(category: HintCategory, column: 'effective_count' | 'ineffective_count'): void {

@@ -113,10 +113,8 @@ export interface PromptTrigger {
 }
 
 export interface HintsConfig {
-  suppress_after_ignored: number
   quiet_hours: string
   json_sidecar: boolean
-  verbose_until_seen_count: number
   min_file_lines_for_hint: number
   bash_dedup_min_bytes: number
   web_dedup_min_bytes: number
@@ -125,6 +123,11 @@ export interface HintsConfig {
   write_rewrite_min_lines: number
   write_rewrite_unchanged_pct: number
   serve_diff_on_reread: boolean
+  // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a
+  // suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal
+  // can lift it back above hint_stats.suppress_threshold_pct -- see that module's "Probe
+  // recovery" doc-comment section. `[]` means no probes: suppression is permanent until a
+  // manual `token-goat hint-stats --reset`.
   backoff_thresholds: number[]
   git_hint_max_ms: number
   min_session_hint_savings_bytes: number
@@ -313,10 +316,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     record_zero_savings: false,
   },
   hints: {
-    suppress_after_ignored: 5,
     quiet_hours: '',
     json_sidecar: false,
-    verbose_until_seen_count: 2,
     min_file_lines_for_hint: 0,
     bash_dedup_min_bytes: 200,
     web_dedup_min_bytes: 200,
@@ -510,8 +511,6 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'image_shrink.ocr_min_confidence': {min: 0, max: 100},
   'repomap.compact_file_threshold': {min: 0, max: 100_000},
   'overflow_guard.max_tokens': {min: 1000, max: 1_000_000},
-  'hints.suppress_after_ignored': {min: 0, max: 1000},
-  'hints.verbose_until_seen_count': {min: 0, max: 10000},
   'hints.min_file_lines_for_hint': {min: 0, max: 1_000_000},
   'hints.bash_dedup_min_bytes': {min: 0, max: 100_000},
   'hints.web_dedup_min_bytes': {min: 0, max: 100_000},
@@ -1122,10 +1121,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
 
   const hi_raw = section(raw, 'hints')
   const hi = getDefaultConfig('hints') as HintsConfig
-  hi.suppress_after_ignored = validatedInt(hi_raw['suppress_after_ignored'], hi.suppress_after_ignored, ...boundsOf('hints.suppress_after_ignored'))
   hi.quiet_hours = validatedStr(hi_raw['quiet_hours'], hi.quiet_hours)
   hi.json_sidecar = validatedBool(hi_raw['json_sidecar'], hi.json_sidecar)
-  hi.verbose_until_seen_count = validatedInt(hi_raw['verbose_until_seen_count'], hi.verbose_until_seen_count, ...boundsOf('hints.verbose_until_seen_count'))
   hi.min_file_lines_for_hint = validatedInt(hi_raw['min_file_lines_for_hint'], hi.min_file_lines_for_hint, ...boundsOf('hints.min_file_lines_for_hint'))
   hi.bash_dedup_min_bytes = validatedInt(hi_raw['bash_dedup_min_bytes'], hi.bash_dedup_min_bytes, ...boundsOf('hints.bash_dedup_min_bytes'))
   hi.bash_dedup_min_bytes = envInt('TOKEN_GOAT_BASH_DEDUP_MIN_BYTES', hi.bash_dedup_min_bytes, ...boundsOf('hints.bash_dedup_min_bytes'))
@@ -1419,10 +1416,8 @@ export function saveConfig(config: Config): void {
       record_zero_savings: config.stats.record_zero_savings,
     },
     hints: {
-      suppress_after_ignored: config.hints.suppress_after_ignored,
       quiet_hours: config.hints.quiet_hours,
       json_sidecar: config.hints.json_sidecar,
-      verbose_until_seen_count: config.hints.verbose_until_seen_count,
       min_file_lines_for_hint: config.hints.min_file_lines_for_hint,
       bash_dedup_min_bytes: config.hints.bash_dedup_min_bytes,
       web_dedup_min_bytes: config.hints.web_dedup_min_bytes,

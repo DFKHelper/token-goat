@@ -11,6 +11,7 @@ import {
   extractPathCorrelator,
   getHintStatsSummary,
   isHintCategory,
+  isProbeOccasion,
   logHintEmission,
   markCategoryEffective,
   markCategoryIneffective,
@@ -438,10 +439,11 @@ describe('applyHintTracking', () => {
     expect(summary.find((r) => r.category === 'bash_redirect')?.emitted).toBeGreaterThan(0)
   })
 
-  it('substitutes passOutput() and does not log when the category is suppressed', () => {
+  it('substitutes passOutput() and does not log when the category is suppressed and backoff_thresholds is empty (no probing)', () => {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 1
     cfg.hint_stats.suppress_threshold_pct = 100 // guarantee suppression on the very first sample
+    cfg.hints.backoff_thresholds = [] // no probes: suppression is permanent for this test
     saveConfig(cfg)
 
     const seedSession = nonce()
@@ -486,6 +488,133 @@ describe('applyHintTracking', () => {
     row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
     expect(row.acted_on).toBe(1)
     expect(row.resolved).toBe(1)
+  })
+})
+
+describe('isProbeOccasion', () => {
+  it('matches occasions in an ascending threshold list', () => {
+    expect(isProbeOccasion(1, [1, 3, 10, 30])).toBe(true)
+    expect(isProbeOccasion(2, [1, 3, 10, 30])).toBe(false)
+    expect(isProbeOccasion(3, [1, 3, 10, 30])).toBe(true)
+    expect(isProbeOccasion(10, [1, 3, 10, 30])).toBe(true)
+    expect(isProbeOccasion(30, [1, 3, 10, 30])).toBe(true)
+  })
+
+  it('probes every multiple of the largest threshold beyond it', () => {
+    expect(isProbeOccasion(31, [1, 3, 10, 30])).toBe(false)
+    expect(isProbeOccasion(59, [1, 3, 10, 30])).toBe(false)
+    expect(isProbeOccasion(60, [1, 3, 10, 30])).toBe(true)
+    expect(isProbeOccasion(90, [1, 3, 10, 30])).toBe(true)
+  })
+
+  it('never probes when the list is empty', () => {
+    expect(isProbeOccasion(1, [])).toBe(false)
+    expect(isProbeOccasion(1000, [])).toBe(false)
+  })
+
+  it('tolerates an unsorted list with duplicates and non-positive entries', () => {
+    expect(isProbeOccasion(3, [10, 0, 3, -5, 3, 1])).toBe(true)
+    expect(isProbeOccasion(1, [10, 0, 3, -5, 3, 1])).toBe(true)
+    expect(isProbeOccasion(2, [10, 0, 3, -5, 3, 1])).toBe(false)
+  })
+})
+
+// Regression: applyHintTracking only ever reached logHintEmission on the NOT-suppressed branch,
+// so once a category crossed shouldSuppress's threshold it could never accumulate fresh
+// acted-on signal and stayed suppressed permanently, with no recovery path short of a manual
+// `--mark-effective` override or a full `--reset`. hints.backoff_thresholds now fixes this by
+// letting a scheduled occasion through as a real, logged "probe" -- these tests would fail on
+// the pre-fix code (which had no isProbeOccasion, no hint_suppression_probes counter, and always
+// returned passOutput() for a suppressed occasion with nothing ever logged).
+describe('probe recovery (hints.backoff_thresholds)', () => {
+  const classify = (text: string): { category: 'bash_redirect'; correlator: string | null } => ({ category: 'bash_redirect', correlator: extractPathCorrelator(text) })
+
+  it('lets a scheduled probe through, logs it as a real emission, and a genuine acted-on signal lifts suppression on the next check', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 50
+    cfg.hints.backoff_thresholds = [1]
+    saveConfig(cfg)
+
+    // Seed one below-threshold, never-acted-on emission so the category crosses min_sample_size at 0% efficacy.
+    const seedSession = nonce()
+    logHintEmission('bash_redirect', seedSession, null)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    // Occasion 1 while suppressed matches backoff_thresholds' single threshold (1) -- must probe:
+    // shown to the caller AND logged as a real emission, unlike an ordinary suppressed occasion.
+    const n = nonce()
+    const event = bashEvent(n, 'cat C:/repo/probe.ts')
+    const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe.ts::Foo"` instead.' }
+    const result = applyHintTracking(event, contextOut, classify)
+    expect(result).toEqual(contextOut) // shown, not swapped for passOutput()
+
+    const db = getDb(globalDbPath())
+    const probeRow = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number } | undefined
+    expect(probeRow).toBeDefined() // the probe WAS logged, unlike a plain suppressed occasion
+
+    // Acting on the probe's own pointer supplies the fresh acted-on signal.
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/probe.ts::Foo"'))
+    const resolvedRow = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(resolvedRow.acted_on).toBe(1)
+
+    // emitted=2 (seed + probe), actedOn=1 -> 50%, not below a 50% threshold -> suppression lifts.
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+  })
+
+  it('stays silently suppressed on occasions that do not match the configured schedule', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 100
+    cfg.hints.backoff_thresholds = [3] // only the 3rd suppressed occasion should probe
+    saveConfig(cfg)
+
+    const seedSession = nonce()
+    logHintEmission('bash_redirect', seedSession, null)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    // Occasions 1 and 2 don't match the schedule -- must stay silently suppressed, not logged.
+    for (let i = 0; i < 2; i++) {
+      const n = nonce()
+      const event = bashEvent(n, `cat C:/repo/skip-${i}.ts`)
+      const contextOut = { hookType: 'context' as const, context: `Use \`token-goat read "C:/repo/skip-${i}.ts::Foo"\` instead.` }
+      const result = applyHintTracking(event, contextOut, classify)
+      expect(result).toEqual({ hookType: 'pass' })
+      const db = getDb(globalDbPath())
+      const row = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ?').get(n) as { n: number }
+      expect(row.n).toBe(0)
+    }
+
+    // Occasion 3 matches the schedule -- probes through and is logged.
+    const n = nonce()
+    const event = bashEvent(n, 'cat C:/repo/probe3.ts')
+    const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe3.ts::Foo"` instead.' }
+    const result = applyHintTracking(event, contextOut, classify)
+    expect(result).toEqual(contextOut)
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT COUNT(*) AS n FROM hint_emissions WHERE session_id = ?').get(n) as { n: number }
+    expect(row.n).toBe(1)
+  })
+
+  it('with backoff_thresholds left empty, a suppressed category never recovers on its own (permanent-suppression baseline preserved)', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 100
+    cfg.hints.backoff_thresholds = []
+    saveConfig(cfg)
+
+    const seedSession = nonce()
+    logHintEmission('bash_redirect', seedSession, null)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    for (let i = 0; i < 40; i++) {
+      const n = nonce()
+      const event = bashEvent(n, `cat C:/repo/never-${i}.ts`)
+      const contextOut = { hookType: 'context' as const, context: `Use \`token-goat read "C:/repo/never-${i}.ts::Foo"\` instead.` }
+      const result = applyHintTracking(event, contextOut, classify)
+      expect(result).toEqual({ hookType: 'pass' })
+    }
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
 })
 
