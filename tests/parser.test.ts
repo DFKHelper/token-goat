@@ -750,6 +750,50 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(4)
   })
 
+  // Regression: argument_list's namedChildren case only matched a bare `identifier` child, so
+  // a Python keyword argument's nested value (foo(on_page=myHelperFunction)) -- a
+  // keyword_argument node with its own `value` field -- was never walked, making `dead` report
+  // a real callback-by-keyword-argument usage (e.g. convert_patent_pdf.py's `add_page_number`
+  // passed as `onFirstPage=add_page_number`) as a false-positive dead symbol.
+  it('captures a function passed as a Python keyword argument value (value position, not a bare argument)', async () => {
+    const file = write(
+      'keyword-arg-ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        '\n' +
+        'def driver():\n' +
+        '    return foo(on_page=my_helper_function)\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: a call whose callee is a parenthesized `??`/`||`/`&&` fallback expression, e.g.
+  // `(override ?? myHelperFunction)(x)`, has no calleeName() match (the callee isn't a bare
+  // identifier/member_expression) and no valueRefIdentifiers case walked binary_expression's
+  // operands either -- so a symbol used only as the fallback side of such an expression was
+  // invisible to refs (found live: src/parser.ts's own `extractWithRegex`, used as
+  // `(NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)`).
+  it('captures a function used as the fallback side of a ?? expression, including when the expression itself is called', async () => {
+    const file = write(
+      'nullish-fallback-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(override: ((x: number) => number) | undefined, x: number): number {\n' +
+        '  return (override ?? myHelperFunction)(x)\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',
