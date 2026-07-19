@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { setTsModuleForTesting } from '../src/ts_refs.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 
 // runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context
@@ -27,6 +28,7 @@ describe('cli_doctor', () => {
     // checkSymbolCount opens the db via getDb, which caches an open handle per path;
     // close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
     clearModuleCaches()
+    setTsModuleForTesting(undefined)
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
@@ -214,6 +216,23 @@ describe('cli_doctor', () => {
     })
   })
 
+  describe('checkTsCompiler', () => {
+    it('returns ok when the typescript compiler module loads', () => {
+      const result = checkTsCompiler()
+      expect(result.name).toBe('TypeScript compiler')
+      expect(result.status).toBe('ok')
+      expect(result.message).toBe('available')
+    })
+
+    it('returns warn (not fail) when the typescript compiler module is unavailable', () => {
+      setTsModuleForTesting(null)
+      const result = checkTsCompiler()
+      expect(result.name).toBe('TypeScript compiler')
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('unavailable')
+    })
+  })
+
   describe('runDoctor', () => {
     it('returns array of doctor results', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
@@ -231,6 +250,12 @@ describe('cli_doctor', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
       const worker = results.find((r) => r.name === 'Worker')
       expect(worker).toBeDefined()
+    })
+
+    it('includes TypeScript compiler check', () => {
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const tsCompiler = results.find((r) => r.name === 'TypeScript compiler')
+      expect(tsCompiler).toBeDefined()
     })
 
     it('includes database check', () => {
