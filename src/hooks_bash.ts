@@ -208,6 +208,13 @@ function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: bool
   return { isDoc, isEnv, isConfig, isSql }
 }
 
+/** Shared isDoc/isConfig classification for the tail/head/Get-Content extractors, which fold .sql into isDoc (unlike classifyFileExtensions, which tracks isSql separately). */
+function classifyDocConfig(filePath: string): { isDoc: boolean; isConfig: boolean } {
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { isDoc, isConfig }
+}
+
 function classifyCatPath(
   filePath: string,
   cmd0: string,
@@ -416,8 +423,7 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  const { isDoc, isConfig } = classifyDocConfig(filePath)
   return { filePath, isDoc, isConfig }
 }
 
@@ -508,8 +514,7 @@ function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; i
     const filePath = readSync[1]
     if (isOrchestratorStateFile(filePath)) return null
     if (isTempPath(filePath)) return null
-    const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-    const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+    const { isDoc, isConfig } = classifyDocConfig(filePath)
     return { filePath, isDoc, isConfig }
   }
   // Also catch require('path/to/file.json') — common for one-liner version lookups
@@ -538,8 +543,7 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  const { isDoc, isConfig } = classifyDocConfig(filePath)
   return { filePath, isDoc, isConfig }
 }
 
@@ -560,8 +564,7 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  const { isDoc, isConfig } = classifyDocConfig(filePath)
   return { filePath, isDoc, isConfig }
 }
 
@@ -575,8 +578,7 @@ function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: b
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  const { isDoc, isConfig } = classifyDocConfig(filePath)
   return { filePath, isDoc, isConfig }
 }
 
