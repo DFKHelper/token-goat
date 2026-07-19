@@ -15,6 +15,7 @@ import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './co
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
+import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 
 /**
  * Result of a single doctor check.
@@ -133,6 +134,23 @@ export function checkInstall(): DoctorResult {
       status: 'fail',
       message: 'token-goat command not found; run: npm install -g token-goat-ts',
     }
+  }
+}
+
+/**
+ * Check whether the optional `typescript` compiler API loaded (`ts_refs.ts`'s type-resolved
+ * exact-refs tier needs it). Missing/failed load only degrades `refs` to its name-based tier, so
+ * this is a warn, not a fail.
+ */
+export function checkTsCompiler(): DoctorResult {
+  if (tsRefsAvailable()) {
+    return { name: 'TypeScript compiler', status: 'ok', message: 'available' }
+  }
+  const err = tsRefsLoadError()
+  return {
+    name: 'TypeScript compiler',
+    status: 'warn',
+    message: err !== null ? `unavailable: ${extractErrorMessage(err)}` : 'unavailable (not attempted)',
   }
 }
 
@@ -315,6 +333,7 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
 
   // Basic checks
   results.push(checkInstall())
+  results.push(checkTsCompiler())
   results.push(checkWorkerRunning() ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
   // File checks
