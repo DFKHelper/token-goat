@@ -918,6 +918,15 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     if (value !== null && value.type === 'identifier') result.push(value)
   }
 
+  // Default parameter value bound to an existing name: function f(cb = myHelperFunction) {},
+  // or with a type annotation: function f(cb: () => void = myHelperFunction) {}. Both parse to
+  // a required_parameter/optional_parameter node with a `value` field, independent of whether a
+  // `type` field is also present.
+  if (isJs && (node.type === 'required_parameter' || node.type === 'optional_parameter')) {
+    const value = node.childForFieldName('value')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
   return result
 }
 

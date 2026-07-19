@@ -728,6 +728,28 @@ describe('parseFile reference extraction', () => {
     expect(ref?.context).toBe('driver')
   })
 
+  // Regression: a required_parameter/optional_parameter node's `value` field (the default
+  // value expression) was never walked by valueRefIdentifiers, so a symbol used only as a
+  // default parameter value -- e.g. `requeue: (a: string) => void = requeueDirtyPath` in
+  // worker.ts -- was invisible to the refs table and `dead` reported a false positive despite
+  // real usage.
+  it('captures a function used as a default parameter value (value position, not a call site)', async () => {
+    const file = write(
+      'default-param-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(cb: (x: number) => number = myHelperFunction): number {\n' +
+        '  return cb(1)\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(4)
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',
