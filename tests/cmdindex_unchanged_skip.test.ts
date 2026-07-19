@@ -86,6 +86,35 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
   })
 
+  // Regression: a parser.ts change to what extractRefs/valueRefIdentifiers extracts (e.g. the
+  // extends-clause fix) leaves every already-indexed file's SHA untouched, so the unchanged-skip
+  // gate above silently keeps serving stale symbols/refs computed under the old parser until each
+  // file happens to be edited -- there was no way to force a full reindex short of deleting the
+  // db. --force must bypass both the parse-sha and embed-sha freshness checks unconditionally.
+  it('--force reindexes an unchanged file instead of skipping it', async () => {
+    const realIndexFileSync = parserModule.indexFileSync
+    const src = path.join(TMP, 'stable.ts')
+    fs.writeFileSync(src, 'export function stableSymbol(): number {\n  return 1\n}\n')
+
+    const indexFileSyncSpy = vi
+      .spyOn(parserModule, 'indexFileSync')
+      .mockImplementation((filePath, dbp) => realIndexFileSync(filePath, dbp))
+
+    await cmdIndex(TMP, { walk: true, dbPath })
+    expect(indexFileSyncSpy).toHaveBeenCalledTimes(1)
+    indexFileSyncSpy.mockClear()
+
+    // Without --force: byte-identical content skips.
+    await cmdIndex(TMP, { walk: true, dbPath })
+    expect(indexFileSyncSpy).not.toHaveBeenCalled()
+    indexFileSyncSpy.mockClear()
+
+    // With --force: same byte-identical content must still be reparsed.
+    await cmdIndex(TMP, { walk: true, dbPath, force: true })
+    expect(indexFileSyncSpy).toHaveBeenCalledTimes(1)
+    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+  })
+
   // A file only becomes fully skippable (indexFileSync AND indexFileEmbeddings both gated out,
   // surfaced via the "Skipped N unchanged file(s)" summary line) once it has both a matching
   // parse-sha AND a matching embed-sha -- see the embed-freshness test below for why these are

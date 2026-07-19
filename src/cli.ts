@@ -223,9 +223,13 @@ async function cmdSemantic(query: string, opts: { limit?: string }): Promise<voi
   process.exitCode = code
 }
 
-export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: string } = {}): Promise<void> {
+export async function cmdIndex(
+  pathArg?: string,
+  opts: { walk?: boolean; dbPath?: string; force?: boolean } = {},
+): Promise<void> {
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
+  const force = opts.force === true
   let files = getTrackedFiles(root)
   if (files.length === 0) {
     if (opts.walk !== true) {
@@ -254,15 +258,16 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
-    // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current.
+    // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current. --force bypasses both freshness checks unconditionally -- e.g. after a parser.ts extraction-logic change, every already-indexed file's SHA is untouched and stale symbols/refs would otherwise never get recomputed until each file happens to be edited.
     const sha = fingerprintFile(key)
     const entry = sha !== null ? getFileEntry(key, dbPath) : null
-    const parseUnchanged = sha !== null && entry?.sha === sha
+    const parseUnchanged = !force && sha !== null && entry?.sha === sha
     // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled.
     const embeddingsEnabled = loadConfig().indexing?.embeddings_enabled ?? true
     // See isEmbedFresh: depsAvailable keeps an `unavailable:`-marked embed_sha (a file skipped only because the optional model/sqlite-vec deps were absent) treated as stale so it is re-embedded once the deps are installed, instead of looking permanently fresh.
     const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))
     const embedUnchanged =
+      !force &&
       parseUnchanged &&
       sha !== null &&
       isEmbedFresh(entry?.embedSha, sha, embeddingsEnabled, depsAvailable)
@@ -2127,6 +2132,7 @@ export function buildProgram(): Command {
     .command('index [path]')
     .description('parse all git-tracked files and (re)build the symbol index')
     .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
+    .option('--force', 'bypass the SHA-freshness cache and reindex every tracked file, even byte-identical ones (e.g. after a parser upgrade changes what gets extracted)')
     .action(guard(cmdIndex))
 
   program
