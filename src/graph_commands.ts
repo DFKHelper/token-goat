@@ -114,7 +114,7 @@ export function bfsCallChains(start: string, callersOf: CallersOfFn, maxDepth: n
 
 /** Well-known entry-point names excluded from dead-symbol analysis. */
 const ENTRY_NAMES: ReadonlySet<string> = new Set([
-  'main', 'default', 'index', '__init__', '__main__', 'setup', 'run', 'handler',
+  'main', 'default', 'index', '__init__', '__main__', 'setup', 'run', 'handler', 'constructor',
 ])
 
 /** Return true when a symbol with the given name and reference count is dead. The refs table does NOT include a symbol's own definition line (verified: queryRefs({name:'querySymbols'}) returns no ref at the definition line 84 of index_reader.ts, and likewise for runRead at line 128 of read_commands.ts), so refCount === 0 is the correct test for a truly unreferenced symbol. Entry-point names are always excluded. */

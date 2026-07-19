@@ -156,9 +156,17 @@ describe('isDeadSymbol', () => {
   })
 
   it('returns false for entry-point names even with zero refs', () => {
-    for (const name of ['main', 'default', 'index', '__init__', '__main__', 'setup', 'run', 'handler']) {
+    for (const name of ['main', 'default', 'index', '__init__', '__main__', 'setup', 'run', 'handler', 'constructor']) {
       expect(isDeadSymbol(name, 0), `${name} should not be dead`).toBe(false)
     }
+  })
+
+  // Regression: a JS/TS class constructor is invoked via `new X()`, which creates a ref named
+  // `X` (the class), never a ref literally named `constructor` -- so every class constructor in
+  // the codebase was a guaranteed false-positive dead-symbol report before `constructor` joined
+  // ENTRY_NAMES, mirroring the already-present `__init__` (Python's equivalent) exclusion.
+  it('returns false for constructor specifically, mirroring the existing __init__ exclusion', () => {
+    expect(isDeadSymbol('constructor', 0)).toBe(false)
   })
 
   it('fails if the zero-ref check is inverted — mutation verification target', () => {
