@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { likeSearchForTesting } from '../src/recall_index.js'
 import {
   getWebOutput,
   getWebOutputByUrl,
@@ -29,6 +30,19 @@ describe('storeWebOutput', () => {
     const a = storeWebOutput('https://example.com', 'one')
     const b = storeWebOutput('https://example.com', 'two')
     expect(a).toBe(b)
+  })
+
+  // Regression (secret-redaction bypass): storeWebOutput indexed the raw, pre-redaction
+  // content into both the in-memory _byId cache and the cache_recall table even though
+  // storeBlob() redacted the same text before writing it to disk -- a same-process
+  // getWebOutput() read, or `token-goat recall`/FTS search, could surface a secret the
+  // blob-store redaction was specifically built to strip.
+  it('never surfaces a raw secret via in-memory getWebOutput or the recall table', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const id = storeWebOutput('https://example.com/secret-leak', `before ${secret} after`)
+    expect(getWebOutput(id)).not.toContain(secret)
+    const hits = likeSearchForTesting(secret, 'web')
+    expect(hits).toHaveLength(0)
   })
 })
 

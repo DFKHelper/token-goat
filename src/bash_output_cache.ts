@@ -23,6 +23,7 @@ import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
 import { isBuildCommand } from './hints/lang_patterns.js'
 import { indexRecallEntry } from './recall_index.js'
+import { redactSecrets } from './secret_redact.js'
 
 /** Subdir under the token-goat home where bash-output blobs live. */
 export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
@@ -506,20 +507,26 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
 export async function storeBashOutput(command: string, output: string, exitCode: number, cwd: string | null = null): Promise<string> {
   const id = await commandHash(command, cwd)
   const fingerprints = computeBashFingerprints(command, cwd)
+  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
+  // redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the
+  // recall index write below both bypassed that pass entirely (served/indexed raw
+  // output), leaking secrets via same-process reads and `token-goat recall`/FTS search.
+  // Redacting here keeps disk, in-memory, and the recall index all consistent.
+  const redactedOutput = redactSecrets(output).text
   const entry: BashOutputEntry = {
     id,
     command,
-    output,
+    output: redactedOutput,
     exitCode,
     storedAt: Date.now(),
-    sizeBytes: Buffer.byteLength(output, 'utf-8'),
+    sizeBytes: Buffer.byteLength(redactedOutput, 'utf-8'),
     ...(fingerprints ? { fingerprints } : {}),
   }
   _byId.set(id, entry)
   // Persist so a later, separate hook process (and the CLI) can recall it.
   storeBlob(BASH_OUTPUT_SUBDIR, id, entry)
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
-  indexRecallEntry('bash', id, command, `${command}\n${output}`, entry.storedAt)
+  indexRecallEntry('bash', id, command, `${command}\n${redactedOutput}`, entry.storedAt)
   return id
 }
 

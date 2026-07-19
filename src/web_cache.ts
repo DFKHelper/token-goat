@@ -18,6 +18,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { indexRecallEntry } from './recall_index.js'
+import { redactSecrets } from './secret_redact.js'
 
 /** Subdir under the token-goat home where web-output blobs live. */
 export const WEB_OUTPUT_SUBDIR = 'web_outputs'
@@ -57,12 +58,18 @@ function cacheIdForUrl(url: string): string {
  */
 export function storeWebOutput(url: string, content: string, dedupKey: string = url): string {
   const cacheId = cacheIdForUrl(dedupKey)
-  _byId.set(cacheId, content)
+  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
+  // redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the
+  // recall index write below both bypassed that pass entirely (served/indexed raw
+  // content), leaking secrets via same-process reads and `token-goat recall`/FTS search.
+  // Redacting here keeps disk, in-memory, and the recall index all consistent.
+  const redactedContent = redactSecrets(content).text
+  _byId.set(cacheId, redactedContent)
   _urlIndex.set(url, cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.
-  storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content })
+  storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content: redactedContent })
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts. Web blobs carry no storedAt field of their own; Date.now() at write time is the closest available signal, same as bash-history/web-history's own mtime-based ordering fallback.
-  indexRecallEntry('web', cacheId, url, `${url}\n${content}`, Date.now())
+  indexRecallEntry('web', cacheId, url, `${url}\n${redactedContent}`, Date.now())
   return cacheId
 }
 

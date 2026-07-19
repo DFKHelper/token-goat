@@ -16,6 +16,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 import { indexRecallEntry } from './recall_index.js'
+import { redactSecrets } from './secret_redact.js'
 
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
@@ -110,17 +111,23 @@ export function storeMcpOutput(
   if (sizeBytes > MCP_MAX_CACHE_BYTES) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
   const label = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
+  // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
+  // redaction pass to the JSON it writes to disk, but the recall index write below
+  // bypassed that pass entirely (indexed raw resultText), leaking secrets into
+  // `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the
+  // recall index all consistent with the same sanitized text.
+  const redactedOutput = redactSecrets(resultText).text
   const entry: BashOutputEntry = {
     id,
     command: label,
-    output: resultText,
+    output: redactedOutput,
     exitCode: 0,
     storedAt: Date.now(),
     sizeBytes,
   }
   if (!storeBlob(BASH_OUTPUT_SUBDIR, id, entry)) return null
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
-  indexRecallEntry('mcp', id, label, `${label}\n${resultText}`, entry.storedAt)
+  indexRecallEntry('mcp', id, label, `${label}\n${redactedOutput}`, entry.storedAt)
   return id
 }
 
