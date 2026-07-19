@@ -832,7 +832,7 @@ let _projectRootCache: { cwd: string; root: string } | null = null
  * matching constants.ts's DATA_DIR memoization rationale — cwd does not change within a hook or
  * CLI process's lifetime.
  */
-function resolveConfigProjectRoot(): string {
+export function resolveConfigProjectRoot(): string {
   const cwd = process.cwd()
   if (_projectRootCache !== null && _projectRootCache.cwd === cwd) return _projectRootCache.root
   const project = findProject(cwd)
