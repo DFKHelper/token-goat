@@ -33,7 +33,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
-import { appendDirtyPath } from './hooks_index.js'
+import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { relay } from './relay.js'
 import {
   installHooks,
@@ -1422,14 +1422,6 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   }
 }
 
-/** Enqueue a written path for background reindexing; never lets a queue-append failure block the write it follows. */
-function enqueueDirtyPathSafe(filePath: string): void {
-  try {
-    appendDirtyPath(resolveIndexPath(filePath))
-  } catch {
-    // Fail-soft: the file is written correctly either way, just not reindexed until the next `token-goat index`.
-  }
-}
 
 function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'): never {
   const fe = e as NodeJS.ErrnoException

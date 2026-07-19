@@ -13,7 +13,7 @@ import { SKIP_DIRS, walkProject } from './baseline.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
-import { appendDirtyPath } from './hooks_index.js'
+import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
@@ -166,7 +166,7 @@ function healStaleIndex(resolvedPath: string): void {
   if (diskSha === null || diskSha === entry.sha) return
   try {
     indexFileSync(resolvedPath, globalDbPath())
-    enqueueDirtyPathSafe(resolvedPath)
+    enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
   } catch {
     // Fail-safe: leave the stale rows in place. The caller's trailing staleWarning(...) call
     // will detect the still-mismatched sha and fall back to the pre-existing warning text --
@@ -515,30 +515,6 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   return lines.join('\n')
 }
 
-/**
- * After a `--force-refresh` reparse (`indexFileSync`), enqueue the file to the dirty queue so
- * the background worker re-embeds it on its next drain.
- *
- * `indexFileSync` -> `writeParseResult` deletes and reinserts the file's `files` row without an
- * `embed_sha` value, so a forced synchronous reparse here always wipes `embed_sha` to NULL --
- * without this enqueue, nothing would ever re-stamp it and `token-goat semantic` would keep
- * serving stale embedded content (or silently stop matching this file at all) until some
- * unrelated future edit happened to touch it again. Mirrors what `cmdReplace` (cli.ts) already
- * does after its own write: appending to the dirty queue is enough, since the worker's own
- * embed-freshness gate (`isEmbedFresh`) will see the wiped `embed_sha` as stale and re-embed on
- * its next drain -- semantic search tolerates that lag the same way it tolerates the worker's
- * normal incremental drain latency. Fail-soft: a queue-append failure must not turn a successful
- * force-refresh read into a hard error.
- */
-function enqueueDirtyPathSafe(filePath: string): void {
-  try {
-    appendDirtyPath(filePath)
-  } catch {
-    // Fail-soft: the reparse already landed either way, just not re-embedded until the next
-    // `token-goat index` or edit touches this file again.
-  }
-}
-
 function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') return { kind: 'none' }
@@ -546,7 +522,7 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   if (forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
-    enqueueDirtyPathSafe(resolved)
+    enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
   } else {
     // Self-heal a stale index before querying below, so runRead/runBrief serve fresh data
     // instead of the caller having to fall back to a stale-index warning.
@@ -990,7 +966,7 @@ function prepareSymbolListing(
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
-    enqueueDirtyPathSafe(resolved)
+    enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
   } else {
     // Self-heal a stale index before querying below, so skeleton/outline serve fresh data
     // instead of the caller having to fall back to a stale-index warning.
