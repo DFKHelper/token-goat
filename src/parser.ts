@@ -1004,6 +1004,22 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     if (value !== undefined && value.type === 'identifier') result.push(value)
   }
 
+  // Base class named in an extends clause: class Impl extends Base {}, or a member-expression
+  // base like class Impl extends ns.Base {} (captures the object, `ns`). Unlike Python, whose
+  // base list is an `argument_list` already matched above, JS/TS wraps the extends target in its
+  // own class_heritage/extends_clause nodes with no field name -- so it's otherwise never walked,
+  // and every base class permanently false-positives as a zero-ref dead symbol.
+  if (isJs && node.type === 'extends_clause') {
+    const base = node.namedChildren[0]
+    if (base !== undefined) {
+      if (base.type === 'identifier') result.push(base)
+      else if (base.type === 'member_expression') {
+        const object = base.childForFieldName('object')
+        if (object !== null && object.type === 'identifier') result.push(object)
+      }
+    }
+  }
+
   return result
 }
 

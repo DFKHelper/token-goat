@@ -989,6 +989,38 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
+  it('captures a base class named in an extends clause (value position, not a call site)', async () => {
+    const file = write(
+      'extends-clause-ref.ts',
+      'export abstract class BaseFilter {\n' +
+        '  abstract run(): void\n' +
+        '}\n' +
+        'export class ConcreteFilter extends BaseFilter {\n' +
+        '  run(): void {}\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'BaseFilter')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('ConcreteFilter')
+    expect(ref?.line).toBe(4)
+  })
+
+  it('captures the object of a member-expression base in an extends clause (e.g. extends ns.Base)', async () => {
+    const file = write(
+      'extends-member-ref.ts',
+      'import * as ns from \'./ns.js\'\n' +
+        'export class ConcreteFilter extends ns.BaseFilter {\n' +
+        '  run(): void {}\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'ns')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('ConcreteFilter')
+    expect(ref?.line).toBe(2)
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',
