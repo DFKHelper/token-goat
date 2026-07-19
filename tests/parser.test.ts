@@ -794,6 +794,201 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
+  // Regression: array-literal elements had no valueRefIdentifiers case, so a symbol used only as
+  // an entry in an array literal (const handlers = [myHelperFunction]) was invisible to refs.
+  it('captures a function used as an array-literal element (value position, not a call site)', async () => {
+    const file = write(
+      'array-literal-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(): ((x: number) => number)[] {\n' +
+        '  return [myHelperFunction]\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: array-literal elements in Python (a `list` node) had the same gap.
+  it('captures a function used as a Python list-literal element (value position, not a call site)', async () => {
+    const file = write(
+      'list-literal-ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        '\n' +
+        'def driver():\n' +
+        '    return [my_helper_function]\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: ternary consequence/alternative branches had no valueRefIdentifiers case, so a
+  // symbol used only as one branch of a ternary (const fn = cond ? myHelperFunction : other) was
+  // invisible to refs.
+  it('captures a function used as a ternary branch (value position, not a call site)', async () => {
+    const file = write(
+      'ternary-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'function otherFn(x: number): number {\n' +
+        '  return x - 1\n' +
+        '}\n' +
+        'export function driver(cond: boolean): (x: number) => number {\n' +
+        '  return cond ? myHelperFunction : otherFn\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(8)
+  })
+
+  // Regression: Python's conditional_expression (a if cond else b) has the same gap.
+  it('captures a function used as a Python conditional-expression branch (value position, not a call site)', async () => {
+    const file = write(
+      'conditional-expr-ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        '\n' +
+        'def other_fn(x):\n' +
+        '    return x - 1\n' +
+        '\n' +
+        'def driver(cond):\n' +
+        '    return my_helper_function if cond else other_fn\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(8)
+  })
+
+  // Regression: a class field initializer (public_field_definition's value field) had no
+  // valueRefIdentifiers case, so a symbol used only as a class field's initial value
+  // (class C { handler = myHelperFunction }) was invisible to refs.
+  it('captures a function used as a class field initializer (value position, not a call site)', async () => {
+    const file = write(
+      'class-field-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export class Driver {\n' +
+        '  handler = myHelperFunction\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('Driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: a bare-identifier return statement (return myHelperFunction) had no
+  // valueRefIdentifiers case, since neither grammar names the returned expression a field.
+  it('captures a function used as a bare-identifier return value (value position, not a call site)', async () => {
+    const file = write(
+      'bare-return-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(): (x: number) => number {\n' +
+        '  return myHelperFunction\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: Python's bare-identifier return has the same gap.
+  it('captures a function used as a Python bare-identifier return value (value position, not a call site)', async () => {
+    const file = write(
+      'bare-return-ref.py',
+      'def my_helper_function(x):\n' +
+        '    return x + 1\n' +
+        '\n' +
+        'def driver():\n' +
+        '    return my_helper_function\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'my_helper_function')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: a destructuring default (object_assignment_pattern's `right` field) had no
+  // valueRefIdentifiers case, so a symbol used only as a destructured default
+  // (const { cb = myHelperFunction } = opts) was invisible to refs.
+  it('captures a function used as an object-destructuring default (value position, not a call site)', async () => {
+    const file = write(
+      'destructure-default-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(opts: { cb?: (x: number) => number }): (x: number) => number {\n' +
+        '  const { cb = myHelperFunction } = opts\n' +
+        '  return cb\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: an array-destructuring default (assignment_pattern's `right` field) has the same gap.
+  it('captures a function used as an array-destructuring default (value position, not a call site)', async () => {
+    const file = write(
+      'array-destructure-default-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(arr: ((x: number) => number)[]): (x: number) => number {\n' +
+        '  const [cb = myHelperFunction] = arr\n' +
+        '  return cb\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
+  // Regression: a template-literal interpolation (template_substitution's sole namedChild) had no
+  // valueRefIdentifiers case, so a symbol used only as a template interpolation
+  // (`value: ${myHelperFunction}`) was invisible to refs.
+  it('captures a function used inside a template-literal interpolation (value position, not a call site)', async () => {
+    const file = write(
+      'template-literal-ref.ts',
+      'function myHelperFunction(x: number): number {\n' +
+        '  return x + 1\n' +
+        '}\n' +
+        'export function driver(): string {\n' +
+        '  return `fn: ${myHelperFunction}`\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'myHelperFunction')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+    expect(ref?.line).toBe(5)
+  })
+
   it('captures a Python function passed as a bare callback argument', async () => {
     const file = write(
       'callback_ref.py',

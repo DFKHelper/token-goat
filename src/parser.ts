@@ -950,6 +950,60 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     if (value !== null && value.type === 'identifier') result.push(value)
   }
 
+  // Array-literal element bound to an existing name: const handlers = [myHelperFunction, other].
+  // JS `array` and Python `list` both expose their elements as plain namedChildren, no field name.
+  if ((isJs && node.type === 'array') || (isPy && node.type === 'list')) {
+    for (const child of node.namedChildren) {
+      if (child.type === 'identifier') result.push(child)
+    }
+  }
+
+  // Ternary/conditional branch bound to an existing name: const fn = cond ? myHelperFunction : other,
+  // or Python's `myHelperFunction if cond else other`. Only the two chosen-value branches are value
+  // positions -- the condition itself is a predicate, not a candidate value, so it's excluded.
+  if (isJs && node.type === 'ternary_expression') {
+    const consequence = node.childForFieldName('consequence')
+    const alternative = node.childForFieldName('alternative')
+    if (consequence !== null && consequence.type === 'identifier') result.push(consequence)
+    if (alternative !== null && alternative.type === 'identifier') result.push(alternative)
+  }
+  if (isPy && node.type === 'conditional_expression' && node.namedChildren.length === 3) {
+    const consequence = node.namedChildren[0]
+    const alternative = node.namedChildren[2]
+    if (consequence !== undefined && consequence.type === 'identifier') result.push(consequence)
+    if (alternative !== undefined && alternative.type === 'identifier') result.push(alternative)
+  }
+
+  // Class field initializer bound to an existing name: class C { handler = myHelperFunction }.
+  // Python's equivalent (a class-body assignment) is already covered by the `assignment` case above.
+  if (isJs && node.type === 'public_field_definition') {
+    const value = node.childForFieldName('value')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  // Bare-identifier return: return myHelperFunction. Neither grammar names this a field, so it's
+  // only walked when the return statement has exactly one named child (avoids matching e.g. a
+  // Python bare `return` with no value, which has zero).
+  if (node.type === 'return_statement' && node.namedChildren.length === 1) {
+    const value = node.namedChildren[0]
+    if (value !== undefined && value.type === 'identifier') result.push(value)
+  }
+
+  // Destructuring default bound to an existing name: const [cb = myHelperFunction] = arr, or
+  // const { cb = myHelperFunction } = opts. Both array- and object-pattern defaults expose the
+  // fallback value via a `right` field.
+  if (isJs && (node.type === 'assignment_pattern' || node.type === 'object_assignment_pattern')) {
+    const value = node.childForFieldName('right')
+    if (value !== null && value.type === 'identifier') result.push(value)
+  }
+
+  // Template-literal interpolation of an existing name: `value: ${myHelperFunction}`. The
+  // substitution wraps its expression as a single namedChild with no field name.
+  if (isJs && node.type === 'template_substitution' && node.namedChildren.length === 1) {
+    const value = node.namedChildren[0]
+    if (value !== undefined && value.type === 'identifier') result.push(value)
+  }
+
   return result
 }
 
