@@ -11,6 +11,7 @@ import {
   MCP_MAX_CACHE_BYTES,
 } from '../src/mcp_cache.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
+import { likeSearchForTesting } from '../src/recall_index.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 let tmpHome: string
@@ -306,5 +307,21 @@ describe('storeMcpOutput / getMcpOutput', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // Regression (secret-redaction bypass): storeMcpOutput indexed the raw, pre-redaction
+  // resultText into the cache_recall table even though storeBlob() redacted the same
+  // text before writing it to disk -- `token-goat recall`/FTS search over cache_recall
+  // could surface a secret the blob-store redaction was specifically built to strip.
+  it('never indexes a raw secret into the recall table, even when the blob is redacted', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const id = storeMcpOutput(sessionId, toolName, toolInput, `before ${secret} after`)
+    expect(id).not.toBeNull()
+    // The on-disk/in-memory blob is redacted (existing behavior via storeBlob).
+    const entry = getBashOutput(id as string)
+    expect(entry?.output).not.toContain(secret)
+    // The recall index must reflect the same redacted text, not the raw secret.
+    const hits = likeSearchForTesting(secret, 'mcp')
+    expect(hits).toHaveLength(0)
   })
 })

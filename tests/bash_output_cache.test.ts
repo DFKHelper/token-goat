@@ -29,6 +29,7 @@ import {
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
+import { likeSearchForTesting } from '../src/recall_index.js'
 
 beforeEach(() => {
   clearModuleCaches()
@@ -174,6 +175,19 @@ describe('storeBashOutput', () => {
   it('returns an id equal to the command hash', async () => {
     const id = await storeBashOutput('echo hi', 'hi\n', 0)
     expect(id).toBe(await commandHash('echo hi', null))
+  })
+
+  // Regression (secret-redaction bypass): storeBashOutput indexed the raw, pre-redaction
+  // output into both the in-memory _byId cache and the cache_recall table even though
+  // storeBlob() redacted the same text before writing it to disk -- a same-process
+  // getBashOutput() read, or `token-goat recall`/FTS search, could surface a secret the
+  // blob-store redaction was specifically built to strip.
+  it('never surfaces a raw secret via in-memory getBashOutput or the recall table', async () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const id = await storeBashOutput('deploy', `before ${secret} after`, 0)
+    expect(getBashOutput(id)?.output).not.toContain(secret)
+    const hits = likeSearchForTesting(secret, 'bash')
+    expect(hits).toHaveLength(0)
   })
 })
 
