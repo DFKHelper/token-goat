@@ -9,15 +9,21 @@ import { execFileSync } from 'node:child_process'
 // file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
 // near the bottom of this file can set a non-default config value
 // deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts.
+// dataDir() is also redirected to an isolated temp dir so the git-mutation
+// staleness-enqueue tests below (which exercise the real queue/dirty.txt
+// write path via enqueueDirtyPathSafe) never touch the real local dirty
+// queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
     ...original,
     configPath: () => _testConfigPath,
+    dataDir: () => _testDataDir,
   }
 })
 
 const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
+const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/session.js'
@@ -26,6 +32,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
 
 function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
   return makeHookEvent({
@@ -2950,5 +2957,106 @@ describe('preBashHandler — backgrounded/multi-line commands are never compress
   it('still rejects an already-rejected && compound', () => {
     const result = preBashHandler(makeBashEvent('git log && git status'))
     expect(result.hookType).toBe('pass')
+  })
+})
+
+// Regression: checkout/switch/pull/merge/rebase/reset/cherry-pick rewrite working-tree file
+// content without ever going through Claude Code's Edit tool, so those files never entered
+// queue/dirty.txt via the normal postEditHandler path -- every surgical-read command would
+// otherwise silently keep serving stale symbols/refs computed before the mutation. See the
+// isHeadMovingGitCommand block in postBashHandler.
+describe('postBashHandler — git-mutation staleness enqueue', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+    clearDirtyQueue()
+  })
+
+  it('enqueues a file changed by `git checkout <branch>` to the dirty queue', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-checkout-')
+    try {
+      const git = (args: string[]): void => {
+        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+      }
+      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
+      git(['checkout', '-b', 'feature'])
+      writeFileSync(join(dir, 'a.txt'), 'two\n')
+      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change a.txt'])
+      git(['checkout', originalBranch])
+
+      await postBashHandler(makePostBashEvent('git checkout feature', '', dir))
+
+      const dirty = getDirtyPaths()
+      const expected = resolveIndexPath('a.txt', dir)
+      expect(dirty).toContain(expected)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues a file changed by `git reset --hard <ref>`', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-reset-')
+    try {
+      const git = (args: string[]): void => {
+        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+      }
+      const firstSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()
+      writeFileSync(join(dir, 'a.txt'), 'two\n')
+      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change a.txt'])
+
+      await postBashHandler(makePostBashEvent(`git reset --hard ${firstSha}`, '', dir))
+
+      const dirty = getDirtyPaths()
+      const expected = resolveIndexPath('a.txt', dir)
+      expect(dirty).toContain(expected)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue anything for a path-scoped `git checkout -- <file>` restore (HEAD never moves)', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-scoped-')
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'two\n')
+
+      await postBashHandler(makePostBashEvent('git checkout -- a.txt', '', dir))
+
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue anything for a non-git-mutating command', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-noop-')
+    try {
+      await postBashHandler(makePostBashEvent('git status', '', dir))
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue anything when the head-moving command failed (non-zero exit)', async () => {
+    const dir = initGitRepoForBashTests('tg-gitmutate-fail-')
+    try {
+      const event = makeHookEvent({
+        eventName: 'post_tool_use',
+        toolName: 'Bash',
+        toolInput: { command: 'git checkout nonexistent-branch' },
+        sessionId: 'test-session',
+        raw: {
+          tool_name: 'Bash',
+          tool_input: { command: 'git checkout nonexistent-branch' },
+          tool_response: { output: '', exit_code: 1 },
+          cwd: dir,
+        },
+      })
+      await postBashHandler(event)
+      expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
