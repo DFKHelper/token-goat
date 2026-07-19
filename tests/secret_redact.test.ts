@@ -26,6 +26,27 @@ describe('redactSecrets — per-pattern detection', () => {
     expect(text).not.toContain(fake)
   })
 
+  it('redacts a modern OpenAI project key (sk-proj-, which contains - and _ after the prefix)', () => {
+    // Regression: the generic openai pattern requires >=20 chars of [A-Za-z0-9] immediately
+    // after "sk-", so "sk-proj-..." (4 alnum then a hyphen) never matched and the dominant
+    // post-2024 OpenAI key format was written to the cache in plaintext.
+    const fake = 'sk-proj-' + 'Ab1_Cd2-Ef3_Gh4-Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3'
+    const { text, count } = redactSecrets(`OPENAI_API_KEY=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('OPENAI_API_KEY=[REDACTED:openai_project_key]')
+    expect(text).not.toContain(fake)
+  })
+
+  it('redacts a GitHub fine-grained personal access token (github_pat_ prefix)', () => {
+    // Regression: the gh[oprsu]_ pattern only covers classic tokens; fine-grained PATs use the
+    // distinct "github_pat_" prefix and were written to the cache in plaintext.
+    const fake = 'github_pat_' + '11ABCDEFG0abcdefghijklmn_ABCdefGHIjklMNOpqrSTUvwxYZ0123456789abcdefghijklmnopqr'
+    const { text, count } = redactSecrets(`export GITHUB_TOKEN=${fake}`)
+    expect(count).toBe(1)
+    expect(text).toBe('export GITHUB_TOKEN=[REDACTED:github_token]')
+    expect(text).not.toContain(fake)
+  })
+
   it('redacts an Anthropic API key (and does not double-classify it as an OpenAI key)', () => {
     const fake = 'sk-ant-api03-' + 'a'.repeat(40)
     const { text, count } = redactSecrets(`ANTHROPIC_API_KEY=${fake}`)
