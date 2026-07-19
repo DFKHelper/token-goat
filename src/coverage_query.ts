@@ -263,7 +263,16 @@ export function parseLcov(text: string): CoverageGapsReport {
       const comma = rest.indexOf(',')
       if (comma !== -1) {
         const lineNo = Number.parseInt(rest.slice(0, comma), 10)
-        const name = rest.slice(comma + 1)
+        let name = rest.slice(comma + 1)
+        // LCOV v2 (geninfo >= 2.0) optionally inserts an end-line field: FN:<start>[,<end>],<name>.
+        // FNDA records key by the bare name, so a v2 end-line field left glued onto the name
+        // ("10,foo") would orphan every function into a phantom uncovered entry. A real function
+        // name cannot begin with digits-then-comma, so a purely-numeric leading field is
+        // unambiguously the optional end line.
+        const comma2 = name.indexOf(',')
+        if (comma2 !== -1 && /^\d+$/.test(name.slice(0, comma2))) {
+          name = name.slice(comma2 + 1)
+        }
         if (Number.isFinite(lineNo)) cur.fnLines.set(name, lineNo)
       }
       continue
