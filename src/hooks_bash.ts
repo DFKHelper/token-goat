@@ -22,6 +22,8 @@ import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './too
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync } from 'node:fs'
+import { runGit } from './util.js'
+import { enqueueDirtyPathSafe } from './hooks_index.js'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
@@ -161,6 +163,22 @@ function pipelineDivergenceNote(cmd: string, entryCommand: string): string {
 function extractCommand(event: HookEvent): string | undefined {
   const cmd = event.toolInput['command']
   return typeof cmd === 'string' && cmd.trim() !== '' ? cmd.trim() : undefined
+}
+
+/**
+ * Matches a git subcommand that can move HEAD and rewrite working-tree file content without
+ * ever going through Claude Code's Edit tool (checkout/switch to a ref, pull, merge, rebase,
+ * reset, or cherry-pick). Excludes the path-scoped `git checkout -- <file>` / `git checkout
+ * <file>` restore forms, since those don't move HEAD -- `HEAD@{1}` only names "where HEAD was
+ * before this command" for the ref-moving forms below.
+ */
+const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick)\b/i
+const PATH_SCOPED_CHECKOUT_RE = /^\s*git\s+checkout\s+(?:.*\s)?--(?:\s|$)/i
+
+function isHeadMovingGitCommand(cmd: string): boolean {
+  if (!HEAD_MOVING_GIT_RE.test(cmd)) return false
+  if (PATH_SCOPED_CHECKOUT_RE.test(cmd)) return false
+  return true
 }
 
 /** True when the path is a temp file (not indexed by token-goat). */
@@ -1669,6 +1687,25 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cwd = getCwd(event) ?? null
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
+
+    // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move
+    // HEAD and rewrite working-tree file content without ever going through Claude Code's Edit
+    // tool, so those files never enter queue/dirty.txt via the normal postEditHandler path --
+    // every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep
+    // serving whatever was indexed before the mutation until each file happens to be individually
+    // read. HEAD@{1} is git's own reflog record of "where HEAD was immediately before this
+    // command moved it", so a diff against it names exactly the files this command changed.
+    if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
+      const gitDir = cwd ?? process.cwd()
+      const mutationDiff = runGit(['diff', '--name-only', 'HEAD@{1}', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+      if (mutationDiff.exitCode === 0) {
+        for (const rel of mutationDiff.stdout.split('\n')) {
+          const trimmed = rel.trim()
+          if (trimmed.length === 0) continue
+          enqueueDirtyPathSafe(resolveIndexPath(trimmed, gitDir), { alreadyResolved: true })
+        }
+      }
+    }
 
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
