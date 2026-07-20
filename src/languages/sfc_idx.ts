@@ -45,6 +45,7 @@ import {
   buildLineIndex,
   makeLineSymbol,
   offsetToLine,
+  stripJsComments,
   stripStringLiterals,
   stripXmlComments,
 } from './common.js'
@@ -84,64 +85,6 @@ function matchLine(content: string, offset: number): number {
 
 function lineContext(content: string, line: number): string {
   return content.split('\n')[line - 1]?.trim() ?? ''
-}
-
-/**
- * Blanks `//` and `/* *\/` JS/TS comments in a single linear scan, leaving quoted-string and
- * backtick template-literal spans untouched -- same algorithm as
- * `salesforce_frontend.ts`'s `stripJsComments` (duplicated here rather than imported: it is not
- * currently exported from that module, and this adapter's `MAX_SYMBOLS`/dedupe/result-shape
- * conventions already diverge enough from the LWC adapter that sharing just this one function
- * across a module boundary wasn't worth the coupling). Any future change to the algorithm in one
- * copy should be mirrored in the other.
- */
-function stripJsComments(content: string): string {
-  let out = ''
-  let i = 0
-  const n = content.length
-  while (i < n) {
-    const ch = content[i]
-    if (ch === '/' && content[i + 1] === '/') {
-      let j = i
-      while (j < n && content[j] !== '\n') j++
-      out += ' '.repeat(j - i)
-      i = j
-      continue
-    }
-    if (ch === '/' && content[i + 1] === '*') {
-      let j = i + 2
-      while (j < n && !(content[j] === '*' && content[j + 1] === '/')) j++
-      const end = j < n ? j + 2 : n
-      out += content.slice(i, end).replace(/[^\n]/g, ' ')
-      i = end
-      continue
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch
-      let j = i + 1
-      while (j < n) {
-        if (content[j] === '\\' && j + 1 < n) {
-          j += 2
-          continue
-        }
-        if (content[j] === quote) {
-          j++
-          break
-        }
-        if (quote !== '`' && content[j] === '\n') {
-          j++
-          break
-        }
-        j++
-      }
-      out += content.slice(i, j)
-      i = j
-      continue
-    }
-    out += ch
-    i++
-  }
-  return out
 }
 
 /**

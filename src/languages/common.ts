@@ -153,6 +153,63 @@ export function stripXmlComments(text: string): string {
 }
 
 /**
+ * Blanks `//` and `/* *\/` JS/TS comments in a single linear scan that copies every quoted-string
+ * and backtick template-literal span through untouched, leaving their content intact for callers
+ * that still need to read it afterward (e.g. matching an import path inside its quotes). A `"`/`'`
+ * string is treated as implicitly closed by a raw newline (a `"`/`'` string can never legally
+ * contain one), while a backtick template literal is allowed to span real newlines since it can
+ * legitimately do so in JS.
+ */
+export function stripJsComments(content: string): string {
+  let out = ''
+  let i = 0
+  const n = content.length
+  while (i < n) {
+    const ch = content[i]
+    if (ch === '/' && content[i + 1] === '/') {
+      let j = i
+      while (j < n && content[j] !== '\n') j++
+      out += ' '.repeat(j - i)
+      i = j
+      continue
+    }
+    if (ch === '/' && content[i + 1] === '*') {
+      let j = i + 2
+      while (j < n && !(content[j] === '*' && content[j + 1] === '/')) j++
+      const end = j < n ? j + 2 : n
+      out += content.slice(i, end).replace(/[^\n]/g, ' ')
+      i = end
+      continue
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch
+      let j = i + 1
+      while (j < n) {
+        if (content[j] === '\\' && j + 1 < n) {
+          j += 2
+          continue
+        }
+        if (content[j] === quote) {
+          j++
+          break
+        }
+        if (quote !== '`' && content[j] === '\n') {
+          j++
+          break
+        }
+        j++
+      }
+      out += content.slice(i, j)
+      i = j
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
+/**
  * Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an
  * open single- or double-quoted string literal on the same line is not treated as a comment
  * starter, so e.g. a GraphQL description string containing a literal `#` is preserved.
