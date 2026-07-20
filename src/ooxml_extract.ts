@@ -1,12 +1,14 @@
 /**
  * Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts).
  * pptx_extract.ts and docx_extract.ts both build on this rather than each reimplementing
- * zip-reading and text-run collection. Follows the loadPdfjs() optional-dependency template:
- * module-level cache typed T | null | undefined, try/catch import, graceful "not installed"
- * error on first real use.
+ * zip-reading and text-run collection. Uses `createLazyModuleLoader` (see lazy_module.ts) for
+ * the optional-dependency imports: cached lazy load, graceful "not installed" error on first
+ * real use.
  */
 
 import * as fs from 'node:fs'
+
+import { createLazyModuleLoader } from './lazy_module.js'
 
 interface FflateModule {
   unzipSync: (data: Uint8Array) => Record<string, Uint8Array>
@@ -20,30 +22,15 @@ interface FastXmlParserModule {
   XMLParser: XmlParserCtor
 }
 
-let _fflateCache: FflateModule | null | undefined
-let _fxpCache: FastXmlParserModule | null | undefined
+const loadFflate = createLazyModuleLoader(
+  async () => (await import('fflate')) as unknown as FflateModule,
+  'office-file reading disabled (fflate unavailable)',
+)
 
-async function loadFflate(): Promise<FflateModule | null> {
-  if (_fflateCache !== undefined) return _fflateCache
-  try {
-    _fflateCache = (await import('fflate')) as unknown as FflateModule
-  } catch (err) {
-    process.stderr.write(`token-goat: office-file reading disabled (fflate unavailable): ${String(err)}\n`)
-    _fflateCache = null
-  }
-  return _fflateCache
-}
-
-async function loadXmlParser(): Promise<FastXmlParserModule | null> {
-  if (_fxpCache !== undefined) return _fxpCache
-  try {
-    _fxpCache = (await import('fast-xml-parser')) as unknown as FastXmlParserModule
-  } catch (err) {
-    process.stderr.write(`token-goat: office-file reading disabled (fast-xml-parser unavailable): ${String(err)}\n`)
-    _fxpCache = null
-  }
-  return _fxpCache
-}
+const loadXmlParser = createLazyModuleLoader(
+  async () => (await import('fast-xml-parser')) as unknown as FastXmlParserModule,
+  'office-file reading disabled (fast-xml-parser unavailable)',
+)
 
 // DEFLATE's worst-case compression ratio is ~1032:1, so capping the compressed input
 // bounds unzipSync's eager, unstreamed decompression to a worst case of tens of GB

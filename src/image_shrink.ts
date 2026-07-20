@@ -18,6 +18,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
+import { createLazyModuleLoader } from './lazy_module.js'
 import { statSize, toKB } from './util.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
@@ -92,28 +93,11 @@ type SharpFactory = (
   options?: { limitInputPixels?: number | false; animated?: boolean },
 ) => SharpInstance
 
-/**
- * Cached lazy import of `sharp`.
- *
- * `undefined` until first attempted; `null` once an import failure is recorded
- * (so we do not re-pay the failing import on every image). Resolved once
- * because the native module's availability does not change within a process.
- */
-let _sharpCache: SharpFactory | null | undefined
-
-/** Load `sharp` lazily, returning null (and logging once) when unavailable. */
-async function loadSharp(): Promise<SharpFactory | null> {
-  if (_sharpCache !== undefined) return _sharpCache
-  try {
-    const mod = (await import('sharp')) as unknown as { default: SharpFactory }
-    _sharpCache = mod.default
-  } catch (err) {
-    // Native binary missing or incompatible: degrade gracefully for the rest of the process. One warning is enough; the hot path stays silent.
-    process.stderr.write(`token-goat: image shrink disabled (sharp unavailable): ${String(err)}\n`)
-    _sharpCache = null
-  }
-  return _sharpCache
-}
+/** Load `sharp` lazily, returning null (and logging once) when unavailable -- e.g. a missing/incompatible native binary. */
+const loadSharp = createLazyModuleLoader(async () => {
+  const mod = (await import('sharp')) as unknown as { default: SharpFactory }
+  return mod.default
+}, 'image shrink disabled (sharp unavailable)')
 
 /** True when `p` has a recognised image extension (case-insensitive). */
 export function isImagePath(p: string): boolean {
