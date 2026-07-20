@@ -53,6 +53,7 @@ import {
   extractSalesforceMarkup,
 } from './languages/salesforce_frontend.js'
 import { extractVue, extractSvelte, extractAstro } from './languages/sfc_idx.js'
+import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
 import { foldPath } from './util.js'
 const _require = createRequire(import.meta.url)
 
@@ -1676,6 +1677,13 @@ function parseContent(content: string, filePath: string, language: Language): Pa
     content = content.slice(1)
   }
 
+  // A notebook is JSON, not source -- flatten its code/markdown cells into a virtual Python-like document and recurse with language forced to 'python' so it gets the real tree-sitter Python extraction path; a non-Python-kernel or unparseable notebook yields no symbols/refs (never throws).
+  if (language === 'ipynb') {
+    const virtual = ipynbToVirtualSource(content)
+    if (virtual.cellLanguage === null) return { symbols: [], refs: [] }
+    return parseContent(virtual.content, filePath, 'python')
+  }
+
   if (isTreeSitterAvailable(language)) {
     try {
       const Ctor = loadParserCtor()
@@ -2060,6 +2068,17 @@ export async function indexFileEmbeddings(
     content = await fs.promises.readFile(filePath, 'utf8')
   } catch {
     return
+  }
+  if (detectLanguage(filePath) === 'ipynb') {
+    // Embedding boundaries below are line ranges taken from the symbols table, which indexFileSync populated from the SAME virtual document -- must transform content identically here or chunk text would be sliced from the wrong (raw JSON) place. A non-Python-kernel/unparseable notebook is a deliberate terminal never-embed, same shape as the profile-meta.xml/oversized-metadata skips below.
+    const virtual = ipynbToVirtualSource(content)
+    if (virtual.cellLanguage === null) {
+      const db = getDb(dbPath)
+      deleteFileEmbeddings(db, filePath)
+      stampEmbedSha(db, filePath, sha, (s) => s)
+      return
+    }
+    content = virtual.content
   }
   if (content.length > ixCfg.large_file_symbol_only_kb * 1024) {
     // Between the symbol-only and full-skip thresholds: syntactic symbols/refs are already indexed by indexFileSync (only large_file_skip_kb gates that), but embedding a moderately-large file is comparatively expensive for comparatively little retrieval value -- deliberately never embed it, mirroring the profile-meta.xml / salesforce_metadata terminal-skip pattern below.

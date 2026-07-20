@@ -83,6 +83,7 @@ export type Language =
   | 'vue'
   | 'svelte'
   | 'astro'
+  | 'ipynb'
   | 'unknown'
 
 /**
@@ -165,6 +166,7 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.vue', 'vue'],
   ['.svelte', 'svelte'],
   ['.astro', 'astro'],
+  ['.ipynb', 'ipynb'],
 ])
 
 /**

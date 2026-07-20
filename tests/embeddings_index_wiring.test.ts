@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { indexFileEmbeddings, indexFileSync } from '../src/parser.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
-import { searchSymbolsFts } from '../src/index_reader.js'
+import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
@@ -247,4 +247,63 @@ describe('real embeddings find meaning-based matches plain FTS misses', () => {
       expect(hits.some((h) => h.filePath === filePath && h.text.includes('getUserByEmail'))).toBe(true)
     },
   )
+})
+
+describe('indexFileSync indexes Jupyter notebook (.ipynb) code cells as real symbols', () => {
+  it('extracts a function defined in a notebook code cell, with a non-empty body and a resolved call ref', () => {
+    const dbPath = path.join(TMP, 'index.db')
+    const filePath = path.join(TMP, 'analysis.ipynb')
+    const notebook = {
+      cells: [
+        { cell_type: 'markdown', metadata: {}, source: ['# Helper utilities\n'] },
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['def helper():\n', '    return 42\n'],
+        },
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['def notebook_main():\n', '    return helper() + 1\n'],
+        },
+      ],
+      metadata: { kernelspec: { name: 'python3', language: 'python' } },
+    }
+    fs.writeFileSync(filePath, JSON.stringify(notebook))
+
+    indexFileSync(filePath, dbPath)
+
+    const symbols = querySymbols({ filePath, name: 'notebook_main' }, dbPath)
+    expect(symbols.length).toBe(1)
+    expect(symbols[0]?.body).toContain('def notebook_main')
+    expect(symbols[0]?.body).toContain('helper()')
+
+    const helperSymbols = querySymbols({ filePath, name: 'helper' }, dbPath)
+    expect(helperSymbols.length).toBe(1)
+    expect(helperSymbols[0]?.body).toContain('return 42')
+
+    // The stored language is still 'ipynb', not 'python' -- distinguishing a notebook from a plain .py file.
+    const db = getDb(dbPath)
+    const fileRow = db.prepare('SELECT language FROM files WHERE path = ?').get(filePath) as
+      | { language: string }
+      | undefined
+    expect(fileRow?.language).toBe('ipynb')
+
+    const refs = queryRefs({ name: 'helper', filePath }, dbPath)
+    expect(refs.length).toBeGreaterThan(0)
+  })
+
+  it('never throws and indexes zero symbols for a notebook with a non-Python kernel', () => {
+    const dbPath = path.join(TMP, 'index.db')
+    const filePath = path.join(TMP, 'r_notebook.ipynb')
+    const notebook = {
+      cells: [{ cell_type: 'code', metadata: {}, source: ['f <- function() 1\n'] }],
+      metadata: { kernelspec: { name: 'ir', language: 'r' } },
+    }
+    fs.writeFileSync(filePath, JSON.stringify(notebook))
+
+    expect(() => indexFileSync(filePath, dbPath)).not.toThrow()
+    const symbols = querySymbols({ filePath }, dbPath)
+    expect(symbols.length).toBe(0)
+  })
 })
