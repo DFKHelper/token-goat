@@ -3359,6 +3359,100 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
   })
 })
 
+describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('groups a high-fanout symbol by file, ranked by count descending, capped to the top N files', () => {
+    mockQueryRefs.mockReturnValue([
+      ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x'), ref('src/a.ts', 3, 'x'),
+      ref('src/b.ts', 1, 'x'), ref('src/b.ts', 2, 'x'),
+      ref('src/c.ts', 1, 'x'),
+    ])
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'ToolFilter', top: 2 })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('6 references across 3 files (showing top 2)')
+    expect(stdout).toContain('3  src/a.ts')
+    expect(stdout).toContain('2  src/b.ts')
+    // Only the top 2 are listed by name -- c.ts is elided, not silently dropped.
+    expect(stdout).not.toContain('src/c.ts')
+    expect(stdout).toContain('1 more files, 1 more references elided')
+    // --top replaces the per-line dump entirely -- no individual file:line: context lines.
+    expect(stdout).not.toContain(':1: x')
+  })
+
+  it('omits the elision note when every file fits within --top', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x'), ref('src/b.ts', 1, 'x')])
+    const { stdout } = capture(() => runRefs({ spec: 'login', top: 5 }))
+    expect(stdout).toContain('2 references across 2 files (showing top 2)')
+    expect(stdout).not.toContain('elided')
+  })
+
+  it('emits the fileCounts/totalFiles/totalRefs/shown envelope under --json instead of items/truncated/totalCount', () => {
+    mockQueryRefs.mockReturnValue([
+      ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x'),
+      ref('src/b.ts', 1, 'x'),
+    ])
+    const { stdout } = capture(() => runRefs({ spec: 'login', top: 1, json: true }))
+    const parsed = JSON.parse(stdout) as {
+      fileCounts: Array<{ file: string; count: number }>
+      totalFiles: number
+      totalRefs: number
+      shown: number
+    }
+    expect(parsed.fileCounts).toEqual([{ file: 'src/a.ts', count: 2 }])
+    expect(parsed.totalFiles).toBe(2)
+    expect(parsed.totalRefs).toBe(3)
+    expect(parsed.shown).toBe(1)
+  })
+
+  it('applies --top per-symbol in a multi-symbol spec, each under its own header', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) =>
+      opts.name === 'login'
+        ? [ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x')]
+        : [ref('src/b.ts', 1, 'x')],
+    )
+    const { stdout } = capture(() => runRefs({ spec: 'login,refresh', top: 1 }))
+    expect(stdout).toContain('login:')
+    expect(stdout).toContain('2 references across 1 files (showing top 1)')
+    expect(stdout).toContain('refresh:')
+    expect(stdout).toContain('1 references across 1 files (showing top 1)')
+  })
+
+  it('takes precedence over --callers for text output when both are set', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x')])
+    const { stdout } = capture(() => runRefs({ spec: 'login', top: 5, callers: true }))
+    expect(stdout).toContain('2 references across 1 files')
+    // The caller-grouped per-line view (":line  context") is not also present.
+    expect(stdout).not.toContain(':1  x')
+  })
+
+  it('rejects --top 0 as an explicit invalid-argument error instead of rendering an empty summary', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
+    const { stderr } = capture(() => {
+      const code = runRefs({ spec: 'login', top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(stderr.toLowerCase()).toContain('top')
+    expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
+
+  it('rejects a negative --top as an explicit invalid-argument error', () => {
+    const { stderr } = capture(() => {
+      const code = runRefs({ spec: 'login', top: -1 })
+      expect(code).toBe(1)
+    })
+    expect(stderr.toLowerCase()).toContain('top')
+    expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
+})
+
 // A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the
 // SAME filtering semantics as the real SQL query (name always filters; filePath, when
 // present, additionally restricts rows to that exact file) so these tests exercise the

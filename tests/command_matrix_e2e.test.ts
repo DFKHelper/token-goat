@@ -191,6 +191,10 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['refs', 'caller.ts::refHelper', '--callers'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/refDriver|caller\.ts/)
+
+    const top = run(['refs', 'caller.ts::refHelper', '--top', '1'])
+    expect(top.status, top.stderr).toBe(0)
+    expect(top.stdout).toMatch(/references across \d+ files? \(showing top 1\)/)
   },
   exports: () => expectRead(['exports', 'src/mod.ts'], 'alphaSym'),
   imports: () => {

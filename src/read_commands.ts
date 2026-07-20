@@ -753,6 +753,16 @@ export interface RefsOptions {
   callers?: boolean
   json?: boolean
   limit?: number
+  /**
+   * Group references by file (count only, no per-line context) and show only the top N files
+   * by reference count. For a high-fanout symbol (hundreds of refs across dozens of files --
+   * e.g. a widely-extended base class or widely-implemented interface) the normal per-line
+   * output degrades into the unusable wall of text this tool exists to prevent; this mode stays
+   * surgical by trading per-line context for a ranked-by-fanout summary. Independent of
+   * `--callers`: when both are set, `--top` wins for text output (its summary supersedes the
+   * caller-grouped per-line view; the choice is between them, not a composition of both).
+   */
+  top?: number
 }
 
 /**
@@ -812,14 +822,22 @@ export function runRefs(opts: RefsOptions): number {
     emitErr(`--limit must be a positive number, got: ${opts.limit}`)
     return 1
   }
+  // Same reasoning: --top 0 (or negative) is never a meaningful request -- reject explicitly
+  // rather than silently rendering an empty summary.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
 
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
   // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/
   // `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated —
-  // a JSON consumer should never have to branch on shape depending on truncation.
-  const jsonOut: Record<string, { items: RefEntry[]; truncated: boolean; totalCount: number }> = {}
+  // a JSON consumer should never have to branch on shape depending on truncation. `--top` opts
+  // into a distinct, deliberately different envelope ({ fileCounts, totalFiles, totalRefs,
+  // shown }) since the caller explicitly asked for the grouped summary shape instead.
+  const jsonOut: Record<string, RefsJsonEntry> = {}
   let anyFound = false
   const lines: string[] = []
   const refFilePaths: string[] = []
@@ -834,8 +852,7 @@ export function runRefs(opts: RefsOptions): number {
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
-      const capped = guardJsonRows(results)
-      jsonOut[sym] = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
+      jsonOut[sym] = opts.top !== undefined ? topFilesJsonPayload(results, opts.top) : guardJsonRows(results)
       continue
     }
     if (results.length === 0) {
@@ -843,7 +860,9 @@ export function runRefs(opts: RefsOptions): number {
       continue
     }
     lines.push(`${sym}:`)
-    if (opts.callers === true) {
+    if (opts.top !== undefined) {
+      lines.push(...renderTopFilesSummary(results, opts.top))
+    } else if (opts.callers === true) {
       lines.push(...renderCallerGroups(results))
     } else {
       for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
@@ -884,8 +903,8 @@ function runRefsSingle(opts: RefsOptions): number {
   const fullSourceBytes = sumFileSizes(results.map((r) => r.filePath))
 
   if (opts.json === true) {
-    const capped = guardJsonRows(results)
-    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
+    const payload: RefsJsonEntry =
+      opts.top !== undefined ? topFilesJsonPayload(results, opts.top) : guardJsonRows(results)
     const text = JSON.stringify(payload, null, 2)
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -893,14 +912,60 @@ function runRefsSingle(opts: RefsOptions): number {
   }
 
   const lines =
-    opts.callers === true
-      ? renderCallerGroups(results)
-      : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
+    opts.top !== undefined
+      ? renderTopFilesSummary(results, opts.top)
+      : opts.callers === true
+        ? renderCallerGroups(results)
+        : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
   return 0
 }
+
+interface FileRefCount {
+  readonly file: string
+  readonly count: number
+}
+
+/** Groups `refs` by file, counting occurrences per file and sorting by count descending (ties broken alphabetically by path for stable output). */
+function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
+  const byFile = new Map<string, number>()
+  for (const ref of refs) byFile.set(ref.filePath, (byFile.get(ref.filePath) ?? 0) + 1)
+  return [...byFile.entries()]
+    .map(([file, count]) => ({ file, count }))
+    .sort((a, b) => b.count - a.count || a.file.localeCompare(b.file))
+}
+
+/** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). */
+function renderTopFilesSummary(refs: RefEntry[], topN: number): string[] {
+  const grouped = groupRefsByFile(refs)
+  const shown = grouped.slice(0, topN)
+  const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})`]
+  for (const { file, count } of shown) lines.push(`  ${count}  ${file}`)
+  const omittedFiles = grouped.length - shown.length
+  if (omittedFiles > 0) {
+    const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
+    lines.push(`  ...(${omittedFiles} more files, ${refs.length - shownRefs} more references elided; use a higher --top to see more)`)
+  }
+  return lines
+}
+
+/** The `--top N` JSON envelope: ranked-by-count file list plus the totals needed to know how much was elided, without ever including a per-reference line (that's the point of the mode). */
+interface RefsTopJsonEntry {
+  readonly fileCounts: FileRefCount[]
+  readonly totalFiles: number
+  readonly totalRefs: number
+  readonly shown: number
+}
+
+function topFilesJsonPayload(refs: RefEntry[], topN: number): RefsTopJsonEntry {
+  const grouped = groupRefsByFile(refs)
+  const shown = grouped.slice(0, topN)
+  return { fileCounts: shown, totalFiles: grouped.length, totalRefs: refs.length, shown: shown.length }
+}
+
+type RefsJsonEntry = { items: RefEntry[]; truncated: boolean; totalCount: number } | RefsTopJsonEntry
 
 function renderCallerGroups(refs: RefEntry[]): string[] {
   const byFile = new Map<string, RefEntry[]>()
