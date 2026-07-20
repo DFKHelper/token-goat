@@ -15,7 +15,7 @@ import * as path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
-import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { extractImports } from './read_commands.js'
@@ -53,6 +53,26 @@ export function enclosingSymbol(symbols: SymbolEntry[], line: number): SymbolEnt
   let best: SymbolEntry | null = null
   for (const s of symbols) {
     if (s.lineStart <= line && line <= s.lineEnd) {
+      if (best === null || s.lineStart > best.lineStart) best = s
+    }
+  }
+  return best
+}
+
+/** Return the innermost class-or-function symbol containing `line`, or null. Unlike
+ * {@link enclosingSymbol} (which returns the innermost symbol of ANY kind), this filters to
+ * kind === 'class' || kind === 'function' -- calling enclosingSymbol with a method's own
+ * lineStart returns the method itself (its own span always contains its own start line and is
+ * more "innermost" than its enclosing class), never the scope that declares it. Function is
+ * included alongside class because an anonymous class expression (`new (class extends Base {
+ * ... })()`) has no name of its own -- the parser's context stack (parser.ts::extractRefs)
+ * never pushes a name for it, so the extends-clause ref's `context` falls back to the nearest
+ * NAMED enclosing scope, which for a factory-function pattern like `makeAiCliFilter` is the
+ * function itself, not a (nonexistent) class symbol. */
+function enclosingNamedScope(symbols: SymbolEntry[], line: number): SymbolEntry | null {
+  let best: SymbolEntry | null = null
+  for (const s of symbols) {
+    if ((s.kind === 'class' || s.kind === 'function') && s.lineStart <= line && line <= s.lineEnd) {
       if (best === null || s.lineStart > best.lineStart) best = s
     }
   }
@@ -377,6 +397,51 @@ export function runImpact(opts: ImpactOptions): number {
 
 // ---- dead -------------------------------------------------------------------
 
+/** How many `extends` links to walk up a class hierarchy when looking for a virtual-dispatch base -- deep enough for any realistic chain, capped against a corrupt/cyclic extends graph. */
+const MAX_ANCESTOR_DEPTH = 8
+
+/** The direct base class name a class extends, per the extends-clause ref recorded at its own declaration (`context` = the extending class's name -- or, for an anonymous class expression, its enclosing named function's name, see {@link enclosingNamedScope} -- `name` = the extended class; see the extends-clause parser fix). `scopeName` is whatever {@link enclosingNamedScope} resolved for the class in question. Returns null when there's no such ref (no base class, or an unresolvable heritage expression). */
+function directBaseClassName(scopeName: string, classFile: string, rootDir: string): string | null {
+  const candidates = queryRefsByContext(scopeName, classFile)
+  for (const ref of candidates) {
+    if (querySymbols({ name: ref.name, kind: 'class', limit: 1, rootDir }).length > 0) return ref.name
+  }
+  return null
+}
+
+/**
+ * True when a method named `methodName`, whose own class/scope resolves to `scopeName` (declared
+ * in `classFile` -- see {@link enclosingNamedScope} for why this may be a function name rather
+ * than a class name), is reachable through a self-dispatch call (`this.<methodName>(...)`)
+ * recorded inside one of its ancestor classes' own files -- the classic polymorphic-override
+ * pattern (e.g. `compressBody` overrides in `tool_filters/*.ts`, all dispatched through one
+ * `this.compressBody(...)` call in the shared base class `tool_filters/base.ts`).
+ * `filterRefsForSymbol`'s cross-file heuristic (a ref is attributed elsewhere only if its own
+ * file doesn't ALSO define the same name) misattributes that one shared dispatch ref entirely to
+ * the base class's own same-named method, starving every subclass override of credit for it --
+ * this check restores that credit by walking the extends chain and looking for the base's own
+ * self-referential ref directly, bypassing the cross-file heuristic for this specific
+ * ancestor-dispatch shape.
+ */
+function hasAncestorDispatchRef(methodName: string, scopeName: string, classFile: string, rootDir: string): boolean {
+  let currentName = scopeName
+  let currentFile = classFile
+  const seen = new Set<string>([scopeName])
+  for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth++) {
+    const baseName = directBaseClassName(currentName, currentFile, rootDir)
+    if (baseName === null || seen.has(baseName)) return false
+    seen.add(baseName)
+    const baseSyms = querySymbols({ name: baseName, kind: 'class', limit: 1, rootDir })
+    const baseSym = baseSyms[0]
+    if (baseSym === undefined) return false
+    const baseRefs = queryRefs({ name: methodName, filePath: baseSym.filePath, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    if (baseRefs.some((ref) => ref.line >= baseSym.lineStart && ref.line <= baseSym.lineEnd)) return true
+    currentName = baseName
+    currentFile = baseSym.filePath
+  }
+  return false
+}
+
 export interface DeadOptions {
   kind?: string
   includePrivate?: boolean
@@ -403,9 +468,15 @@ export function runDead(opts: DeadOptions): number {
     // as belonging to a different, same-named symbol elsewhere in the project.
     const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     const scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
-    if (isDeadSymbol(sym.name, scoped.length)) {
-      results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
+    if (!isDeadSymbol(sym.name, scoped.length)) continue
+    // Rescue check for methods only: a zero-ref method might be a polymorphic override reached
+    // only through a base class's own self-dispatch (`this.<method>(...)`) -- see
+    // hasAncestorDispatchRef's doc comment.
+    if (sym.kind === 'method') {
+      const ownScope = enclosingNamedScope(getSyms(sym.filePath), sym.lineStart)
+      if (ownScope !== null && hasAncestorDispatchRef(sym.name, ownScope.name, sym.filePath, rootDir)) continue
     }
+    results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
 
   const sliced = results.slice(0, opts.top ?? results.length)
