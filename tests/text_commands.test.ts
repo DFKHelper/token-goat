@@ -813,6 +813,30 @@ describe('lockdeps command', () => {
     fs.rmSync(nameCollisionDir, { recursive: true, force: true })
   })
 
+  it('reports "unknown" (not fabricated "direct") for Pipfile.lock entries, since default/develop list the full resolved set with no dependency-edge data to distinguish direct from transitive (regression: parsePipfileLock hardcoded kind: "direct" for every entry, unlike the sibling parsers with the same no-edge-data limitation -- parseTomlPackages/parseYarnLock/parseRequirementsTxt -- which all correctly report "unknown")', () => {
+    const pipfileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pipfile-lock-'))
+    const lockPath = path.join(pipfileDir, 'Pipfile.lock')
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        _meta: {},
+        default: { requests: { version: '==2.31.0' } },
+        develop: { pytest: { version: '==7.4.0' } },
+      }),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('pipfile')
+    expect(parsed.deps).toContainEqual({ name: 'requests', version: '2.31.0', kind: 'unknown' })
+    expect(parsed.deps).toContainEqual({ name: 'pytest', version: '7.4.0', kind: 'unknown' })
+    fs.rmSync(pipfileDir, { recursive: true, force: true })
+  })
+
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))
     const r = run(['lockdeps', emptyDir])

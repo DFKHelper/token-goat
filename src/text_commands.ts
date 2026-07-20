@@ -907,12 +907,16 @@ function parsePipfileLock(content: string): DepEntry[] {
     default?: Record<string, { version?: string }>
     develop?: Record<string, { version?: string }>
   }
+  // Pipfile.lock's default/develop sections list the full resolved set (direct and
+  // transitive alike) with no dependency-edge data to tell them apart -- same limitation
+  // as parseTomlPackages/parseYarnLock/parseRequirementsTxt below, all of which correctly
+  // report 'unknown' rather than guessing 'direct' for every entry.
   const deps: DepEntry[] = []
   for (const [name, meta] of Object.entries(raw.default ?? {})) {
-    deps.push({ name, version: (meta.version ?? '').replace(/^==/, ''), kind: 'direct' })
+    deps.push({ name, version: (meta.version ?? '').replace(/^==/, ''), kind: 'unknown' })
   }
   for (const [name, meta] of Object.entries(raw.develop ?? {})) {
-    deps.push({ name, version: (meta.version ?? '').replace(/^==/, ''), kind: 'direct' })
+    deps.push({ name, version: (meta.version ?? '').replace(/^==/, ''), kind: 'unknown' })
   }
   return deps
 }
