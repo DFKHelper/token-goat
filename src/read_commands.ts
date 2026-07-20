@@ -1263,10 +1263,10 @@ export interface JsonOutlineCliOptions {
   json?: boolean
 }
 
-/** Handle ``token-goat json-outline file``: structural summary of a JSON document without
- * dumping it -- element count + key/type shape for an array, top-level key types/sizes for
- * an object. */
-export function runJsonOutline(opts: JsonOutlineCliOptions): number {
+/** Shared body for ``json-outline``/``yaml-outline``: read file, parse via the given
+ * format-specific parser, then delegate to outlineJson/formatJsonOutline. Parameterized by
+ * `parse` (the format's parse function) and `formatLabel` (used in the parse-error message). */
+function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string): number {
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
@@ -1275,9 +1275,9 @@ export function runJsonOutline(opts: JsonOutlineCliOptions): number {
 
   let data: unknown
   try {
-    data = JSON.parse(text)
+    data = parse(text)
   } catch {
-    emitErr(`Failed to parse JSON: ${opts.file}`)
+    emitErr(`Failed to parse ${formatLabel}: ${opts.file}`)
     return 1
   }
 
@@ -1290,6 +1290,13 @@ export function runJsonOutline(opts: JsonOutlineCliOptions): number {
   return 0
 }
 
+/** Handle ``token-goat json-outline file``: structural summary of a JSON document without
+ * dumping it -- element count + key/type shape for an array, top-level key types/sizes for
+ * an object. */
+export function runJsonOutline(opts: JsonOutlineCliOptions): number {
+  return runOutlineCommand(opts, JSON.parse, 'JSON')
+}
+
 export interface JsonQueryCliOptions {
   file: string
   path: string
@@ -1297,10 +1304,16 @@ export interface JsonQueryCliOptions {
   json?: boolean
 }
 
-/** Handle ``token-goat json-query file path``: extract one value or a projected/filtered
- * subset from a JSON document by dot-path spec (`[n]` index, `[*]` wildcard,
- * `[field=value]` filter), instead of a raw Read. */
-export function runJsonQuery(opts: JsonQueryCliOptions): number {
+/** Shared body for ``json-query``/``yaml-query``: read file, parse via the given
+ * format-specific parser, then delegate to queryJson. Parameterized by `parse` (the format's
+ * parse function), `formatLabel` (used in the parse-error message), and `guardTag` (passed to
+ * emitGuarded so plain-text output is capped/labeled per-command). */
+function runQueryCommand(
+  opts: JsonQueryCliOptions,
+  parse: (text: string) => unknown,
+  formatLabel: string,
+  guardTag: string,
+): number {
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
@@ -1309,9 +1322,9 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
 
   let data: unknown
   try {
-    data = JSON.parse(text)
+    data = parse(text)
   } catch {
-    emitErr(`Failed to parse JSON: ${opts.file}`)
+    emitErr(`Failed to parse ${formatLabel}: ${opts.file}`)
     return 1
   }
 
@@ -1344,13 +1357,20 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
       if (headTruncated) {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
       }
-      emitGuarded(lines.join('\n'), 'json-query')
+      emitGuarded(lines.join('\n'), guardTag)
     }
     return 0
   } catch (e) {
     emitErr(extractErrorMessage(e))
     return 1
   }
+}
+
+/** Handle ``token-goat json-query file path``: extract one value or a projected/filtered
+ * subset from a JSON document by dot-path spec (`[n]` index, `[*]` wildcard,
+ * `[field=value]` filter), instead of a raw Read. */
+export function runJsonQuery(opts: JsonQueryCliOptions): number {
+  return runQueryCommand(opts, JSON.parse, 'JSON', 'json-query')
 }
 
 /** Parses YAML text, handling multi-document streams (`---`-separated) via js-yaml's loadAll -- a single-document file (the overwhelming majority) unwraps to its one value so path queries work directly against it, while a genuine multi-doc stream (k8s manifests, etc.) stays an array so the existing [n]/[*] json_query.ts grammar indexes into documents for free. */
@@ -1361,81 +1381,12 @@ function parseYamlDocument(text: string): unknown {
 
 /** Handle ``token-goat yaml-outline file``: structural summary of a YAML document, reusing json_query.ts's outlineJson (a parsed YAML document is the same array/object/scalar shape as parsed JSON). */
 export function runYamlOutline(opts: JsonOutlineCliOptions): number {
-  const text = readFileText(opts.file)
-  if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
-    return 1
-  }
-
-  let data: unknown
-  try {
-    data = parseYamlDocument(text)
-  } catch {
-    emitErr(`Failed to parse YAML: ${opts.file}`)
-    return 1
-  }
-
-  const outline = outlineJson(data)
-  if (opts.json === true) {
-    emit(JSON.stringify(outline))
-  } else {
-    emit(formatJsonOutline(outline))
-  }
-  return 0
+  return runOutlineCommand(opts, parseYamlDocument, 'YAML')
 }
 
 /** Handle ``token-goat yaml-query file path``: extract one value or a projected/filtered subset from a YAML document by dot-path, reusing json_query.ts's queryJson (same grammar as json-query). */
 export function runYamlQuery(opts: JsonQueryCliOptions): number {
-  const text = readFileText(opts.file)
-  if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
-    return 1
-  }
-
-  let data: unknown
-  try {
-    data = parseYamlDocument(text)
-  } catch {
-    emitErr(`Failed to parse YAML: ${opts.file}`)
-    return 1
-  }
-
-  let head: number | undefined
-  try {
-    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
-  } catch (e) {
-    emitErr(extractErrorMessage(e))
-    return 1
-  }
-
-  try {
-    const result = queryJson(data, opts.path)
-
-    if (!result.fanned) {
-      const value = result.items[0]
-      emit(opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2))
-      return 0
-    }
-
-    const totalCount = result.items.length
-    const limited = head !== undefined ? result.items.slice(0, head) : result.items
-    const headTruncated = limited.length < totalCount
-
-    if (opts.json === true) {
-      const capped = guardJsonRows(limited)
-      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }))
-    } else {
-      const lines = limited.map((item) => JSON.stringify(item))
-      if (headTruncated) {
-        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
-      }
-      emitGuarded(lines.join('\n'), 'yaml-query')
-    }
-    return 0
-  } catch (e) {
-    emitErr(extractErrorMessage(e))
-    return 1
-  }
+  return runQueryCommand(opts, parseYamlDocument, 'YAML', 'yaml-query')
 }
 
 export interface OpenApiOutlineCliOptions {
