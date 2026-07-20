@@ -382,9 +382,13 @@ function splitRangeIntoChunks(
  * path uses. Small gaps between boundaries - or before the first one - are folded
  * into the nearest adjacent chunk rather than becoming their own tiny fragment; a gap
  * large enough to clear MIN_CHUNK_CHARS on its own still becomes a standalone
- * 'window' chunk. Overlapping/nested boundaries (a class symbol row and its own
- * methods' rows both cover the same lines) collapse to the outermost one so the same
- * lines are never embedded twice under two different chunks.
+ * 'window' chunk. Nested boundaries (a class symbol row and its own methods' rows
+ * both cover the same lines) collapse to the outermost one so the same lines are
+ * never embedded twice under two different chunks. A boundary that only partially
+ * overlaps a previously-accepted one (starts inside it but extends past its end) is
+ * not dropped - it is clipped to start right after the accepted boundary's end and
+ * keeps its own `kind`, so its non-overlapping tail still gets its own chunk instead
+ * of silently vanishing into an unrelated chunk.
  *
  * @param filePath - Relative path to the file.
  * @param content - File content.
@@ -423,12 +427,13 @@ export function chunkFile(
     return splitRangeIntoChunks(filePath, lines, 1, totalLines, chunkSize, overlap, 'window')
   }
 
-  // Flatten nested/overlapping boundaries (a class row fully contains its own method rows) down to the outermost one - each line belongs to exactly one chunk, never embedded once as part of a member and again as part of its container.
+  // Flatten nested/overlapping boundaries so each line belongs to exactly one chunk. A boundary fully contained in a previously-accepted one (a class row containing its own method rows) is dropped entirely - nothing new to add. A boundary that only partially overlaps a previously-accepted one is clipped to start right after that boundary's end, keeping its own kind for the non-overlapping tail instead of losing it.
   const flattened: { start: number; end: number; kind: string }[] = []
   let openEnd = 0
   for (const b of clipped) {
-    if (b.start <= openEnd) continue
-    flattened.push(b)
+    const start = Math.max(b.start, openEnd + 1)
+    if (start > b.end) continue
+    flattened.push({ ...b, start })
     openEnd = b.end
   }
 
