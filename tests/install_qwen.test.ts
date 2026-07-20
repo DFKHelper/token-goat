@@ -95,7 +95,8 @@ describe('installQwen', () => {
       expect(command).toContain(`"${process.execPath}"`)
       expect(command.startsWith('node ')).toBe(false)
       expect(command).toContain(`"${process.argv[1]}"`)
-      expect(command.endsWith(`hook ${QWEN_EVENT_ARG[event]}`)).toBe(true)
+      expect(command).toContain(`hook ${QWEN_EVENT_ARG[event]} --harness qwen`)
+      expect(command.endsWith('--harness qwen')).toBe(true)
     }
 
     expect(isQwenInstalled()).toBe(true)
@@ -156,7 +157,7 @@ describe('installQwen', () => {
     expect(settings['theme']).toBe('dark')
     const beforeCommands = commandsFor(settings, 'PreToolUse')
     expect(beforeCommands).toContain('my-own-hook.sh')
-    expect(beforeCommands.some((c) => c.endsWith('hook pre_tool_use'))).toBe(true)
+    expect(beforeCommands.some((c) => c.includes('hook pre_tool_use --harness qwen'))).toBe(true)
     const groups = settings.hooks?.['PreToolUse'] ?? []
     expect(groups.some((g) => g.matcher === 'my_own_tool')).toBe(true)
   })
@@ -212,6 +213,34 @@ describe('installQwen', () => {
         expect(command).toContain(`"${process.argv[1]}"`)
       }
     }
+  })
+
+  it('upgrades a pre-"--harness qwen" exec-path-hardened command (no ambient harness self-identification) to the current form on re-install, instead of treating it as already installed', () => {
+    const p = qwenSettingsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    // Shape produced by qwenHookCommand() before the --harness qwen fix.
+    const oldFormatSettings = {
+      hooks: Object.fromEntries(
+        QWEN_EVENTS.map((event) => [
+          event,
+          [{ hooks: [{ type: 'command', command: `"${process.execPath}" "${process.argv[1]}" hook ${QWEN_EVENT_ARG[event]}` }] }],
+        ]),
+      ),
+    }
+    fs.writeFileSync(p, JSON.stringify(oldFormatSettings, null, 2))
+
+    const result = installQwen()
+    expect(result.alreadyInstalled).toBe(false)
+
+    const settings = readSettings()
+    for (const event of QWEN_EVENTS) {
+      const commands = commandsFor(settings, event)
+      // Exactly one hook entry per event -- the stale pre-fix command was replaced, not duplicated.
+      expect(commands).toHaveLength(1)
+      expect(commands[0]).toContain('--harness qwen')
+      expect(commands[0]).toContain(`"${process.argv[1]}"`)
+    }
+    expect(isQwenInstalled()).toBe(true)
   })
 })
 

@@ -23,7 +23,7 @@ import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { formatLocalTimestamp } from './stats.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
-import { globalDbPath, VERSION } from './constants.js'
+import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
@@ -357,7 +357,16 @@ async function cmdMcpServe(): Promise<void> {
   })
 }
 
-async function cmdHook(event: string): Promise<void> {
+async function cmdHook(event: string, opts: { harness?: string }): Promise<void> {
+  // A bridge that writes a bare command string into its host tool's config (no in-process
+  // env-setting hook like pi.ts/copilot_cli.ts have) can self-identify via this flag instead —
+  // same purpose as TOKEN_GOAT_HARNESS_OVERRIDE, just passed as an argv flag since there's no
+  // JS relay script in the middle to set process.env directly. detectHarness() itself already
+  // validates the value against KNOWN_HARNESS_NAMES and ignores anything unrecognized, so no
+  // extra validation is needed here.
+  if (typeof opts.harness === 'string' && opts.harness.length > 0) {
+    process.env[ENV_KEYS.HARNESS_OVERRIDE] = opts.harness
+  }
   // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
 }
@@ -2202,6 +2211,7 @@ export function buildProgram(): Command {
   program
     .command('hook <event>')
     .description('hook relay entrypoint (reads JSON on stdin)')
+    .option('--harness <name>', 'override harness detection for this invocation (sets TOKEN_GOAT_HARNESS_OVERRIDE)')
     .action(guard(cmdHook))
 
   program
