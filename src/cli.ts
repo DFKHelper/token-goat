@@ -107,6 +107,7 @@ import {
   runSemantic,
 } from './read_commands.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
+import { buildCommandManifest, formatCommandManifest } from './cli_commands.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
@@ -320,6 +321,15 @@ function cmdBridgesStatus(opts: { json?: boolean }): void {
     out(JSON.stringify(bridgesStatusToJson(BRIDGE_CAPABILITY_MATRIX)))
   } else {
     out(formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX))
+  }
+}
+
+function cmdCommands(opts: { json?: boolean }): void {
+  const manifest = buildCommandManifest(buildProgram())
+  if (opts.json === true) {
+    out(JSON.stringify(manifest))
+  } else {
+    out(formatCommandManifest(manifest))
   }
 }
 
@@ -2175,6 +2185,12 @@ export function buildProgram(): Command {
     .description('hook-event parity matrix across every AI-harness bridge (read-only static analysis, never invokes a real harness binary)')
     .option('--json', 'emit the matrix as JSON instead of text')
     .action(guard(cmdBridgesStatus))
+
+  program
+    .command('commands')
+    .description('machine-readable manifest of every registered command, its options, and its arguments')
+    .option('--json', 'emit the manifest as JSON instead of text')
+    .action(guard(cmdCommands))
 
   program
     .command('mcp-serve')

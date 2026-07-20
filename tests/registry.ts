@@ -7,21 +7,12 @@
  */
 
 import { buildProgram } from '../src/cli.js'
+import { buildCommandManifest, flattenCommandNames } from '../src/cli_commands.js'
 
 /**
  * Every registered command name, including `parent sub` entries for subcommands
  * (e.g. `worker start`). Excludes Commander's built-in `help` command.
  */
 export function allCommandNames(): string[] {
-  const names: string[] = []
-  const program = buildProgram()
-  for (const cmd of program.commands) {
-    if (cmd.name() === 'help') continue
-    names.push(cmd.name())
-    for (const sub of cmd.commands) {
-      if (sub.name() === 'help') continue
-      names.push(`${cmd.name()} ${sub.name()}`)
-    }
-  }
-  return names
+  return flattenCommandNames(buildCommandManifest(buildProgram()))
 }
