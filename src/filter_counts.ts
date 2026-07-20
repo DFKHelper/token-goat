@@ -38,8 +38,8 @@ export const PATH_PATTERN_COUNT =
 /** File type intercept handlers — PDF, HTML, txt/log, XLSX, PPTX, DOCX, office binary (ODT/ODS/OTT/ODP), CSV/TSV, VTT/SRT transcript, generic large (src/hints/file_type_handler.ts). */
 export const FILE_TYPE_HANDLER_COUNT = 10
 
-/** Pre-bash read interceptors — cat/cat+flags, cat+WSL, cat|jq, python open()/heredoc, head, node readFileSync/require, tail/tail-c, tasks output, sed line range, directory listing (incl. ls-pipe), find, markdown heading grep, rg structural, grep|grep chain, curl GET cache, curl -o dedup, rg symbol search, for-loop wc-l (src/hooks_bash.ts). */
-export const BASH_INTERCEPTOR_COUNT = 18
+/** Pre-bash read interceptors — unbalanced shell quoting/heredoc, cat/cat+flags, cat multi-file, cat+WSL, cat|jq, PowerShell-wrapped Get-Content, python open()/heredoc, head, tail/tail-c, Get-Content -Tail, Get-Content Select-Object -First, node readFileSync/require, tasks output, sed line range, directory listing (incl. ls-pipe), find, markdown heading grep, rg structural, grep|grep chain, monitoring-command recall, curl GET cache, curl -o dedup, gh api GET recall, scoped git status/diff --stat recall, rg symbol search, for-loop wc-l, CLI surgical-read dedup (src/hooks_bash.ts). */
+export const BASH_INTERCEPTOR_COUNT = 27
 
 /** Distinct deny/context decision paths in the pre-read hook (src/hooks_read.ts). */
 export const READ_HOOK_CONDITION_COUNT = 20
