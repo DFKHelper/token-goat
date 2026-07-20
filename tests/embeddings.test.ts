@@ -307,6 +307,27 @@ describe('embeddings module', () => {
       expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
       expect(chunks.map((c) => c.text).join('\n')).toContain('const E = 5')
     })
+
+    it('clips a partially-overlapping boundary to start after the previously-accepted boundary instead of dropping it', () => {
+      const contentLines = Array(30)
+        .fill(0)
+        .map((_, i) => `line ${i + 1} padding text to make each range clearly distinguishable`)
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 5, end: 15, kind: 'symbol' },
+        { start: 10, end: 30, kind: 'symbol' }, // partially overlaps the first (starts inside it, extends past its end) - not nested
+      ]
+
+      const chunks = embeddings.chunkFile('overlap.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      // Both boundaries must produce their own chunk - not just `window 1-4 / symbol 5-15 / window 16-30`.
+      expect(chunks.map((c) => c.kind)).toEqual(['window', 'symbol', 'symbol'])
+      expect(chunks.map((c) => [c.startLine, c.endLine])).toEqual([
+        [1, 4],
+        [5, 15],
+        [16, 30], // second boundary clipped to start right after the first boundary's end (15), keeping its own 'symbol' kind
+      ])
+    })
   })
 
   describe('mergeNearbyHits()', () => {
