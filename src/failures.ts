@@ -35,7 +35,9 @@ const PYTEST_SECTION = /^=+ (.+?) =+$/;
 const PYTEST_BLOCK_SEP = /^_+ (.+?) _+$/;
 const JEST_BLOCK_START = /^\s+● /;
 const GO_FAIL = /^--- FAIL:\s+(\S+)/;
-const CARGO_FAIL = /^test .+ \.\.\. FAILED/;
+const CARGO_FAIL = /^test (\S+) \.\.\. FAILED/;
+const CARGO_SECTION = /^---- (\S+) (?:stdout|stderr) ----$/;
+const CARGO_RESULT = /^test result:/;
 
 // ───────────────────────────────────────────────────────────────────────────── Runner detection ─────────────────────────────────────────────────────────────────────────────
 
@@ -246,11 +248,64 @@ function extractCargo(lines: string[]): FailureResult {
     statsLine: '',
   };
 
+  // First pass: collect failing test names (in order) and their one-line
+  // summaries, plus the final stats line.
+  const failNames: string[] = [];
+  const summaryByName = new Map<string, string>();
+
   for (const line of lines) {
     const s = line.trimEnd();
-    if (CARGO_FAIL.test(s)) {
-      result.blocks.push({ name: s, body: s });
+    const m = CARGO_FAIL.exec(s);
+    if (m) {
+      const name = m[1]!;
+      failNames.push(name);
+      summaryByName.set(name, s);
+      continue;
     }
+    if (CARGO_RESULT.test(s)) {
+      result.statsLine = s;
+    }
+  }
+
+  // Second pass: cargo's detail lives in separate `---- name stdout ----`
+  // / `---- name stderr ----` sections, keyed by test name. Accumulate
+  // until the next section header, a `failures:` recap, a `test result:`
+  // line, or end of input closes the section.
+  const detailByName = new Map<string, string[]>();
+  let currentName = '';
+  let currentBody: string[] = [];
+
+  const flush = () => {
+    if (currentName) {
+      const existing = detailByName.get(currentName) ?? [];
+      detailByName.set(currentName, existing.concat(currentBody));
+    }
+    currentName = '';
+    currentBody = [];
+  };
+
+  for (const line of lines) {
+    const s = line.trimEnd();
+    const m = CARGO_SECTION.exec(s);
+    if (m) {
+      flush();
+      currentName = m[1]!;
+      continue;
+    }
+    if (currentName && (/^failures:/.test(s) || CARGO_RESULT.test(s))) {
+      flush();
+      continue;
+    }
+    if (currentName) {
+      currentBody.push(s);
+    }
+  }
+  flush();
+
+  for (const name of failNames) {
+    const detail = detailByName.get(name);
+    const body = detail && detail.length > 0 ? detail.join('\n').trim() : summaryByName.get(name)!;
+    result.blocks.push({ name, body });
   }
 
   return result;
