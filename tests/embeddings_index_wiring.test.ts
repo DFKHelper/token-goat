@@ -27,6 +27,8 @@ import { closeAllDbs, getDb } from '../src/db.js'
 import { indexFileEmbeddings, indexFileSync } from '../src/parser.js'
 import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
+import { fingerprintFile } from '../src/fingerprint.js'
+import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
@@ -211,6 +213,50 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
       .get(filePath) as { c: number }
     expect(symRow.c).toBeGreaterThan(0)
   })
+})
+
+describe('indexFileEmbeddings extracts and embeds text from binary document formats (task #337)', () => {
+  it.skipIf(!canExerciseRealEmbeddings)(
+    'populates chunks/chunk_vectors for a real .docx file and stamps embed_sha, driven through the real default path',
+    async () => {
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+      const dbPath = path.join(TMP, 'index.db')
+      const filePath = path.join(TMP, 'spec.docx')
+      const bytes = buildDocxFixture([
+        { text: 'Design Spec', headingLevel: 1 },
+        { text: 'The rollout plan covers three regions in Q3.' },
+      ])
+      fs.writeFileSync(filePath, bytes)
+
+      // Drive the real default path -- indexFileSync (a no-op for these formats, no Language
+      // union member) then indexFileEmbeddings, exactly what cmdIndex and worker.ts::makeIndexer
+      // each do for every file they touch.
+      indexFileSync(filePath, dbPath)
+      const sha = fingerprintFile(filePath)
+      await indexFileEmbeddings(filePath, dbPath, sha ?? undefined)
+
+      const db = getDb(dbPath)
+      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
+        c: number
+      }
+      expect(chunkRow.c).toBeGreaterThan(0)
+
+      const vecRow = db
+        .prepare(
+          'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)',
+        )
+        .get(filePath) as { c: number }
+      expect(vecRow.c).toBeGreaterThan(0)
+
+      const fileRow = db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(filePath) as
+        | { embed_sha: string | null }
+        | undefined
+      expect(fileRow?.embed_sha).toBeTruthy()
+
+      const hits = mergeNearbyHits(await searchSemantic(db, 'plan for the rollout across regions', 5))
+      expect(hits.some((h) => h.filePath === filePath && h.text.includes('rollout plan'))).toBe(true)
+    },
+  )
 })
 
 describe('real embeddings find meaning-based matches plain FTS misses', () => {

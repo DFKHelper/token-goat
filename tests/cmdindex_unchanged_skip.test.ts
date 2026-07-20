@@ -19,9 +19,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { cmdIndex } from '../src/cli.js'
 import * as parserModule from '../src/parser.js'
-import { closeAllDbs } from '../src/db.js'
+import { closeAllDbs, getDb } from '../src/db.js'
 import { getFileEntry, querySymbols } from '../src/index_reader.js'
 import { isAvailable } from '../src/embeddings.js'
+import { resolveIndexPath } from '../src/paths.js'
+import { buildDocxFixture } from './helpers/ooxml_fixtures.js'
 
 let TMP: string
 let dbPath: string
@@ -168,6 +170,43 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
       embedSpy.mockClear()
       await cmdIndex(TMP, { walk: true, dbPath })
       expect(embedSpy).not.toHaveBeenCalled()
+    },
+  )
+})
+
+// Task #337: cmdIndex's bulk walk previously skipped every file with `if (detectLanguage(key)
+// === 'unknown') continue`, which silently excluded PDF/DOCX/PPTX/XLSX (no Language union
+// member) from ever reaching indexFileEmbeddings below, even though the extraction modules for
+// all four formats already work. Drives the real `token-goat index` bulk-walk path (not just the
+// gate's boolean logic in isolation) against a real .docx fixture on disk.
+describe('cmdIndex indexes embeddable document formats (task #337)', () => {
+  it.skipIf(!isAvailable())(
+    'no longer skips a .docx file over the detectLanguage-unknown gate -- it reaches indexFileEmbeddings and gets embedded',
+    async () => {
+      process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+      const realIndexFileEmbeddings = parserModule.indexFileEmbeddings
+
+      const src = path.join(TMP, 'spec.docx')
+      fs.writeFileSync(
+        src,
+        buildDocxFixture([{ text: 'The onboarding flow supports single sign-on for enterprise customers.' }]),
+      )
+
+      const embedSpy = vi
+        .spyOn(parserModule, 'indexFileEmbeddings')
+        .mockImplementation((filePath, dbp, sha) => realIndexFileEmbeddings(filePath, dbp, sha))
+
+      await cmdIndex(TMP, { walk: true, dbPath })
+
+      expect(embedSpy).toHaveBeenCalledWith(expect.stringContaining('spec.docx'), dbPath, expect.anything())
+      const key = resolveIndexPath(src)
+      expect(getFileEntry(key, dbPath)?.embedSha).toBeTruthy()
+
+      const db = getDb(dbPath)
+      const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
+        c: number
+      }
+      expect(chunkRow.c).toBeGreaterThan(0)
     },
   )
 })
