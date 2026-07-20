@@ -376,6 +376,34 @@ describe('compressGWorkspaceMcpResult', () => {
     const text = JSON.stringify({ id: 'thread-1', subject: 'short', messages: [{ id: 'm1', plaintextBody: 'hi' }] })
     expect(compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)).toBeNull()
   })
+
+  it('does not truncate a body at a bare "From:" line that is not part of a real forwarded-message header block', () => {
+    const body =
+      'Status Report\n\nFrom: Team A\nTo: Team B\nRe: project X\n\nEverything is on track and no action is needed at this time, all systems green.'
+    const text = JSON.stringify({ messages: [{ id: '1', body }] })
+    const parsed = JSON.parse(text) as { messages: { id: string; body: string }[] }
+    // compressGWorkspaceMcpResult may decline (return null) when there's nothing worth stripping;
+    // either way the body content itself must never be silently truncated.
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    const resultBody = compressed === null ? parsed.messages[0].body : (JSON.parse(compressed) as typeof parsed).messages[0].body
+    expect(resultBody).toContain('Everything is on track and no action is needed at this time, all systems green.')
+  })
+
+  it('still trims a genuine forwarded-message header block (From:/Sent:/To:/Subject: cluster)', () => {
+    const body =
+      'Please see the message below for context.\n\n' +
+      'From: Alice <alice@example.com>\nSent: Monday, July 6, 2026 10:00 AM\nTo: Bob <bob@example.com>\nSubject: Re: project X\n\n' +
+      'Original forwarded content that should be trimmed away.'.padEnd(4000, ' filler forwarded text ')
+    const text = JSON.stringify({ messages: [{ id: '1', body }] })
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const resultBody = (JSON.parse(compressed) as { messages: { id: string; body: string }[] }).messages[0].body
+      expect(resultBody).toContain('Please see the message below for context.')
+      expect(resultBody).not.toContain('Original forwarded content')
+      expect(resultBody).not.toContain('Alice <alice@example.com>')
+    }
+  })
 })
 
 // --- compressMcpResultWithPacks (dispatch) -----------------------------------
