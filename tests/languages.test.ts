@@ -16,6 +16,7 @@ import { extractMakefile } from '../src/languages/makefile_idx.js'
 import { extractProto } from '../src/languages/proto_idx.js'
 import { extractTerraform } from '../src/languages/terraform_idx.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
+import { extractBash } from '../src/languages/bash_idx.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3698,5 +3699,108 @@ variable "db_password-v2" {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('aws_instance.web-server_1')
     expect(names).toContain('var.db_password-v2')
+  })
+})
+
+describe('bash adapter', () => {
+  it('extracts function and top-level var declarations across function-header styles', () => {
+    const content = `#!/usr/bin/env bash
+export APP_NAME=myapp
+readonly VERSION=1.2.3
+declare -r CONFIG_PATH=/etc/myapp.conf
+PLAIN_VAR=hello
+
+log() {
+  echo "[$APP_NAME] $1"
+}
+
+function deploy {
+  echo "deploying"
+}
+
+function build() {
+  echo "building"
+}
+
+one_liner() { echo hi; }
+`
+    const symbols = extractBash(content, 'deploy.sh')
+    const byName = (name: string) => symbols.find((s) => s.name === name)
+
+    expect(byName('APP_NAME')).toMatchObject({ kind: 'variable', lineStart: 2 })
+    expect(byName('VERSION')).toMatchObject({ kind: 'variable', lineStart: 3 })
+    expect(byName('CONFIG_PATH')).toMatchObject({ kind: 'variable', lineStart: 4 })
+    expect(byName('PLAIN_VAR')).toMatchObject({ kind: 'variable', lineStart: 5 })
+
+    expect(byName('log')).toMatchObject({ kind: 'function', lineStart: 7 })
+    expect(byName('deploy')).toMatchObject({ kind: 'function', lineStart: 11 })
+    expect(byName('build')).toMatchObject({ kind: 'function', lineStart: 15 })
+    expect(byName('one_liner')).toMatchObject({ kind: 'function', lineStart: 19 })
+  })
+
+  it('does not treat a local/nested assignment inside a function body as a top-level var', () => {
+    const content = `deploy() {
+  local target=prod
+  RESULT=ok
+}
+`
+    const symbols = extractBash(content, 'deploy.sh')
+    expect(symbols.find((s) => s.name === 'target')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'RESULT')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'deploy')?.kind).toBe('function')
+  })
+
+  it('does not mistake a word-glued # in ${VAR#pattern} parameter expansion for a comment', () => {
+    // Regression: a generic C-style line-comment stripper treats any unquoted `#` as an opener,
+    // which would truncate this line at the `#` inside ${APP_NAME#my} and never see NEXT_VAR.
+    const content = 'PREFIX=${APP_NAME#my}\nNEXT_VAR=ok\n'
+    const symbols = extractBash(content, 'expand.sh')
+    expect(symbols.find((s) => s.name === 'PREFIX')).toBeDefined()
+    expect(symbols.find((s) => s.name === 'NEXT_VAR')).toBeDefined()
+  })
+
+  it('masks heredoc bodies so embedded #/=/{} content never desyncs parsing', () => {
+    const content = `deploy() {
+  cat <<EOF
+NOT_A_VAR=should not be indexed
+# not a real comment either
+{ unbalanced brace
+EOF
+  echo done
+}
+
+AFTER_HEREDOC=ok
+`
+    const symbols = extractBash(content, 'deploy.sh')
+    expect(symbols.find((s) => s.name === 'NOT_A_VAR')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'AFTER_HEREDOC')).toMatchObject({ kind: 'variable', lineStart: 10 })
+  })
+
+  it('respects a quoted heredoc terminator (<<\'EOF\') the same as an unquoted one', () => {
+    const content = "cat <<'EOF'\nFAKE_VAR=nope\nEOF\nREAL_VAR=yes\n"
+    const symbols = extractBash(content, 'deploy.sh')
+    expect(symbols.find((s) => s.name === 'FAKE_VAR')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'REAL_VAR')).toBeDefined()
+  })
+
+  it('returns an empty array for empty input', () => {
+    expect(extractBash('', 'empty.sh')).toHaveLength(0)
+  })
+
+  it('detects .sh and .bash language via parseFile', async () => {
+    const shFile = tmp('deploy.sh', 'log() {\n  echo hi\n}\n')
+    const bashFile = tmp('deploy.bash', 'log() {\n  echo hi\n}\n')
+    try {
+      const shResult = await parseFile(shFile)
+      expect(shResult.language).toBe('bash')
+      expect(shResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
+
+      const bashResult = await parseFile(bashFile)
+      expect(bashResult.language).toBe('bash')
+      expect(bashResult.symbols.find((s) => s.name === 'log')?.kind).toBe('function')
+    } finally {
+      fs.rmSync(path.dirname(shFile), { recursive: true, force: true })
+      fs.rmSync(path.dirname(bashFile), { recursive: true, force: true })
+    }
   })
 })

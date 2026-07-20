@@ -675,6 +675,37 @@ describe('drainOnce', () => {
     }
   })
 
+  // Same shipping-path proof as the .tf test above, for the bash adapter (feature-queue #332):
+  // .sh/.bash already mapped to the 'bash' Language via EXTENSION_LANGUAGE, but had no entry in
+  // NO_TREE_SITTER_EXTRACTORS, so every shell script indexed to zero symbols via the real
+  // drain -> index -> symbols table path even though extractBash worked correctly in isolation.
+  it('default path indexes a real .sh file into global.db, resolving bash function/var symbols (no injected callback)', () => {
+    const src = path.join(DIR, 'deploy.sh')
+    fs.writeFileSync(
+      src,
+      '#!/usr/bin/env bash\n' + 'export APP_NAME=myapp\n' + '\n' + 'deploy() {\n' + '  echo "$APP_NAME"\n' + '}\n',
+    )
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    const count = drainOnce(DIR)
+    expect(count).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      const func = querySymbols({ name: 'deploy', limit: 10 }, projectDb)
+      expect(func.length).toBeGreaterThan(0)
+      expect(func[0]?.kind).toBe('function')
+      expect(func[0]?.lineStart).toBe(4)
+
+      const variable = querySymbols({ name: 'APP_NAME', limit: 10 }, projectDb)
+      expect(variable.length).toBeGreaterThan(0)
+      expect(variable[0]?.kind).toBe('variable')
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
   // Regression: the incremental drain must reconcile DELETIONS, not just edits. The shipping path is `drainOnce(dir)` with no injected callbacks; before the fix a dirty path whose file was gone was skipped, orphaning its symbol/ref rows forever. This drives the real default path: index a file, delete it, re-queue its path, drain again, and asserts the symbol is gone from the project's global.db. It fails pre-fix (row survives) and passes post-fix.
   it('default path prunes a deleted file\'s rows on re-drain (no injected callback)', () => {
     const src = path.join(DIR, 'doomed.ts')
