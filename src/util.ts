@@ -612,6 +612,25 @@ export function writeJsonSettings(p: string, settings: unknown): void {
   atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
 }
 
+/**
+ * Shared by bridges/grok_install.ts and bridges/copilot_cli_install.ts: write `content` to `p`
+ * only if it differs from what's already there (or the file doesn't exist), optionally backing
+ * up the prior file first. Returns whether a write happened.
+ */
+export function writeIfDifferent(p: string, content: string, backup = false): boolean {
+  let existing: string | undefined
+  try {
+    existing = readFileSync(p, 'utf8')
+  } catch {
+    existing = undefined
+  }
+  if (existing === content) return false
+  if (backup) backupFile(p)
+  ensureDirSync(path.dirname(p))
+  atomicWriteText(p, content)
+  return true
+}
+
 /** Rounds a byte count to the nearest whole kilobyte, for size labels in hints/messages. */
 export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
