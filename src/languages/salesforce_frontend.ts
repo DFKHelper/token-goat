@@ -1,7 +1,7 @@
 import * as path from 'node:path'
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
-import { stripXmlComments } from './common.js'
+import { stripJsComments, stripXmlComments } from './common.js'
 
 export interface SalesforceFrontendResult {
   readonly symbols: SymbolEntry[]
@@ -43,76 +43,6 @@ function dedupe<T>(values: T[], key: (value: T) => string): T[] {
     seen.add(id)
     return true
   })
-}
-
-/**
- * Blanks `//` and `/* *\/` JS comments in a single linear scan that copies every quoted-string
- * and backtick template-literal span through untouched (rather than scanning past them), so a
- * comment-marker-looking sequence inside one is never mistaken for a real comment opener. This
- * replaces a previous two-pass approach (`common.ts`'s `stripCstyleComments` +
- * `stripSlashLineComments`) whose quote-awareness only recognized `"`/`'` - not the backtick -
- * and reset that awareness at every newline. A template literal can legitimately span multiple
- * lines in JS (unlike a `"`/`'` string), so a `/*` inside one - e.g. `` `template with /* looks
- * like a comment` `` - was misread as a real comment opener; with no matching `*\/` anywhere
- * later in the file, the "comment" never closed and everything after it, including real `@api`
- * declarations, was silently dropped from the index.
- *
- * String/template content is copied through verbatim (not blanked) because callers still need
- * to read it afterward - e.g. matching a `@salesforce/apex/...` import path inside its quotes.
- * Nested `${...}` interpolation inside a template literal is treated as opaque content like the
- * rest of the literal (not scanned for real code), a known simplification consistent with the
- * other regex-based limitations already documented in this adapter.
- */
-function stripJsComments(content: string): string {
-  let out = ''
-  let i = 0
-  const n = content.length
-  while (i < n) {
-    const ch = content[i]
-    if (ch === '/' && content[i + 1] === '/') {
-      let j = i
-      while (j < n && content[j] !== '\n') j++
-      out += ' '.repeat(j - i)
-      i = j
-      continue
-    }
-    if (ch === '/' && content[i + 1] === '*') {
-      let j = i + 2
-      while (j < n && !(content[j] === '*' && content[j + 1] === '/')) j++
-      const end = j < n ? j + 2 : n
-      out += content.slice(i, end).replace(/[^\n]/g, ' ')
-      i = end
-      continue
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch
-      let j = i + 1
-      while (j < n) {
-        if (content[j] === '\\' && j + 1 < n) {
-          j += 2
-          continue
-        }
-        if (content[j] === quote) {
-          j++
-          break
-        }
-        // A `"`/`'` string never legally contains a raw newline; treat one as an implicit
-        // terminator (defense against a false "still open" state swallowing the rest of the
-        // file). A backtick template literal, unlike those, legitimately spans real newlines.
-        if (quote !== '`' && content[j] === '\n') {
-          j++
-          break
-        }
-        j++
-      }
-      out += content.slice(i, j)
-      i = j
-      continue
-    }
-    out += ch
-    i++
-  }
-  return out
 }
 
 export function extractLwcJavaScript(content: string, filePath: string): SalesforceFrontendResult {
