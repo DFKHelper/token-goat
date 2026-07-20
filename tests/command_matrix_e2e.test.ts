@@ -1015,6 +1015,23 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+\.\d+\.\d+/)
   },
+  commands: () => {
+    const r = run(['commands'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('token-goat commands')
+    expect(r.stdout).toContain('symbol')
+    expect(r.stdout).toContain('install')
+
+    const rJson = run(['commands', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const manifest = JSON.parse(rJson.stdout) as Array<{ name: string; description: string; options: unknown[]; subcommands: Array<{ name: string }> }>
+    expect(manifest.length).toBeGreaterThan(10)
+    const symbolEntry = manifest.find((e) => e.name === 'symbol')
+    expect(symbolEntry).toBeDefined()
+    expect(symbolEntry?.description.length).toBeGreaterThan(0)
+    const workerEntry = manifest.find((e) => e.name === 'worker')
+    expect(workerEntry?.subcommands.map((s) => s.name)).toContain('start')
+  },
   hook: () => {
     // relay never throws on an unknown event; it emits {} and returns 0.
     const r = run(['hook', 'PreToolUse'], { input: '{}' })
