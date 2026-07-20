@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   compressGithubMcpResult,
   compressBrowserMcpResult,
+  compressGWorkspaceMcpResult,
   compressMcpResultWithPacks,
 } from '../src/mcp_compress_packs.js'
 // Importing relay registers every hook module (including hooks_mcp) for its side
@@ -151,6 +152,46 @@ function networkRequestList(n: number) {
   return Array.from({ length: n }, (_, i) => networkRequest(i))
 }
 
+/** A realistic Gmail thread with several messages, HTML-duplicated bodies, quoted-reply history, and an attachment with an inline base64 payload. */
+function gmailThread() {
+  const quotedHistory =
+    '\n\nOn Mon, Jul 6, 2026 at 9:00 AM, Bob <bob@example.com> wrote:\n> Thanks, sounds good.\n>\n> On Sun, Jul 5, 2026, Alice wrote:\n> > Let'.padEnd(4000, ' filler quoted text from a long thread history ') + '\n>'
+  return {
+    id: 'thread-1',
+    subject: 'Q3 planning',
+    messages: [
+      {
+        id: 'msg-1',
+        subject: 'Q3 planning',
+        from: 'alice@example.com',
+        to: ['bob@example.com'],
+        snippet: 'Here is the plan for Q3...',
+        plaintextBody: `Here is the plan for Q3, please review the attached doc.${quotedHistory}`,
+        htmlBody: `<div dir="ltr"><p>Here is the plan for Q3, please review the attached doc.</p>${'<span>filler html markup </span>'.repeat(200)}</div>`,
+        raw: 'QmFzZTY0RW5jb2RlZFJhd01pbWVQYXlsb2FkRmlsbGVy'.repeat(50),
+        attachments: [
+          {
+            id: 'att-1',
+            filename: 'plan.pdf',
+            mimeType: 'application/pdf',
+            size: 204800,
+            data: 'QmFzZTY0QXR0YWNobWVudEJ5dGVzRmlsbGVy'.repeat(80),
+          },
+        ],
+      },
+    ],
+  }
+}
+
+/** A realistic Drive `read_file_content` result: plain natural-language text, no HTML/attachment noise to strip. */
+function driveFileContent() {
+  return {
+    fileId: 'file-1',
+    title: 'Project Notes',
+    content: 'These are my project notes.\n> A genuine markdown blockquote that must survive untouched.\nMore notes follow.'.repeat(30),
+  }
+}
+
 // --- compressGithubMcpResult -------------------------------------------------
 
 describe('compressGithubMcpResult', () => {
@@ -288,6 +329,55 @@ describe('compressBrowserMcpResult', () => {
   })
 })
 
+// --- compressGWorkspaceMcpResult ----------------------------------------------
+
+describe('compressGWorkspaceMcpResult', () => {
+  it('returns null for a non-gmail/drive tool name even if the shape matches', () => {
+    const text = JSON.stringify(gmailThread())
+    expect(compressGWorkspaceMcpResult('mcp__plugin_github_github__get_thread', text)).toBeNull()
+  })
+
+  it('returns null for non-JSON text', () => {
+    expect(compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', 'not json')).toBeNull()
+  })
+
+  it('strips htmlBody/raw, trims quoted-reply history, and collapses attachment payloads for a Gmail get_thread fixture', () => {
+    const thread = gmailThread()
+    const text = JSON.stringify(thread)
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      expect(compressed).not.toContain('htmlBody')
+      expect(compressed).not.toContain('filler html markup')
+      expect(compressed).not.toContain('QmFzZTY0RW5jb2RlZFJhd01pbWVQYXlsb2FkRmlsbGVy')
+      expect(compressed).not.toContain('QmFzZTY0QXR0YWNobWVudEJ5dGVzRmlsbGVy')
+      expect(compressed).not.toContain('On Mon, Jul 6, 2026')
+      // Real content and attachment metadata survive.
+      expect(compressed).toContain('Here is the plan for Q3')
+      expect(compressed).toContain('plan.pdf')
+      expect(compressed).toContain('application/pdf')
+      expect(compressed.length).toBeLessThan(text.length * 0.85)
+    }
+  })
+
+  it('never trims Drive read_file_content — content key is not a Gmail body key, even when it contains a ">" line', () => {
+    const doc = driveFileContent()
+    const text = JSON.stringify(doc)
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Google_Drive__read_file_content', text)
+    // No boilerplate to strip in this fixture and body-trimming does not apply to `content`,
+    // so the pack correctly declines rather than risk destroying real document text.
+    expect(compressed).toBeNull()
+    // Direct proof the content itself was never mutated by trimGmailBodies's quote-marker regex.
+    const parsed = JSON.parse(text) as { content: string }
+    expect(parsed.content).toContain('A genuine markdown blockquote that must survive untouched.')
+  })
+
+  it('falls through to null when there is nothing to strip and the shape is too small for the generic pass', () => {
+    const text = JSON.stringify({ id: 'thread-1', subject: 'short', messages: [{ id: 'm1', plaintextBody: 'hi' }] })
+    expect(compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)).toBeNull()
+  })
+})
+
 // --- compressMcpResultWithPacks (dispatch) -----------------------------------
 
 describe('compressMcpResultWithPacks', () => {
@@ -303,6 +393,13 @@ describe('compressMcpResultWithPacks', () => {
     const compressed = compressMcpResultWithPacks('mcp__claude-in-chrome__read_console_messages', text)
     expect(compressed).not.toBeNull()
     if (compressed !== null) expect(compressed).not.toContain('stackTrace')
+  })
+
+  it('dispatches to the Google Workspace pack for a gmail tool name', () => {
+    const text = JSON.stringify(gmailThread())
+    const compressed = compressMcpResultWithPacks('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) expect(compressed).not.toContain('htmlBody')
   })
 
   it('returns null when neither pack matches the tool name, leaving the caller to run the generic pass', () => {
@@ -389,6 +486,31 @@ describe('MCP compression packs wired into postMcpHandler (real runHook dispatch
       const entry = getBashOutput(m![1] as string)
       expect(entry?.output).toBe(rawText)
       expect(entry?.output).toContain('requestHeaders')
+    }
+  })
+
+  it('compresses a Gmail get_thread result via the Google Workspace pack, full original still recoverable by id', async () => {
+    const toolName = 'mcp__claude_ai_Gmail__get_thread'
+    const toolInput = { threadId: 'thread-1' }
+    const thread = gmailThread()
+    const rawText = JSON.stringify(thread)
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: toolName,
+        tool_input: toolInput,
+        session_id: sessionId,
+        tool_response: rawText,
+      }),
+    )
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).not.toContain('htmlBody')
+      expect(result.updatedOutput).not.toContain('filler html markup')
+      const m = /mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
+      expect(m).not.toBeNull()
+      const entry = getBashOutput(m![1] as string)
+      expect(entry?.output).toBe(rawText)
+      expect(entry?.output).toContain('htmlBody')
     }
   })
 

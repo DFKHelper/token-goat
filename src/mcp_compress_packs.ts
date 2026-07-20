@@ -203,6 +203,89 @@ export function compressBrowserMcpResult(toolName: string, resultText: string): 
   return finishWithGenericPass(resultText, stripped)
 }
 
+// --- Google Workspace pack (Gmail / Drive) ------------------------------------
+
+/** Matches Gmail and Google Drive MCP tools, e.g. `mcp__claude_ai_Gmail__get_thread`, `mcp__claude_ai_Google_Drive__read_file_content`. */
+const GWORKSPACE_TOOL_RE = /^mcp__.*(?:gmail|drive).*__/i
+
+/**
+ * Exact-match keys carrying a redundant HTML/raw-MIME rendering of content
+ * that also has a plaintext sibling field (Gmail message bodies), or a raw
+ * MIME payload never useful once the plaintext body is present. Both
+ * camelCase and snake_case variants are listed since this MCP server's exact
+ * wire-format casing for these fields is unconfirmed -- an unmatched variant
+ * is simply never stripped (fails closed per key, not per pack).
+ */
+const GWORKSPACE_STRIP_EXACT_KEYS = new Set(['htmlBody', 'html_body', 'raw', 'payload'])
+
+/** Body-text-bearing keys eligible for quoted-reply-chain trimming (Gmail messages only, never Drive `content`). */
+const GWORKSPACE_BODY_KEYS = new Set(['plaintextBody', 'plaintext_body', 'body'])
+
+/** Attachment fields worth keeping once an entry's binary payload is summarized away. */
+const GWORKSPACE_ATTACHMENT_KEEP_KEYS = new Set(['id', 'filename', 'name', 'mimeType', 'mime_type', 'size', 'inline'])
+
+/** Matches a line opening a quoted-reply chain: a `>`-quoted line, a standard "On ... wrote:" header, an Outlook-style "-----Original Message-----" separator, or an embedded reply's own `From:` header line. */
+const QUOTED_REPLY_RE = /^(?:>|On .{0,120} wrote:|-{2,}\s*Original Message\s*-{2,}|From:\s.*)$/im
+
+/** Trims a Gmail plaintext body at the first quoted-reply marker so a long thread's repeated quoted history is not carried in full by every message. Returns the input unchanged when no marker is found. */
+function trimQuotedReply(text: string): string {
+  const match = QUOTED_REPLY_RE.exec(text)
+  if (!match) return text
+  return text.slice(0, match.index).trimEnd()
+}
+
+/** Recursively applies {@link trimQuotedReply} to string values under {@link GWORKSPACE_BODY_KEYS}, leaving every other key (notably Drive's `content`) untouched. */
+function trimGmailBodies(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(trimGmailBodies)
+  if (value === null || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = GWORKSPACE_BODY_KEYS.has(key) && typeof val === 'string' ? trimQuotedReply(val) : trimGmailBodies(val)
+  }
+  return out
+}
+
+/** Recursively replaces each element of any `attachments` array with an allowlisted subset (name/size/mime type, no binary payload), leaving every other key -- notably Drive's top-level `content` -- untouched. */
+function summarizeAttachments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(summarizeAttachments)
+  if (value === null || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'attachments' && Array.isArray(val)) {
+      out[key] = val.map((att) => {
+        if (att === null || typeof att !== 'object') return att
+        const kept: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(att as Record<string, unknown>)) {
+          if (GWORKSPACE_ATTACHMENT_KEEP_KEYS.has(k)) kept[k] = v
+        }
+        return kept
+      })
+    } else {
+      out[key] = summarizeAttachments(val)
+    }
+  }
+  return out
+}
+
+/**
+ * Compress a Gmail or Google Drive MCP tool result. Returns `null` when
+ * *toolName* is not a Gmail/Drive-server tool, *resultText* is not JSON, or
+ * the transformed result still does not clear the savings bar.
+ */
+export function compressGWorkspaceMcpResult(toolName: string, resultText: string): string | null {
+  if (!GWORKSPACE_TOOL_RE.test(toolName)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultText)
+  } catch {
+    return null
+  }
+  const stripped = deepStrip(parsed, (key) => GWORKSPACE_STRIP_EXACT_KEYS.has(key))
+  const trimmed = trimGmailBodies(stripped)
+  const summarized = summarizeAttachments(trimmed)
+  return finishWithGenericPass(resultText, summarized)
+}
+
 // --- Dispatch ----------------------------------------------------------------
 
 /**
@@ -212,5 +295,9 @@ export function compressBrowserMcpResult(toolName: string, resultText: string): 
  * should fall through to {@link compressMcpResult} on the untransformed text.
  */
 export function compressMcpResultWithPacks(toolName: string, resultText: string): string | null {
-  return compressGithubMcpResult(toolName, resultText) ?? compressBrowserMcpResult(toolName, resultText)
+  return (
+    compressGithubMcpResult(toolName, resultText) ??
+    compressBrowserMcpResult(toolName, resultText) ??
+    compressGWorkspaceMcpResult(toolName, resultText)
+  )
 }
