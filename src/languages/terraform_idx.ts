@@ -16,6 +16,7 @@ import type { MiniSection } from './common.js'
 import {
   assignFlatEndLines,
   buildLineIndex,
+  findMatchingBraceEndLine,
   isInsideStringLiteral,
   makeSymbolEmitter,
   offsetToLine,
@@ -96,37 +97,8 @@ const LOCALS_RE = /^[ \t]*locals\s*\{/gm
 // alias config, ...). The shared assignFlatEndLines/propagateEndLinesToSymbols helpers only do
 // flat "ends where the next section starts" propagation, which truncates an outer block's end
 // to right before its first nested child. Each regex above ends with `\{`, so its offset is
-// known -- find the true matching closing brace instead, same approach as proto_idx.ts's
-// findBlockEndLine.
-function findBlockEndLine(
-  content: string,
-  openBraceIndex: number,
-  totalLines: number,
-  lineIndex: readonly number[],
-): number {
-  let depth = 0
-  // Track single/double-quoted string literals (backslash-escape aware) so a brace character
-  // inside a quoted attribute value (e.g. `default = "{}"`) is never miscounted as real
-  // nesting.
-  let quote: string | null = null
-  for (let i = openBraceIndex; i < content.length; i++) {
-    const ch = content[i]
-    if (quote !== null) {
-      if (ch === '\\') { i++; continue }
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '"' || ch === "'") { quote = ch; continue }
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        return offsetToLine(lineIndex, i)
-      }
-    }
-  }
-  return totalLines
-}
+// known -- find the true matching closing brace instead, via findMatchingBraceEndLine in
+// common.ts (same approach as proto_idx.ts's block extraction).
 
 interface BlockMatch {
   readonly name: string
@@ -209,7 +181,7 @@ export function extractTerraform(content: string, filePath: string): SymbolEntry
   for (const bm of matches) {
     const line = offsetToLine(lineIndex, bm.matchIndex)
     const openBraceIndex = bm.matchIndex + bm.openBraceOffsetFromMatchStart
-    const endLine = findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex)
+    const endLine = findMatchingBraceEndLine(stripped, openBraceIndex, totalLines, lineIndex)
     blockEndLines.set(`${bm.name}\0${bm.kind}\0${line}`, endLine)
     emit(bm.name, bm.kind, line)
   }

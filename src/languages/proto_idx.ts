@@ -11,6 +11,7 @@ import type { MiniSection, AdapterImport } from './common.js'
 import {
   assignFlatEndLines,
   buildLineIndex,
+  findMatchingBraceEndLine,
   makeSymbolEmitter,
   offsetToLine,
   propagateEndLinesToSymbols,
@@ -65,44 +66,15 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
 // once nesting is possible: an outer block's end gets truncated to right before its first
 // nested child, and an innermost/last-in-file nested block over-extends to EOF instead of
 // stopping at its own closing brace. For these block kinds we know the exact offset of the
-// opening `{` (each regex ends with `\{`), so find the true matching closing brace instead.
-function findBlockEndLine(
-  content: string,
-  openBraceIndex: number,
-  totalLines: number,
-  lineIndex: readonly number[],
-): number {
-  let depth = 0
-  // Track single/double-quoted string literals (backslash-escape aware) so a brace character
-  // inside a quoted default value or option (e.g. `option (x) = "{"`) is never miscounted as
-  // real nesting -- the same desync bug already fixed for csharp.ts/php.ts/kotlin.ts/
-  // powershell_idx.ts's line-oriented brace counters, adapted here for this whole-text scan.
-  let quote: string | null = null
-  for (let i = openBraceIndex; i < content.length; i++) {
-    const ch = content[i]
-    if (quote !== null) {
-      if (ch === '\\') { i++; continue }
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '"' || ch === "'") { quote = ch; continue }
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        return offsetToLine(lineIndex, i)
-      }
-    }
-  }
-  return totalLines
-}
+// opening `{` (each regex ends with `\{`), so find the true matching closing brace instead --
+// see findMatchingBraceEndLine in common.ts.
 
 // An rpc statement's real terminator is either a bare `;` (the common case) or a trailing
 // method-options block (`rpc Foo(A) returns (B) { option ...; }`). Scans forward from the
 // start of the rpc match -- so the request/response type parens the regex already consumed
 // are counted too -- tracking paren depth (so a `;` or `{` inside the parameter list's types
 // is never mistaken for the statement's own terminator) and quoted strings, same approach as
-// findBlockEndLine above.
+// findMatchingBraceEndLine in common.ts.
 function findRpcEndLine(
   content: string,
   matchStartIndex: number,
@@ -123,7 +95,7 @@ function findRpcEndLine(
     if (ch === ')') { parenDepth--; continue }
     if (parenDepth > 0) continue
     if (ch === ';') return offsetToLine(lineIndex, i)
-    if (ch === '{') return findBlockEndLine(content, i, totalLines, lineIndex)
+    if (ch === '{') return findMatchingBraceEndLine(content, i, totalLines, lineIndex)
   }
   return totalLines
 }
@@ -144,7 +116,7 @@ export function extractProto(
 
   // name+lineStart -> true end line for block kinds whose opening `{` offset is known, so
   // nested message/enum/extend/oneof blocks get a correct end line regardless of the flat
-  // section propagation below (see findBlockEndLine).
+  // section propagation below (see findMatchingBraceEndLine in common.ts).
   const blockEndLines = new Map<string, number>()
 
   // Imports
@@ -164,7 +136,7 @@ export function extractProto(
       const kind = KIND_MAP.get(keyword) ?? 'proto_message'
       const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
+      blockEndLines.set(`${name}\0${line}`, findMatchingBraceEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, kind, line)
     }
   }
@@ -175,7 +147,7 @@ export function extractProto(
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
+      blockEndLines.set(`${name}\0${line}`, findMatchingBraceEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, 'proto_extend', line)
     }
   }
@@ -196,7 +168,7 @@ export function extractProto(
     if (name) {
       const line = offsetToLine(lineIndex, m.index ?? 0)
       const openBraceIndex = (m.index ?? 0) + m[0].length - 1
-      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines, lineIndex))
+      blockEndLines.set(`${name}\0${line}`, findMatchingBraceEndLine(stripped, openBraceIndex, totalLines, lineIndex))
       emit(name, 'proto_oneof', line)
     }
   }
