@@ -173,6 +173,9 @@ function extractJest(lines: string[]): FailureResult {
     if (inBlock) {
       // A FAIL header or "Tests:" line closes the block
       if (/^(FAIL|PASS|Tests:|Test Suites:)\s/.test(s)) {
+        if (/^Tests:\s/.test(s)) {
+          result.statsLine = s;
+        }
         result.blocks.push({ name: currentName, body: currentBody.join('\n') });
         inBlock = false;
         currentName = '';
@@ -220,16 +223,23 @@ function extractGo(lines: string[]): FailureResult {
       continue;
     }
 
-    if (inBlock) {
-      // A bare FAIL/PASS/ok summary line (unindented) closes the block
-      if (/^(FAIL|PASS|ok)(\s|$)/.test(s)) {
+    // A bare FAIL/PASS/ok summary line (unindented) closes the block; the
+    // package-summary form (real content after the token) carries the stats
+    if (/^(FAIL|PASS|ok)(\s|$)/.test(s)) {
+      if (/^(?:FAIL|ok)\s+\S/.test(s)) {
+        result.statsLine = s;
+      }
+      if (inBlock) {
         result.blocks.push({ name: currentName, body: currentBody.join('\n') });
         inBlock = false;
         currentName = '';
         currentBody = [];
-      } else {
-        currentBody.push(s);
       }
+      continue;
+    }
+
+    if (inBlock) {
+      currentBody.push(s);
     }
   }
 
