@@ -40,6 +40,7 @@ import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
 import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { extractIni, extractEnv } from './languages/ini_idx.js'
+import { extractBash } from './languages/bash_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
 import { extractTerraform } from './languages/terraform_idx.js'
@@ -1778,6 +1779,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   apex: (content, filePath) => extractApex(content, filePath).symbols,
   salesforce_metadata: (content, filePath) => extractSalesforceMetadata(content, filePath).symbols,
   env_file: extractEnv,
+  bash: extractBash,
 }
 
 function extractNoTreeSitter(
