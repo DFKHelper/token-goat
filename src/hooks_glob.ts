@@ -29,23 +29,9 @@
  *     separate, larger design decision, out of scope for #301), not smuggled in as a Glob-only
  *     special case. Decision: (a) only.
  */
-import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import type { HookOutput } from './types.js'
-import { passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { makeDedupHintHandlers } from './hooks_common.js'
 import { recordGlobQuery, getGlobMatchCount } from './session.js'
-import { recordStat } from './stats.js'
-import { loadConfig } from './config.js'
-
-function extractToolResponse(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-}
-
-/** Non-empty lines in `text` (one line per matched path), used as a match-count proxy for Glob's
- *  flat newline-separated path-list output. Mirrors hooks_grep.ts's countNonEmptyLines. */
-function countNonEmptyLines(text: string): number {
-  return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length
-}
 
 /** Session-scoped identity for a Glob call: two calls with the same signature searched the same
  *  thing the same way. Returns null when there is no pattern to key on. Glob's tool_input has
@@ -58,39 +44,16 @@ function globSignature(toolInput: Record<string, unknown>): string | null {
   return JSON.stringify([pattern, path])
 }
 
-export function postGlobHandler(event: HookEvent): HookOutput {
-  try {
-    if (getToolName(event) !== 'Glob') return passOutput()
-    const signature = globSignature(getToolInput(event))
-    if (signature === null) return passOutput()
-    recordGlobQuery(signature, countNonEmptyLines(extractToolResponse(event.raw)))
-    return passOutput()
-  } catch {
-    return passOutput()
-  }
-}
+const { post: postGlobHandler, pre: preGlobDedupHandler } = makeDedupHintHandlers({
+  toolName: 'Glob',
+  buildSignature: globSignature,
+  recordQuery: recordGlobQuery,
+  getMatchCount: getGlobMatchCount,
+  minMatchesConfigKey: 'glob_dedup_min_matches',
+  statName: 'glob_dedup_hint',
+})
 
-export function preGlobDedupHandler(event: HookEvent): HookOutput {
-  try {
-    if (getToolName(event) !== 'Glob') return passOutput()
-    const toolInput = getToolInput(event)
-    const signature = globSignature(toolInput)
-    if (signature === null) return passOutput()
-    const priorCount = getGlobMatchCount(signature)
-    if (priorCount === null) return passOutput()
-    if (priorCount < loadConfig().hints.glob_dedup_min_matches) return passOutput()
-
-    recordStat('glob_dedup_hint', 0, 0)
-    const pattern = typeof toolInput['pattern'] === 'string' ? toolInput['pattern'] : ''
-    return contextOutput(
-      'Note: an identical Glob for "' + pattern + '" already ran this session and returned ' +
-        priorCount + (priorCount === 1 ? ' match' : ' matches') +
-        '. If that result already answers this, you can skip re-running it.',
-    )
-  } catch {
-    return passOutput()
-  }
-}
+export { postGlobHandler, preGlobDedupHandler }
 
 // Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
 registerHook('pre_tool_use', preGlobDedupHandler, { toolName: 'Glob' })

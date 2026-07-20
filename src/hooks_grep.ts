@@ -6,25 +6,9 @@
  * (pattern, path, output_mode, glob) so an identical repeat later in the session, once the last
  * known match count meets hints.grep_dedup_min_matches, gets a recall-style advisory instead.
  */
-import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import type { HookOutput } from './types.js'
-import { passOutput, contextOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
+import { makeDedupHintHandlers } from './hooks_common.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
-import { recordStat } from './stats.js'
-import { loadConfig } from './config.js'
-
-function extractToolResponse(raw: Record<string, unknown>): string {
-  return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-}
-
-/** Non-empty lines in `text`, used as a match-count proxy across every Grep output_mode
- *  (one line per matched file in `files_with_matches`, one per matched line in `content`,
- *  one per file in `count`). Deliberately approximate: `count` mode undercounts the true
- *  total match tally, but the result stays monotonic with real result size either way. */
-function countNonEmptyLines(text: string): number {
-  return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length
-}
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
  *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
@@ -64,39 +48,16 @@ function grepSignature(toolInput: Record<string, unknown>): string | null {
   ])
 }
 
-export function postGrepHandler(event: HookEvent): HookOutput {
-  try {
-    if (getToolName(event) !== 'Grep') return passOutput()
-    const signature = grepSignature(getToolInput(event))
-    if (signature === null) return passOutput()
-    recordGrepQuery(signature, countNonEmptyLines(extractToolResponse(event.raw)))
-    return passOutput()
-  } catch {
-    return passOutput()
-  }
-}
+const { post: postGrepHandler, pre: preGrepDedupHandler } = makeDedupHintHandlers({
+  toolName: 'Grep',
+  buildSignature: grepSignature,
+  recordQuery: recordGrepQuery,
+  getMatchCount: getGrepMatchCount,
+  minMatchesConfigKey: 'grep_dedup_min_matches',
+  statName: 'grep_dedup_hint',
+})
 
-export function preGrepDedupHandler(event: HookEvent): HookOutput {
-  try {
-    if (getToolName(event) !== 'Grep') return passOutput()
-    const toolInput = getToolInput(event)
-    const signature = grepSignature(toolInput)
-    if (signature === null) return passOutput()
-    const priorCount = getGrepMatchCount(signature)
-    if (priorCount === null) return passOutput()
-    if (priorCount < loadConfig().hints.grep_dedup_min_matches) return passOutput()
-
-    recordStat('grep_dedup_hint', 0, 0)
-    const pattern = typeof toolInput['pattern'] === 'string' ? toolInput['pattern'] : ''
-    return contextOutput(
-      'Note: an identical Grep for "' + pattern + '" already ran this session and returned ' +
-        priorCount + (priorCount === 1 ? ' match' : ' matches') +
-        '. If that result already answers this, you can skip re-running it.',
-    )
-  } catch {
-    return passOutput()
-  }
-}
+export { postGrepHandler, preGrepDedupHandler }
 
 // Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
 registerHook('pre_tool_use', preGrepDedupHandler, { toolName: 'Grep' })
