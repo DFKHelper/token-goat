@@ -292,6 +292,27 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('Alice')
     expect(r.stdout).not.toContain('Bob')
   },
+  'yaml-outline': () => {
+    const dir = mkIsolated('tg-matrix-yamloutline-')
+    const yamlPath = path.join(dir, 'people.yaml')
+    fs.writeFileSync(yamlPath, '- id: 1\n  name: Alice\n  status: active\n- id: 2\n  name: Bob\n  status: inactive\n')
+    const r = run(['yaml-outline', yamlPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('array of 2 elements (object)')
+    expect(r.stdout).toContain('name: string')
+  },
+  'yaml-query': () => {
+    const dir = mkIsolated('tg-matrix-yamlquery-')
+    const yamlPath = path.join(dir, 'people.yaml')
+    fs.writeFileSync(
+      yamlPath,
+      'items:\n  - id: 1\n    name: Alice\n    status: active\n  - id: 2\n    name: Bob\n    status: inactive\n',
+    )
+    const r = run(['yaml-query', yamlPath, 'items[status=active].name'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Alice')
+    expect(r.stdout).not.toContain('Bob')
+  },
   'openapi-outline': () => {
     const dir = mkIsolated('tg-matrix-openapioutline-')
     const specPath = path.join(dir, 'openapi.json')
