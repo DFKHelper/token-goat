@@ -1390,7 +1390,13 @@ async function cmdSkillDiff(name: string): Promise<void> {
   const newerBody = await fs.promises.readFile(path.resolve(dir, `${newer.outputId}.txt`), 'utf-8').catch(() => null)
   const olderBody = await fs.promises.readFile(path.resolve(dir, `${older.outputId}.txt`), 'utf-8').catch(() => null)
   if (newerBody === null || olderBody === null) {
-    out(`only one cached version of '${name}'`)
+    // listOutputs() above genuinely found >=2 versions -- a body read failing here (unlike the
+    // versions.length < 2 case above) means one was evicted by a concurrent storeOutput()/
+    // prune-cache run in the gap between that list and this read (pruneSkillOutputs runs
+    // synchronously on every storeOutput() call and independently via `prune-cache`, neither
+    // coordinated with this read), not that only one version ever existed. Say so distinctly
+    // instead of reusing the "only one cached version" text, which would be actively false here.
+    out(`a cached version of '${name}' was evicted while diffing -- try again`)
     return
   }
   const diff = buildLineDiff(olderBody, newerBody, name)
