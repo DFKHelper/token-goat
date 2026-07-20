@@ -9,6 +9,8 @@
 
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
+import { recordStat } from './stats.js'
+import { loadConfig } from './config.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
 export function getToolName(event: HookEvent): string | undefined {
@@ -111,4 +113,67 @@ export function denyOutput(message: string): HookOutput {
 /** Build a `context` output — let the call proceed but inject `context`. */
 export function contextOutput(context: string): HookOutput {
   return { hookType: 'context', context }
+}
+
+/** Non-empty lines in `text`, used as a match-count proxy for tools whose output is a flat
+ *  newline-separated list (one line per matched file/line/path). Shared by Grep and Glob's
+ *  dedup-hint handlers via {@link makeDedupHintHandlers}. */
+export function countNonEmptyLines(text: string): number {
+  return text.split(/\r\n|\r|\n/).filter((line) => line.length > 0).length
+}
+
+/**
+ * Build the `post_tool_use` / `pre_tool_use` handler pair backing a tool's session-scoped
+ * "you already ran this exact query, here's the recall count" advisory hint.
+ *
+ * Factors out the identical handler bodies shared by Grep and Glob (see hooks_grep.ts /
+ * hooks_glob.ts): both record each call's match count keyed by a tool-specific signature, then on
+ * a later identical call whose recorded match count meets a tool-specific config threshold, emit
+ * a context advisory instead of letting the call silently re-run. The signature shape itself
+ * (`buildSignature`) stays genuinely tool-specific and is supplied by the caller, not shared.
+ */
+export function makeDedupHintHandlers(opts: {
+  toolName: string
+  buildSignature: (toolInput: Record<string, unknown>) => string | null
+  recordQuery: (signature: string, matchCount: number) => void
+  getMatchCount: (signature: string) => number | null
+  minMatchesConfigKey: 'grep_dedup_min_matches' | 'glob_dedup_min_matches'
+  statName: string
+}): { post: (event: HookEvent) => HookOutput; pre: (event: HookEvent) => HookOutput } {
+  const post = (event: HookEvent): HookOutput => {
+    try {
+      if (getToolName(event) !== opts.toolName) return passOutput()
+      const signature = opts.buildSignature(getToolInput(event))
+      if (signature === null) return passOutput()
+      const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+      opts.recordQuery(signature, countNonEmptyLines(text))
+      return passOutput()
+    } catch {
+      return passOutput()
+    }
+  }
+
+  const pre = (event: HookEvent): HookOutput => {
+    try {
+      if (getToolName(event) !== opts.toolName) return passOutput()
+      const toolInput = getToolInput(event)
+      const signature = opts.buildSignature(toolInput)
+      if (signature === null) return passOutput()
+      const priorCount = opts.getMatchCount(signature)
+      if (priorCount === null) return passOutput()
+      if (priorCount < loadConfig().hints[opts.minMatchesConfigKey]) return passOutput()
+
+      recordStat(opts.statName, 0, 0)
+      const pattern = typeof toolInput['pattern'] === 'string' ? toolInput['pattern'] : ''
+      return contextOutput(
+        'Note: an identical ' + opts.toolName + ' for "' + pattern + '" already ran this session and returned ' +
+          priorCount + (priorCount === 1 ? ' match' : ' matches') +
+          '. If that result already answers this, you can skip re-running it.',
+      )
+    } catch {
+      return passOutput()
+    }
+  }
+
+  return { post, pre }
 }
