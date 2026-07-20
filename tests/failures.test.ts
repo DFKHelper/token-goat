@@ -130,6 +130,58 @@ test tests::example_test ... FAILED
       expect(result.runner).toBe('cargo');
       expect(result.blocks.length).toBeGreaterThan(0);
     });
+
+    it('should pull panic detail out of the separate ---- name stdout ---- section', () => {
+      const output = `
+running 2 tests
+test tests::foo ... FAILED
+test tests::bar ... ok
+
+failures:
+
+---- tests::foo stdout ----
+thread 'tests::foo' panicked at src/lib.rs:10:5:
+assertion \`left == right\` failed
+  left: 2
+  right: 3
+note: run with \`RUST_BACKTRACE=1\` environment variable to display a backtrace
+
+
+failures:
+    tests::foo
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('cargo');
+
+      const foo = result.blocks.find((b) => b.name === 'tests::foo');
+      expect(foo).toBeDefined();
+      expect(foo?.body).toContain('assertion `left == right` failed');
+      expect(foo?.body).toContain('left: 2');
+      expect(foo?.body).toContain('right: 3');
+      expect(foo?.body).not.toBe('test tests::foo ... FAILED');
+    });
+
+    it('should populate statsLine from the test result line', () => {
+      const output = `
+running 1 test
+test tests::example_test ... FAILED
+
+failures:
+
+---- tests::example_test stdout ----
+thread 'tests::example_test' panicked at src/lib.rs:5:5:
+assertion failed
+
+failures:
+    tests::example_test
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+`;
+      const result = extractFailures(output);
+      expect(result.statsLine).toContain('test result: FAILED');
+    });
   });
 
   describe('extractFailures - generic', () => {
