@@ -29,7 +29,7 @@ import * as path from 'node:path'
 import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
-import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
+import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { recordStat } from './stats.js'
 import { suggestPackageNames } from './util.js'
 
@@ -283,17 +283,17 @@ function guardText(text: string): string {
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, 'dep-docs') : text
 }
 
-function guardReadmeField(text: string): { text: string; truncated: boolean } {
+function guardReadmeField(text: string, budgetTokens: number): { text: string; truncated: boolean } {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { text, truncated: false }
-  const trimmed = trimToBudget(text, cfg.overflow_guard.max_tokens, 'dep-docs')
+  const trimmed = trimToBudget(text, budgetTokens, 'dep-docs')
   return { text: trimmed, truncated: trimmed !== text }
 }
 
-function guardDeclarationRows(rows: readonly DeclarationRow[]): JsonRowCapResult<DeclarationRow> {
+function guardDeclarationRows(rows: readonly DeclarationRow[], budgetTokens: number): JsonRowCapResult<DeclarationRow> {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { items: [...rows], truncated: false, totalCount: rows.length }
-  return capJsonRows(rows, cfg.overflow_guard.max_tokens)
+  return capJsonRows(rows, budgetTokens)
 }
 
 function recordDepDocsStat(fullSourceBytes: number, emittedText: string, packageName: string): void {
@@ -356,8 +356,16 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     (dtsContent !== null ? Buffer.byteLength(dtsContent, 'utf8') : 0)
 
   if (opts.json === true) {
-    const readmeField = readmeFile !== null ? guardReadmeField(readmeRaw) : null
-    const declCap = declarations !== null ? guardDeclarationRows(declarations) : null
+    // README and declarations share ONE overflow_guard.max_tokens budget for the combined JSON
+    // payload (matching the text path's single trimToBudget() pass over the whole assembled
+    // string, src/dep_docs.ts below). Budgeting each field against the full max_tokens
+    // independently would let their combined output run up to ~2x the configured ceiling.
+    const cfg = loadConfig()
+    const maxTokens = cfg.overflow_guard.max_tokens
+    const readmeField = readmeFile !== null ? guardReadmeField(readmeRaw, maxTokens) : null
+    const readmeTokensUsed = readmeField !== null ? estimateTokens(readmeField.text) : 0
+    const remainingBudget = Math.max(0, maxTokens - readmeTokensUsed)
+    const declCap = declarations !== null ? guardDeclarationRows(declarations, remainingBudget) : null
     const payload = {
       package: name,
       version,

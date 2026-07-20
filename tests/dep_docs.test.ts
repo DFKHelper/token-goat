@@ -152,6 +152,66 @@ describe('runDepDocs — README truncation (overflow guard)', () => {
   })
 })
 
+describe('runDepDocs — JSON overflow guard shares ONE budget across README + declarations', () => {
+  // Regression target: guardReadmeField and guardDeclarationRows each capped their own field
+  // against the FULL overflow_guard.max_tokens budget independently, so a package with both an
+  // oversized README and enough declarations could emit a combined JSON payload up to ~2x the
+  // configured ceiling -- exactly the unbounded-output failure the guard exists to prevent.
+  const DECL_COUNT = 10
+  const dtsSource = Array.from({ length: DECL_COUNT }, (_, i) => `export const item${i}: string;`).join('\n')
+
+  function makePkg(withHugeReadme: boolean): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-dep-docs-sharedbudget-'))
+    const pkgDir = path.join(dir, 'node_modules', 'shared-budget-pkg')
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'shared-budget-pkg', version: '1.0.0', types: 'index.d.ts' })
+    )
+    fs.writeFileSync(path.join(pkgDir, 'index.d.ts'), dtsSource)
+    if (withHugeReadme) {
+      fs.writeFileSync(path.join(pkgDir, 'README.md'), 'x'.repeat(200_000))
+    }
+    return dir
+  }
+
+  it('control: with no README competing for budget, all declarations fit under the full budget', () => {
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 300 } } as unknown as ReturnType<typeof loadConfig>)
+    const dir = makePkg(false)
+    try {
+      const { text, code } = runDepDocs({ packageName: 'shared-budget-pkg', projectRoot: dir, json: true })
+      expect(code).toBe(0)
+      const parsed = JSON.parse(text) as { declarations: { items: unknown[]; truncated: boolean; totalCount: number } | null }
+      expect(parsed.declarations?.truncated).toBe(false)
+      expect(parsed.declarations?.items.length).toBe(DECL_COUNT)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the same declarations get truncated once an oversized README already consumed the shared budget', () => {
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 300 } } as unknown as ReturnType<typeof loadConfig>)
+    const dir = makePkg(true)
+    try {
+      const { text, code } = runDepDocs({ packageName: 'shared-budget-pkg', projectRoot: dir, json: true })
+      expect(code).toBe(0)
+      const parsed = JSON.parse(text) as {
+        readme: { truncated: boolean } | null
+        declarations: { items: unknown[]; truncated: boolean; totalCount: number } | null
+      }
+      expect(parsed.readme?.truncated).toBe(true)
+      expect(parsed.declarations?.totalCount).toBe(DECL_COUNT)
+      // Under a correctly shared budget, the README alone consumes nearly all of it, leaving the
+      // declaration list capped hard (well short of all 10 items) -- not sized as if it still had
+      // the full 300-token budget to itself.
+      expect(parsed.declarations?.truncated).toBe(true)
+      expect(parsed.declarations!.items.length).toBeLessThan(DECL_COUNT)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('runDepDocs — no bundled types, no @types companion', () => {
   let dir: string
 
