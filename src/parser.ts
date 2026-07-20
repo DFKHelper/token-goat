@@ -24,6 +24,7 @@ import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
+import { isEmbeddableDocument, extractEmbeddableDocumentText } from './doc_embed_extract.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
@@ -2063,6 +2064,42 @@ export async function indexFileEmbeddings(
     deleteFileEmbeddings(db, filePath)
     // Deliberately-never-embed is a terminal state: stamp the real sha so the freshness gate (worker.ts/cli.ts) treats this file as done and does not re-read its multi-megabyte content into indexFileEmbeddings on every worker drain / index run.
     stampEmbedSha(db, filePath, sha, (s) => s)
+    return
+  }
+  if (isEmbeddableDocument(filePath)) {
+    // Binary document formats (PDF/DOCX/PPTX/XLSX) need format-specific extraction, not a raw
+    // utf8 read of the file's bytes -- must run before the generic read below, which would
+    // otherwise reinterpret binary content as garbage text. detectLanguage() returns 'unknown'
+    // for these extensions (no Language union member, no code symbols), so none of the
+    // ipynb/large-file/salesforce branches above or below apply to them.
+    const extracted = await extractEmbeddableDocumentText(filePath)
+    if (extracted === null || extracted.trim().length === 0) {
+      // A failed extraction or a document with no extractable text is a terminal deliberately-
+      // never-embed state, same shape as the .profile-meta.xml skip above: stamp the real sha so
+      // an unchanged file is not re-read into extraction on every worker drain / index run.
+      const db = getDb(dbPath)
+      deleteFileEmbeddings(db, filePath)
+      stampEmbedSha(db, filePath, sha, (s) => s)
+      return
+    }
+    if (extracted.length > ixCfg.large_file_symbol_only_kb * 1024) {
+      // Reuse the same large-file threshold as the generic content-length check below --
+      // extracted document text is comparatively expensive to embed for comparatively little
+      // retrieval value once it's this large, not a case that needs its own config knob.
+      const db = getDb(dbPath)
+      deleteFileEmbeddings(db, filePath)
+      stampEmbedSha(db, filePath, sha, (s) => s)
+      return
+    }
+    try {
+      const db = getDb(dbPath)
+      // No symbol table exists for these formats, so boundaries is empty -- the whole extracted
+      // text goes through chunkFile's generic windowed chunking instead of symbol-aligned chunks.
+      const outcome = await embedIndexFile(db, filePath, extracted, [])
+      stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
+    } catch (err) {
+      onError?.(err)
+    }
     return
   }
   let content: string

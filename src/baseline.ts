@@ -19,6 +19,7 @@ import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
+import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
@@ -69,11 +70,19 @@ export interface WalkResult {
  * Recursively collect source files under `rootDir`, skipping {@link SKIP_DIRS}
  * and any non-source ('unknown') extensions, tallying a language histogram.
  */
-export function walkProject(rootDir: string, opts: { excludeTests?: boolean } = {}): WalkResult {
+export function walkProject(
+  rootDir: string,
+  opts: { excludeTests?: boolean; includeEmbeddableDocuments?: boolean } = {},
+): WalkResult {
   const files: string[] = []
   const languages: Record<string, number> = {}
   const stack: string[] = [rootDir]
   const excludeTests = opts.excludeTests === true
+  // Opt-in only (walk_index.ts's collectWalkIndexFiles for `token-goat index --walk`): other
+  // walkProject callers (project-map, grep-across-project text commands) must keep skipping
+  // PDF/DOCX/PPTX/XLSX -- they have no Language entry and treating them as source text there
+  // would misreport project-map's language histogram or grep binary bytes as text.
+  const includeEmbeddableDocuments = opts.includeEmbeddableDocuments === true
   // indexing.skip_dirs (config.toml `[indexing] skip_dirs = [...]`, see config.ts's
   // IndexingConfig) merges with the always-skipped SKIP_DIRS set above, so project-specific
   // generated directories can be excluded from a non-git walk the same way they already are
@@ -102,7 +111,7 @@ export function walkProject(rootDir: string, opts: { excludeTests?: boolean } = 
         stack.push(full)
       } else if (entry.isFile()) {
         const lang: Language = detectLanguage(full)
-        if (lang === 'unknown') continue
+        if (lang === 'unknown' && !(includeEmbeddableDocuments && isEmbeddableDocument(full))) continue
         if (excludeTests && isTestFile(full)) continue
         files.push(full)
         languages[lang] = (languages[lang] ?? 0) + 1

@@ -68,7 +68,7 @@ export function assertWalkableRoot(root: string): void {
 export function collectWalkIndexFiles(root: string): string[] {
   const resolved = path.resolve(root)
   assertWalkableRoot(resolved)
-  const { files } = walkProject(resolved)
+  const { files } = walkProject(resolved, { includeEmbeddableDocuments: true })
   if (files.length >= MAX_FILES_SCANNED) {
     throw new Error(
       `'${resolved}' has too many source files (>= ${MAX_FILES_SCANNED}); refusing to ` +
