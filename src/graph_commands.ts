@@ -37,6 +37,14 @@ const DEFAULT_REF_QUERY_LIMIT = 500
  * gets truncated, shared so every call site stays in sync. */
 export const ALL_SYMBOLS_IN_FILE_LIMIT = 10000
 
+/** SQLite: `LIMIT -1` (even as a bound parameter) means unbounded. Used by {@link runTestFor}
+ * and {@link runCoverageGaps}, whose "does a test reference this symbol" check needs to see
+ * every ref regardless of ref count -- unlike the other {@link queryRefs} call sites in this
+ * file, DEFAULT_REF_QUERY_LIMIT's alphabetical-by-file-path ordering has no reason to sort
+ * test-file refs before the cutoff, so a capped query on a symbol with 500+ refs can silently
+ * drop every test-file ref and produce a false "untested" verdict. */
+const UNBOUNDED_REF_LIMIT = -1
+
 function emit(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)
   process.stdout.write(ensureNewline(payload))
@@ -928,7 +936,7 @@ export function runTestFor(opts: TestForOptions): number {
   const getSyms = buildFileSymCache()
 
   for (const sym of symbols) {
-    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    const refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
     for (const ref of refs) {
       if (!isTestFile(ref.filePath)) continue
       if (!testFileMap.has(ref.filePath)) testFileMap.set(ref.filePath, new Set())
@@ -997,7 +1005,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   for (const sym of candidates) {
     if (!opts.includePrivate && sym.name.startsWith('_')) continue
     if (ENTRY_NAMES.has(sym.name)) continue
-    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    const refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
     const hasTestRef = refs.some((r) => isTestFile(r.filePath))
     if (!hasTestRef) gaps.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
