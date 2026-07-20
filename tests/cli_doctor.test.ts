@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
@@ -139,6 +140,71 @@ describe('cli_doctor', () => {
       const result = checkSymbolCount(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
+    })
+  })
+
+  describe('checkDirtyQueueHealth', () => {
+    it('returns ok with zero pending when the queue file does not exist', () => {
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('0 file(s) pending')
+    })
+
+    it('returns ok (worker not running) when the queue has entries but no worker process is alive', () => {
+      const queuePath = dirtyQueuePathFor(tempDir)
+      fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+      fs.writeFileSync(queuePath, 'a.ts\nb.ts\n')
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('2 file(s) pending')
+      expect(result.message).toContain('worker not running')
+    })
+
+    it('warns when the backlog exceeds the threshold, even with the worker running', () => {
+      const queuePath = dirtyQueuePathFor(tempDir)
+      fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+      fs.writeFileSync(queuePath, Array.from({ length: 501 }, (_, i) => `file${i}.ts`).join('\n') + '\n')
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('501 file(s) pending')
+    })
+
+    it('returns ok when the worker is running and its heartbeat is fresh', () => {
+      // A real, currently-alive pid (this test process itself) makes isWorkerRunning's
+      // process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
+      fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
+      fs.writeFileSync(drainHeartbeatPathFor(tempDir), '')
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('actively draining')
+    })
+
+    it('warns when the worker is running but the drain heartbeat is stale (wedged/deadlocked)', () => {
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
+      const heartbeatPath = drainHeartbeatPathFor(tempDir)
+      fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true })
+      fs.writeFileSync(heartbeatPath, '')
+      const staleMs = Date.now() - 5 * 60 * 1000 // 5 minutes ago, well past the staleness threshold
+      fs.utimesSync(heartbeatPath, new Date(staleMs), new Date(staleMs))
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain("hasn't completed a drain cycle")
+    })
+
+    it('returns ok when the worker is running but has not completed its first drain cycle yet (no heartbeat file)', () => {
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
+      // Deliberately no heartbeat file written -- simulates a freshly-started worker.
+
+      const result = checkDirtyQueueHealth(tempDir)
+      expect(result.status).toBe('ok')
     })
   })
 

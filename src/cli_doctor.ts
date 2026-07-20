@@ -9,7 +9,7 @@ import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
-import { isWorkerRunning } from './worker.js'
+import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor } from './worker.js'
 import { getDb } from './db.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
@@ -115,6 +115,62 @@ export function checkSymbolCount(dbPath: string): DoctorResult {
       message: `could not query symbol count: ${extractErrorMessage(err)}`,
     }
   }
+}
+
+/** Backlog size above which a nonzero dirty-queue is worth flagging even when the worker is running -- large enough that normal churn (a big rebase, a branch switch) never trips it, small enough to catch a genuinely stalled drain before every surgical-read command in the project is serving stale data. */
+const DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD = 500
+
+/** How stale the drain-heartbeat marker (touched at the end of every drainOnce cycle, see drainHeartbeatPathFor) can get before a running worker process is flagged as possibly wedged -- 30x the 2s default poll interval, generous margin against a slow cycle on a large repo. */
+const DRAIN_HEARTBEAT_STALE_MS = 60_000
+
+/**
+ * Check the health of the dirty-reindex queue: how many files are pending, and -- when the
+ * worker is running -- whether it's actually still completing drain cycles or has gone quiet
+ * without exiting (deadlock, stuck lock, crash loop that keeps restarting the pid but never
+ * reaching the end of drainOnce). A worker that's simply not running is already reported by
+ * the 'Worker' check; this check focuses on backlog size and on distinguishing "alive" from
+ * "actually draining".
+ */
+export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
+  let pendingCount = 0
+  try {
+    const raw = fs.readFileSync(dirtyQueuePathFor(dataDir), 'utf8')
+    pendingCount = raw
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0).length
+  } catch {
+    // No queue file yet -- nothing pending.
+  }
+
+  if (pendingCount > DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD) {
+    return {
+      name: 'Dirty queue',
+      status: 'warn',
+      message: `${pendingCount} file(s) pending reindex -- the worker may be falling behind or stalled; check 'token-goat worker status'`,
+    }
+  }
+
+  if (!isWorkerRunning(dataDir)) {
+    return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending (worker not running)` }
+  }
+
+  let heartbeatAgeMs: number | null = null
+  try {
+    heartbeatAgeMs = Date.now() - fs.statSync(drainHeartbeatPathFor(dataDir)).mtimeMs
+  } catch {
+    // No heartbeat yet -- worker may not have completed its first drain cycle since starting; not itself a fault.
+  }
+
+  if (heartbeatAgeMs !== null && heartbeatAgeMs > DRAIN_HEARTBEAT_STALE_MS) {
+    return {
+      name: 'Dirty queue',
+      status: 'warn',
+      message: `worker process is running but hasn't completed a drain cycle in ${Math.round(heartbeatAgeMs / 1000)}s -- possibly deadlocked or stuck; check the worker error log`,
+    }
+  }
+
+  return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending, worker actively draining` }
 }
 
 /**
@@ -340,6 +396,7 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
   const actualDataDir = dataDir || defaultDataDir()
   results.push(checkDbExists(actualDataDir))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db')))
+  results.push(checkDirtyQueueHealth(actualDataDir))
 
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))

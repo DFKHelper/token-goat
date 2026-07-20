@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   claimWorkerPidFile,
+  drainHeartbeatPathFor,
   drainOnce,
   ensureWorkerAlive,
   getDirtyPathsFor,
@@ -555,6 +556,34 @@ describe('drainOnce', () => {
 
   it('is a no-op (returns 0) when the queue is empty', () => {
     expect(drainOnce(DIR)).toBe(0)
+  })
+
+  // Regression: doctor's dirty-queue drain-heartbeat check (checkDirtyQueueHealth) distinguishes
+  // a running-but-wedged worker from one actively draining by the recency of this marker's
+  // mtime. It must be touched on EVERY cycle, including a no-op one (empty queue) -- a wedged
+  // loop that stopped reaching the end of drainOnce is exactly what the check needs to catch,
+  // and an empty-queue cycle is the most common steady-state case in a real project.
+  it('touches the drain-heartbeat marker even on a no-op cycle', () => {
+    const heartbeatPath = drainHeartbeatPathFor(DIR)
+    expect(fs.existsSync(heartbeatPath)).toBe(false)
+
+    drainOnce(DIR)
+
+    expect(fs.existsSync(heartbeatPath)).toBe(true)
+  })
+
+  it('updates the drain-heartbeat marker mtime on each subsequent cycle', () => {
+    const heartbeatPath = drainHeartbeatPathFor(DIR)
+    drainOnce(DIR)
+    const firstMtime = fs.statSync(heartbeatPath).mtimeMs
+    // Back-date the marker so a second real drainOnce call is guaranteed to produce a
+    // strictly later mtime even on filesystems with coarse mtime resolution.
+    fs.utimesSync(heartbeatPath, new Date(firstMtime - 5000), new Date(firstMtime - 5000))
+
+    drainOnce(DIR)
+
+    const secondMtime = fs.statSync(heartbeatPath).mtimeMs
+    expect(secondMtime).toBeGreaterThan(firstMtime - 5000)
   })
 
   // Regression: the shipping path is `runWorkerLoop -> drainOnce(dir)` with NO injected index callback. Before the fix, the default callback was a stub that wrote "would index" to stderr and never touched the DB, so every surgical-read command silently returned an empty index. This test drives the real default path (no callback) end-to-end and asserts the symbols table is actually populated — it fails against the stub (0 rows) and passes once the real indexer is wired in. The existing drainOnce/processDirtyBatch tests inject their own callback, so they never exercised this path.
