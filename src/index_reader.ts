@@ -172,6 +172,22 @@ export function queryRefs(
 }
 
 /**
+ * Refs recorded with a given enclosing `context` (the class/function name the ref's line falls
+ * inside) in one specific file. Used to resolve a class's extends-clause target: an
+ * `extends_clause` ref's `context` is set to the extending class's own name (see the
+ * extends-clause parser fix), so `queryRefsByContext(className, classFile)` returns the ref(s)
+ * recorded at that class's declaration -- among which the base class name can be picked out.
+ * Narrower than {@link queryRefs} (which requires a `name` filter) for exactly this "what did
+ * this file/context reference" direction.
+ */
+export function queryRefsByContext(context: string, filePath: string, dbPath: string = globalDbPath()): RefEntry[] {
+  const sql = `SELECT file_path, name, line, col, context FROM refs WHERE context = ? AND ${pathEq('file_path')} ORDER BY line LIMIT 20`
+  const db = getDb(dbPath)
+  const rows = db.prepare(sql).all(context, foldPath(filePath)) as RefRow[]
+  return rows.map(toRefEntry)
+}
+
+/**
  * Batched reference count per symbol name, for `outline --stats`/`skeleton --stats`. One
  * `GROUP BY` query over all requested names instead of one query per symbol -- avoids N+1
  * queries when a file has many symbols. Names with zero references are simply absent from

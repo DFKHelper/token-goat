@@ -712,6 +712,118 @@ describe('runDead same-project name-collision scoping', () => {
   })
 })
 
+// ---- runDead virtual-dispatch ancestor-self-dispatch rescue (regression) ---
+
+describe('runDead virtual-dispatch rescue', () => {
+  // Regression: filterRefsForSymbol's cross-file heuristic misattributes a base class's own
+  // `this.<method>(...)` self-dispatch ref entirely to the base's own same-named definition
+  // (since the dispatch call's file DOES define a same-named symbol), starving every subclass
+  // override elsewhere of credit -- every compressBody override in tool_filters/*.ts false
+  // positived as dead until this rescue check was added.
+  it('does not flag a named-class polymorphic override as dead, but still flags a genuinely unused sibling method', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-named-'))
+    try {
+      const baseFile = normalizePath(join(root, 'base.ts'))
+      const implFile = normalizePath(join(root, 'impl.ts'))
+      writeFileSync(
+        baseFile,
+        'export class Base {\n  compress(): string {\n    return this.compressBody("x")\n  }\n\n  compressBody(s: string): string {\n    return s\n  }\n}\n',
+      )
+      writeFileSync(
+        implFile,
+        'import { Base } from "./base.js"\n\nexport class Impl extends Base {\n  override compressBody(s: string): string {\n    return s.toUpperCase()\n  }\n\n  neverCalledMethod9k2(): void {\n    return\n  }\n}\n',
+      )
+      indexFileSync(baseFile)
+      indexFileSync(implFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runDead({ json: true, top: 500, kind: 'method' })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        // The override is reachable only via Base's self-dispatch -- must not be flagged dead.
+        expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === implFile)).toBe(false)
+        // A genuinely unused sibling method on the same class must still be flagged.
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === implFile)).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: an anonymous class expression (`new (class extends Base { ... })()`, the shape
+  // used by makeAiCliFilter/makeLanguageFilter in tool_filters/families.ts) has no name of its
+  // own, so the extends-clause ref's `context` falls back to the nearest enclosing NAMED scope --
+  // the factory function -- rather than a (nonexistent) class name. enclosingClass (kind ===
+  // 'class' only) returned null for these, silently skipping the rescue check entirely; fixed by
+  // enclosingNamedScope also matching kind === 'function'.
+  it('does not flag an override inside an anonymous class expression as dead, but still flags a genuinely unused sibling method', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-anon-'))
+    try {
+      const baseFile = normalizePath(join(root, 'base.ts'))
+      const factoryFile = normalizePath(join(root, 'factory.ts'))
+      writeFileSync(
+        baseFile,
+        'export class Base {\n  compress(): string {\n    return this.compressBody("x")\n  }\n\n  compressBody(s: string): string {\n    return s\n  }\n}\n',
+      )
+      writeFileSync(
+        factoryFile,
+        [
+          'import { Base } from "./base.js"',
+          '',
+          'export function makeThing9k2() {',
+          '  return new (class extends Base {',
+          '    override compressBody(s: string): string {',
+          '      return s.toUpperCase()',
+          '    }',
+          '',
+          '    neverCalledMethod9k2(): void {',
+          '      return',
+          '    }',
+          '  })()',
+          '}',
+          '',
+        ].join('\n'),
+      )
+      indexFileSync(baseFile)
+      indexFileSync(factoryFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          runDead({ json: true, top: 500, kind: 'method' })
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === factoryFile)).toBe(false)
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === factoryFile)).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runDeps against the real repo -------------------------
 
 describe('runDeps integration', () => {
