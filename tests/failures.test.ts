@@ -74,6 +74,19 @@ FAIL src/module.test.ts
       const result = extractFailures(output);
       expect(result.runner).toBe('jest');
     });
+
+    it('should populate statsLine from the Tests: summary line', () => {
+      const output = `
+  ● some test description
+    at path/to/file.ts:10
+
+Tests:  1 failed, 2 passed (3 total)
+FAIL src/module.test.ts
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('jest');
+      expect(result.statsLine).toBe('Tests:  1 failed, 2 passed (3 total)');
+    });
   });
 
   describe('extractFailures - go', () => {
@@ -117,6 +130,30 @@ FAIL
 
       expect(two?.body).toContain('two_test.go:20: message two');
       expect(two?.body).not.toContain('one_test.go:10: message one');
+    });
+
+    it('should populate statsLine from the package-summary FAIL line', () => {
+      const output = `
+--- FAIL: TestExample (0.00s)
+        main_test.go:15: assertion failed
+FAIL
+exit status 1
+FAIL\texample.com/pkg\t0.003s
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('go');
+      expect(result.statsLine).toContain('example.com/pkg');
+    });
+
+    it('should not populate statsLine from a bare FAIL line with no package summary', () => {
+      const output = `
+--- FAIL: TestExample (0.00s)
+        main_test.go:15: assertion failed
+FAIL
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('go');
+      expect(result.statsLine).toBe('');
     });
   });
 
