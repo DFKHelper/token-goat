@@ -2195,11 +2195,46 @@ describe('read_commands', () => {
       expect(stdout.trim()).toBe('"Deployment"')
     })
 
+    it('emits a JSON envelope with items/truncated/totalCount for a fanned result under --json', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*].id', json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toEqual([1, 2, 3])
+      expect(parsed.totalCount).toBe(3)
+      expect(parsed.truncated).toBe(false)
+    })
+
     it('caps a fanned result to --head, reporting the real total and an elision note in text mode', () => {
       const f = path.join(tempDir, 'people.yaml')
       fs.writeFileSync(f, PEOPLE_YAML)
       const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*].id', head: '1' }) })
       expect(stdout).toContain('2 more items elided')
+    })
+
+    it('caps a fanned --json result to --head, reflecting the head cut in truncated/totalCount', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*].id', head: '1', json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toEqual([1])
+      expect(parsed.totalCount).toBe(3)
+      expect(parsed.truncated).toBe(true)
+    })
+
+    it('caps an oversized text-mode fanned result at overflow_guard.max_tokens', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 20 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const lines = ['items:']
+      for (let i = 0; i < 500; i++) {
+        lines.push(`  - id: ${i}`)
+        lines.push(`    name: "${`person-${i}-`.repeat(5)}"`)
+      }
+      const f = path.join(tempDir, 'big.yaml')
+      fs.writeFileSync(f, lines.join('\n') + '\n')
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*]' }) })
+      expect(stdout).toContain('output capped at')
     })
 
     it('returns 1 with a clear error for a missing key on a non-fanned path', () => {
@@ -2209,6 +2244,24 @@ describe('read_commands', () => {
       const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'items[0].doesNotExist' }) })
       expect(code).toBe(1)
       expect(stderr).toContain('path not found')
+    })
+
+    it('returns 1 with a clear error for an out-of-range array index', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'items[99]' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('out of range')
+    })
+
+    it('returns 1 with a clear error for an invalid path spec', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'items[unterminated' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('invalid path spec')
     })
 
     it('returns 1 when the file does not exist', () => {
