@@ -347,19 +347,14 @@ export async function findCrossSessionEntry(skillName: string, contentSha: strin
 
       const dir = skillOutputsDir()
       const bodyPath = resolve(dir, `${meta.outputId}.txt`)
-      const gzPath = resolve(dir, `${meta.outputId}.gz`)
 
       try {
         const bodyExists = await fs
           .access(bodyPath)
           .then(() => true)
           .catch(() => false)
-        const gzExists = await fs
-          .access(gzPath)
-          .then(() => true)
-          .catch(() => false)
 
-        if (bodyExists || gzExists) {
+        if (bodyExists) {
           return meta
         }
       } catch {
@@ -833,17 +828,17 @@ export async function installedSkillPath(skillName: string): Promise<string | nu
 }
 
 /**
- * Evict skill-output entries (paired .meta/.txt/.gz files, keyed by each entry's
+ * Evict skill-output entries (paired .meta/.txt files, keyed by each entry's
  * stored `ts`) beyond maxCount or older than maxAgeMs. Sync, matching prune-cache /
  * clean-cache's synchronous CLI path (mirrors getCompactAnySessionSync's sync sibling
  * pattern for the same reason).
  *
  * This directory doesn't use disk_cache.ts's generic pruneBlobs: that helper only
  * recognizes single self-contained '<id>.json' blobs, but a skill output is a group
- * of related files (.meta metadata + .txt body, occasionally .gz) that must be
- * evicted together, so it needs its own eviction pass. Sidecar .hits/@compact files
- * are left in place — they're small and self-heal via storeCompact/incrementSkillHit's
- * own atomic writes on next access.
+ * of related files (.meta metadata + .txt body) that must be evicted together, so it
+ * needs its own eviction pass. Sidecar .hits/@compact files are left in place —
+ * they're small and self-heal via storeCompact/incrementSkillHit's own atomic writes
+ * on next access.
  *
  * Returns the number of evicted entries (not the number of files removed).
  */
@@ -876,7 +871,7 @@ export function pruneSkillOutputs(
     }
 
     const removeEntry = (outputId: string): void => {
-      for (const ext of ['.meta', '.txt', '.gz']) {
+      for (const ext of ['.meta', '.txt']) {
         try {
           unlinkSync(resolve(dir, `${outputId}${ext}`))
         } catch {
