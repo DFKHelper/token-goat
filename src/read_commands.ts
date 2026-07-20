@@ -31,6 +31,7 @@ import { resolveCallers } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
+import { loadAll as loadAllYaml } from 'js-yaml'
 import { parseOpenApiSpec, extractOperations, formatOpenApiOutline, findOperation, formatOperationDetail, operationLabel } from './openapi_query.js'
 import { listZipEntries, extractZipEntry, formatZipList } from './archive_query.js'
 import {
@@ -1279,6 +1280,91 @@ export function runJsonQuery(opts: JsonQueryCliOptions): number {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
       }
       emitGuarded(lines.join('\n'), 'json-query')
+    }
+    return 0
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+}
+
+/** Parses YAML text, handling multi-document streams (`---`-separated) via js-yaml's loadAll -- a single-document file (the overwhelming majority) unwraps to its one value so path queries work directly against it, while a genuine multi-doc stream (k8s manifests, etc.) stays an array so the existing [n]/[*] json_query.ts grammar indexes into documents for free. */
+function parseYamlDocument(text: string): unknown {
+  const docs = loadAllYaml(text)
+  return docs.length === 1 ? docs[0] : docs
+}
+
+/** Handle ``token-goat yaml-outline file``: structural summary of a YAML document, reusing json_query.ts's outlineJson (a parsed YAML document is the same array/object/scalar shape as parsed JSON). */
+export function runYamlOutline(opts: JsonOutlineCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let data: unknown
+  try {
+    data = parseYamlDocument(text)
+  } catch {
+    emitErr(`Failed to parse YAML: ${opts.file}`)
+    return 1
+  }
+
+  const outline = outlineJson(data)
+  if (opts.json === true) {
+    emit(JSON.stringify(outline))
+  } else {
+    emit(formatJsonOutline(outline))
+  }
+  return 0
+}
+
+/** Handle ``token-goat yaml-query file path``: extract one value or a projected/filtered subset from a YAML document by dot-path, reusing json_query.ts's queryJson (same grammar as json-query). */
+export function runYamlQuery(opts: JsonQueryCliOptions): number {
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
+  let data: unknown
+  try {
+    data = parseYamlDocument(text)
+  } catch {
+    emitErr(`Failed to parse YAML: ${opts.file}`)
+    return 1
+  }
+
+  let head: number | undefined
+  try {
+    head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
+  } catch (e) {
+    emitErr(extractErrorMessage(e))
+    return 1
+  }
+
+  try {
+    const result = queryJson(data, opts.path)
+
+    if (!result.fanned) {
+      const value = result.items[0]
+      emit(opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2))
+      return 0
+    }
+
+    const totalCount = result.items.length
+    const limited = head !== undefined ? result.items.slice(0, head) : result.items
+    const headTruncated = limited.length < totalCount
+
+    if (opts.json === true) {
+      const capped = guardJsonRows(limited)
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }))
+    } else {
+      const lines = limited.map((item) => JSON.stringify(item))
+      if (headTruncated) {
+        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+      }
+      emitGuarded(lines.join('\n'), 'yaml-query')
     }
     return 0
   } catch (e) {

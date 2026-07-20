@@ -65,6 +65,8 @@ import {
   runCsvQuery,
   runJsonOutline,
   runJsonQuery,
+  runYamlOutline,
+  runYamlQuery,
   runSqliteSchema,
   runSqliteQuery,
 
@@ -2103,6 +2105,124 @@ describe('read_commands', () => {
       const { stderr } = capture(() => { code = runJsonQuery({ file: f, path: 'foo' }) })
       expect(code).toBe(1)
       expect(stderr).toContain('Failed to parse JSON')
+    })
+  })
+
+  // ---- runYamlOutline / runYamlQuery -------------------------------------
+
+  describe('runYamlOutline', () => {
+    it('summarizes a single-document YAML mapping as top-level keys with type and size', () => {
+      const f = path.join(tempDir, 'config.yaml')
+      fs.writeFileSync(f, 'name: app\nversion: "1.0.0"\ndeps:\n  a: 1\n  b: 2\nitems:\n  - 1\n  - 2\n  - 3\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f }) })
+      expect(stdout).toContain('name: string')
+      expect(stdout).toContain('deps: object (2)')
+      expect(stdout).toContain('items: array (3)')
+    })
+
+    it('summarizes a YAML sequence of mappings: length, element type, and merged key/type shape', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, '- id: 1\n  name: Alice\n- id: 2\n  name: Bob\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f }) })
+      expect(stdout).toContain('array of 2 elements (object)')
+      expect(stdout).toContain('id: number')
+      expect(stdout).toContain('name: string')
+    })
+
+    it('outlines a multi-document YAML stream as an array of documents', () => {
+      const f = path.join(tempDir, 'multi.yaml')
+      fs.writeFileSync(f, 'kind: Service\n---\nkind: Deployment\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f }) })
+      expect(stdout).toContain('array of 2 elements (object)')
+    })
+
+    it('emits a structured outline object under --json', () => {
+      const f = path.join(tempDir, 'people2.yaml')
+      fs.writeFileSync(f, '- id: 1\n- id: 2\n')
+      const { stdout } = capture(() => { runYamlOutline({ file: f, json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.kind).toBe('array')
+      expect(parsed.length).toBe(2)
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runYamlOutline({ file: path.join(tempDir, 'missing.yaml') })
+      expect(code).toBe(1)
+    })
+
+    it('returns 1 with a clear message on invalid YAML', () => {
+      const f = path.join(tempDir, 'bad.yaml')
+      fs.writeFileSync(f, 'key: [unterminated\n')
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlOutline({ file: f }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('Failed to parse YAML')
+    })
+  })
+
+  describe('runYamlQuery', () => {
+    const PEOPLE_YAML = 'items:\n  - id: 1\n    name: Alice\n    status: active\n  - id: 2\n    name: Bob\n    status: inactive\n  - id: 3\n    name: Carol\n    status: active\n'
+
+    it('extracts a single value at a dot-path', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[0].name' }) })
+      expect(stdout.trim()).toBe('"Alice"')
+    })
+
+    it('projects a field across every array element with [*]', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*].name' }) })
+      expect(stdout).toContain('"Alice"')
+      expect(stdout).toContain('"Bob"')
+      expect(stdout).toContain('"Carol"')
+    })
+
+    it('filters array elements by field value with [field=value]', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[status=active]' }) })
+      expect(stdout).toContain('Alice')
+      expect(stdout).toContain('Carol')
+      expect(stdout).not.toContain('Bob')
+    })
+
+    it('indexes into a multi-document YAML stream with [n]', () => {
+      const f = path.join(tempDir, 'multi.yaml')
+      fs.writeFileSync(f, 'kind: Service\nmetadata:\n  name: svc\n---\nkind: Deployment\nmetadata:\n  name: dep\n')
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: '[1].kind' }) })
+      expect(stdout.trim()).toBe('"Deployment"')
+    })
+
+    it('caps a fanned result to --head, reporting the real total and an elision note in text mode', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      const { stdout } = capture(() => { runYamlQuery({ file: f, path: 'items[*].id', head: '1' }) })
+      expect(stdout).toContain('2 more items elided')
+    })
+
+    it('returns 1 with a clear error for a missing key on a non-fanned path', () => {
+      const f = path.join(tempDir, 'people.yaml')
+      fs.writeFileSync(f, PEOPLE_YAML)
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'items[0].doesNotExist' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('path not found')
+    })
+
+    it('returns 1 when the file does not exist', () => {
+      const code = runYamlQuery({ file: path.join(tempDir, 'missing.yaml'), path: 'foo' })
+      expect(code).toBe(1)
+    })
+
+    it('returns 1 with a clear message on invalid YAML', () => {
+      const f = path.join(tempDir, 'bad.yaml')
+      fs.writeFileSync(f, 'key: [unterminated\n')
+      let code = -1
+      const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'foo' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain('Failed to parse YAML')
     })
   })
 

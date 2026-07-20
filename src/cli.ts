@@ -83,6 +83,8 @@ import {
   runCsvQuery,
   runJsonOutline,
   runJsonQuery,
+  runYamlOutline,
+  runYamlQuery,
   runOpenApiOutline,
   runOpenApiOp,
   runZipList,
@@ -1021,6 +1023,14 @@ function cmdJsonOutline(file: string, opts: { json?: boolean }) {
 
 function cmdJsonQuery(file: string, jsonPath: string, opts: { head?: string; json?: boolean }) {
   process.exitCode = runJsonQuery({ file, path: jsonPath, ...opts })
+}
+
+function cmdYamlOutline(file: string, opts: { json?: boolean }) {
+  process.exitCode = runYamlOutline({ file, ...opts })
+}
+
+function cmdYamlQuery(file: string, yamlPath: string, opts: { head?: string; json?: boolean }) {
+  process.exitCode = runYamlQuery({ file, path: yamlPath, ...opts })
 }
 
 function cmdOpenApiOutline(file: string, opts: { json?: boolean }) {
@@ -3057,6 +3067,24 @@ export function buildProgram(): Command {
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
     .action(guard(cmdJsonQuery))
+
+  program
+    .command('yaml-outline <file>')
+    .description('structural summary of a YAML document (array shape / object key types) instead of a raw Read -- multi-document streams (---separated) outline as an array of documents')
+    .option('--json', 'emit the outline as JSON instead of text')
+    .action(guard(cmdYamlOutline))
+
+  program
+    .command('yaml-query <file> <path>')
+    .description(
+      "extract one value or a projected/filtered subset from a YAML document by dot-path instead of a raw Read (same grammar as json-query)\n\n" +
+        "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
+        '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
+        "stringifies to value). Examples: spec.containers[0].image, items[*].name, items[kind=Service]",
+    )
+    .option('--head <n>', 'limit a projected/filtered result to the first N items')
+    .option('--json', 'emit the result as JSON instead of text')
+    .action(guard(cmdYamlQuery))
 
   program
     .command('openapi-outline <file>')
