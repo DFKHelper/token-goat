@@ -1075,3 +1075,43 @@ export function propagateEndLinesToSymbols(
     return sym
   })
 }
+
+/**
+ * Find the line of the closing brace that matches the `{` at `openBraceIndex`, by walking
+ * forward from that offset and tracking brace depth. Used by adapters (proto_idx, terraform_idx)
+ * whose blocks can nest arbitrarily (a message can contain another message, a resource can
+ * contain a lifecycle block, ...), where the shared assignFlatEndLines/propagateEndLinesToSymbols
+ * flat "ends where the next section starts" propagation is wrong: an outer block's end gets
+ * truncated to right before its first nested child, and an innermost/last-in-file nested block
+ * over-extends to EOF instead of stopping at its own closing brace. Since each caller's regex
+ * ends with `\{`, the opening brace's offset is already known, making a true matching-brace walk
+ * possible. Tracks single/double-quoted string literals (backslash-escape aware) so a brace
+ * character inside a quoted value (e.g. `default = "{}"`, `option (x) = "{"`) is never miscounted
+ * as real nesting. Returns `totalLines` if the brace is never closed.
+ */
+export function findMatchingBraceEndLine(
+  content: string,
+  openBraceIndex: number,
+  totalLines: number,
+  lineIndex: readonly number[],
+): number {
+  let depth = 0
+  let quote: string | null = null
+  for (let i = openBraceIndex; i < content.length; i++) {
+    const ch = content[i]
+    if (quote !== null) {
+      if (ch === '\\') { i++; continue }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        return offsetToLine(lineIndex, i)
+      }
+    }
+  }
+  return totalLines
+}
