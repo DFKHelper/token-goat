@@ -2126,14 +2126,19 @@ export function buildProgram(): Command {
     .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view). For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol false positives; falls back to name-based matching when that is not possible.')
     .option('--callers', 'group references by their enclosing caller symbol')
     .option('-l, --limit <n>', 'max results')
+    .option(
+      '--top <n>',
+      'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
+    )
     .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { callers?: boolean; limit?: string; json?: boolean }) =>
+    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; json?: boolean }) =>
       runExit(() =>
         runRefs({
           spec,
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
         }),
       ),
     )
