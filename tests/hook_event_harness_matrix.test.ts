@@ -130,6 +130,16 @@ function geminiEvents(): HookEventName[] {
   return extractKnownEvents(m[1], 'src/bridges/gemini_install.ts GEMINI_EVENT_ARG')
 }
 
+/** Qwen Code's QWEN_EVENT_ARG (src/bridges/qwen_install.ts): Qwen event key -> internal event arg. */
+function qwenEvents(): HookEventName[] {
+  const src = readSrc('bridges/qwen_install.ts')
+  const m = src.match(/const QWEN_EVENT_ARG:[^\r\n]*\r?\n([\s\S]*?)\r?\n\}/)
+  if (!m || m[1] === undefined) {
+    throw new Error('QWEN_EVENT_ARG not found in src/bridges/qwen_install.ts -- update the matrix derivation')
+  }
+  return extractKnownEvents(m[1], 'src/bridges/qwen_install.ts QWEN_EVENT_ARG')
+}
+
 /** Copilot CLI's COPILOT_TO_TG_EVENT (src/bridges/copilot_cli.ts): Copilot event name -> internal event, already the value passed as the CLI event arg. */
 function copilotCliEvents(): HookEventName[] {
   const src = readSrc('bridges/copilot_cli.ts')
@@ -175,6 +185,7 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   hermes: claudecodeFamilyEvents(),
   codex: codexEvents(),
   gemini: geminiEvents(),
+  qwen: qwenEvents(),
   pi: callHookEvents(PI_EXTENSION_SCRIPT, 'PI_EXTENSION_SCRIPT'),
   opencode: callHookEvents(OPENCODE_PLUGIN_SCRIPT, 'OPENCODE_PLUGIN_SCRIPT'),
   openclaw: callHookEvents(OPENCLAW_PLUGIN_SCRIPT, 'OPENCLAW_PLUGIN_SCRIPT'),
@@ -195,6 +206,7 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   hermes: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
   codex: ['pre_tool_use', 'post_tool_use'],
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
+  qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
   pi: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   opencode: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   openclaw: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
@@ -397,7 +409,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   // shim (GROK_HOOK_SCRIPT, src/bridges/grok.ts) instead translates this
   // 'block' shape into Grok's documented '{"decision":"deny",...}' -- verified
   // separately in tests/install_grok.test.ts, not exercised here.
-  const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'generic']
+  const RAW_PASSTHROUGH_HARNESSES: HarnessName[] = ['claudecode', 'grok', 'hermes', 'gemini', 'qwen', 'generic']
 
   for (const harness of RAW_PASSTHROUGH_HARNESSES) {
     it(`${harness}: denies a re-read of an already-read large file via raw {decision:'block'} JSON`, () => {
