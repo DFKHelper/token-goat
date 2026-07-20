@@ -1707,6 +1707,98 @@ describe('runCoverageGaps subdirectory scoping', () => {
   })
 })
 
+// ---- runTestFor / runCoverageGaps do not truncate away test refs at 500+ refs (regression) --
+
+describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
+  // Regression: queryRefs's DEFAULT_REF_QUERY_LIMIT (500) orders by file_path, line with no
+  // preference for test-file paths. runTestFor/runCoverageGaps used to pass that same capped
+  // limit, so a symbol referenced 500+ times from files that sort alphabetically BEFORE its test
+  // file's path would have every one of its real test refs silently dropped by the cutoff --
+  // runCoverageGaps then falsely reports the symbol as an untested "coverage gap", and
+  // runTestFor silently omits the test file that actually exercises it.
+  const REF_FILE_COUNT = 6
+  const REFS_PER_FILE = 100 // 600 total, comfortably over the old 500-row cap
+
+  function buildFixture(symbolName: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'tg-refcap-'))
+    writeFileSync(join(root, 'package.json'), '{"name":"tg-refcap-fixture"}\n')
+
+    const targetFile = normalizePath(join(root, 'target.ts'))
+    writeFileSync(targetFile, `export function ${symbolName}() {\n  return 1\n}\n`, 'utf-8')
+    indexFileSync(targetFile)
+
+    // File names sort alphabetically BEFORE the test file below ('a...' < 'z...'), so these
+    // refs occupy the entire 0-499 window of a file_path-ordered, 500-row-capped query.
+    for (let i = 0; i < REF_FILE_COUNT; i++) {
+      const refFile = normalizePath(join(root, `a_ref_file_${String(i).padStart(2, '0')}.ts`))
+      const lines = [`import { ${symbolName} } from './target'`]
+      for (let j = 0; j < REFS_PER_FILE; j++) lines.push(`${symbolName}()`)
+      writeFileSync(refFile, lines.join('\n') + '\n', 'utf-8')
+      indexFileSync(refFile)
+    }
+
+    const testFile = normalizePath(join(root, 'z_target.test.ts'))
+    writeFileSync(
+      testFile,
+      [
+        `import { ${symbolName} } from './target'`,
+        '',
+        'function test_usesTarget() {',
+        `  ${symbolName}()`,
+        '}',
+      ].join('\n'),
+      'utf-8',
+    )
+    indexFileSync(testFile)
+
+    return root
+  }
+
+  it('runTestFor still finds the test file even though 600 non-test refs sort before it', () => {
+    const symbolName = 'refCapBugTarget9f2a1c'
+    const root = buildFixture(symbolName)
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runTestFor({ file: normalizePath(join(root, 'target.ts')), json: true })
+      } finally {
+        process.stdout.write = origWrite
+        cwdSpy.mockRestore()
+      }
+      expect(code).toBe(0)
+      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      expect(results.some((r) => r.testFile.endsWith('z_target.test.ts'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runCoverageGaps does not flag a tested symbol as a gap even though 600 non-test refs sort before its test ref', () => {
+    const symbolName = 'refCapBugTarget7c3d2e'
+    const root = buildFixture(symbolName)
+    try {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      try {
+        runCoverageGaps({ json: true, top: 5000 })
+      } finally {
+        process.stdout.write = origWrite
+        cwdSpy.mockRestore()
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      expect(parsed.some((r) => r.name === symbolName)).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- runSimilar/runContextFor/runAsk cross-project FTS scoping (regression) -
 
 describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across projects', () => {
