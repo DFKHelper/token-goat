@@ -112,6 +112,20 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ],
   },
   {
+    harness: 'qwen',
+    label: 'Qwen Code',
+    sourceFile: 'src/bridges/qwen_install.ts (QWEN_HOOK_EVENTS)',
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
+    reasons: [
+      {
+        events: ['notification'],
+        reason:
+          "Only five Qwen Code events have a token-goat handler; every other real event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at (qwen_install.ts)",
+      },
+      { events: ['stop'], reason: NO_SERVER_HANDLER_REASON },
+    ],
+  },
+  {
     harness: 'opencode',
     label: 'opencode',
     sourceFile: 'src/bridges/opencode.ts',

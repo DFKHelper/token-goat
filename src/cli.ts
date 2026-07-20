@@ -47,6 +47,7 @@ import {
 import type { HookScope } from './install.js'
 import { installCodex, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, uninstallGemini } from './bridges/gemini_install.js'
+import { installQwen, uninstallQwen } from './bridges/qwen_install.js'
 import { installPi, uninstallPi } from './bridges/pi_install.js'
 import { installOpencode, uninstallOpencode } from './bridges/opencode_install.js'
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
@@ -353,6 +354,7 @@ async function cmdInstall(opts: {
   project?: boolean
   codex?: boolean
   gemini?: boolean
+  qwen?: boolean
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
@@ -396,6 +398,16 @@ async function cmdInstall(opts: {
       out(`Gemini CLI integration already installed → ${geminiResult.settingsPath}`)
     } else {
       out(`Installed token-goat Gemini CLI integration → ${geminiResult.settingsPath}`)
+    }
+  }
+
+  // --qwen is additive, exactly like --gemini above.
+  if (opts.qwen === true) {
+    const qwenResult = installQwen()
+    if (qwenResult.alreadyInstalled) {
+      out(`Qwen Code integration already installed → ${qwenResult.settingsPath}`)
+    } else {
+      out(`Installed token-goat Qwen Code integration → ${qwenResult.settingsPath}`)
     }
   }
 
@@ -498,6 +510,7 @@ function cmdUninstall(opts: {
   project?: boolean
   codex?: boolean
   gemini?: boolean
+  qwen?: boolean
   pi?: boolean
   opencode?: boolean
   hermes?: boolean
@@ -527,6 +540,7 @@ function cmdUninstall(opts: {
   const removals: Array<{ flag: boolean; run: () => boolean; label: string }> = [
     { flag: opts.codex === true, run: uninstallCodex, label: 'Codex CLI integration' },
     { flag: opts.gemini === true, run: uninstallGemini, label: 'Gemini CLI integration' },
+    { flag: opts.qwen === true, run: uninstallQwen, label: 'Qwen Code integration' },
     { flag: opts.pi === true, run: () => (opts.local === true ? uninstallPi({ local: true }) : uninstallPi()), label: 'pi extension' },
     { flag: opts.openclaw === true, run: uninstallOpenclaw, label: 'OpenClaw integration' },
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
@@ -2178,6 +2192,7 @@ export function buildProgram(): Command {
     .option('-p, --project', 'install into project scope instead of user scope')
     .option('--codex', 'also patch Codex CLI (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also patch Gemini CLI (~/.gemini/settings.json)')
+    .option('--qwen', 'also patch Qwen Code (~/.qwen/settings.json)')
     .option('--pi', 'also drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
     .option('--opencode', 'also drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
@@ -2193,6 +2208,7 @@ export function buildProgram(): Command {
     .option('-p, --project', 'uninstall from project scope instead of user scope')
     .option('--codex', 'also strip the Codex CLI integration (~/.codex/config.toml, ~/.codex/AGENTS.md)')
     .option('--gemini', 'also strip the Gemini CLI integration (~/.gemini/settings.json)')
+    .option('--qwen', 'also strip the Qwen Code integration (~/.qwen/settings.json)')
     .option('--pi', 'also remove the pi (pi-coding-agent) extension')
     .option('--opencode', 'also remove the opencode plugin')
     .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')

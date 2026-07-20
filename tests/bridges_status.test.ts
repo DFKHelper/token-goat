@@ -45,7 +45,7 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
   it('covers exactly the real bridge modules -- excludes hermes (no install-writer) and generic (fallback, not a harness)', () => {
     const harnesses = BRIDGE_CAPABILITY_MATRIX.map((r) => r.harness).sort()
     expect(harnesses).toEqual(
-      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'openclaw', 'opencode', 'pi'].sort(),
+      ['claudecode', 'codex', 'copilot_cli', 'gemini', 'grok', 'openclaw', 'opencode', 'pi', 'qwen'].sort(),
     )
     expect(harnesses).not.toContain('hermes')
     expect(harnesses).not.toContain('generic')
@@ -170,10 +170,11 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 5/7 score for claudecode and codex, 3/7 for opencode/gemini/openclaw/pi, 6/7 for copilot_cli', () => {
+  it('shows a 5/7 score for claudecode/codex/qwen, 3/7 for opencode/gemini/openclaw/pi, 6/7 for copilot_cli', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    expect(text).toMatch(/claudecode\s+.*\s5\/7/)
-    expect(text).toMatch(/codex\s+.*\s5\/7/)
+    for (const harness of ['claudecode', 'codex', 'qwen']) {
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/7`))
+    }
     expect(text).toMatch(/copilot_cli\s+.*\s6\/7/)
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
       expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/7`))
@@ -213,6 +214,13 @@ describe('drift guard: matrix reasons stay grounded in the real bridge source', 
     expect(text).toContain('notification')
     expect(text).toContain('is left unimplemented')
     expect(text).toContain('rather than guessed at')
+  })
+
+  it("qwen's documented unimplemented-notification note still appears in qwen_install.ts", () => {
+    const text = fs.readFileSync(path.join(REPO_ROOT, 'src', 'bridges', 'qwen_install.ts'), 'utf8')
+    expect(text).toContain('Notification')
+    expect(text).toContain('is left')
+    expect(text).toContain('unimplemented rather than guessed at')
   })
 })
 
