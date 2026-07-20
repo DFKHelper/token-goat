@@ -41,8 +41,19 @@ export const FILE_TYPE_HANDLER_COUNT = 10
 /** Pre-bash read interceptors — unbalanced shell quoting/heredoc, cat/cat+flags, cat multi-file, cat+WSL, cat|jq, PowerShell-wrapped Get-Content, python open()/heredoc, head, tail/tail-c, Get-Content -Tail, Get-Content Select-Object -First, node readFileSync/require, tasks output, sed line range, directory listing (incl. ls-pipe), find, markdown heading grep, rg structural, grep|grep chain, monitoring-command recall, curl GET cache, curl -o dedup, gh api GET recall, scoped git status/diff --stat recall, rg symbol search, for-loop wc-l, CLI surgical-read dedup (src/hooks_bash.ts). */
 export const BASH_INTERCEPTOR_COUNT = 27
 
-/** Distinct deny/context decision paths in the pre-read hook (src/hooks_read.ts). */
-export const READ_HOOK_CONDITION_COUNT = 20
+/** Distinct deny/context decision paths in the pre-read hook — node_modules deny, lock-file deny,
+ * .tsbuildinfo deny, build-dir/generated-file deny, package-manifest hint, tsconfig re-read,
+ * manifest re-read, skill-file stale-compact advisory, stable-doc compact serving, notebook
+ * output stripping, markdown large-file intercept, MEMORY.md re-read denial, .improve-state
+ * re-read denial, .env re-read denial, session-artifact re-read dedup, session-artifact
+ * first-read size gate, doc-file auto-diff on re-read, cross-session read dedup, truncated-read
+ * redirect, markdown 2nd-read deny, count-based source-file deny, size/count-based generic
+ * re-read deny, large-file deny/hint gate, universal file-type handler catch-all
+ * (src/hooks_read.ts). Counts one entry per distinct top-level decision category (a gate whose
+ * predicate recognizes a specific situation), not per literal return statement — multiple
+ * `return denyOutput(...)` calls that are just phrasing variants of one computed outcome
+ * (e.g. unchanged-vs-diff within one diff check) count as a single category. */
+export const READ_HOOK_CONDITION_COUNT = 24
 
 /** Test-runner failure block extractors — pytest, jest, go, cargo (src/failures.ts). */
 export const FAILURE_RUNNER_COUNT = 4
