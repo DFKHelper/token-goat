@@ -58,6 +58,51 @@ describe('token-goat CLI', () => {
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
 
+  // Qwen Code's bridge (src/bridges/qwen_install.ts) writes a bare command string into
+  // ~/.qwen/settings.json with no ambient env var of its own for detectHarness() to key off,
+  // unlike pi.ts/copilot_cli.ts which set process.env.TOKEN_GOAT_HARNESS_OVERRIDE directly
+  // in-process. It self-identifies via this --harness flag instead. This confirms the flag
+  // doesn't break the hook relay path (exit 0, valid JSON) exactly as the flag-less form above
+  // does.
+  it('hook pre_tool_use --harness qwen with empty stdin exits 0 and writes {} to stdout', () => {
+    const r = runCli(['hook', 'pre_tool_use', '--harness', 'qwen'], '')
+    expect(r.status).toBe(0)
+    expect(r.stdout.trim()).toBe('{}')
+  }, 30000)
+
+  // The `hook` command's --harness flag has no CLI-visible output of its own (relay() emits
+  // the same {} regardless of resolved harness for empty stdin, and 'qwen' has no per-harness
+  // wire-format reshaping or auto-trigger-multiplier entry to diff against -- see
+  // src/hooks_cli.ts's normalizePayload/harnessForNormalization and
+  // src/compact.ts's HARNESS_MULTIPLIER_DEFAULTS). So this pins down the two halves of the
+  // fix directly instead of relying on an indirect CLI side effect:
+  //  1. cmdHook actually forwards --harness into process.env.TOKEN_GOAT_HARNESS_OVERRIDE before
+  //     calling relay() (asserted against the real source, the same pattern
+  //     tests/bridges_status.test.ts already uses to pin a specific line of bridge source).
+  //  2. detectHarness() (src/bridges/registry.ts), which relay() depends on, actually resolves
+  //     that override to 'qwen' -- and takes priority over every ambient env-var signal, which
+  //     is exactly why this override mechanism is a valid substitute for an ambient signal Qwen
+  //     Code itself never sets.
+  it('the --harness flag is wired: cmdHook sets TOKEN_GOAT_HARNESS_OVERRIDE from it, and detectHarness() resolves that override to \'qwen\' ahead of any ambient signal', async () => {
+    const cliSrc = fs.readFileSync(path.join(BUNDLE, '..', '..', 'src', 'cli.ts'), 'utf8')
+    expect(cliSrc).toMatch(/process\.env\[ENV_KEYS\.HARNESS_OVERRIDE\]\s*=\s*opts\.harness/)
+
+    const { detectHarness } = await import('../src/bridges/registry.js')
+    const saved = { ...process.env }
+    try {
+      // An ambient signal that would resolve to 'gemini' if the override were absent or ignored.
+      process.env['GEMINI_API_KEY'] = 'fake-key-for-test'
+      delete process.env['ANTHROPIC_API_KEY']
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'qwen'
+      expect(detectHarness()).toBe('qwen')
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key]
+      }
+      Object.assign(process.env, saved)
+    }
+  }, 30000)
+
   it('bash-output exits 1 for missing ID', () => {
     const r = runCli(['bash-output', 'nonexistent-id'])
     expect(r.status).toBe(1)
