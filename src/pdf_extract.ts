@@ -9,6 +9,8 @@
 
 import type * as pdfjsTypes from 'pdfjs-dist/legacy/build/pdf.mjs'
 
+import { createLazyModuleLoader } from './lazy_module.js'
+
 export interface PdfExtractResult {
   text: string
   pageCount: number
@@ -17,32 +19,23 @@ export interface PdfExtractResult {
 
 type PdfjsModule = typeof pdfjsTypes
 
-let _pdfjsCache: PdfjsModule | null | undefined
-
-async function loadPdfjs(): Promise<PdfjsModule | null> {
-  if (_pdfjsCache !== undefined) return _pdfjsCache
-  try {
-    const mod = await import('pdfjs-dist/legacy/build/pdf.mjs')
-    // esbuild bundles this module's code directly into dist/token-goat.mjs, so pdfjs's
-    // default relative-path guess for its worker script (next to its own file on disk)
-    // resolves to a path inside dist/ that doesn't exist. Point it at the real file in
-    // node_modules instead of letting it guess. import.meta.resolve is unavailable under
-    // Vite/vitest's SSR transform in tests, so skip it there -- Node resolves the
-    // unbundled module's own relative worker path fine outside the built bundle.
-    if (typeof import.meta.resolve === 'function') {
-      try {
-        mod.GlobalWorkerOptions.workerSrc = await import.meta.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')
-      } catch {
-        // best-effort; extraction still works via pdfjs's own fallback resolution
-      }
+const loadPdfjs = createLazyModuleLoader(async () => {
+  const mod = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  // esbuild bundles this module's code directly into dist/token-goat.mjs, so pdfjs's
+  // default relative-path guess for its worker script (next to its own file on disk)
+  // resolves to a path inside dist/ that doesn't exist. Point it at the real file in
+  // node_modules instead of letting it guess. import.meta.resolve is unavailable under
+  // Vite/vitest's SSR transform in tests, so skip it there -- Node resolves the
+  // unbundled module's own relative worker path fine outside the built bundle.
+  if (typeof import.meta.resolve === 'function') {
+    try {
+      mod.GlobalWorkerOptions.workerSrc = await import.meta.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')
+    } catch {
+      // best-effort; extraction still works via pdfjs's own fallback resolution
     }
-    _pdfjsCache = mod
-  } catch (err) {
-    process.stderr.write(`token-goat: pdf-extract disabled (pdfjs-dist unavailable): ${String(err)}\n`)
-    _pdfjsCache = null
   }
-  return _pdfjsCache
-}
+  return mod
+}, 'pdf-extract disabled (pdfjs-dist unavailable)')
 
 /** Parses a 1-indexed inclusive page spec like "1-5" or "3". Returns null (all pages) when unset. */
 export function parsePageRange(spec: string | undefined, pageCount: number): { start: number; end: number } | null {

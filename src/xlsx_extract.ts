@@ -1,10 +1,11 @@
 /**
- * Excel (.xlsx) narrow-slice reader, via ExcelJS (`exceljs` on npm). Follows the
- * loadPdfjs() optional-dependency template: module-level cache, try/catch import, a clear
- * "not installed" error on first real use rather than a crash.
+ * Excel (.xlsx) narrow-slice reader, via ExcelJS (`exceljs` on npm). Uses
+ * `createLazyModuleLoader` (see lazy_module.ts) for the optional-dependency import: cached
+ * lazy load, a clear "not installed" error on first real use rather than a crash.
  */
 
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
+import { createLazyModuleLoader } from './lazy_module.js'
 import { extractErrorMessage } from './util.js'
 
 interface ExcelCell {
@@ -39,19 +40,10 @@ interface ExcelJSModule {
   Workbook: new () => ExcelWorkbook
 }
 
-let _exceljsCache: ExcelJSModule | null | undefined
-
-async function loadExcelJs(): Promise<ExcelJSModule | null> {
-  if (_exceljsCache !== undefined) return _exceljsCache
-  try {
-    const mod = (await import('exceljs')) as unknown as { default?: ExcelJSModule } & ExcelJSModule
-    _exceljsCache = mod.default ?? mod
-  } catch (err) {
-    process.stderr.write(`token-goat: xlsx reading disabled (exceljs package unavailable): ${String(err)}\n`)
-    _exceljsCache = null
-  }
-  return _exceljsCache
-}
+const loadExcelJs = createLazyModuleLoader(async () => {
+  const mod = (await import('exceljs')) as unknown as { default?: ExcelJSModule } & ExcelJSModule
+  return mod.default ?? mod
+}, 'xlsx reading disabled (exceljs package unavailable)')
 
 async function requireExcelJs(): Promise<ExcelJSModule> {
   const mod = await loadExcelJs()

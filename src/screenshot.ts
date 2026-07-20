@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { loadConfig } from './config.js'
 import { shrinkImage } from './image_shrink.js'
+import { createLazyModuleLoader } from './lazy_module.js'
 import { atomicWriteBytes, withExtension } from './util.js'
 
 export interface ScreenshotOptions {
@@ -41,19 +42,10 @@ interface PuppeteerModule {
   launch(opts: { headless: boolean; executablePath: string }): Promise<PuppeteerBrowser>
 }
 
-let _puppeteerCache: PuppeteerModule | null | undefined
-
-async function loadPuppeteer(): Promise<PuppeteerModule | null> {
-  if (_puppeteerCache !== undefined) return _puppeteerCache
-  try {
-    const mod = (await import('puppeteer-core')) as unknown as PuppeteerModule
-    _puppeteerCache = mod
-  } catch (err) {
-    process.stderr.write(`token-goat: screenshot disabled (puppeteer-core unavailable): ${String(err)}\n`)
-    _puppeteerCache = null
-  }
-  return _puppeteerCache
-}
+const loadPuppeteer = createLazyModuleLoader(
+  async () => (await import('puppeteer-core')) as unknown as PuppeteerModule,
+  'screenshot disabled (puppeteer-core unavailable)',
+)
 
 /** Playwright's own Chrome-for-Testing cache directory name changed across versions
  * (`chrome-win` on older installs, `chrome-win64` on current ones) -- probe both. */
