@@ -200,11 +200,39 @@ function extractGo(lines: string[]): FailureResult {
     statsLine: '',
   };
 
+  let inBlock = false;
+  let currentName = '';
+  let currentBody: string[] = [];
+
   for (const line of lines) {
-    const m = GO_FAIL.exec(line.trimEnd());
+    const s = line.trimEnd();
+
+    const m = GO_FAIL.exec(s);
     if (m) {
-      result.blocks.push({ name: m[1]!, body: line.trimEnd() });
+      if (inBlock && currentName) {
+        result.blocks.push({ name: currentName, body: currentBody.join('\n') });
+      }
+      currentName = m[1]!;
+      currentBody = [s];
+      inBlock = true;
+      continue;
     }
+
+    if (inBlock) {
+      // A bare FAIL/PASS/ok summary line (unindented) closes the block
+      if (/^(FAIL|PASS|ok)(\s|$)/.test(s)) {
+        result.blocks.push({ name: currentName, body: currentBody.join('\n') });
+        inBlock = false;
+        currentName = '';
+        currentBody = [];
+      } else {
+        currentBody.push(s);
+      }
+    }
+  }
+
+  if (inBlock && currentName) {
+    result.blocks.push({ name: currentName, body: currentBody.join('\n') });
   }
 
   return result;

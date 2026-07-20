@@ -87,6 +87,7 @@ FAIL
       expect(result.runner).toBe('go');
       expect(result.blocks.length).toBeGreaterThan(0);
       expect(result.blocks[0]?.name).toContain('TestExample');
+      expect(result.blocks[0]?.body).toContain('main_test.go:15: assertion failed');
     });
 
     it('should detect go runner from pattern', () => {
@@ -94,6 +95,28 @@ FAIL
       const result = extractFailures(output);
       expect(result.runner).toBe('go');
       expect(result.blocks.length).toBe(2);
+    });
+
+    it('should capture multi-line bodies for multiple go failures', () => {
+      const output = `
+--- FAIL: TestOne (0.00s)
+        one_test.go:10: message one
+--- FAIL: TestTwo (0.00s)
+        two_test.go:20: message two
+FAIL
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('go');
+      expect(result.blocks.length).toBe(2);
+
+      const one = result.blocks.find((b) => b.name === 'TestOne');
+      const two = result.blocks.find((b) => b.name === 'TestTwo');
+
+      expect(one?.body).toContain('one_test.go:10: message one');
+      expect(one?.body).not.toContain('two_test.go:20: message two');
+
+      expect(two?.body).toContain('two_test.go:20: message two');
+      expect(two?.body).not.toContain('one_test.go:10: message one');
     });
   });
 
