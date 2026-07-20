@@ -195,8 +195,13 @@ export function resetTransientRetryCount(absPath: string, dbPath: string = globa
 }
 
 /** Absolute path to the dirty queue file for `dir`. */
-function dirtyQueuePathFor(dir: string): string {
+export function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
+}
+
+/** Absolute path to the drain-heartbeat marker for `dir`, touched at the end of every `drainOnce` cycle (whether or not anything was processed) so a doctor check can distinguish "worker process alive" from "worker actually still draining" -- a deadlocked or wedged loop keeps its pid alive without ever reaching the touch below. */
+export function drainHeartbeatPathFor(dir: string): string {
+  return path.join(dir, 'queue', 'drain-heartbeat')
 }
 
 /**
@@ -770,6 +775,14 @@ export function drainOnce(
 
   // Now that both stages above have finished claiming/processing their batches for this cycle, it is safe to actually append this cycle's transient-failure requeues to the live queue -- see deferredRequeues' doc comment above for why this must happen last.
   for (const p of deferredRequeues) appendToDirtyQueue(dir, p)
+
+  // Touch the heartbeat marker last, unconditionally -- see drainHeartbeatPathFor's doc comment. Best-effort: a failed write here must not fail the drain cycle itself.
+  try {
+    fs.mkdirSync(path.dirname(drainHeartbeatPathFor(dir)), { recursive: true })
+    fs.writeFileSync(drainHeartbeatPathFor(dir), '')
+  } catch {
+    // best-effort
+  }
 
   return processed
 }
