@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, hookCommandFor } from '../util.js'
+import { hookCommandFor, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
@@ -147,21 +147,6 @@ function buildConfig(scriptPath: string): CopilotCliConfig {
     ]
   }
   return { version: 1, hooks }
-}
-
-/** Writes `content` to `p` only if it differs from what's already on disk; returns whether a write happened. */
-function writeIfDifferent(p: string, content: string, backup = false): boolean {
-  let existing: string | undefined
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    existing = undefined
-  }
-  if (existing === content) return false
-  if (backup) backupFile(p)
-  ensureDirSync(path.dirname(p))
-  atomicWriteText(p, content)
-  return true
 }
 
 export interface CopilotCliInstallResult {

@@ -65,7 +65,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, hookCommandFor } from '../util.js'
+import { hookCommandFor, writeIfDifferent } from '../util.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 
 /** Grok's own hook event keys that token-goat wires -- mirrors `../install.ts`'s `HOOK_EVENT_MAP`. */
@@ -118,21 +118,6 @@ function buildConfig(scriptPath: string): GrokHookConfig {
     ]
   }
   return { hooks }
-}
-
-/** Writes `content` to `p` only if it differs from what's already on disk; returns whether a write happened. */
-function writeIfDifferent(p: string, content: string, backup = false): boolean {
-  let existing: string | undefined
-  try {
-    existing = fs.readFileSync(p, 'utf8')
-  } catch {
-    existing = undefined
-  }
-  if (existing === content) return false
-  if (backup) backupFile(p)
-  ensureDirSync(path.dirname(p))
-  atomicWriteText(p, content)
-  return true
 }
 
 /** Outcome of an {@link installGrok} call. */
