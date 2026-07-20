@@ -435,6 +435,30 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('/rustc/')
   })
 
+  it('skips a numbered backtrace frame with no `at <file>:<line>:<col>` continuation instead of aborting the whole scan (regression: a location-less frame -- normal for std/core frames compiled without debug info -- used to break the loop entirely and silently drop every deeper frame after it)', () => {
+    const withLocationlessFrame = [
+      "thread 'main' panicked at src/main.rs:10:5:",
+      'boom',
+      'stack backtrace:',
+      '   0: rust_begin_unwind',
+      '             at /rustc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/library/std/src/panicking.rs:665:5',
+      '   1: my_crate::helper',
+      '             at src/helper.rs:20:9',
+      // No `at ...` continuation for this frame -- a real, common shape for std/core frames.
+      '   2: core::ops::function::FnOnce::call_once',
+      '   3: my_crate::main',
+      '             at src/main.rs:10:5',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: withLocationlessFrame, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string; lineNo: number; func: string }> }> }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    // Pre-fix: the loop broke on frame 2's missing `at` line, so frame 3 (my_crate::main) was
+    // silently dropped -- only frames 0 and 1 would be present here.
+    expect(frames.map((f) => f.func)).toContain('my_crate::main')
+    expect(frames.find((f) => f.func === 'my_crate::main')).toMatchObject({ file: 'src/main.rs', lineNo: 10 })
+  })
+
   it('filters a Cargo-registry dependency frame via isProjectFrame', () => {
     const withDep = [
       "thread 'main' panicked at src/main.rs:10:5:",

@@ -349,7 +349,11 @@ function parseRustBlock(lines: string[], start: number): TraceParseResult | null
       const numMatch = RUST_BACKTRACE_NUM_RE.exec(lines[i] ?? '')
       if (numMatch === null) break
       const atMatch = RUST_BACKTRACE_AT_RE.exec(lines[i + 1] ?? '')
-      if (atMatch === null) break
+      if (atMatch === null) {
+        // A numbered frame with no `at <file>:<line>:<col>` continuation is normal in real Rust backtraces (e.g. std/core frames compiled without location metadata) and can appear anywhere in the trace, not just at the end -- skip just this one frame and keep scanning, rather than aborting the whole backtrace and silently dropping every deeper (often more diagnostically relevant, project-level) frame after it.
+        i += 1
+        continue
+      }
       frames.push({ file: atMatch[1] ?? '', lineNo: Number.parseInt(atMatch[2] ?? '0', 10), func: (numMatch[1] ?? '').trim() })
       i += 2
     }
