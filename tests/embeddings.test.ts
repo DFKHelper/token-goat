@@ -306,6 +306,10 @@ describe('embeddings module', () => {
       expect(chunks[0].startLine).toBe(1)
       expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
       expect(chunks.map((c) => c.text).join('\n')).toContain('const E = 5')
+      // Must actually take the boundary-merging path (single-line start===end boundaries kept,
+      // not silently filtered out and falling back to plain window splitting - a fallback would
+      // still satisfy the loose assertions above without proving boundary merging ran at all).
+      expect(chunks.every((c) => c.kind === 'const')).toBe(true)
     })
 
     it('clips a partially-overlapping boundary to start after the previously-accepted boundary instead of dropping it', () => {
@@ -327,6 +331,46 @@ describe('embeddings module', () => {
         [5, 15],
         [16, 30], // second boundary clipped to start right after the first boundary's end (15), keeping its own 'symbol' kind
       ])
+    })
+
+    it('collapses two boundaries sharing the same start line to the outer (longer) one, not the inner one (regression: sort tie-break must be longest-first)', () => {
+      const contentLines = Array(20)
+        .fill(0)
+        .map((_, i) => `line ${i + 1} padding text to make each range clearly distinguishable`)
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 1, end: 20, kind: 'class' }, // outer boundary, e.g. a class
+        { start: 1, end: 5, kind: 'method' }, // inner boundary starting on the same line, e.g. a same-line method
+      ]
+
+      const chunks = embeddings.chunkFile('samestart.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
+
+      // The inner boundary is fully nested in the outer one and must be dropped entirely,
+      // leaving exactly one chunk covering the whole outer range tagged with the outer kind.
+      expect(chunks.length).toBe(1)
+      expect(chunks[0].kind).toBe('class')
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[0].endLine).toBe(20)
+    })
+
+    it('clamps sub-split overlap to the boundary\'s own rangeStart instead of bleeding into the preceding, differently-tagged range', () => {
+      const linesA = Array(5).fill(0).map((_, i) => `AAAA line ${i + 1}`)
+      const linesB = Array(50).fill(0).map((_, i) => `BBBB line ${i + 1} padding text padding text padding`)
+      const contentLines = [...linesA, ...linesB]
+      const content = contentLines.join('\n')
+      const boundaries: embeddings.ChunkBoundary[] = [
+        { start: 1, end: 5, kind: 'A' },
+        { start: 6, end: contentLines.length, kind: 'B' }, // oversized, gets sub-split with overlap
+      ]
+
+      const chunks = embeddings.chunkFile('overlapclamp.ts', content, 100, 200, boundaries)
+
+      for (const c of chunks) {
+        if (c.kind === 'B') {
+          expect(c.startLine).toBeGreaterThanOrEqual(6) // never dips back into A's lines (1-5)
+          expect(c.text).not.toContain('AAAA')
+        }
+      }
     })
   })
 
