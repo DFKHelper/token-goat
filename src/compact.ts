@@ -11,6 +11,7 @@ import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
+import { stripAnsiCodes } from './bash_compress.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
 
@@ -161,10 +162,13 @@ class Counter<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * Rough token estimate: ~3 chars/token (conservative vs. the true 3.5 ratio).
+ * Rough token estimate: ~3 chars/token (conservative vs. the true 3.5 ratio). Strips ANSI color
+ * codes before counting (matches overflow_guard.ts's estimateTokens) so colored bash/tool output
+ * embedded in transcripts and briefings doesn't inflate the estimate.
  */
 export function estimateTokens(text: string): number {
-  return Math.max(1, Math.floor(text.length / 3) + 1)
+  const stripped = stripAnsiCodes(text)
+  return Math.max(1, Math.floor(stripped.length / 3) + 1)
 }
 
 /**
