@@ -29,7 +29,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { anchoredMarkerPattern } from '../install.js'
-import { stripOwnHooksFromMap, writeJsonSettings } from '../util.js'
+import { stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 // Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS).
 // Only these five have a token-goat handler; every other real Qwen Code
@@ -169,16 +169,7 @@ export function installQwen(): QwenInstallResult {
     }
 
     // A stale entry (legacy bare command, or a same-shape command whose baked entry path is otherwise not current) is not "already installed" -- strip it before writing the current command, so a re-install upgrades in place instead of leaving a dead duplicate.
-    const groups: QwenMatcherGroup[] = []
-    for (const group of existingGroups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => !isQwenTokenGoatCommand(h.command))
-      if (keptHooks.length > 0) {
-        groups.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
-        // A group that had no hooks to begin with is user data; preserve it.
-        groups.push(group)
-      }
-    }
+    const groups: QwenMatcherGroup[] = stripStaleGroupHooks(existingGroups, isQwenTokenGoatCommand)
     groups.push({ matcher: '', hooks: [{ type: 'command', command }] })
     hooks[event] = groups
     changed = true

@@ -69,7 +69,7 @@ import * as path from 'node:path'
 
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
-import { extractErrorMessage, stripOwnHooksFromMap, writeJsonSettings } from '../util.js'
+import { extractErrorMessage, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
 
 /**
  * Marker substring identifying a legacy (pre exec-path-hardening) bare
@@ -345,20 +345,7 @@ export function installGemini(): GeminiInstallResult {
       // baked entry path is otherwise not current) is not "already installed"
       // -- strip it before writing the current command, so a re-install
       // upgrades in place instead of leaving a dead duplicate.
-      const nextGroups: GeminiMatcherGroup[] = []
-      for (const group of groups) {
-        if (group.matcher !== matcher) {
-          nextGroups.push(group)
-          continue
-        }
-        const keptHooks = (group.hooks ?? []).filter((h) => !isGeminiTokenGoatCommand(h.command))
-        if (keptHooks.length > 0) {
-          nextGroups.push({ ...group, hooks: keptHooks })
-        } else if ((group.hooks ?? []).length === 0) {
-          // A group that had no hooks to begin with is user data; preserve it.
-          nextGroups.push(group)
-        }
-      }
+      const nextGroups = stripStaleGroupHooks(groups, isGeminiTokenGoatCommand, { matcher })
       groups.length = 0
       groups.push(...nextGroups)
 
