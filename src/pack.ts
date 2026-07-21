@@ -3,6 +3,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as minimatch from 'minimatch'
+import { estimateTokens } from './overflow_guard.js'
 
 const LANG_MAP: Record<string, string> = {
   '.py': 'python',
@@ -76,10 +77,6 @@ export interface BudgetResult {
   skipped: string[]
   total_lines: number
   total_tokens: number
-}
-
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.floor(text.length / 4))
 }
 
 function getLang(filePath: string): string {

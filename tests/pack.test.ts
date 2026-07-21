@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget, formatBudgetText } from '../src/pack.js'
+import { estimateTokens as sharedEstimateTokens } from '../src/overflow_guard.js'
 
 // Capability probe: creating a real symlink on Windows requires either an
 // elevated shell or Developer Mode. Run it once at module load so the suite
@@ -304,6 +305,20 @@ describe('symlink escape guard', () => {
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('collectFiles token estimation matches the shared ratio', () => {
+  it('uses the same chars-per-token ratio as overflow_guard.estimateTokens instead of its own drifted one', () => {
+    // A 25%-lighter local ratio (chars/4 instead of chars/3) would silently let
+    // `token-goat pack --budget N` admit content the rest of the codebase considers
+    // over-budget, since cmdPack's budget gate compares against this same field.
+    const content = 'x'.repeat(300)
+    fs.writeFileSync(path.join(TMP, 'sample.ts'), content)
+    const result = collectFiles(TMP, ['sample.ts'])
+    const pf = result.files[0]
+    expect(pf).toBeDefined()
+    expect(pf!.tokens).toBe(sharedEstimateTokens(content))
   })
 })
 
