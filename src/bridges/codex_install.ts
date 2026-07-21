@@ -52,7 +52,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 
@@ -275,20 +275,7 @@ export function installCodex(): CodexInstallResult {
       // version switch) is not "already installed" -- strip it before writing
       // the current command, so a re-install upgrades in place instead of
       // leaving a dead, unreachable entry next to nothing.
-      const nextGroups: CodexMatcherGroup[] = []
-      for (const group of groups) {
-        if (group.matcher !== matcher) {
-          nextGroups.push(group)
-          continue
-        }
-        const keptHooks = (group.hooks ?? []).filter((h) => !isCodexTokenGoatCommand(h.command))
-        if (keptHooks.length > 0) {
-          nextGroups.push({ ...group, hooks: keptHooks })
-        } else if ((group.hooks ?? []).length === 0) {
-          // A group that had no hooks to begin with is user data; preserve it.
-          nextGroups.push(group)
-        }
-      }
+      const nextGroups = stripStaleGroupHooks(groups, isCodexTokenGoatCommand, { matcher })
       groups.length = 0
       groups.push(...nextGroups)
 
@@ -310,15 +297,7 @@ export function installCodex(): CodexInstallResult {
 
     // Same stale-entry handling as the matcher loop above: strip any
     // outdated token-goat entry before writing the current command.
-    const nextGroups: CodexMatcherGroup[] = []
-    for (const group of groups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => !isCodexTokenGoatCommand(h.command))
-      if (keptHooks.length > 0) {
-        nextGroups.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
-        nextGroups.push(group)
-      }
-    }
+    const nextGroups = stripStaleGroupHooks(groups, isCodexTokenGoatCommand)
     nextGroups.push({ hooks: [{ type: 'command', command: expectedCommand }] })
     hooks[event] = nextGroups
     hooksChanged = true

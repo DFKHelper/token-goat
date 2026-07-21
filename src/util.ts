@@ -530,6 +530,48 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
   return removed
 }
 
+/** {@link MatcherGroupLike} plus the optional `matcher` field {@link stripStaleGroupHooks} needs. */
+interface MatcherGroupWithMatcher<H extends HookEntryLike> extends MatcherGroupLike<H> {
+  readonly matcher?: string
+}
+
+/**
+ * Shared by codex_install.ts, gemini_install.ts, and qwen_install.ts's install functions: given
+ * one hook event's existing matcher groups, strip out any stale token-goat hook entry (legacy
+ * bare command, or a same-shape command whose baked entry path is no longer current) so a
+ * re-install upgrades in place instead of leaving a dead duplicate. When `matcherFilter` is
+ * provided, only groups whose `matcher` field strictly equals `matcherFilter.matcher` (which may
+ * itself be `undefined`, for matcher-less groups) are filtered; other groups pass through
+ * untouched -- this matches codex/gemini's per-matcher install loop. When `matcherFilter` is
+ * omitted entirely, every group is filtered regardless of its `matcher` field -- this matches
+ * qwen's single catch-all group and codex's matcher-less global-event loop. The wrapper object
+ * (rather than a bare `matcher?: string` param) is what lets "no restriction" and "restrict to
+ * groups whose matcher is undefined" be expressed as two distinct calls. A group survives
+ * filtering if it still has non-token-goat hooks left, OR if it started with zero hooks (an
+ * empty group is user data token-goat never wrote, so it's preserved). Does not mutate `groups`;
+ * returns the filtered array for the caller to push the fresh entry onto.
+ */
+export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherGroupWithMatcher<H>>(
+  groups: readonly G[],
+  isOurs: (command: string) => boolean,
+  matcherFilter?: { readonly matcher: string | undefined },
+): G[] {
+  const next: G[] = []
+  for (const group of groups) {
+    if (matcherFilter !== undefined && group.matcher !== matcherFilter.matcher) {
+      next.push(group)
+      continue
+    }
+    const keptHooks = (group.hooks ?? []).filter((h) => !isOurs(h.command))
+    if (keptHooks.length > 0) {
+      next.push({ ...group, hooks: keptHooks })
+    } else if ((group.hooks ?? []).length === 0) {
+      next.push(group)
+    }
+  }
+  return next
+}
+
 /**
  * Shared by install.ts's `stripClaudeMdBlock` and codex_install.ts's `stripAgentsBlock`:
  * remove a delimited block (everything from `beginMarker` through the end of `endMarker`,
