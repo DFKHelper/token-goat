@@ -41,6 +41,7 @@ let prevHome: string | undefined
 let prevHarnessOverride: string | undefined
 let stdoutLines: string[]
 let writeSpy: ReturnType<typeof vi.spyOn>
+let consoleLogSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
@@ -56,10 +57,17 @@ beforeEach(() => {
     stdoutLines.push(String(chunk))
     return true
   })
+  // Some command paths (e.g. renderShortStats's zero-events branch) emit via console.log rather
+  // than process.stdout.write directly; Vitest's worker pool intercepts console.* separately from
+  // process.stdout, so capturedOutput() would silently miss that text without this second spy.
+  consoleLogSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    stdoutLines.push(args.map((a) => String(a)).join(' ') + '\n')
+  })
 })
 
 afterEach(() => {
   writeSpy.mockRestore()
+  consoleLogSpy.mockRestore()
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
   if (prevHarnessOverride === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
@@ -731,7 +739,7 @@ describe('cmdSessionSummary', () => {
 describe('cmdCost', () => {
   it('exits cleanly (delegates to runStats)', () => {
     cmdCost({})
-    expect(capturedOutput().length).toBeGreaterThanOrEqual(0)
+    expect(capturedOutput()).toContain('No stats recorded yet.')
   })
 
   it('with --session reports no session data when empty', () => {
