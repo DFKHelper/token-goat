@@ -988,6 +988,35 @@ describe('BanditFilter output', () => {
     expect(out).not.toContain('return password')
     expect(out.toLowerCase()).toMatch(/collapsed|low/)
   })
+
+  it('does not leak the closing separator line from a collapsed LOW severity issue', () => {
+    const lowIssueWithContext =
+      '>> Issue: [B105:hardcoded_password_string] Possible hardcoded password.\n' +
+      '   Severity: Low   Confidence: Medium\n' +
+      '   CWE: CWE-259\n' +
+      '   Location: ./app.py:12:8\n' +
+      '11\tdef foo():\n' +
+      '12\t    password = "hunter2"\n' +
+      '13\t    return password\n' +
+      '--------------------------------------------------\n'
+    const out = apply(f, banditOutput([lowIssueWithContext]), argv)
+    expect(out).not.toContain('--------------------------------------------------')
+  })
+
+  it('does not duplicate the closing separator line for a kept HIGH severity issue', () => {
+    const issueWithContext =
+      '>> Issue: [B301:unsafe_serialize] Unsafe deserialization detected.\n' +
+      '   Severity: High   Confidence: Medium\n' +
+      '   CWE: CWE-502\n' +
+      '   Location: src/load.py:10:4\n' +
+      '9\tdef load(data):\n' +
+      '10\t    return pickle.loads(data)\n' +
+      '11\t\n' +
+      '--------------------------------------------------\n'
+    const out = apply(f, banditOutput([issueWithContext]), argv)
+    const sepCount = (out.match(/-{10,}/g) ?? []).length
+    expect(sepCount).toBe(1)
+  })
 })
 
 // ---------------------------------------------------------------------------
