@@ -1631,6 +1631,23 @@ describe('preBashHandler — curl GET recall', () => {
     expect(result.hookType).toBe('rewriteInput')
   })
 
+  it('never caches (nor recalls) a curl GET carrying an Authorization header, in either -H or --header spelling', async () => {
+    const largeOutput = '{"user":"me"}'.repeat(200)
+    for (const cmd of [
+      "curl -s -H 'Authorization: Bearer token123' https://api.example.com/me",
+      "curl -s --header 'Authorization: Bearer token123' https://api.example.com/me",
+    ]) {
+      clearModuleCaches()
+      await postBashHandler(makePostBashEvent(cmd, largeOutput))
+      const result = preBashHandler(makeBashEvent(cmd))
+      // rewriteInput (first-run compression wrap) is fine; a 'context' recall hint containing
+      // 'curl response cached' would mean the credential-carrying command got persisted.
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('curl response cached')
+      }
+    }
+  })
+
   it('wraps curl with -u credentials (CurlFilter registered)', async () => {
     const cmd = 'curl -s -u admin:password https://api.example.com/admin'
     const largeOutput = '{"admin":true}'.repeat(200)
@@ -2683,6 +2700,12 @@ describe('gh api recall (F4)', () => {
 
   it('does not cache a gh api carrying an Authorization header (avoids persisting a credential)', async () => {
     const cmd = 'gh api repos/octocat/hello -H "Authorization: Bearer ghp_x"'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache a gh api carrying an Authorization header via the long --header spelling', async () => {
+    const cmd = 'gh api repos/octocat/hello --header "Authorization: Bearer ghp_x"'
     await postBashHandler(makePostBashEvent(cmd, bigBody))
     expect(ghRecalled(cmd)).toBe(false)
   })

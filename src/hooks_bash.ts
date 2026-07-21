@@ -829,9 +829,12 @@ function curlHasUnsafeFlags(cmd: string): boolean {
   if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
   // Request body (implies non-GET)
   if (/(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return true
-  // Auth credentials — skip caching to avoid leaking tokens into the output store
+  // Auth credentials — skip caching to avoid leaking tokens into the output store. The header
+  // check covers both curl's short (-H) and long (--header) spellings — the long form was
+  // previously unmatched, so `curl --header 'Authorization: ...' <url>` slipped past this guard
+  // and got cached (and recall-hinted) with the credential embedded in the stored command string.
   if (/(?:^|\s)(?:-u|--user)\b/.test(cmd)) return true
-  if (/-H\s+['"]?Authorization/i.test(cmd)) return true
+  if (/(?:-H|--header)\s+['"]?Authorization/i.test(cmd)) return true
   return false
 }
 
@@ -855,7 +858,7 @@ function isCurlGetCommand(cmd: string): boolean {
 function isReadOnlyGhApi(cmd: string): boolean {
   if (!/^gh\s+api\b/.test(cmd)) return false
   if (/\bgraphql\b/.test(cmd)) return false
-  if (/-H\s+['"]?Authorization/i.test(cmd)) return false
+  if (/(?:-H|--header)\s+['"]?Authorization/i.test(cmd)) return false
   if (/(?:-X|--method)\s+GET\b/i.test(cmd)) return true
   if (/(?:-X|--method)\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/i.test(cmd)) return false
   if (/\s(?:-f|-F|--field|--raw-field|--input)\b/.test(cmd)) return false
