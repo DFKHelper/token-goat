@@ -1299,9 +1299,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const catJsonPipe = extractCatJsonPipe(cmd)
   if (catJsonPipe !== null) {
     const { filePath } = catJsonPipe
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      '`cat | jq` loads the whole file. Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to slice one value.',
+      '`cat | jq` loads the whole file. Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to slice one value.',
     )
   }
 
@@ -1386,29 +1387,33 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = tailResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
+    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = headResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
+    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
 
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = gcTailResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
     const { filePath, isDoc, isConfig, isSql } = gcSelectResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
+    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(hintPath, isConfig, isDoc, isSql))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
@@ -1438,10 +1443,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const mdHeadingGrep = extractMarkdownHeadingGrep(cmd)
   if (mdHeadingGrep !== null) {
     const { filePath } = mdHeadingGrep
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Use `token-goat outline "' + filePath + '"` to get all headings with line ranges — ' +
-      'then `token-goat section "' + filePath + '::Heading"` to read one section.',
+      'Use `token-goat outline "' + hintPath + '"` to get all headings with line ranges — ' +
+      'then `token-goat section "' + hintPath + '::Heading"` to read one section.',
     )
   }
 
@@ -1458,11 +1464,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const rgStructural = extractRgStructuralSearch(cmd)
   if (rgStructural !== null) {
     const { filePath } = rgStructural
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Searching for code definitions with `rg`/`grep` is slower than surgical reads. ' +
-      'Use `token-goat skeleton "' + filePath + '"` to see all symbols with line numbers, ' +
-      'or `token-goat outline "' + filePath + '"` for symbols with docstrings and line ranges.'
+      'Use `token-goat skeleton "' + hintPath + '"` to see all symbols with line numbers, ' +
+      'or `token-goat outline "' + hintPath + '"` for symbols with docstrings and line ranges.'
     )
   }
 

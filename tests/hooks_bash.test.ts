@@ -384,6 +384,16 @@ describe('preBashHandler — cd-prefix stripping', () => {
       expect(result.context).toContain(expectedPath)
     }
   })
+
+  it('resolves the hint path against the cd target directory for tail, not the bare post-strip path (regression: tail/head/Get-Content -Tail/-Select-Object -First/cat|jq/markdown-heading-grep/rg-structural hints never applied resolveCdHintPath while cat/pyRead/nodeRead did, so a cd-prefixed tail suggested a path relative to the wrong directory)', () => {
+    const result = preBashHandler(makeBashEvent('cd subdir && tail -n 30 file.py', '/repo'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('"file.py::')
+      const expectedPath = resolveIndexPath('file.py', resolveIndexPath('subdir', '/repo'))
+      expect(result.context).toContain(expectedPath)
+    }
+  })
 })
 
 describe('preBashHandler — cat source file recall', () => {
