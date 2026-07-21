@@ -74,6 +74,13 @@ describe('compact', () => {
       expect(estimateTokens('ab')).toBe(1) // 2/3 = 0, + 1 = 1
       expect(estimateTokens('abcd')).toBe(2) // 4/3 = 1, + 1 = 2
     })
+
+    it('strips ANSI color codes before counting, matching overflow_guard.ts', () => {
+      const plain = 'abcdefghij'
+      const colored = `\x1b[31m${plain}\x1b[0m`
+      // Without stripping, the escape sequences would inflate the estimate well past the plain-text count.
+      expect(estimateTokens(colored)).toBe(estimateTokens(plain))
+    })
   })
 
   describe('tierForFraction', () => {
