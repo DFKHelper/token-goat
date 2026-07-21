@@ -174,14 +174,23 @@ const DIFF_GIT_HEADER_RE = /^diff --git a\/(.+) b\/(.+)$/
 
 /** Extracts just the diff block for one file (`diff --git a/<path> b/<path>` through the next
  * such header, or end of text) out of a full unified diff produced by `gh pr diff`. Returns
- * null when no block matches the given path. */
+ * null when no block matches the given path.
+ *
+ * `git`'s diff headers always use forward slashes, even for a Windows repo (git's internal path
+ * representation is POSIX-style regardless of platform), but `filePath` here is a raw CLI
+ * argument that a Windows user may naturally type with backslashes (e.g. pasted from Explorer,
+ * or copied from another token-goat command's backslash-normalized output). Without converting
+ * backslashes to forward slashes before comparing, that never-matches the header and every
+ * `diff:src\foo.ts`-style invocation silently reports "No diff found" even though the file is
+ * genuinely in the diff. */
 export function extractFileDiff(diffText: string, filePath: string): string | null {
+  const wantPath = filePath.replace(/\\/g, '/')
   const lines = diffText.split(/\r?\n/)
   let start = -1
   for (let i = 0; i < lines.length; i++) {
     const m = DIFF_GIT_HEADER_RE.exec(lines[i] ?? '')
     if (m === null) continue
-    if (m[1] === filePath || m[2] === filePath) {
+    if (m[1] === wantPath || m[2] === wantPath) {
       start = i
       break
     }
