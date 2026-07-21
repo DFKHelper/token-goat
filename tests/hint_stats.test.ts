@@ -277,6 +277,25 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.acted_on).toBe(0)
   })
 
+  it('resolves exactly on the ACTED_ON_WINDOW-th unrelated call, not one call earlier or later', () => {
+    const n = nonce()
+    logHintEmission('bash_redirect', n, 'C:/repo/file.ts')
+    // ACTED_ON_WINDOW is 5 (see the module doc comment) -- 4 unrelated calls must leave the row
+    // pending (calls_remaining decrements to 1, not 0), and the 5th must be the one that flips it
+    // to resolved. A `calls_remaining < 0` off-by-one would instead require a 6th call.
+    for (let i = 0; i < 4; i++) {
+      resolvePendingHintsForEvent(readEvent(n, `C:/repo/unrelated-${i}.ts`))
+    }
+    const db = getDb(globalDbPath())
+    let row = db.prepare('SELECT resolved, calls_remaining FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; calls_remaining: number }
+    expect(row.resolved).toBe(0)
+    expect(row.calls_remaining).toBe(1)
+
+    resolvePendingHintsForEvent(readEvent(n, 'C:/repo/unrelated-4.ts'))
+    row = db.prepare('SELECT resolved, calls_remaining FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; calls_remaining: number }
+    expect(row.resolved).toBe(1)
+  })
+
   it('does not resolve pending hints from a different session', () => {
     const n = nonce()
     const other = nonce()
