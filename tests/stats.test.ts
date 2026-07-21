@@ -78,6 +78,11 @@ describe('stats', () => {
       expect(kindToSource('unknown_kind')).toBe(SOURCE_OTHER)
       expect(kindToSource('future_kind_v2')).toBe(SOURCE_OTHER)
     })
+
+    it('maps the imports kind to SOURCE_READ, mirroring its exports sibling', () => {
+      expect(kindToSource('exports')).toBe(SOURCE_READ)
+      expect(kindToSource('imports')).toBe(SOURCE_READ)
+    })
   })
 
   describe('summarize', () => {
@@ -358,6 +363,43 @@ describe('stats', () => {
         expect(sectionCmd.tokens_saved).toBe(100)
         expect(sectionCmd.bytes_saved).toBe(400)
       }
+    })
+
+    it('groups imports kind under the imports command bucket, mirroring exports', () => {
+      const dbPath = path.join(tempDir, 'test-imports.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+
+      const now = Math.floor(Date.now() / 1000)
+      const insert = db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      )
+      insert.run(now, 'imports', 60, 240)
+
+      const summary = summarize(30, db)
+      db.close()
+
+      const importsCmd = summary.by_command.find((r) => r.command === 'imports')
+      expect(importsCmd).toBeDefined()
+      if (importsCmd) {
+        expect(importsCmd.events).toBe(1)
+        expect(importsCmd.tokens_saved).toBe(60)
+        expect(importsCmd.bytes_saved).toBe(240)
+      }
+
+      expect(summary.by_source[SOURCE_READ]).toBeDefined()
+      expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
     })
 
     it('handles NULL bytes_saved and tokens_saved', () => {
