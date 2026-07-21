@@ -1471,9 +1471,21 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'j.txt')
       fs.writeFileSync(f, 'match this line')
       const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, json: true }) })
-      const parsed = JSON.parse(stdout) as Array<{ file: string; line: number; text: string }>
-      expect(Array.isArray(parsed)).toBe(true)
-      expect(parsed[0]?.text).toContain('match')
+      const parsed = JSON.parse(stdout) as { items: Array<{ file: string; line: number; text: string }>; truncated: boolean; totalCount: number }
+      expect(Array.isArray(parsed.items)).toBe(true)
+      expect(parsed.items[0]?.text).toContain('match')
+      expect(parsed.truncated).toBe(false)
+      expect(parsed.totalCount).toBe(1)
+    })
+
+    it('surfaces truncated:true and the real totalCount in JSON mode when hits exceed --max-lines', () => {
+      const f = path.join(tempDir, 'jtrunc.txt')
+      fs.writeFileSync(f, 'needle\nneedle\nneedle\nneedle')
+      const { stdout } = capture(() => { runGrep({ pattern: 'needle', path: f, maxLines: 2, json: true }) })
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.items).toHaveLength(2)
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(4)
     })
 
     it('matches a $-anchored pattern on CRLF line endings (M3)', () => {
@@ -1532,9 +1544,9 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'context.txt')
       fs.writeFileSync(f, 'match line\nline2\nline3\nline4\nline5')
       const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, context: 2, json: true }) })
-      const parsed = JSON.parse(stdout) as Array<{ file: string; line: number; text: string; context?: Array<{ line: number; text: string }> }>
-      expect(parsed).toHaveLength(1)
-      const hit = parsed[0]
+      const parsed = JSON.parse(stdout) as { items: Array<{ file: string; line: number; text: string; context?: Array<{ line: number; text: string }> }> }
+      expect(parsed.items).toHaveLength(1)
+      const hit = parsed.items[0]
       // Match is on line 1 -- there are no lines above it, so context is clamped to
       // start at line 1 instead of extending to a nonexistent line -1.
       expect(hit?.context?.map((c) => c.line)).toEqual([1, 2, 3])
@@ -1556,8 +1568,8 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'nocontext.txt')
       fs.writeFileSync(f, 'plain match line')
       const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, json: true }) })
-      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>
-      expect(parsed[0]).not.toHaveProperty('context')
+      const parsed = JSON.parse(stdout) as { items: Array<Record<string, unknown>> }
+      expect(parsed.items[0]).not.toHaveProperty('context')
     })
   })
 
