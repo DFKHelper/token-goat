@@ -364,6 +364,23 @@ describe('sqlite_query', () => {
       expect(() => runReadOnlySqliteQuery(dbPath, 'SELECT FROM WHERE')).toThrow(/invalid SQL/)
     })
 
+    it('returns a 64-bit integer beyond Number.MAX_SAFE_INTEGER as an exact decimal string, not a silently rounded number', () => {
+      const db = new Database(dbPath)
+      db.exec('CREATE TABLE big (id INTEGER PRIMARY KEY, v INTEGER)')
+      db.prepare('INSERT INTO big (id, v) VALUES (1, ?)').run(9223372036854775807n)
+      db.close()
+
+      const result = runReadOnlySqliteQuery(dbPath, 'SELECT v FROM big WHERE id = 1')
+      // The naive (non-safe-integer) read would silently corrupt this to 9223372036854776000.
+      expect(result.rows[0]?.v).toBe('9223372036854775807')
+    })
+
+    it('still returns an in-range integer as a plain JS number, not a bigint or string', () => {
+      const result = runReadOnlySqliteQuery(dbPath, 'SELECT id FROM users WHERE id = 1')
+      expect(result.rows[0]?.id).toBe(1)
+      expect(typeof result.rows[0]?.id).toBe('number')
+    })
+
     it('throws a clean error for a query against a nonexistent table', () => {
       expect(() => runReadOnlySqliteQuery(dbPath, 'SELECT * FROM nope')).toThrow(/invalid SQL/)
     })
