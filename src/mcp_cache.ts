@@ -107,8 +107,8 @@ export function storeMcpOutput(
   resultText: string,
 ): string | null {
   if (!sessionId || !resultText) return null
-  const sizeBytes = Buffer.byteLength(resultText, 'utf-8')
-  if (sizeBytes > MCP_MAX_CACHE_BYTES) return null
+  const rawSizeBytes = Buffer.byteLength(resultText, 'utf-8')
+  if (rawSizeBytes > MCP_MAX_CACHE_BYTES) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
   const label = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
   // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
@@ -123,7 +123,13 @@ export function storeMcpOutput(
     output: redactedOutput,
     exitCode: 0,
     storedAt: Date.now(),
-    sizeBytes,
+    // Sized off the redacted output, not the raw pre-redaction resultText (rawSizeBytes is only
+    // the cache-eligibility gate above) -- mirrors bash_output_cache.ts's storeBashOutput, whose
+    // sizeBytes is likewise computed from redactedOutput. Sizing off the raw text here left
+    // mcp-audit's per-call token estimate and `mcp-history`'s byte column reporting a stale byte
+    // count for any entry a secret was actually stripped from, out of sync with the stored/served
+    // (redacted, shorter) output.
+    sizeBytes: Buffer.byteLength(redactedOutput, 'utf-8'),
   }
   if (!storeBlob(BASH_OUTPUT_SUBDIR, id, entry)) return null
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.

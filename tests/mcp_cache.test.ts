@@ -324,4 +324,21 @@ describe('storeMcpOutput / getMcpOutput', () => {
     const hits = likeSearchForTesting(secret, 'mcp')
     expect(hits).toHaveLength(0)
   })
+
+  // Regression: storeMcpOutput computed sizeBytes from the raw pre-redaction resultText even
+  // though the stored/served entry.output is the redacted (shorter) text -- mismatching
+  // bash_output_cache.ts's storeBashOutput, whose sizeBytes is sized off the redacted output.
+  // Any consumer that reports entry.sizeBytes as "how big is this cached entry" (mcp-audit's
+  // per-call token estimate, mcp-history's byte column) was reporting a stale, too-large count
+  // for any entry a secret was actually stripped from.
+  it('sizes the stored entry off the redacted output, not the raw pre-redaction text', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const raw = `before ${secret} after`
+    const id = storeMcpOutput(sessionId, toolName, toolInput, raw)
+    expect(id).not.toBeNull()
+    const entry = getBashOutput(id as string)
+    expect(entry).not.toBeNull()
+    expect(entry?.sizeBytes).toBe(Buffer.byteLength(entry!.output, 'utf-8'))
+    expect(entry?.sizeBytes).not.toBe(Buffer.byteLength(raw, 'utf-8'))
+  })
 })
