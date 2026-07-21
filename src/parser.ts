@@ -188,6 +188,25 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['enum_declaration', 'enum'],
 ])
 
+// TS/JS class-member decorators (`@Override`, `@Input()`, ...) are wrapped as a `decorator` field
+// on `public_field_definition`/`field_definition` itself, but tree-sitter-typescript parses a
+// decorator on a `method_definition` as a standalone `decorator` sibling immediately preceding it
+// inside `class_body`, not as a field of the method node -- the same sibling-not-wrapper gap fixed
+// for Rust `attribute_item`s and Python's `decorated_definition`. Left unhandled, a decorated
+// method's tree-sitter range starts at its modifiers/name, silently dropping the `@decorator`
+// line(s) above it from `read`/`skeleton` output. Walk backward through contiguous leading
+// `decorator` siblings (stacked decorators are legal, e.g. `@Log() @Cache method() {}`) so the
+// emitted range includes them.
+function leadingTsDecorators(node: TsNode): TsNode[] {
+  const decorators: TsNode[] = []
+  let cur = node.previousNamedSibling
+  while (cur !== null && cur.type === 'decorator') {
+    decorators.unshift(cur)
+    cur = cur.previousNamedSibling
+  }
+  return decorators
+}
+
 function nodeName(node: TsNode): string | null {
   const named = node.childForFieldName('name')
   if (named !== null) return named.text
@@ -242,7 +261,20 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
     if (kind !== undefined && !(insideFunction && node.type === 'function_declaration')) {
       const name = nodeName(node)
       if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
+        const decorators = leadingTsDecorators(node)
+        if (decorators.length === 0) {
+          out.push(makeSymbol(filePath, name, kind, node))
+        } else {
+          out.push({
+            filePath,
+            name,
+            kind,
+            lineStart: decorators[0]!.startPosition.row + 1,
+            lineEnd: node.endPosition.row + 1,
+            body: [...decorators, node].map((n) => n.text).join('\n'),
+            docstring: '',
+          })
+        }
       }
       // Methods live inside class bodies; descend to find nested classes too.
     }
