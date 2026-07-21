@@ -178,6 +178,19 @@ describe('TerraformFilter', () => {
     expect(text).toMatch(/Initializing|Installing|complete/i)
   })
 
+  it('terraform init wraps the provider-collapse note in the standard [token-goat: ...] marker even when head/tail compression also fires', () => {
+    const lines = ['Initializing the backend...']
+    for (let i = 0; i < 15; i++) lines.push(`- Finding hashicorp/aws versions matching "~> ${i}.0"...`)
+    for (let i = 0; i < 15; i++) lines.push(`Terraform notice line ${i}`)
+    lines.push('Terraform has been successfully initialized!')
+    const { text } = apply(f, lines.join('\n'), '', 0, ['terraform', 'init'])
+    // Every other filter in this codebase emits collapse notes wrapped as `[token-goat: ...]`
+    // (see ToolFilter.emitNotes). The provider-collapse note here must follow the same
+    // convention instead of appearing as an unwrapped raw line.
+    expect(text).toContain('[token-goat: collapsed 15 provider install/find lines]')
+    expect(text).not.toMatch(/^collapsed 15 provider install\/find lines$/m)
+  })
+
   it('terraform validate passes through short output', () => {
     const stdout = 'Valid!\nNo issues found.\n'
     const { text } = apply(f, stdout, '', 0, ['terraform', 'validate'])

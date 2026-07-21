@@ -282,7 +282,7 @@ export class TerraformFilter extends ToolFilter {
     maybeNote(notes, providerCollapsed, `collapsed ${providerCollapsed} provider install/find lines`)
     if (nonEmpty.length > 12) {
       let compressed = headTailCompress(nonEmpty, 5, 5, 'lines')
-      if (notes.length) compressed = compressed.replace(/\s+$/, '') + '\n' + notes.join('\n')
+      if (notes.length) compressed = `${compressed.replace(/\s+$/, '')}\n[token-goat: ${notes.join('; ')}]`
       return compressed
     }
     this.emitNotes(kept, notes)
