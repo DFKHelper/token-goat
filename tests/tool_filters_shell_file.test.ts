@@ -261,6 +261,27 @@ describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
     expect(out).toContain('[token-goat:')
     expect(out).toContain('.c$$d×1')
   })
+
+  it('the "by type" extension breakdown only counts elided entries, not the ones already shown (LSEXT-DOUBLECOUNT regression)', () => {
+    // 80 .ts + 50 .js = 130 entries; _LS_MAX_ENTRIES (10) are shown verbatim, so exactly
+    // 120 are elided. The by-type breakdown must describe only those 120 elided entries
+    // -- its per-extension counts must sum to 120, not to the full 130-entry listing
+    // (which would double-count the 10 already-visible entries in the marker text).
+    const lines = [
+      'total 1024',
+      ...Array.from({ length: 80 }, (_, i) => `-rw-r--r-- 1 u g 100 Jan 1 file${i}.ts`),
+      ...Array.from({ length: 50 }, (_, i) => `-rw-r--r-- 1 u g 100 Jan 1 file${i}.js`),
+    ]
+
+    const out = compress(f, lines.join('\n'), argv)
+    const marker = out.split('\n').find((l) => l.includes('by type:'))
+    expect(marker).toBeDefined()
+    expect(marker).toContain('120 more entries')
+
+    const counts = [...marker!.matchAll(/×(\d+)/g)].map((m) => Number(m[1]))
+    const sum = counts.reduce((a, b) => a + b, 0)
+    expect(sum).toBe(120)
+  })
 })
 
 // ---------------------------------------------------------------------------
