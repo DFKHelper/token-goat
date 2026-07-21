@@ -187,6 +187,10 @@ describe('sliceTranscript', () => {
     const sliced = sliceTranscript(cues, parseSliceOptions({ speaker: 'Alice', grep: 'twenty' }))
     expect(sliced).toHaveLength(1)
   })
+
+  it('rejects a --from spec with more than three colon-separated segments instead of silently truncating it', () => {
+    expect(() => parseSliceOptions({ from: '1:02:03:04' })).toThrow('invalid time spec: 1:02:03:04')
+  })
 })
 
 describe('formatCues', () => {

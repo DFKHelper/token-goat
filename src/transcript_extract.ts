@@ -92,7 +92,7 @@ export function formatTimestamp(seconds: number): string {
 
 function parseClockSpec(spec: string): number {
   const parts = spec.split(':').map((p) => parseInt(p, 10))
-  if (parts.some((p) => Number.isNaN(p))) throw new Error(`invalid time spec: ${spec} (expected HH:MM:SS)`)
+  if (parts.length > 3 || parts.some((p) => Number.isNaN(p))) throw new Error(`invalid time spec: ${spec} (expected HH:MM:SS)`)
   while (parts.length < 3) parts.unshift(0)
   const [h, m, s] = parts as [number, number, number]
   return h * 3600 + m * 60 + s
