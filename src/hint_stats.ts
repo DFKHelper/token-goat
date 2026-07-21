@@ -358,13 +358,24 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
 // whole point of checking that the CLI was actually invoked.
 const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])token-goat(?=[\s]|$)/
 
+/** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, and id `ab12` must not match `ab1234`) -- mirrors the boundary check other prefix-matching code in this codebase (e.g. skill_cache.ts's session-fragment guard) already applies. Requires the character immediately after every match to be absent or not a path/id-continuation character (alphanumeric, `_`, `.`, `-`); the character before is not checked since every correlator this module extracts already starts at a natural boundary (a drive letter, `./`, `../`, `/`, or a bare id token). */
+function commandMentionsCorrelator(command: string, correlator: string): boolean {
+  let idx = command.indexOf(correlator)
+  while (idx !== -1) {
+    const after = command[idx + correlator.length]
+    if (after === undefined || !/[A-Za-z0-9_.-]/.test(after)) return true
+    idx = command.indexOf(correlator, idx + 1)
+  }
+  return false
+}
+
 /** True when a subsequent Bash `command` honestly demonstrates the agent followed this specific hint's pointer: it invokes token-goat AND mentions the exact correlator the hint text gave. */
 function isActedOn(category: HintCategory, correlator: string, command: string): boolean {
   if (!TOKEN_GOAT_INVOCATION_RE.test(command)) return false
   if (category === 'bash_recall') {
-    return command.includes('bash-output') && command.includes(correlator)
+    return command.includes('bash-output') && commandMentionsCorrelator(command, correlator)
   }
-  return command.includes(correlator)
+  return commandMentionsCorrelator(command, correlator)
 }
 
 /**
