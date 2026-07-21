@@ -456,7 +456,12 @@ export async function runDoctorAndExit(opts?: { dataDir?: string; configPath?: s
       if (fs.existsSync(pregenPath)) {
         const content = JSON.parse(fs.readFileSync(pregenPath, 'utf-8')) as { names?: string[] }
         const pregenNames = new Set(content.names || [])
-        const skills = [] as string[]
+        // A skill can have multiple .meta files (one per distinct content hash cached across
+        // sessions -- see skill_cache.ts's findCrossSessionEntry, which only dedups identical
+        // content, not every version of an updated skill), so collect into a Set keyed by name
+        // rather than pushing to an array -- otherwise a skill missing from pregen.json with two
+        // or more cached versions would be listed twice (or more) in the same report line.
+        const skillsSeen = new Set<string>()
         try {
           const entries = fs.readdirSync(dir, { withFileTypes: true })
           for (const entry of entries) {
@@ -464,7 +469,7 @@ export async function runDoctorAndExit(opts?: { dataDir?: string; configPath?: s
             try {
               const meta = JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf-8')) as { skillName: string }
               if (meta.skillName && !pregenNames.has(meta.skillName)) {
-                skills.push(meta.skillName)
+                skillsSeen.add(meta.skillName)
               }
             } catch {
               // skip
@@ -473,6 +478,7 @@ export async function runDoctorAndExit(opts?: { dataDir?: string; configPath?: s
         } catch {
           // skip
         }
+        const skills = [...skillsSeen]
         if (skills.length > 0) {
           console.log(`Missing from pregen.json: ${skills.join(', ')}`)
           console.log(`Remediation: token-goat skill-compact --all\n`)
