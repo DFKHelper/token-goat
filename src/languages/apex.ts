@@ -167,18 +167,29 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const objectName = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
-    emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, line, match[0]), objectName)
+    const bodyStartLine = annotationStartLine(rawLines, line)
+    emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]), objectName)
   }
 
+  // A standalone `@IsTest`/`@SuppressWarnings(...)` annotation line directly above a class/
+  // interface/enum declaration (`@IsTest\npublic class MyTestClass { ... }`) is at least as
+  // common in real Apex as the same-line form (`@IsTest private class MyTestClass { ... }`)
+  // the comment above TYPE_DECL_RE already handles -- @IsTest on its own line is in fact the
+  // more idiomatic style for Apex test classes. TYPE_DECL_RE, like TRIGGER_RE, only matches
+  // annotations glued to the same physical line as the keyword, so a preceding standalone
+  // annotation line was silently excluded from the emitted span/body and lineStart pointed at
+  // the class keyword instead of its real declaration start -- the same span-folding
+  // annotationStartLine already applies to constructors/methods below, just not here.
   const typeNames = new Set<string>()
   for (const match of code.matchAll(TYPE_DECL_RE)) {
     const typeKind = match[1] ?? ''
     const name = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
+    const bodyStartLine = annotationStartLine(rawLines, line)
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
-    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, line, match[0]))
+    emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 
   // A constructor may legally omit an access modifier entirely (implicitly private), same as any

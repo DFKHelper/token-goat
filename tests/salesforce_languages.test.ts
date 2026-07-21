@@ -105,6 +105,22 @@ describe('apex adapter', () => {
     expect(method?.body).not.toContain('@IsTest')
   })
 
+  it('extracts a class annotated with a standalone annotation line above the declaration (regression: TYPE_DECL_RE/TRIGGER_RE only folded a same-line leading annotation into the span via annotationStartLine-equivalent handling on constructors/methods, not on class/interface/enum/trigger declarations -- `@IsTest` on its own line above `public class Foo { ... }`, the idiomatic Apex test-class style, was silently excluded from the class symbol\'s lineStart/body)', () => {
+    const content = `@IsTest
+public class MyTestClass {
+  static void testMethod1() {
+    System.assert(true);
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyTestClass.cls')
+    const cls = symbols.find((s) => s.name === 'MyTestClass')
+    expect(cls?.kind).toBe('apex_class')
+    expect(cls?.lineStart).toBe(1)
+    expect(cls?.body).toContain('@IsTest')
+  })
+
   it('extracts an interface annotated with a same-line annotation (regression: same TYPE_DECL_RE gap as the class case above)', () => {
     const content = `@SuppressWarnings('PMD') public interface MyIntf {
   void doThing();
