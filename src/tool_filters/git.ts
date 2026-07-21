@@ -561,7 +561,45 @@ function _hunkWhitespaceEolOnlyPairCount(hunkLines: string[]): number | null {
 }
 
 /** Compress diff body: binary detection, large-hunk truncation, JSONL summarisation. */
-function _compressGitDiffBody(stdout: string, stderr: string): string {
+// Density (changed-line fraction) of one hunk, keyed the same way as shell_file.ts's
+// DiffFilter._scoreAndCapHunks -- `content` skips the hunk's own `@@ ... @@` header line.
+function _hunkDensity(hunkText: string): number {
+  const content = hunkText.split('\n').slice(1)
+  if (content.length === 0) return 0
+  const changed = content.filter((l) => l.startsWith('+') || l.startsWith('-')).length
+  return changed / content.length
+}
+
+// Caps the number of real hunks (everything after `hunks[0]`, the pre-`@@` file-header
+// preamble) to `maxHunksPerFile`, keeping the highest-density hunks (most likely to be real
+// signal, not whitespace/formatting noise) and dropping the rest with a summary note -- the
+// same density-based selection [bash_diff].max_hunks_per_file drives for the raw `diff`
+// command via shell_file.ts's DiffFilter/_scoreAndCapHunks. Without this, `git diff`/`git
+// show` (routed here via GitDiffFilter, the actually-reached filter for those subcommands)
+// silently ignored the config knob entirely: only the never-dispatched GitFilter fallback and
+// the raw-`diff` filter honored it.
+function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: string[]; note: string | null } {
+  const real = hunks.slice(1)
+  if (maxHunksPerFile <= 0 || real.length <= maxHunksPerFile) return { hunks, note: null }
+
+  const scored = real.map((h, i) => ({ i, h, d: _hunkDensity(h) }))
+  const keepSet = new Set(
+    scored
+      .slice()
+      .sort((a, b) => b.d - a.d)
+      .slice(0, maxHunksPerFile)
+      .map((x) => x.i),
+  )
+  const dropped = scored.filter((x) => !keepSet.has(x.i))
+  const avg = dropped.length ? dropped.reduce((a, x) => a + x.d, 0) / dropped.length : 0
+  const kept = scored.filter((x) => keepSet.has(x.i)).map((x) => x.h)
+  return {
+    hunks: [hunks[0] ?? '', ...kept],
+    note: `[token-goat: ${dropped.length} more hunks, avg density ${avg.toFixed(2)} — likely whitespace/formatting]`,
+  }
+}
+
+function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 10): string {
   const MAX_HUNK_CHANGED = 50
   const HUNK_HEAD_KEEP = 20
   const HUNK_TAIL_KEEP = 5
@@ -586,11 +624,14 @@ function _compressGitDiffBody(stdout: string, stderr: string): string {
     }
 
     // Large-hunk compression: split into hunks and compress each.
-    const hunks = splitBlocks(block, _GIT_DIFF_HUNK_RE)
+    let hunks = splitBlocks(block, _GIT_DIFF_HUNK_RE)
     if (hunks.length <= 1) {
       outBlocks.push(block)
       continue
     }
+
+    const { hunks: cappedHunks, note: hunkCapNote } = _capHunksByDensity(hunks, maxHunksPerFile)
+    hunks = cappedHunks
 
     const compressedHunks: string[] = []
     for (const hunk of hunks) {
@@ -639,6 +680,7 @@ function _compressGitDiffBody(stdout: string, stderr: string): string {
         }
       }
     }
+    if (hunkCapNote) compressedHunks.push(hunkCapNote)
     outBlocks.push(compressedHunks.join('\n'))
   }
 
@@ -695,7 +737,17 @@ function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[]
   const flags = new Set(argv)
   const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-only')
   if (isStat) return _compressGitDiffStat(stdout, stderr, argv)
-  return _compressGitDiffBody(stdout, stderr)
+  // [bash_diff] max_hunks_per_file (default 10); falls back to _compressGitDiffBody's own
+  // built-in default (10) on config load failure.
+  let maxHunksPerFile: number | undefined
+  try {
+    maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
+  } catch {
+    maxHunksPerFile = undefined
+  }
+  return maxHunksPerFile === undefined
+    ? _compressGitDiffBody(stdout, stderr)
+    : _compressGitDiffBody(stdout, stderr, maxHunksPerFile)
 }
 
 export class GitDiffFilter extends GitBaseFilter {
