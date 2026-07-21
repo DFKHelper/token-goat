@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimateTokens, trimToBudget } from '../src/overflow_guard.js'
+import { estimateTokens, trimToBudget, capJsonRows } from '../src/overflow_guard.js'
 
 describe('overflow_guard', () => {
   describe('estimateTokens', () => {
@@ -138,6 +138,49 @@ describe('overflow_guard', () => {
       // budget the function computed for itself -- this is the accounting invariant the bug
       // violated (real raw output ran to roughly 2.5x the budget in this shape pre-fix).
       expect(body.length).toBeLessThanOrEqual(charBudget)
+    })
+  })
+
+  describe('exact-boundary comparisons', () => {
+    it('returns text unchanged when totalTokens exactly equals budgetTokens (not just under)', () => {
+      // estimateTokens: floor(L/3)+1. L=300 -> tokens=101 exactly.
+      const text = 'a'.repeat(300)
+      const budgetTokens = 101
+      expect(estimateTokens(text)).toBe(budgetTokens)
+      expect(trimToBudget(text, budgetTokens)).toBe(text)
+    })
+
+    it('keeps the first line whole (not sliced) when its cost lands exactly on charBudget', () => {
+      // budgetTokens=70 -> bodyBudget=6 -> charBudget=18. First line cost = 17+1 = 18, exactly at the budget.
+      const line1 = 'x'.repeat(17)
+      const line2 = 'y'.repeat(200)
+      const text = line1 + '\n' + line2
+      const result = trimToBudget(text, 70)
+      const firstLine = result.split('\n')[0]!
+      expect(firstLine).toBe(line1)
+    })
+
+    it('keeps a second line whole when running total lands exactly on charBudget mid-loop', () => {
+      // budgetTokens=70 -> charBudget=18. line1 cost=5+1=6, line2 cost=11+1=12; used after both = 18 exactly.
+      const line1 = 'a'.repeat(5)
+      const line2 = 'b'.repeat(11)
+      const line3 = 'c'.repeat(200)
+      const text = [line1, line2, line3].join('\n')
+      const result = trimToBudget(text, 70)
+      const lines = result.split('\n')
+      expect(lines[0]).toBe(line1)
+      expect(lines[1]).toBe(line2)
+      expect(lines[2]).not.toBe(line3)
+    })
+
+    it('keeps an item whose cumulative cost lands exactly on charBudget in capJsonRows', () => {
+      // budgetTokens=10 -> charBudget=30. item0 cost = 7+2=9. item1 cost = 19+2=21. used after both = 30 exactly.
+      const item0 = 'aaaaa'
+      const item1 = 'b'.repeat(17)
+      const item2 = 'c'.repeat(50)
+      const result = capJsonRows([item0, item1, item2], 10)
+      expect(result.items).toEqual([item0, item1])
+      expect(result.truncated).toBe(true)
     })
   })
 
