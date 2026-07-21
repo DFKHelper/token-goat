@@ -695,7 +695,11 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
     const seen = new Set<string>()
 
     for (const meta of metas) {
-      if (sessionId && !meta.outputId.startsWith(safeSessionFragment(sessionId))) {
+      // Boundary-checked prefix match (the trailing '-' matters): without it, a session id
+      // whose safe fragment is a strict string-prefix of another session's fragment (e.g.
+      // 'sess-a' vs 'sess-ab') would conflate the two -- 'sess-ab-skill-sha'.startsWith('sess-a')
+      // is true even though they're different sessions. Mirrors hasSessionOutput's identical guard.
+      if (sessionId && !meta.outputId.startsWith(`${safeSessionFragment(sessionId)}-`)) {
         continue
       }
 
