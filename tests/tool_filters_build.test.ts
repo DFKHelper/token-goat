@@ -386,6 +386,24 @@ describe('MSBuildFilter', () => {
     const warningMatches = result.match(/warning CS0168/g) ?? []
     expect(warningMatches.length).toBe(3)
   })
+
+  // Regression: the dedup key was file path + line + code, omitting the column, so two
+  // genuinely distinct warnings sharing a file, line, and code (e.g. two unused-parameter
+  // warnings on the same declaration line) were wrongly collapsed into one, silently dropping
+  // a real diagnostic.
+  it('preserves the same warning code+line but distinct columns', () => {
+    const out = [
+      'Foo.cs(10,5): warning CS0168: The variable \'x\' is declared but never used',
+      'Foo.cs(10,20): warning CS0168: The variable \'y\' is declared but never used',
+      'Build succeeded.',
+    ].join('\n') + '\n'
+    const result = apply(f, out, '', 0, ['msbuild'])
+    expect(result).toContain('Foo.cs(10,5)')
+    expect(result).toContain('Foo.cs(10,20)')
+    const warningMatches = result.match(/warning CS0168/g) ?? []
+    expect(warningMatches.length).toBe(2)
+    expect(result).not.toContain('collapsed')
+  })
 })
 
 // ---------------------------------------------------------------------------
