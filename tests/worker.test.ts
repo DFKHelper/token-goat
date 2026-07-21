@@ -92,6 +92,44 @@ describe('isWorkerRunning', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
     expect(isWorkerRunning(DIR)).toBe(true)
   })
+
+  // Regression-style coverage gap: pidAlive's EPERM branch (a pid that exists but is owned by
+  // another user, so process.kill(pid, 0) throws EPERM rather than succeeding or throwing ESRCH)
+  // was previously only asserted by inspecting the source's doc comment, not exercised by any
+  // test -- mutating that branch's `=== 'EPERM'` to a hardcoded `false` left the full worker
+  // test suite green. A process that exists but isn't ours must still read as alive (matching
+  // Python's os.kill semantics this ports), otherwise isWorkerRunning would misreport a real,
+  // running daemon as dead purely because of a permission boundary, and callers like
+  // ensureWorkerAlive/claimWorkerPidFile would wrongly spawn a duplicate.
+  it('treats a pid that exists but is not owned by this process (EPERM) as alive', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('EPERM') as NodeJS.ErrnoException
+      err.code = 'EPERM'
+      throw err
+    })
+    try {
+      expect(isWorkerRunning(DIR)).toBe(true)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  // Sibling to the EPERM case above: a genuinely dead pid raises ESRCH, which must read as not
+  // alive -- confirms the two error codes are not conflated by the same branch.
+  it('treats a pid that raises ESRCH (no such process) as not alive', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('ESRCH') as NodeJS.ErrnoException
+      err.code = 'ESRCH'
+      throw err
+    })
+    try {
+      expect(isWorkerRunning(DIR)).toBe(false)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
 })
 
 describe('ensureWorkerAlive (auto-heal regression)', () => {
