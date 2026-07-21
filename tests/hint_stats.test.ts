@@ -142,6 +142,20 @@ describe('classifyBashHint', () => {
     expect(result.correlator).toBe('ab12cd34')
   })
 
+  it(
+    'classifies a `bash-output --file "<path>"` hint by the quoted path, not the literal --file flag ' +
+      '(regression: [A-Za-z0-9_.-]+ includes "-", so the bare-id regex matched "--file" itself as the ' +
+      'correlator, making isActedOn credit ANY later bash-output --file call regardless of which file it targeted)',
+    () => {
+      const result = classifyBashHint(
+        '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "C:/Projects/tasks/abc.output" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.',
+      )
+      expect(result.category).toBe('bash_recall')
+      expect(result.correlator).toBe('C:/Projects/tasks/abc.output')
+      expect(result.correlator).not.toBe('--file')
+    },
+  )
+
   it('classifies a surgical-redirect hint by its embedded path when no bash-output id is present', () => {
     const result = classifyBashHint('`cat` loads the entire file into context. Use `token-goat read "C:/repo/file.ts::SymbolName"` to read one function or class.')
     expect(result.category).toBe('bash_redirect')
