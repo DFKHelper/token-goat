@@ -739,6 +739,19 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  it('dedups a cd-prefixed sed read against the same file referenced without cd (regression: the sed dedup key and hint path never applied resolveCdHintPath while its cat/tail/head siblings did, so a cd-prefixed sed read resolved against the hook cwd instead of the shell cd target and missed the overlap)', () => {
+    const cwd = 'C:/Projects/repo-a'
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts", cwd))
+    const result = preBashHandler(makeBashEvent("cd src && sed -n '50,100p' paging_demo.ts", cwd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already read')
+      expect(result.context).toContain('10-60')
+      const expectedPath = resolveIndexPath('paging_demo.ts', resolveIndexPath('src', cwd))
+      expect(result.context).toContain(expectedPath)
+    }
+  })
+
   it('denies node -e with readFileSync reading a source file', () => {
     const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
     const result = preBashHandler(event)
