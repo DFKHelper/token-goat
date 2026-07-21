@@ -1276,23 +1276,29 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const sedRange = extractSedRange(cmd)
   if (sedRange !== null) {
     const { filePath, ranges } = sedRange
+    // When a cd prefix was stripped, both the dedup key and the displayed hint path must resolve
+    // against the directory cd would actually leave the shell in, matching every other path-carrying
+    // hint block above/below — otherwise a cd-prefixed sed read resolves against this hook's own cwd
+    // instead of the shell's real one, both mislabeling the hint and missing dedup against a
+    // non-cd-prefixed reference to the same file.
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
-    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. The raw filePath is kept for the hint text itself so existing relative-path hints are unchanged.
+    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths.
     // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
-    const sedDedupKey = resolveIndexPath(filePath, preHookCwd ?? process.cwd())
+    const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
     const overlapHints: string[] = []
     const freshRanges: Array<readonly [number, number]> = []
     for (const [start, end] of ranges) {
       const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
       recordFileLineRange(sedDedupKey, start, end)
       if (priorOverlap !== null) {
-        overlapHints.push(sedOverlapHint(filePath, priorOverlap, start, end))
+        overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
       } else {
         freshRanges.push([start, end])
       }
     }
     const hints = [...overlapHints]
-    if (freshRanges.length > 0) hints.push(sedRangeHint(filePath, freshRanges))
+    if (freshRanges.length > 0) hints.push(sedRangeHint(hintPath, freshRanges))
     return contextOutput(hints.join(' '))
   }
 
