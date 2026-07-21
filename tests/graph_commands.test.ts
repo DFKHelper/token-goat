@@ -1343,6 +1343,19 @@ describe('findCycles', () => {
     const cycles = findCycles(g)
     expect(cycles).toEqual([['a', 'a']])
   })
+
+  it('does not crash with a stack overflow on a deep linear import chain (large real-world repo)', () => {
+    // Regression: tarjanSCCs used to be a plain recursive `strongconnect`, whose recursion depth
+    // equals the longest DFS path in the graph. runArch builds this graph from every tracked file
+    // in the whole project, so a long acyclic import chain in a large monorepo (verified: a plain
+    // linear chain of ~5000 nodes reliably overflows Node's default stack) crashed `token-goat
+    // arch` outright with "Maximum call stack size exceeded" instead of reporting zero cycles.
+    const g = new Map<string, string[]>()
+    const n = 20000
+    for (let i = 0; i < n; i++) g.set(`n${i}`, i + 1 < n ? [`n${i + 1}`] : [])
+    expect(() => findCycles(g)).not.toThrow()
+    expect(findCycles(g)).toHaveLength(0)
+  })
 })
 
 // ---- runSimilar (integration) -----------------------------------------------

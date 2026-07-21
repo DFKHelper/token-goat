@@ -717,6 +717,15 @@ const MAX_CYCLES = 200
  * lies in a component of size > 1, or has a self-loop - restricting the exhaustive per-path
  * cycle search below to just these components keeps it safe on large, mostly-acyclic import
  * graphs (real codebases) instead of exploring every DAG diamond in the whole graph.
+ *
+ * Implemented iteratively (an explicit work stack of {node, neighbor-iterator} frames standing
+ * in for the call stack) rather than as the textbook recursive `strongconnect`: `runArch` builds
+ * this graph from every file `getTrackedFiles` returns across the whole project, so a
+ * moderately deep import chain in a large real-world repo (verified: a plain linear chain of
+ * ~5000 files reliably blows Node's default stack via the recursive version, well within range
+ * for a large monorepo) would throw "Maximum call stack size exceeded" and crash `token-goat
+ * arch` outright. The iterative form has no recursion depth at all, so it scales to any chain
+ * length bounded only by heap, not stack.
  */
 function tarjanSCCs(graph: Map<string, string[]>): string[][] {
   let index = 0
@@ -726,36 +735,60 @@ function tarjanSCCs(graph: Map<string, string[]>): string[][] {
   const stack: string[] = []
   const result: string[][] = []
 
-  function strongconnect(v: string): void {
-    indices.set(v, index)
-    lowlink.set(v, index)
-    index++
-    stack.push(v)
-    onStack.add(v)
-
-    for (const w of graph.get(v) ?? []) {
-      if (!indices.has(w)) {
-        strongconnect(w)
-        lowlink.set(v, Math.min(lowlink.get(v)!, lowlink.get(w)!))
-      } else if (onStack.has(w)) {
-        lowlink.set(v, Math.min(lowlink.get(v)!, indices.get(w)!))
-      }
-    }
-
-    if (lowlink.get(v) === indices.get(v)) {
-      const component: string[] = []
-      let w: string
-      do {
-        w = stack.pop()!
-        onStack.delete(w)
-        component.push(w)
-      } while (w !== v)
-      result.push(component)
-    }
+  interface Frame {
+    node: string
+    iter: Iterator<string>
   }
 
-  for (const node of graph.keys()) {
-    if (!indices.has(node)) strongconnect(node)
+  for (const start of graph.keys()) {
+    if (indices.has(start)) continue
+
+    const workStack: Frame[] = [{ node: start, iter: (graph.get(start) ?? [])[Symbol.iterator]() }]
+    indices.set(start, index)
+    lowlink.set(start, index)
+    index++
+    stack.push(start)
+    onStack.add(start)
+
+    while (workStack.length > 0) {
+      const frame = workStack[workStack.length - 1]!
+      const v = frame.node
+      const next = frame.iter.next()
+
+      if (!next.done) {
+        const w = next.value
+        if (!indices.has(w)) {
+          indices.set(w, index)
+          lowlink.set(w, index)
+          index++
+          stack.push(w)
+          onStack.add(w)
+          workStack.push({ node: w, iter: (graph.get(w) ?? [])[Symbol.iterator]() })
+        } else if (onStack.has(w)) {
+          lowlink.set(v, Math.min(lowlink.get(v)!, indices.get(w)!))
+        }
+        continue
+      }
+
+      // Neighbors of v exhausted: pop v's frame and propagate its lowlink up to its parent
+      // (the frame now on top, if any) before checking whether v roots its own component.
+      workStack.pop()
+      const parentFrame = workStack[workStack.length - 1]
+      if (parentFrame !== undefined) {
+        lowlink.set(parentFrame.node, Math.min(lowlink.get(parentFrame.node)!, lowlink.get(v)!))
+      }
+
+      if (lowlink.get(v) === indices.get(v)) {
+        const component: string[] = []
+        let w: string
+        do {
+          w = stack.pop()!
+          onStack.delete(w)
+          component.push(w)
+        } while (w !== v)
+        result.push(component)
+      }
+    }
   }
   return result
 }
