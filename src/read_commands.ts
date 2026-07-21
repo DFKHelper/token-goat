@@ -2599,7 +2599,12 @@ export function runGrep(opts: GrepOptions): number {
   const truncated = hits.slice(0, maxLines)
 
   if (opts.json === true) {
-    emit(JSON.stringify(truncated, null, 2))
+    // Same {items, truncated, totalCount} envelope guardJsonRows uses for symbol/refs/skeleton/
+    // outline's --json mode -- a bare truncated array here would silently hand a JSON consumer
+    // fewer hits than actually matched with no way to tell "capped by --max-lines" apart from
+    // "there just weren't more".
+    const payload: JsonRowCapResult<GrepHit> = { items: truncated, truncated: hits.length > maxLines, totalCount: hits.length }
+    emit(JSON.stringify(payload, null, 2))
     return 0
   }
 
