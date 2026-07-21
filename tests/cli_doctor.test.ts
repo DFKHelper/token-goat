@@ -7,6 +7,7 @@ import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
+import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 
 // runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context
@@ -489,6 +490,52 @@ describe('cli_doctor', () => {
     it('resolves normally with --context when runContextStats succeeds', async () => {
       const code = await runDoctorAndExit({ dataDir: tempDir, context: true })
       expect(typeof code).toBe('number')
+    })
+  })
+
+  describe('pregen-gap check (--context)', () => {
+    let skillsDir: string
+
+    beforeEach(() => {
+      skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor_skills_'))
+      setSkillOutputsDirForTesting(skillsDir)
+    })
+
+    afterEach(() => {
+      setSkillOutputsDirForTesting(null)
+      fs.rmSync(skillsDir, { recursive: true, force: true })
+    })
+
+    it('lists a skill with multiple cached .meta versions only once, not once per version', async () => {
+      fs.writeFileSync(path.join(skillsDir, 'pregen.json'), JSON.stringify({ ts: Date.now(), names: [] }))
+      // Two distinct cached versions of the same skill (e.g. re-read after the skill file was
+      // updated between sessions) -- both missing from pregen.json's names list.
+      fs.writeFileSync(
+        path.join(skillsDir, 'sess1-my-skill-aaa.meta'),
+        JSON.stringify({ outputId: 'sess1-my-skill-aaa', skillName: 'my-skill', contentSha: 'aaa', bodyBytes: 10, ts: 1, truncated: false, sourcePath: '' }),
+      )
+      fs.writeFileSync(
+        path.join(skillsDir, 'sess2-my-skill-bbb.meta'),
+        JSON.stringify({ outputId: 'sess2-my-skill-bbb', skillName: 'my-skill', contentSha: 'bbb', bodyBytes: 12, ts: 2, truncated: false, sourcePath: '' }),
+      )
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+      let calls: unknown[][]
+      try {
+        await runDoctorAndExit({ dataDir: tempDir, context: true })
+        // Read the call log before mockRestore() below, which resets it (mockRestore() also
+        // calls mockReset() internally, wiping mock.calls) -- reading it after would always
+        // see zero calls regardless of what actually logged.
+        calls = logSpy.mock.calls
+      } finally {
+        logSpy.mockRestore()
+      }
+
+      const gapLine = calls.map((c) => String(c[0])).find((line) => line.startsWith('Missing from pregen.json:'))
+      expect(gapLine).toBeDefined()
+      // Regression: the old implementation pushed one entry per .meta file instead of
+      // deduping by skillName, so a skill with N cached versions was listed N times.
+      expect(gapLine).toBe('Missing from pregen.json: my-skill')
     })
   })
 })
