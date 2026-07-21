@@ -510,6 +510,37 @@ describe('loadConfig / loadPersistedConfig distinguish a parse failure from a mi
     expect(cfg2.compact_assist.enabled).toBe(defaultConfig().compact_assist.enabled)
     expect(getLastConfigParseError()).not.toBeNull()
   })
+
+  it('loadPersistedConfig() ignores a transient TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES env override instead of baking it into the persisted-on-disk view (regression: withoutConfigEnv only cleared its hand-maintained ENV_KEYS list, which omitted this var, so an env override active for the current invocation leaked through and would get permanently written to config.toml by a `config set` on any unrelated key)', () => {
+    const orig = process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+    try {
+      process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = '4321'
+      const cfg = loadPersistedConfig()
+      expect(cfg.hints.glob_dedup_min_matches).toBe(defaultConfig().hints.glob_dedup_min_matches)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+      } else {
+        process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('loadPersistedConfig() ignores a transient TOKEN_GOAT_OCR_ENABLED env override instead of baking it into the persisted-on-disk view (regression: same withoutConfigEnv omission as glob_dedup_min_matches above)', () => {
+    const orig = process.env['TOKEN_GOAT_OCR_ENABLED']
+    try {
+      const defaultOcrEnabled = defaultConfig().image_shrink.ocr_enabled
+      process.env['TOKEN_GOAT_OCR_ENABLED'] = defaultOcrEnabled ? 'false' : 'true'
+      const cfg = loadPersistedConfig()
+      expect(cfg.image_shrink.ocr_enabled).toBe(defaultOcrEnabled)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_OCR_ENABLED']
+      } else {
+        process.env['TOKEN_GOAT_OCR_ENABLED'] = orig
+      }
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -675,6 +706,57 @@ describe('cross-field config clamping', () => {
         delete process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES']
       } else {
         process.env['TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES', () => {
+    const orig = process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+    try {
+      process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.hints.glob_dedup_min_matches).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+      } else {
+        process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('picks up a mid-process change to TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES without an explicit invalidateConfigCache() call (regression: configEnvFingerprint\'s hand-maintained ENV_KEYS list omitted this var, so loadConfig()\'s cache never saw the change and kept serving the stale value)', () => {
+    const orig = process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+    try {
+      delete process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+      const before = loadConfig()
+      expect(before.hints.glob_dedup_min_matches).toBe(5)
+      process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = '4321'
+      const after = loadConfig()
+      expect(after.hints.glob_dedup_min_matches).toBe(4321)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES']
+      } else {
+        process.env['TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES'] = orig
+      }
+    }
+  })
+
+  it('picks up a mid-process change to TOKEN_GOAT_OCR_ENABLED without an explicit invalidateConfigCache() call (regression: same ENV_KEYS omission as glob_dedup_min_matches above)', () => {
+    const orig = process.env['TOKEN_GOAT_OCR_ENABLED']
+    try {
+      delete process.env['TOKEN_GOAT_OCR_ENABLED']
+      const before = loadConfig()
+      const defaultOcrEnabled = before.image_shrink.ocr_enabled
+      process.env['TOKEN_GOAT_OCR_ENABLED'] = defaultOcrEnabled ? 'false' : 'true'
+      const after = loadConfig()
+      expect(after.image_shrink.ocr_enabled).toBe(!defaultOcrEnabled)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_OCR_ENABLED']
+      } else {
+        process.env['TOKEN_GOAT_OCR_ENABLED'] = orig
       }
     }
   })
