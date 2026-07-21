@@ -375,4 +375,20 @@ describe('formatBudgetText', () => {
     expect(lines[3]).toContain('200')
     expect(lines[3]).toContain('1000')
   })
+
+  it('does not crash with RangeError on a very large entry count (Math.max spread over the call-stack limit)', () => {
+    // Regression for a Math.max(...array) column-width computation that blew the engine's
+    // call-stack limit once the entries array crossed ~100k-130k items -- exactly the file
+    // count a `token-goat budget`/`token-goat tokens` glob can realistically match on a large
+    // monorepo. Below that threshold Math.max(...array) works fine, so a small fixture would
+    // not have caught this; the array must actually be large enough to overflow the spread.
+    const entries = Array.from({ length: 150_000 }, (_, i) => ({
+      rel_path: `file${i}.ts`,
+      lines: 10,
+      tokens: 20,
+      size_bytes: 100,
+    }))
+    const result = { entries, skipped: [], total_lines: entries.length * 10, total_tokens: entries.length * 20 }
+    expect(() => formatBudgetText(result)).not.toThrow()
+  })
 })

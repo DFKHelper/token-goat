@@ -684,10 +684,11 @@ export function formatBudgetText(result: BudgetResult, contextK?: number): strin
     return 'No files matched.'
   }
 
-  const colW = Math.max(
-    4,
-    Math.max(...result.entries.map((e) => e.rel_path.length)),
-  )
+  // Reduce instead of Math.max(...array): spreading a large project's file list as call
+  // arguments blows the engine's call-stack limit (RangeError: Maximum call stack size
+  // exceeded) well within realistic file counts -- see transcript_extract.ts's durationSeconds
+  // for the same fix applied to a different large-array Math.max spread.
+  const colW = result.entries.reduce((max, e) => Math.max(max, e.rel_path.length), 4)
   const lines: string[] = [
     `  ${'File'.padEnd(colW, ' ')}  ${'Lines'.padStart(6, ' ')}  ${'~Tokens'.padStart(8, ' ')}`,
     `  ${'-'.repeat(colW)}  ${'-'.repeat(6)}  ${'-'.repeat(8)}`,

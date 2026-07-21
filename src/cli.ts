@@ -1829,17 +1829,36 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   }
 }
 
-/** Expand glob patterns in a list of path strings using fs.globSync when available (Node 22+). Literal paths are passed through unchanged. */
-function expandGlobs(root: string, patterns: string[]): string[] {
+/**
+ * Expand glob patterns in a list of path strings using fs.globSync when available (Node 22+).
+ * Literal paths are passed through unchanged. Exported for regression coverage (see
+ * cli_expandglobs_large_match.test.ts); not part of the public CLI surface. `globFnOverride`
+ * lets a test substitute a fake glob match array (e.g. a huge one, to exercise the
+ * large-match-set path below) without writing real files to disk; production callers never
+ * pass it, so the real `fs.globSync` is always used.
+ */
+export function expandGlobs(
+  root: string,
+  patterns: string[],
+  globFnOverride?: (pattern: string, opts: { cwd: string }) => string[],
+): string[] {
   const out: string[] = []
-  const globFn = (fs as unknown as Record<string, unknown>)['globSync'] as
-    | ((pattern: string, opts: { cwd: string }) => string[])
-    | undefined
+  const globFn =
+    globFnOverride ??
+    ((fs as unknown as Record<string, unknown>)['globSync'] as
+      | ((pattern: string, opts: { cwd: string }) => string[])
+      | undefined)
   for (const p of patterns) {
     if (globFn !== undefined && (p.includes('*') || p.includes('?') || p.includes('{'))) {
       try {
         const hits = globFn(p, { cwd: root })
-        out.push(...hits.map((h) => (path.isAbsolute(h) ? h : path.join(root, h))))
+        // Plain loop instead of out.push(...array): spreading a large glob match set (e.g.
+        // `**/*` on a big project) as call arguments blows the engine's call-stack limit well
+        // within realistic file counts (RangeError: Maximum call stack size exceeded), which
+        // this function's own try/catch then silently swallows as "not a valid glob, fall
+        // through to literal path" -- turning a huge, legitimate match set into zero matched
+        // files instead of throwing or reporting the real count.
+        for (const h of hits) out.push(path.isAbsolute(h) ? h : path.join(root, h))
         continue
       } catch {
         // fall through to literal path
@@ -1964,7 +1983,10 @@ function cmdTokens(
     out('No files matched.')
     return
   }
-  const colW = Math.max(4, Math.max(...entries.map((e) => e.rel_path.length)))
+  // Reduce instead of Math.max(...array): spreading a large project's file list as call
+  // arguments blows the engine's call-stack limit (RangeError) well within realistic file
+  // counts -- mirrors the same fix in pack.ts's formatBudgetText.
+  const colW = entries.reduce((max, e) => Math.max(max, e.rel_path.length), 4)
   const lines = [
     `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
     `${'-'.repeat(colW)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`,
