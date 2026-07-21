@@ -602,7 +602,10 @@ describe('listSkills regression - hyphenated session id', () => {
   })
 
   it('picks the newest cached version of a skill, not whichever meta file readdir happens to return first (fail-on-buggy: dedup-by-first-seen without a ts sort surfaces an arbitrary older version)', async () => {
-    const sessionId = 'sessionrepro12345'
+    // <=16 chars so it matches production's outputIdFor (which truncates the session fragment
+    // to 16 chars via safeSessionFragment) -- a longer raw id here would desync this fixture's
+    // hand-built outputIds from what storeOutput/listSkills actually produce.
+    const sessionId = 'sessionrepro1234'
     const skillName = 'myskill'
     // Deliberately give the OLDER entry an outputId that sorts alphabetically BEFORE the
     // NEWER entry's (fs.readdir's order is filesystem-dependent, commonly filename order,
@@ -622,6 +625,18 @@ describe('listSkills regression - hyphenated session id', () => {
     const skill = skills.find((s) => s.name === skillName)
     expect(skill).toBeDefined()
     expect(skill!.bodyLen).toBe(500)
+  })
+
+  it('does not leak another session skill whose session fragment is a superstring of the queried session id (fail-on-buggy: listSkills\' prefix check omits the trailing "-" boundary hasSessionOutput uses)', async () => {
+    // 'sess-a' is a strict string-prefix of 'sess-ab', so an unbounded .startsWith check
+    // conflates the two sessions even though they are distinct.
+    await storeOutput('sess-a', 'skillone', 'Body for session sess-a')
+    await storeOutput('sess-ab', 'skilltwo', 'Body for session sess-ab')
+
+    const skills = await listSkills('sess-a')
+    const names = skills.map((s) => s.name)
+    expect(names).toContain('skillone')
+    expect(names).not.toContain('skilltwo')
   })
 })
 
