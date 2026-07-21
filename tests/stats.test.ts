@@ -79,6 +79,12 @@ describe('stats', () => {
       expect(kindToSource('future_kind_v2')).toBe(SOURCE_OTHER)
     })
 
+    it('maps the large-file-hint and read-count-deny lifecycle kinds to SOURCE_HINT, not SOURCE_OTHER', () => {
+      expect(kindToSource('large_file_hint_followed')).toBe(SOURCE_HINT)
+      expect(kindToSource('large_file_hint_ignored')).toBe(SOURCE_HINT)
+      expect(kindToSource('read_count_deny')).toBe(SOURCE_HINT)
+    })
+
     it('maps the imports kind to SOURCE_READ, mirroring its exports sibling', () => {
       expect(kindToSource('exports')).toBe(SOURCE_READ)
       expect(kindToSource('imports')).toBe(SOURCE_READ)
