@@ -159,6 +159,23 @@ describe('cost aggregation', () => {
     expect(byTool[0]?.tokens).toBeGreaterThan(byTool.find((t) => t.key === 'Bash')?.tokens ?? 0)
   })
 
+  // Regression: costPerCall used compact.ts's estimateTokens, which counts raw text.length with
+  // no ANSI stripping -- a colorized Bash result (git diff --color, a color-forcing test runner,
+  // etc.) inflated its token estimate by the escape-sequence bytes, skewing which calls the
+  // report flags as expensive. overflow_guard.ts's estimateTokens strips ANSI first for exactly
+  // this reason; costPerCall now uses that copy instead.
+  it('estimates tokens from ANSI-stripped result text, not raw escape-code-inflated length', () => {
+    const plain = 'x'.repeat(300)
+    const ansiWrapped = `\x1b[32m${plain}\x1b[0m`
+    const transcript = writeFixture(tempDir, [
+      toolUseLine('t1', 'Bash', { command: 'git diff --color' }),
+      toolResultLine('t1', ansiWrapped),
+    ])
+    const costs = costPerCall(parseTranscript(transcript))
+    const plainTokens = Math.max(1, Math.floor(plain.length / 3) + 1)
+    expect(costs[0]?.tokens).toBe(plainTokens)
+  })
+
   it('tokensByFile only aggregates Read/Edit/Write/NotebookEdit calls, keyed by file_path', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'Read', { file_path: '/a.ts' }),
