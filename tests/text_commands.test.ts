@@ -1174,6 +1174,33 @@ describe('hot command', () => {
     }
   })
 
+  it('aggregates readCount for the same file recorded under different casings across sessions on a case-insensitive filesystem (regression: loadAllSessionReadCounts keyed its totals map on the raw path string, not foldPath(path) -- normalizePath only lowercases the drive letter, so the same physical file read with two different literal casings in separate sessions split into two map entries instead of merging, undercounting the true readCount and risking dropping a genuinely hot file out of a --limit-bounded result)', () => {
+    const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-casemix-'))
+    try {
+      const sessDir = path.join(hotData, 'sessions')
+      fs.mkdirSync(sessDir, { recursive: true })
+      const lower = '/fake/project/src/Auth.ts'
+      const upper = '/fake/project/src/AUTH.ts'
+      fs.writeFileSync(
+        path.join(sessDir, 'sess1.json'),
+        JSON.stringify({ files: [{ path: lower, readCount: 3, lastReadAt: 1, wasEdited: false, sizeBytes: 100 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }),
+        'utf8',
+      )
+      fs.writeFileSync(
+        path.join(sessDir, 'sess2.json'),
+        JSON.stringify({ files: [{ path: upper, readCount: 5, lastReadAt: 2, wasEdited: false, sizeBytes: 100 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }),
+        'utf8',
+      )
+      const r = run(['hot', '--json'], { env: { ...isolatedEnv(hotData), TOKEN_GOAT_CASE_INSENSITIVE_FS: '1' } })
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { entries: Array<{ path: string; readCount: number }> }
+      expect(parsed.entries.length, 'must merge into one entry, not split across two casings').toBe(1)
+      expect(parsed.entries[0]?.readCount, 'sum of readCounts across differently-cased sessions').toBe(8)
+    } finally {
+      fs.rmSync(hotData, { recursive: true, force: true })
+    }
+  })
+
   it('--limit N caps the result set', () => {
     const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-limit-'))
     try {

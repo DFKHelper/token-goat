@@ -1200,9 +1200,16 @@ interface HotEntry {
   readCount: number
 }
 
-function loadAllSessionReadCounts(): Map<string, number> {
+// Aggregates by foldPath(path) (a no-op on case-sensitive filesystems, see util.ts), not the raw
+// path string -- normalizePath (paths.ts) only lowercases the drive-letter prefix, so the same
+// physical file read under two different literal casings across separate sessions (e.g. a Read
+// tool call typed with different capitalization) would otherwise land in two distinct map entries
+// on a case-insensitive filesystem, splitting/undercounting its true readCount and potentially
+// dropping it out of the --limit-bounded top-N results entirely. The first-seen raw casing is
+// kept as the display path, matching cmdHot's --project filter's existing foldPath usage below.
+function loadAllSessionReadCounts(): Map<string, { path: string; readCount: number }> {
   const sessionsDir = path.join(tokenGoatHome(), 'sessions')
-  const totals = new Map<string, number>()
+  const totals = new Map<string, { path: string; readCount: number }>()
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(sessionsDir, { withFileTypes: true })
@@ -1226,7 +1233,9 @@ function loadAllSessionReadCounts(): Map<string, number> {
       const fp = (f as Record<string, unknown>)['path']
       const rc = (f as Record<string, unknown>)['readCount']
       if (typeof fp !== 'string' || typeof rc !== 'number') continue
-      totals.set(fp, (totals.get(fp) ?? 0) + rc)
+      const key = foldPath(fp)
+      const existing = totals.get(key)
+      totals.set(key, { path: existing?.path ?? fp, readCount: (existing?.readCount ?? 0) + rc })
     }
   }
   return totals
@@ -1236,7 +1245,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   const limit = opts.limit !== undefined ? requireNonNegativeStrictInt('--limit', opts.limit) : 20
   const totals = loadAllSessionReadCounts()
 
-  let entries: HotEntry[] = [...totals.entries()].map(([p, rc]) => ({ path: p, readCount: rc }))
+  let entries: HotEntry[] = [...totals.values()].map(({ path: p, readCount: rc }) => ({ path: p, readCount: rc }))
 
   if (opts.project === true) {
     const project = findProject(process.cwd())
