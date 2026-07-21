@@ -355,7 +355,15 @@ export function validateReadOnlySelect(sql: string): void {
   }
 }
 
-export type SqliteScalar = string | number | bigint | null | Uint8Array
+// A 64-bit SQLite INTEGER column (large snowflake/hash IDs, nanosecond timestamps) can exceed
+// Number.MAX_SAFE_INTEGER. better-sqlite3's default (non-safe-integer) mode silently rounds such
+// a value to the nearest representable double when reading it back -- e.g. 9223372036854775807
+// comes back as 9223372036854776000, with no error and no indication the value was corrupted.
+// runReadOnlySqliteQuery below reads with safeIntegers enabled and normalizes each value through
+// {@link normalizeSqliteScalar} instead: safe-range integers stay plain numbers (unchanged
+// behavior), and out-of-range ones become an exact decimal string rather than a lossy number --
+// so a raw JS `bigint` (which JSON.stringify cannot serialize) never actually reaches a caller.
+export type SqliteScalar = string | number | null | Uint8Array
 
 export interface SqliteQueryRow {
   [column: string]: SqliteScalar
@@ -376,6 +384,24 @@ export interface SqliteQueryResult {
  * instead of materializing an unbounded array first. See the module doc for why this does not
  * bound a single-row pathological aggregate.
  */
+/** Converts one raw better-sqlite3 result value (read with `safeIntegers(true)`, so every SQLite
+ * INTEGER column arrives as a `bigint`) into a {@link SqliteScalar}: a `bigint` that still fits a
+ * safe JS number converts to a plain `number` (identical to the pre-existing non-safe-integer
+ * behavior for the overwhelmingly common case), while one that doesn't converts to its exact
+ * decimal string instead of silently rounding -- see the {@link SqliteScalar} module doc. */
+function normalizeSqliteScalar(value: unknown): SqliteScalar {
+  if (typeof value === 'bigint') {
+    return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString()
+  }
+  return value as SqliteScalar
+}
+
+function normalizeSqliteRow(row: Record<string, unknown>): SqliteQueryRow {
+  const out: SqliteQueryRow = {}
+  for (const [k, v] of Object.entries(row)) out[k] = normalizeSqliteScalar(v)
+  return out
+}
+
 export function runReadOnlySqliteQuery(filePath: string, sql: string, opts: { rowCap?: number } = {}): SqliteQueryResult {
   validateReadOnlySelect(sql)
   const rowCap = opts.rowCap ?? SQLITE_QUERY_ROW_CAP
@@ -397,6 +423,11 @@ export function runReadOnlySqliteQuery(filePath: string, sql: string, opts: { ro
       throw new Error('only read-only SELECT statements are allowed (sqlite-query is read-only)')
     }
 
+    // See the SqliteScalar module doc: without this, a 64-bit INTEGER column value beyond
+    // Number.MAX_SAFE_INTEGER is silently rounded to the nearest representable double on the way
+    // out, with no error and no indication of the corruption.
+    stmt.safeIntegers(true)
+
     let columns: string[] = []
     try {
       columns = stmt.columns().map((c) => c.name)
@@ -406,12 +437,12 @@ export function runReadOnlySqliteQuery(filePath: string, sql: string, opts: { ro
 
     const rows: SqliteQueryRow[] = []
     let rowCapped = false
-    for (const row of stmt.iterate() as IterableIterator<SqliteQueryRow>) {
+    for (const row of stmt.iterate() as IterableIterator<Record<string, unknown>>) {
       if (rows.length >= rowCap) {
         rowCapped = true
         break
       }
-      rows.push(row)
+      rows.push(normalizeSqliteRow(row))
     }
 
     return { columns, rows, rowCapped }
