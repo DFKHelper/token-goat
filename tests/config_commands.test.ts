@@ -414,6 +414,25 @@ describe('cmdConfig set input validation hardening', () => {
     expect(fs.existsSync(_testConfigPath)).toBe(false)
   })
 
+  it('accepts a config set value exactly at the documented max instead of rejecting the boundary itself (regression: an off-by-one clamp would silently reject/alter the exact max, not just values past it)', () => {
+    // compact_assist.min_events bounds are {min: 0, max: 1000} -- 1000 itself must be a legal, unclamped value.
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '1000' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.compact_assist.min_events).toBe(1000)
+  })
+
+  it('accepts a cross-field clampTo value exactly equal to the field it must not exceed (regression: an off-by-one on the clampTo comparison would reject/alter the exact boundary, not just values past it)', () => {
+    // bash_compress.cache_max_bytes_per_output has clampTo: 'bash_compress.cache_max_bytes' -- setting
+    // it to exactly the current cache_max_bytes value must be accepted unclamped, not rejected.
+    cmdConfig({ action: 'set', key: 'bash_compress.cache_max_bytes', value: '20971520' })
+    invalidateConfigCache()
+    cmdConfig({ action: 'set', key: 'bash_compress.cache_max_bytes_per_output', value: '20971520' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    expect(cfg.bash_compress.cache_max_bytes_per_output).toBe(20971520)
+  })
+
   it('rejects a typo\'d compression.profile value instead of silently persisting it and falling back at runtime (#237)', () => {
     // Pre-fix, coerce() returned the raw string unchanged for any non-boolean/number/array
     // field with no revalidation, so `config set compression.profile agressive` reported
