@@ -580,6 +580,24 @@ describe('haskellFilter compress', () => {
     expect(out).toContain('collapsed 3 module compilation(s)')
     expect(out).toContain('Build completed')
   })
+
+  // Regression: makeLanguageFilter's dedupeRules truncated the dedup key to the first 40
+  // characters by default, so a 4th distinct Warning: line sharing a long common leading
+  // substring with 3 earlier ones collided into the same key and was silently dropped as
+  // a false "repeat" even though its content (beyond char 40) genuinely differs.
+  it('does not drop a distinct 4th warning that shares its first 40 characters with 3 others', () => {
+    const prefix = 'Warning: The package list for hackage.haskell.org is 90 days old (foo-service-'
+    const w1 = `${prefix}alpha)`
+    const w2 = `${prefix}beta)`
+    const w3 = `${prefix}gamma)`
+    const w4 = `${prefix}delta)`
+    const lines = [w1, w2, w3, w4, 'Build completed'].join('\n')
+    const out = compress(haskellFilter, lines, ['cabal', 'build'])
+    expect(out).toContain('service-alpha')
+    expect(out).toContain('service-beta')
+    expect(out).toContain('service-gamma')
+    expect(out).toContain('service-delta')
+  })
 })
 
 describe('elmFilter dispatch', () => {

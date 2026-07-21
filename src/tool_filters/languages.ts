@@ -1155,7 +1155,6 @@ export const haskellFilter = makeLanguageFilter({
     {
       re: HASKELL_WARNING_RE,
       maxPerKey: 3,
-      keyLen: 40,
       note: (n) => `deduplicated ${n} repeated warning(s)`,
     },
   ],

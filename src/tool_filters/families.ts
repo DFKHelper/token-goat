@@ -655,7 +655,8 @@ export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
         let deduped = false
         for (let i = 0; i < dRules.length; i++) {
           if (dRules[i]!.re.test(line)) {
-            const key = line.slice(0, dRules[i]!.keyLen ?? 40)
+            // Do not truncate the key by default: a fixed-length cap makes two DISTINCT lines that share a long leading substring collide, silently dropping one as a false "repeat" (only truncate when a rule explicitly opts in via keyLen).
+            const key = dRules[i]!.keyLen !== undefined ? line.slice(0, dRules[i]!.keyLen) : line
             const ds = dState[i]!
             const seen = (ds.seen.get(key) ?? 0) + 1
             ds.seen.set(key, seen)
