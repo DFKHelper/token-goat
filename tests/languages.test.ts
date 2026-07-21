@@ -3750,6 +3750,21 @@ one_liner() { echo hi; }
     expect(symbols.find((s) => s.name === 'deploy')?.kind).toBe('function')
   })
 
+  it('does not treat a var/function inside a bare { ...; } grouping block as top-level', () => {
+    // Regression: a bash `{ ...; }` compound-command grouping block (not a function) bumps
+    // braceDepth but never sets inFunction, so a naive inFunction-only gate wrongly treats
+    // anything nested inside it as top-level.
+    const content = `{
+  echo hello
+  INNER_VAR=set
+}
+NEXT_VAR=ok
+`
+    const symbols = extractBash(content, 'deploy.sh')
+    expect(symbols.find((s) => s.name === 'INNER_VAR')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'NEXT_VAR')).toMatchObject({ kind: 'variable', lineStart: 5 })
+  })
+
   it('does not mistake a word-glued # in ${VAR#pattern} parameter expansion for a comment', () => {
     // Regression: a generic C-style line-comment stripper treats any unquoted `#` as an opener,
     // which would truncate this line at the `#` inside ${APP_NAME#my} and never see NEXT_VAR.
