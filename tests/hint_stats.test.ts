@@ -261,6 +261,29 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.resolved).toBe(1)
   })
 
+  it('does not credit acted_on when a later command touches a different file that merely shares the correlator as a prefix (e.g. foo.ts vs foo.tsx)', () => {
+    const n = nonce()
+    logHintEmission('bash_redirect', n, 'C:/repo/foo.ts')
+    // foo.tsx is a distinct, unrelated file whose path happens to start with the exact
+    // correlator text 'C:/repo/foo.ts' -- a naive `command.includes(correlator)` check would
+    // wrongly credit this as following the hint about foo.ts.
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat read "C:/repo/foo.tsx::Foo"'))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.acted_on).toBe(0)
+  })
+
+  it('does not credit acted_on for bash_recall when a later id merely shares the correlator as a prefix (e.g. ab12 vs ab1234)', () => {
+    const n = nonce()
+    logHintEmission('bash_recall', n, 'ab12')
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat bash-output ab1234'))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.acted_on).toBe(0)
+  })
+
   it('resolves as not-acted-on once the window is exhausted by unrelated tool calls', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, 'C:/repo/file.ts')
