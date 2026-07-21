@@ -20,7 +20,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol, runRead, runSection, runSemantic } from '../src/read_commands.js'
+import { runSymbol, runRead, runSection, runSemantic, runImports } from '../src/read_commands.js'
 import { summarize } from '../src/stats.js'
 
 describe('read_commands surgical-read stat recording (#238)', () => {
@@ -108,6 +108,26 @@ describe('read_commands surgical-read stat recording (#238)', () => {
       }
 
       const after = summarize(30).by_kind['semantic_search']
+      expect(after).toBeDefined()
+      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runImports records an imports stat row through the real global stats DB', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-statrec-imports-'))
+    try {
+      const file = join(root, 'd.ts')
+      writeFileSync(file, "import { statRecImportsThing9k2 } from './statRecImportsMod9k2.js'\n")
+
+      const before = summarize(30).by_kind['imports']
+      const beforeEvents = before?.events ?? 0
+
+      const code = runImports({ file })
+      expect(code).toBe(0)
+
+      const after = summarize(30).by_kind['imports']
       expect(after).toBeDefined()
       expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
     } finally {

@@ -3025,15 +3025,21 @@ export function runImports(opts: ImportsExportsOptions): number {
     return 0
   }
 
+  const fullSourceBytes = sumFileSizes([opts.file])
+
   if (opts.json === true) {
     const capped = guardJsonRows(imports)
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+    const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+    emit(jsonText)
+    recordReadStat('imports', fullSourceBytes, jsonText, opts.file)
     return 0
   }
 
-  for (const imp of imports) {
-    emit(`import  ${imp}`)
+  const outLines = imports.map((imp) => `import  ${imp}`)
+  for (const line of outLines) {
+    emit(line)
   }
+  recordReadStat('imports', fullSourceBytes, outLines.join('\n'), opts.file)
   return 0
 }
 
