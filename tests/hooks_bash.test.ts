@@ -1631,11 +1631,12 @@ describe('preBashHandler — curl GET recall', () => {
     expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('never caches (nor recalls) a curl GET carrying an Authorization header, in either -H or --header spelling', async () => {
+  it('never caches (nor recalls) a curl GET carrying an Authorization header, in -H, --header, or --header= spelling', async () => {
     const largeOutput = '{"user":"me"}'.repeat(200)
     for (const cmd of [
       "curl -s -H 'Authorization: Bearer token123' https://api.example.com/me",
       "curl -s --header 'Authorization: Bearer token123' https://api.example.com/me",
+      "curl -s --header='Authorization: Bearer token123' https://api.example.com/me",
     ]) {
       clearModuleCaches()
       await postBashHandler(makePostBashEvent(cmd, largeOutput))
@@ -2708,6 +2709,18 @@ describe('gh api recall (F4)', () => {
     const cmd = 'gh api repos/octocat/hello --header "Authorization: Bearer ghp_x"'
     await postBashHandler(makePostBashEvent(cmd, bigBody))
     expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache a gh api carrying an Authorization header via the --header= equals-sign spelling', async () => {
+    const cmd = 'gh api repos/octocat/hello --header="Authorization: Bearer ghp_x"'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('caches a gh api with --method=GET even alongside field flags (equals-sign spelling)', async () => {
+    const cmd = 'gh api repos/octocat/hello/x --method=GET -f per_page=1'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(true)
   })
 
   it('does not cache a gh api response below the size floor', async () => {

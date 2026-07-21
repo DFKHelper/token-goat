@@ -826,15 +826,18 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
 function curlHasUnsafeFlags(cmd: string): boolean {
   // Explicit non-GET method
   if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
-  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
+  if (/--request(?:\s+|=)(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return true
   // Request body (implies non-GET)
   if (/(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return true
   // Auth credentials — skip caching to avoid leaking tokens into the output store. The header
   // check covers both curl's short (-H) and long (--header) spellings — the long form was
   // previously unmatched, so `curl --header 'Authorization: ...' <url>` slipped past this guard
   // and got cached (and recall-hinted) with the credential embedded in the stored command string.
+  // It also allows `=` as well as whitespace between the long flag and its value, since curl accepts
+  // both `--header 'Authorization: ...'` and `--header='Authorization: ...'` (and same for --user) --
+  // the space-only form previously let the `=` spelling slip past uncached.
   if (/(?:^|\s)(?:-u|--user)\b/.test(cmd)) return true
-  if (/(?:-H|--header)\s+['"]?Authorization/i.test(cmd)) return true
+  if (/(?:-H|--header)(?:\s+|=)['"]?Authorization/i.test(cmd)) return true
   return false
 }
 
@@ -858,9 +861,10 @@ function isCurlGetCommand(cmd: string): boolean {
 function isReadOnlyGhApi(cmd: string): boolean {
   if (!/^gh\s+api\b/.test(cmd)) return false
   if (/\bgraphql\b/.test(cmd)) return false
-  if (/(?:-H|--header)\s+['"]?Authorization/i.test(cmd)) return false
-  if (/(?:-X|--method)\s+GET\b/i.test(cmd)) return true
-  if (/(?:-X|--method)\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/i.test(cmd)) return false
+  // gh (Go's pflag) accepts `=` as well as whitespace between a long OR short flag and its value (`-X=GET`, `--method=GET`, `-H=...`, `--header=...`), unlike curl's getopt-style short flags -- the space-only form previously let the `=` spelling slip past these guards uncached/miscategorized.
+  if (/(?:-H|--header)(?:\s+|=)['"]?Authorization/i.test(cmd)) return false
+  if (/(?:-X|--method)(?:\s+|=)GET\b/i.test(cmd)) return true
+  if (/(?:-X|--method)(?:\s+|=)(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/i.test(cmd)) return false
   if (/\s(?:-f|-F|--field|--raw-field|--input)\b/.test(cmd)) return false
   return true
 }
