@@ -2149,25 +2149,34 @@ export function runChanged(opts: ChangedOptions = {}): number {
       emit('No symbols changed.')
       return 0
     }
+    const symbolFullBytes = sumFileSizes(changedFiles.map((f) => resolveIndexPath(f, projectRoot)))
     if (opts.json === true) {
       const capped = guardJsonRows(allSymbols)
-      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+      const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+      emit(text)
+      recordReadStat('changed_lookup', symbolFullBytes, text, ref)
       return 0
     }
+    const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`).join('\n')
     for (const s of allSymbols) {
       emit(`${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`)
     }
+    recordReadStat('changed_lookup', symbolFullBytes, symbolText, ref)
     return 0
   }
 
+  const fullBytes = sumFileSizes(changedFiles.map((f) => resolveIndexPath(f, projectRoot)))
   if (opts.json === true) {
     const capped = guardJsonRows(changedFiles)
-    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
+    const text = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
+    emit(text)
+    recordReadStat('changed_lookup', fullBytes, text, ref)
     return 0
   }
   for (const f of changedFiles) {
     emit(f)
   }
+  recordReadStat('changed_lookup', fullBytes, changedFiles.join('\n'), ref)
   return 0
 }
 

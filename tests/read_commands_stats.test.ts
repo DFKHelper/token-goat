@@ -13,6 +13,7 @@
  * tests/image_shrink.test.ts's equivalent #236 regression test for the same reasoning.
  */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -20,7 +21,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSymbol, runRead, runSection, runSemantic, runImports } from '../src/read_commands.js'
+import { runSymbol, runRead, runSection, runSemantic, runImports, runChanged } from '../src/read_commands.js'
 import { summarize } from '../src/stats.js'
 
 describe('read_commands surgical-read stat recording (#238)', () => {
@@ -128,6 +129,32 @@ describe('read_commands surgical-read stat recording (#238)', () => {
       expect(code).toBe(0)
 
       const after = summarize(30).by_kind['imports']
+      expect(after).toBeDefined()
+      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runChanged records a changed_lookup stat row through the real global stats DB', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-statrec-changed-'))
+    try {
+      execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root, stdio: 'ignore' })
+      const file = join(root, 'e.ts')
+      writeFileSync(file, 'export const statRecChangedVal9k2 = 1\n')
+      execFileSync('git', ['add', '.'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' })
+      writeFileSync(file, 'export const statRecChangedVal9k2 = 2\n')
+
+      const before = summarize(30).by_kind['changed_lookup']
+      const beforeEvents = before?.events ?? 0
+
+      const code = runChanged({ ref: 'HEAD', projectRoot: root })
+      expect(code).toBe(0)
+
+      const after = summarize(30).by_kind['changed_lookup']
       expect(after).toBeDefined()
       expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
     } finally {
