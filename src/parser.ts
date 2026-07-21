@@ -81,6 +81,7 @@ interface TsNode {
   readonly endPosition: TsPoint
   readonly namedChildren: TsNode[]
   readonly parent: TsNode | null
+  readonly previousNamedSibling: TsNode | null
   childForFieldName(field: string): TsNode | null
 }
 interface TsTree {
@@ -432,6 +433,24 @@ const RUST_FN_SCOPE_TYPES: ReadonlySet<string> = new Set(['function_item', 'clos
 // Rust declaration kinds that are package-level symbols at top level but locals inside a function body; gated on scope. Only value bindings are excluded - nested structs, enums, functions, traits, impls, and types stay indexed, mirroring how the TS/JS extractor keeps nested classes and functions while dropping local `const`/`let`/`var`.
 const RUST_LOCAL_KINDS: ReadonlySet<string> = new Set(['const_item'])
 
+// Rust `#[...]` attributes (`#[derive(Debug)]`, `#[test]`, `#[async_trait]`, ...) parse as
+// standalone `attribute_item` siblings immediately preceding the item they annotate, not as a
+// wrapping parent node the way Python's `decorated_definition` wraps a decorated def/class. Left
+// unhandled, an item's own tree-sitter range starts at its keyword (`fn`/`struct`/`enum`/...),
+// silently dropping every attribute line above it from `read`/`skeleton` output and from
+// `lineStart`. Walk backward through contiguous leading `attribute_item` siblings (there can be
+// more than one stacked, e.g. `#[derive(Debug)]` then `#[allow(dead_code)]`) so the emitted range
+// includes them, mirroring the Python decorator-folding fix for the same underlying gap.
+function leadingRustAttributes(node: TsNode): TsNode[] {
+  const attrs: TsNode[] = []
+  let cur = node.previousNamedSibling
+  while (cur !== null && cur.type === 'attribute_item') {
+    attrs.unshift(cur)
+    cur = cur.previousNamedSibling
+  }
+  return attrs
+}
+
 function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
@@ -442,7 +461,20 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       const name =
         node.type === 'impl_item' ? (node.childForFieldName('type')?.text ?? null) : nodeName(node)
       if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
+        const attrs = leadingRustAttributes(node)
+        if (attrs.length === 0) {
+          out.push(makeSymbol(filePath, name, kind, node))
+        } else {
+          out.push({
+            filePath,
+            name,
+            kind,
+            lineStart: attrs[0]!.startPosition.row + 1,
+            lineEnd: node.endPosition.row + 1,
+            body: [...attrs, node].map((n) => n.text).join('\n'),
+            docstring: '',
+          })
+        }
       }
     }
 

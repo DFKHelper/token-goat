@@ -407,6 +407,33 @@ describe('parseFile', () => {
     expect(names).not.toContain('CLOSURE_C')
   })
 
+  it('folds leading Rust attributes (#[derive], #[test], stacked attrs) into the symbol range', async () => {
+    const rustFile = write(
+      'attrs.rs',
+      [
+        '#[derive(Debug)]',
+        '#[allow(dead_code)]',
+        'struct Widget { x: i32 }',
+        '',
+        '#[test]',
+        'fn check() { assert!(true); }',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    const widget = result.symbols.find((s) => s.name === 'Widget')
+    expect(widget).toBeDefined()
+    // The range starts at the earliest stacked attribute, not the `struct` keyword.
+    expect(widget!.lineStart).toBe(1)
+    expect(widget!.body).toContain('#[derive(Debug)]')
+    expect(widget!.body).toContain('#[allow(dead_code)]')
+
+    const check = result.symbols.find((s) => s.name === 'check')
+    expect(check).toBeDefined()
+    expect(check!.lineStart).toBe(5)
+    expect(check!.body).toContain('#[test]')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
