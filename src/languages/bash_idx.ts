@@ -88,7 +88,7 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
 
     if (!stripped) continue
 
-    if (!inFunction && !awaitingFunctionBrace) {
+    if (!inFunction && !awaitingFunctionBrace && braceDepth === 0) {
       const kwMatch = FUNC_KEYWORD_RE.exec(stripped)
       const posixMatch = kwMatch === null ? FUNC_POSIX_RE.exec(stripped) : null
       const funcMatch = kwMatch ?? posixMatch
