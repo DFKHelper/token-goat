@@ -588,6 +588,18 @@ describe('CargoFilter', () => {
     expect(passIdx).toBeLessThan(failIdx)
   })
 
+  // Regression: _compressBench used `runnerHeaderCount > 1` to decide whether to keep a
+  // "running N tests" header line, which drops the *first* occurrence (the common case: a
+  // single bench binary emits exactly one such header) and only keeps repeats -- the inverse
+  // of the "keep first occurrence, drop dupes" idiom used elsewhere in this file (e.g.
+  // MSBUILD_BUILD_STARTED_RE's `buildStartedCount === 0`). The header is useful context (how
+  // many benchmarks ran) and must not be silently dropped for the single-binary case.
+  it('cargo bench: keeps the running-N-tests header for a single bench binary', () => {
+    const stdout = 'running 3 tests\ntest bench_add ... bench:  12 ns/iter (+/- 3)\ntest bench_sub ... bench:  10 ns/iter (+/- 2)\ntest result: ok. 0 passed; 0 failed; 3 measured\n'
+    const result = apply(f, stdout, '', 0, ['cargo', 'bench'])
+    expect(result).toContain('running 3 tests')
+  })
+
   it('significant compression on large cargo build', () => {
     const stderrLines = [
       ...Array.from({ length: 30 }, (_, i) => `   Downloaded crate-${i} v1.0.0`),
