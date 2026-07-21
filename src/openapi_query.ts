@@ -48,13 +48,38 @@ export interface OpenApiOperation {
 }
 
 /**
+ * Merges path-level `parameters` (shared across every method on a path item, per the OpenAPI
+ * spec) ahead of an operation's own `parameters`. Per the spec, "a unique parameter is defined
+ * by a combination of a name and location" and an operation-level parameter with the same
+ * name+location as a path-level one overrides it rather than adding a second entry -- so this
+ * dedupes on (name, in), keeping the operation-level definition when both are present. A
+ * parameter missing a string `name` or `in` can't be deduped against anything and is always
+ * kept as-is (mirrors the shape of a malformed-but-present parameter object elsewhere in this
+ * module, which degrades gracefully rather than throwing).
+ */
+function mergeParameters(pathLevelParams: unknown[], ownParams: unknown[]): unknown[] {
+  const keyOf = (p: unknown): string | null => {
+    if (typeof p !== 'object' || p === null) return null
+    const rec = p as Record<string, unknown>
+    return typeof rec['name'] === 'string' && typeof rec['in'] === 'string' ? `${rec['in']}\x00${rec['name']}` : null
+  }
+  const ownKeys = new Set(ownParams.map(keyOf).filter((k): k is string => k !== null))
+  const inheritedParams = pathLevelParams.filter((p) => {
+    const key = keyOf(p)
+    return key === null || !ownKeys.has(key)
+  })
+  return [...inheritedParams, ...ownParams]
+}
+
+/**
  * Flattens `spec.paths` into one entry per (path, method) operation, sorted by path then method
  * so the outline reads the same regardless of the spec author's own key order. Path-level
  * `parameters` (shared across every method on that path item, per the OpenAPI spec) are merged
- * ahead of each operation's own `parameters` so a caller sees the full applicable parameter set
- * without re-deriving the merge themselves. Malformed input (no object, no `paths`, a
- * non-object path item) degrades to an empty list rather than throwing -- "0 operations found"
- * is a more useful signal than a crash for a spec that parsed but isn't shaped like OpenAPI.
+ * ahead of each operation's own `parameters` (see {@link mergeParameters}) so a caller sees the
+ * full applicable parameter set without re-deriving the merge themselves. Malformed input (no
+ * object, no `paths`, a non-object path item) degrades to an empty list rather than throwing --
+ * "0 operations found" is a more useful signal than a crash for a spec that parsed but isn't
+ * shaped like OpenAPI.
  */
 export function extractOperations(spec: unknown): OpenApiOperation[] {
   if (typeof spec !== 'object' || spec === null) return []
@@ -81,7 +106,7 @@ export function extractOperations(spec: unknown): OpenApiOperation[] {
         ...(typeof op['summary'] === 'string' ? { summary: op['summary'] } : {}),
         ...(typeof op['description'] === 'string' ? { description: op['description'] } : {}),
         ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
-        parameters: [...pathLevelParams, ...ownParams],
+        parameters: mergeParameters(pathLevelParams, ownParams),
         ...(op['requestBody'] !== undefined ? { requestBody: op['requestBody'] } : {}),
         responses: typeof op['responses'] === 'object' && op['responses'] !== null ? (op['responses'] as Record<string, unknown>) : {},
       })
