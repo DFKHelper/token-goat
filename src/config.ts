@@ -652,9 +652,20 @@ const ENV_KEYS = [
   'TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT',
 ]
 
+// Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered
+// in CONFIG_KEY_ENV_OVERRIDES (below) as the per-field canonical source of truth. Fold those in
+// here rather than relying solely on the hand-maintained ENV_KEYS list above: a var added only
+// to CONFIG_KEY_ENV_OVERRIDES (as happened for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES and
+// TOKEN_GOAT_OCR_ENABLED, both consumed in _buildConfig but omitted from ENV_KEYS) would
+// otherwise silently drop out of the fingerprint, letting loadConfig()'s cache serve a stale
+// config across a change to that var with no cache-invalidation signal at all.
+function allEnvKeys(): string[] {
+  return [...new Set([...ENV_KEYS, ...Object.values(CONFIG_KEY_ENV_OVERRIDES).flat()])]
+}
+
 export function configEnvFingerprint(): string {
   const snap: Record<string, string | undefined> = {}
-  for (const k of ENV_KEYS) {
+  for (const k of allEnvKeys()) {
     snap[k] = process.env[k]
   }
   return JSON.stringify(snap)
@@ -945,20 +956,26 @@ export function invalidateConfigCache(): void {
 }
 
 /**
- * Run `fn` with every config-affecting env var (the {@link ENV_KEYS} registry) temporarily
- * cleared, then restore the original values. Safe because `_buildConfig` is fully
- * synchronous — no other code can observe the env vars while they are unset.
+ * Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the
+ * hand-maintained {@link ENV_KEYS} list) temporarily cleared, then restore the original values.
+ * Safe because `_buildConfig` is fully synchronous — no other code can observe the env vars
+ * while they are unset. Using only ENV_KEYS here previously let a var missing from that list
+ * (e.g. TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES, TOKEN_GOAT_OCR_ENABLED) survive the clear and leak
+ * into buildPersistedConfig()'s output, defeating this function's whole purpose for that var:
+ * a transient env override would get permanently written to config.toml by `config set` on any
+ * unrelated key instead of staying scoped to the current invocation.
  */
 function withoutConfigEnv<T>(fn: () => T): T {
+  const keys = allEnvKeys()
   const saved: Record<string, string | undefined> = {}
-  for (const k of ENV_KEYS) {
+  for (const k of keys) {
     saved[k] = process.env[k]
     delete process.env[k]
   }
   try {
     return fn()
   } finally {
-    for (const k of ENV_KEYS) {
+    for (const k of keys) {
       const v = saved[k]
       if (v === undefined) delete process.env[k]
       else process.env[k] = v
