@@ -59,11 +59,17 @@ export function readMcpConfig(projectRoot: string): McpServerConfig | null {
 /**
  * Analyze bash output cache for MCP server calls.
  * Returns a map of server name -> call metrics.
+ * MCP results share {@link BASH_OUTPUT_SUBDIR} with plain Bash-tool output
+ * entries (see mcp_cache.ts's storeMcpOutput), distinguished only by the
+ * `mcp_` id prefix it mints -- same filter cmdMcpHistory uses in
+ * cache_session_commands.ts. Without it, ordinary Bash command output sitting
+ * in the same cache falls through the `command` regex below into the
+ * 'unknown' bucket and gets miscounted as MCP server cost.
  */
 export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstimate: number; totalBytes: number }> {
   const serverMetrics = new Map<string, { callCount: number; perCallEstimate: number; totalBytes: number }>()
 
-  const blobs = listBlobs(BASH_OUTPUT_SUBDIR)
+  const blobs = listBlobs(BASH_OUTPUT_SUBDIR).filter((b) => b.id.startsWith('mcp_'))
   for (const { value } of blobs) {
     if (typeof value !== 'object' || value === null) continue
 
