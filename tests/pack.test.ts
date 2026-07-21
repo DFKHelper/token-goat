@@ -307,6 +307,22 @@ describe('symlink escape guard', () => {
   })
 })
 
+describe('estimateBudget token estimation', () => {
+  it('scales the token estimate for files bigger than the 100000-byte sample, like it already does for lines', () => {
+    const filePath = path.join(TMP, 'big.txt')
+    // 1,020,000 bytes total, well past the 100000-byte token sample cap.
+    fs.writeFileSync(filePath, ('x'.repeat(50) + '\n').repeat(20000))
+
+    const result = estimateBudget(TMP, ['big.txt'])
+
+    const entry = result.entries[0]
+    expect(entry).toBeDefined()
+    // A capped, un-extrapolated estimate would report ~25000 (100000 / 4); the true
+    // size-proportional estimate is ~255000 (1020000 / 4).
+    expect(entry!.tokens).toBeGreaterThan(200000)
+  })
+})
+
 describe('formatBudgetText', () => {
   it('formats budget output with proper column alignment (no stray commas)', () => {
     const result = {

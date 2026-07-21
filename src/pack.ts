@@ -655,8 +655,14 @@ export function estimateBudget(
         const sampleSize = Math.min(1000, data.length)
         const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
         lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
-        const text = data.toString('utf8', 0, Math.min(100000, data.length))
-        tokens = estimateTokens(text)
+        const tokenSampleSize = Math.min(100000, data.length)
+        const text = data.toString('utf8', 0, tokenSampleSize)
+        const sampleTokens = estimateTokens(text)
+        // Extrapolate the same way `lines` does above -- estimateTokens only saw the first
+        // tokenSampleSize bytes, so for a file bigger than that sample this must be scaled up
+        // by the truncation ratio or large files silently report a tiny fraction of their real
+        // token count (e.g. a 1MB file capped at ~25000 tokens instead of ~255000).
+        tokens = data.length > tokenSampleSize ? Math.ceil(sampleTokens * (data.length / tokenSampleSize)) : sampleTokens
       } catch {
         result.skipped.push(`${rel} (unreadable)`)
         continue
