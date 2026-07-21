@@ -596,6 +596,12 @@ describe('LinterFilter (generic)', () => {
     expect(result.text).toContain('--- separator (non-issue) ---')
     // Both rules survive (each under its keep-3 cap).
     expect(result.text).toContain('unit-no-unknown')
+    // The header must lead the block, before any of its own violation/separator lines.
+    const outLines = result.text.split('\n')
+    const headerLine = outLines.findIndex((l) => l.includes('src/component.tsx'))
+    const firstIssueOrSep = outLines.findIndex((l) => l.includes('indentation') || l.includes('separator'))
+    expect(headerLine).toBeGreaterThanOrEqual(0)
+    expect(headerLine).toBeLessThan(firstIssueOrSep)
   })
 })
 

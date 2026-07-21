@@ -39,6 +39,7 @@ function _compressEslintStanza(text: string): string {
     if (!currentFile.length) return
     const header = currentFile[0]!
     const body = currentFile.slice(1)
+    out.push(header)
     let perRule = new Map<string, string[]>()
     for (const line of body) {
       if (!_ESLINT_LOC_RE.test(line)) {
@@ -55,7 +56,6 @@ function _compressEslintStanza(text: string): string {
       bucket.push(line)
       perRule.set(rule, bucket)
     }
-    out.push(header)
     out.push(..._emitEslintRules(perRule))
     currentFile = []
   }
