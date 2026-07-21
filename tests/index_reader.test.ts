@@ -9,6 +9,7 @@ import {
   getFileEntry,
   queryRefCounts,
   queryRefs,
+  queryRefsByContext,
   querySymbols,
   searchSymbolsFts,
 } from '../src/index_reader.js'
@@ -100,6 +101,27 @@ describe('index_reader round-trips inserted rows', () => {
     expect(querySymbols({ filePath: 'a.ts', kind: 'function' }, dbPath)).toHaveLength(1)
   })
 
+  // Regression coverage: mutation testing (cycle 65) found `limit` was fully unenforced by the
+  // whole test suite -- a mutant that hardcoded `LIMIT 999999` in place of the bound `limit`
+  // parameter passed every existing test green. Many CLI callers (DIDYOUMEAN_LIMIT,
+  // ALL_SYMBOLS_IN_FILE_LIMIT, FIND_SCAN_LIMIT in read_commands.ts/graph_commands.ts) depend on
+  // this cap actually truncating the result set.
+  it('querySymbols caps results at the requested limit, defaulting to 100', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    for (let i = 0; i < 150; i++) {
+      stmt.run(`f${i}.ts`, `sym${i}`, 'function', 1, 2, '', '')
+    }
+
+    expect(querySymbols({}, dbPath)).toHaveLength(100)
+    expect(querySymbols({ limit: 5 }, dbPath)).toHaveLength(5)
+    expect(querySymbols({ limit: 150 }, dbPath)).toHaveLength(150)
+  })
+
   it('queryRefs returns inserted references scoped by file', () => {
     const dbPath = tmpDbPath()
     const db = getDb(dbPath)
@@ -114,6 +136,34 @@ describe('index_reader round-trips inserted rows', () => {
     expect(scoped).toHaveLength(1)
     expect(scoped[0]?.line).toBe(9)
     expect(scoped[0]?.context).toBe('await login()')
+  })
+
+  it('queryRefs caps results at the requested limit, defaulting to 100', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (let i = 0; i < 150; i++) {
+      stmt.run(`f${i}.ts`, 'login', i + 1, 0, '')
+    }
+
+    expect(queryRefs({ name: 'login' }, dbPath)).toHaveLength(100)
+    expect(queryRefs({ name: 'login', limit: 5 }, dbPath)).toHaveLength(5)
+    expect(queryRefs({ name: 'login', limit: 150 }, dbPath)).toHaveLength(150)
+  })
+
+  it('queryRefsByContext caps results at 20', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (let i = 0; i < 25; i++) {
+      stmt.run('a.ts', `base${i}`, i + 1, 0, 'Impl')
+    }
+
+    expect(queryRefsByContext('Impl', 'a.ts', dbPath)).toHaveLength(20)
   })
 
   // Regression: global.db is a single machine-wide index shared across every project ever
