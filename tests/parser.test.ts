@@ -210,6 +210,25 @@ describe('parseFile', () => {
     expect(foo?.body.startsWith("@app.route('/x')")).toBe(true)
   })
 
+  it('includes the decorator line(s) in a decorated TS method\'s line range and body', async () => {
+    const file = write(
+      'decorated.ts',
+      'class Foo {\n  @Log()\n  @Cache\n  method() {\n    return 1\n  }\n}\n',
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('typescript')
+    const method = result.symbols.find((s) => s.name === 'method')
+    // Regression: tree-sitter-typescript parses a method's `@decorator` as a standalone
+    // `decorator` sibling inside `class_body`, not a field wrapping `method_definition` (unlike a
+    // decorated class field, where the decorator IS a field on the node) — so the symbol built
+    // from the bare method_definition node started at `method()`, silently dropping both
+    // `@decorator` lines above it from `read`/`skeleton` output.
+    expect(method?.kind).toBe('method')
+    expect(method?.lineStart).toBe(2)
+    expect(method?.lineEnd).toBe(6)
+    expect(method?.body.startsWith('@Log()')).toBe(true)
+  })
+
   it('labels a method defined inside a control-flow block in a class as a method', async () => {
     const file = write(
       'c.py',
