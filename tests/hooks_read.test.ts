@@ -457,6 +457,32 @@ describe('preReadHandler', () => {
         expect(result.message).toContain('already read this session')
       }
     })
+
+    it('denies a re-read exactly at the protected-window boundary (rank == n is outside the window, not inside it)', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 2
+      saveConfig(cfg)
+
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
+
+      const target = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(target))
+
+      // Exactly two other files read after the target push its recency rank to 2 (0-indexed)
+      // -- the boundary itself. With protect_recent_reads=2, ranks 0 and 1 are protected but
+      // rank 2 is not (rank < n, not rank <= n), so this must still deny.
+      for (let i = 0; i < 2; i++) {
+        vi.setSystemTime(new Date(2026, 0, 1, 12, 0, i + 1))
+        recordFileRead(normalizePath(makeTmpFile(`other-${i}`)))
+      }
+
+      const result = preReadHandler(readEvent(target))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('already read this session')
+      }
+    })
   })
 
   // Regression: hints.min_file_lines_for_hint was defined, validated, persisted, and
@@ -895,6 +921,25 @@ describe('preReadHandler', () => {
     }
   })
 
+  it('treats a large file with only a handful of long lines (well under NEAR_SINGLE_LINE_SCAN_THRESHOLD) as near-single-line, not just a literal one-line file', () => {
+    // 15 lines of 40000 chars each (~600KB total, above the default large-file-deny threshold) — few enough lines that line-based
+    // offset/limit windowing still can't meaningfully shrink the read, but not literally
+    // one line. Regression coverage for the NEAR_SINGLE_LINE_SCAN_THRESHOLD boundary itself
+    // (previously only exercised by a genuinely single-line file, which passes trivially
+    // regardless of the threshold's exact value).
+    const content = Array.from({ length: 15 }, (_, i) => `${i}`.repeat(40000)).join('\n')
+    const p = makeTmpFile(content)
+
+    const result = preReadHandler(readEventWithRange(p, 1, 1_000_000))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+      expect(result.message).toContain('mostly one long line')
+      expect(result.message).not.toContain('Use Read with offset/limit to sample specific sections')
+      expect(result.message).not.toContain('narrow the range further')
+    }
+  })
+
   it('allows a mid-size (20-100KB) .txt read when offset/limit narrows it to a small slice — exercises the universal file-type-handler branch (handleTxt), not just the top-level large-file gate', () => {
     // 50KB: above FILE_TYPE_THRESHOLDS.txt (20KB) but below LARGE_FILE_BYTES (100KB), so this
     // is gated by the per-type handler branch, not the earlier whole-file size branch.
@@ -991,6 +1036,17 @@ describe('preReadHandler', () => {
     // "is large" context nudge from the large-file branch (checked first), not the
     // generic file-type handler's hard block that fired below the old, higher
     // 102,400-byte LARGE_FILE_BYTES boundary.
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('is large')
+    }
+  })
+
+  it('treats a file at exactly the LARGE_FILE_BYTES boundary as large (>= the threshold triggers the hint, not just strictly-above)', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.xyz`)
+    fs.writeFileSync(p, 'x'.repeat(FILE_TYPE_THRESHOLDS.generic))
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('is large')
@@ -2586,6 +2642,15 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
       expect(result.message).toContain('--tail 50')
+    }
+  })
+
+  it('denies a first read of tasks/*.output at exactly TASK_OUTPUT_DENY_BYTES (>= the threshold denies, not just strictly-above)', () => {
+    const p = makeTasksOutputFile('x'.repeat(20 * 1024)) // exactly TASK_OUTPUT_DENY_BYTES (20KB)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
     }
   })
 
