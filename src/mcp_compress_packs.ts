@@ -224,8 +224,13 @@ const GWORKSPACE_BODY_KEYS = new Set(['plaintextBody', 'plaintext_body', 'body']
 /** Attachment fields worth keeping once an entry's binary payload is summarized away. */
 const GWORKSPACE_ATTACHMENT_KEEP_KEYS = new Set(['id', 'filename', 'name', 'mimeType', 'mime_type', 'size', 'inline'])
 
-/** Matches a line opening a quoted-reply chain: a `>`-quoted line, a standard "On ... wrote:" header, or an Outlook-style "-----Original Message-----" separator. */
-const QUOTED_REPLY_LINE_RE = /^(?:>|On .{0,120} wrote:|-{2,}\s*Original Message\s*-{2,})$/i
+/** Matches a line opening a quoted-reply chain: a `>`-quoted line (any line starting with `>`,
+ * not just a bare `>` on its own -- real quoted lines almost always carry quoted text after the
+ * marker, e.g. `> Thanks, sounds good.`), a standard "On ... wrote:" header, or an Outlook-style
+ * "-----Original Message-----" separator. Only the latter two require a full-line match ($) --
+ * the `>` branch intentionally has no trailing anchor so it still matches when quoted content
+ * follows on the same line. */
+const QUOTED_REPLY_LINE_RE = /^(?:>|On .{0,120} wrote:$|-{2,}\s*Original Message\s*-{2,}$)/i
 
 /** Matches a bare `From:` header line, the opener of an embedded forwarded-message header block. Not sufficient on its own -- an ordinary sentence can start with "From:", and a single coincidental sibling like a stray "To:" line is still not conclusive -- so this only counts when followed within a few lines by at least {@link FORWARD_HEADER_CLUSTER_MIN_MATCHES} sibling headers (see {@link FORWARD_HEADER_CLUSTER_RE}). */
 const FORWARD_HEADER_FROM_RE = /^From:\s/i

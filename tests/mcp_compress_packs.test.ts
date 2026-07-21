@@ -404,6 +404,20 @@ describe('compressGWorkspaceMcpResult', () => {
       expect(resultBody).not.toContain('Alice <alice@example.com>')
     }
   })
+
+  it('trims a quoted-reply chain that starts directly with a ">" line and no "On ... wrote:" header', () => {
+    const quotedTail = '> Hey, can we push the meeting to 3pm?\n> Thanks,\n> Bob'.padEnd(4000, ' filler quoted text ')
+    const body = `Sure, sounds good to me.\n\n${quotedTail}`
+    const text = JSON.stringify({ messages: [{ id: '1', body }] })
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const resultBody = (JSON.parse(compressed) as { messages: { id: string; body: string }[] }).messages[0].body
+      expect(resultBody).toContain('Sure, sounds good to me.')
+      expect(resultBody).not.toContain('Hey, can we push the meeting to 3pm?')
+      expect(resultBody).not.toContain('filler quoted text')
+    }
+  })
 })
 
 // --- compressMcpResultWithPacks (dispatch) -----------------------------------
