@@ -301,6 +301,7 @@ export class LsFilter extends ToolFilter {
     const keptEntryIdx = new Set(entryIdx.slice(0, _LS_MAX_ENTRIES))
     const hiddenCount = entryIdx.length - keptEntryIdx.size
     const fileEntries = entryIdx
+      .slice(_LS_MAX_ENTRIES)
       .map(i => lines[i]!)
       .filter(l => !_DIR_EXE_DIR_ENTRY_RE.test(l))
     const extPart = _lsExtSummary(fileEntries)
@@ -346,7 +347,7 @@ export class LsFilter extends ToolFilter {
     }
     out.push(...entries.slice(0, _LS_MAX_ENTRIES))
     const hidden = entries.length - _LS_MAX_ENTRIES
-    const extPart = _lsExtSummary(entries)
+    const extPart = _lsExtSummary(entries.slice(_LS_MAX_ENTRIES))
     if (extPart) {
       out.push(_LS_HIDDEN_MARKER_EXT.replace('{n}', String(hidden)).replace('{ext_summary}', () => extPart))
     } else {
