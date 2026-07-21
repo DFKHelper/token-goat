@@ -175,6 +175,21 @@ describe('cost aggregation', () => {
     expect(byFile[0]?.tokens).toBeGreaterThan(0)
   })
 
+  // Regression: FILE_PATH_TOOLS omitted MultiEdit, even though hooks_edit.ts registers it
+  // identically to Edit/Write and it carries the same file_path field. tokensByFile silently
+  // dropped every MultiEdit call's cost from the per-file breakdown instead of attributing it.
+  it('tokensByFile also aggregates MultiEdit calls, keyed by file_path', () => {
+    const transcript = writeFixture(tempDir, [
+      toolUseLine('t1', 'MultiEdit', { file_path: '/b.ts', edits: [{ old_string: 'x', new_string: 'y' }] }),
+      toolResultLine('t1', 'ok'.repeat(50)),
+    ])
+    const costs = costPerCall(parseTranscript(transcript))
+    const byFile = tokensByFile(costs)
+    expect(byFile).toHaveLength(1)
+    expect(byFile[0]?.key).toBe('/b.ts')
+    expect(byFile[0]?.tokens).toBeGreaterThan(0)
+  })
+
   it('topExpensiveCalls returns the N highest-cost calls, descending', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'Read', { file_path: '/small.ts' }),
