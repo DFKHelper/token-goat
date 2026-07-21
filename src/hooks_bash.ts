@@ -1353,9 +1353,13 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
     if (isSql) {
-      return cdStripped
-        ? contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
-        : denyOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/extractWslCatFile's
+      // deliberate SQL-never-deny design (see the "Item 4 (nestpilot mining)" regression test) --
+      // a schema/migration file is routinely read in full for review, and `token-goat section
+      // "file::table_name"` only extracts one block at a time, so denying the whole-file read here
+      // (as the cd-unprefixed branch below does for every other file type) would block a legitimate
+      // workflow this hint category was never meant to gate that hard.
+      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc)
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)

@@ -2426,6 +2426,18 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent('cat script.sh'))
     expect(result.hookType).toBe('pass')
   })
+
+  // Regression: the PowerShell-wrapped Get-Content SQL branch used to deny (not advise) whenever
+  // the command had no cd-prefix, breaking the deliberate SQL-never-deny design every other SQL
+  // extractor (cat/wsl-cat) already follows -- see the two tests directly above.
+  it('emits context hint (not deny) for a PowerShell-wrapped Get-Content of a SQL file, with no cd prefix', () => {
+    const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'schema.sql'"`))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('CREATE TABLE')
+    }
+  })
 })
 
 // Regression (e3fb46e): redirect to a quoted filename must be stripped for cache keying
