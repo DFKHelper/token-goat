@@ -157,6 +157,27 @@ describe('extractOperations', () => {
     expect(getById?.parameters).toEqual([{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }])
   })
 
+  it('lets an operation-level parameter override a path-level one sharing the same name+location instead of duplicating it', () => {
+    const spec = {
+      openapi: '3.0.0',
+      paths: {
+        '/widgets/{id}': {
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'generic id' }],
+          get: {
+            operationId: 'getWidget',
+            parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'the widget id' }],
+            responses: { '200': { description: 'OK' } },
+          },
+        },
+      },
+    }
+    const ops = extractOperations(spec)
+    const getWidget = ops.find((o) => o.operationId === 'getWidget')
+    expect(getWidget?.parameters).toEqual([
+      { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'the widget id' },
+    ])
+  })
+
   it('captures operationId, summary, description, and tags when present', () => {
     const ops = extractOperations(SPEC_JSON)
     const getById = ops.find((o) => o.operationId === 'getUserById')
