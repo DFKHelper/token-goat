@@ -37,7 +37,7 @@ describe('hooks_session', () => {
     }
   });
 
-  it('should handle user_prompt_submit event for short prompts', () => {
+  it('user_prompt_submit passes through without calling git for short prompts', () => {
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -48,11 +48,13 @@ describe('hooks_session', () => {
         cwd: '/tmp',
       },
     };
-    expect(event.sessionId).toBe('test-session');
-    expect(event.raw['prompt']).toBe('k');
+    const result = userPromptSubmitHandler(event);
+    expect(result.hookType).toBe('pass');
+    expect(util.runGit).not.toHaveBeenCalled();
   });
 
-  it('should handle user_prompt_submit event for longer prompts', () => {
+  it('user_prompt_submit emits a branch hint for longer prompts', () => {
+    vi.mocked(util.runGit).mockReturnValue({ stdout: 'feature/foo', stderr: '', exitCode: 0 });
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -60,26 +62,28 @@ describe('hooks_session', () => {
       sessionId: 'test-session',
       raw: {
         prompt: 'this is a longer test prompt that should pass the length check',
-        cwd: '/tmp',
+        cwd: '/tmp/repo',
       },
     };
-    expect(event.sessionId).toBe('test-session');
-    const prompt = event.raw['prompt'] as string;
-    expect(prompt.length).toBeGreaterThan(8);
+    const result = userPromptSubmitHandler(event);
+    expect(result.hookType).toBe('context');
+    expect((result as { context: string }).context).toContain('feature/foo');
   });
 
-  it('should handle subagent_stop event with missing sessionId', () => {
+  it('subagent_stop passes through without calling git when sessionId is missing', () => {
     const event: HookEvent = {
       eventName: 'subagent_stop',
       toolName: undefined,
       toolInput: {},
       sessionId: '',
-      raw: {},
+      raw: { cwd: '/tmp/repo' },
     };
-    expect(event.sessionId).toBe('');
+    const result = subagentStopHandler(event);
+    expect(result.hookType).toBe('pass');
+    expect(util.runGit).not.toHaveBeenCalled();
   });
 
-  it('should handle subagent_stop event with missing cwd', () => {
+  it('subagent_stop passes through without calling git when cwd is missing', () => {
     const event: HookEvent = {
       eventName: 'subagent_stop',
       toolName: undefined,
@@ -87,8 +91,9 @@ describe('hooks_session', () => {
       sessionId: 'test-session',
       raw: {},
     };
-    expect(event.sessionId).toBe('test-session');
-    expect(event.raw['cwd']).toBeUndefined();
+    const result = subagentStopHandler(event);
+    expect(result.hookType).toBe('pass');
+    expect(util.runGit).not.toHaveBeenCalled();
   });
 
   describe('subagentStopHandler - hallucination detection', () => {
