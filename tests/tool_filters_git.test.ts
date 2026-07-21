@@ -1483,3 +1483,44 @@ describe('GitFilter diff/show honors [bash_diff].max_hunks_per_file (not hardcod
     expect(out).toContain('new line 5')
   })
 })
+
+// ---------------------------------------------------------------------------
+// GitDiffFilter (the filter actually reached by real `git diff`/`git show`
+// invocations, via GIT_FILTERS' selectFilter ordering) — [bash_diff].max_hunks_per_file
+//
+// Regression coverage for a real gap: GitDiffFilter routes to
+// _compressGitDiffBody, which only trimmed the CONTENT of individual large hunks
+// (MAX_HUNK_CHANGED) but never capped the NUMBER of hunks kept per file -- so a
+// configured [bash_diff].max_hunks_per_file had zero effect on `git diff`/`git show`
+// output, unlike the raw `diff` command (shell_file.ts's DiffFilter) and the
+// never-dispatched GitFilter fallback above, both of which did honor it.
+// ---------------------------------------------------------------------------
+
+describe('GitDiffFilter (live git diff/show path) honors [bash_diff].max_hunks_per_file', () => {
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(configPath())
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('a low configured max_hunks_per_file caps the number of hunks kept, with a density-cap note', () => {
+    const cfg = defaultConfig()
+    cfg.bash_diff.max_hunks_per_file = 2
+    saveConfig(cfg)
+
+    const out = apply(gitDiffFilter, makeMultiHunkDiff(6), ['git', 'diff'])
+    expect(out).toContain('more hunks, avg density')
+    // Only 2 of the 6 hunks should survive.
+    const survivingLines = [0, 1, 2, 3, 4, 5].filter((h) => out.includes(`new line ${h}`))
+    expect(survivingLines.length).toBe(2)
+  })
+
+  it('selectFilter routes real `git diff` to this filter (confirms the config path above is live, not dead code)', () => {
+    expect(selectFilter(['git', 'diff'])).toBeInstanceOf(GitDiffFilter)
+  })
+})
