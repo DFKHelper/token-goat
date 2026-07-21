@@ -1375,7 +1375,7 @@ export class CargoFilter extends ToolFilter {
     for (const line of benchLines) {
       if (CARGO_TEST_RUNNING_RE.test(line)) {
         runnerHeaderCount++
-        if (runnerHeaderCount > 1) kept.push(line)
+        if (runnerHeaderCount === 1) kept.push(line)
         continue
       }
       kept.push(line)
