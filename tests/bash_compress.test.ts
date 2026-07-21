@@ -16,6 +16,16 @@ describe('stripAnsiCodes', () => {
   it('returns plain text unchanged (fast path)', () => {
     expect(stripAnsiCodes('no escapes here')).toBe('no escapes here')
   })
+
+  it('strips a truncated OSC sequence with no BEL/ST terminator instead of leaking the dangling payload', () => {
+    const truncated = 'before\x1B]0;window title cut off mid-write'
+    expect(stripAnsiCodes(truncated)).toBe('before')
+  })
+
+  it('strips an unterminated OSC sequence to end-of-string rather than leaking its payload text after a 2-byte partial strip', () => {
+    const bare = 'before\x1B]after'
+    expect(stripAnsiCodes(bare)).toBe('before')
+  })
 })
 
 describe('compressOutput', () => {
