@@ -5,7 +5,13 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
-import { isTreeSitterAvailable, parseFile, stripPythonStringQuotes } from '../src/parser.js'
+import {
+  isParseSkipEligible,
+  isTreeSitterAvailable,
+  isUnderSkipDir,
+  parseFile,
+  stripPythonStringQuotes,
+} from '../src/parser.js'
 
 let TMP: string
 
@@ -1115,5 +1121,32 @@ describe('stripPythonStringQuotes', () => {
   it('handles string prefixes (r, b, f, u)', () => {
     expect(stripPythonStringQuotes('r"raw string"')).toBe('raw string')
     expect(stripPythonStringQuotes('f"formatted"')).toBe('formatted')
+  })
+})
+
+describe('isUnderSkipDir', () => {
+  it('matches a path segment that is a containing directory, not the file itself (mutation-testing gap: the last segment -- the filename -- must be excluded from the skip-dir check, or a file whose own basename happens to equal a skip_dirs entry gets wrongly treated as living under a skipped directory)', () => {
+    expect(isUnderSkipDir('/repo/node_modules/pkg/index.js', ['node_modules'])).toBe(true)
+    // The file itself is literally named "dist" (no extension) -- this must NOT match, since
+    // skip_dirs describes containing directories, not filenames.
+    expect(isUnderSkipDir('/repo/src/dist', ['dist'])).toBe(false)
+    expect(isUnderSkipDir('/repo/src/dist/bundle.js', ['dist'])).toBe(true)
+  })
+})
+
+describe('isParseSkipEligible', () => {
+  const cfg = { skip_dirs: [], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576 }
+
+  it('does not skip a file whose size sits exactly at the cap (mutation-testing gap: the boundary check must be strictly greater-than, not greater-than-or-equal)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+    const file = path.join(tmpDir, 'exact.txt')
+    fs.writeFileSync(file, Buffer.alloc(1024, 'a'))
+
+    expect(isParseSkipEligible(file, cfg)).toBe(false)
+
+    fs.writeFileSync(file, Buffer.alloc(1025, 'a'))
+    expect(isParseSkipEligible(file, cfg)).toBe(true)
+
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 })

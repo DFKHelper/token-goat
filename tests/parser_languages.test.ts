@@ -313,6 +313,49 @@ real_key: value
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('does not prematurely close a multi-line double-quoted value on an escaped quote (mutation-testing gap: yamlLineClosesQuote/yamlOpenQuoteAfter must skip past a backslash-escaped quote as two chars, not one, or a `\\"` inside a wrapped value is mistaken for the real closing quote and the next line is misread as a new top-level key)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'escaped-quote.yaml')
+
+      const content = `description: "This has an escaped \\" quote and
+fake_key: this looks like a key but is really string content
+still wrapping"
+real_key: value
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('description')
+      expect(names).toContain('real_key')
+      expect(names).not.toContain('fake_key')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('does not prematurely close a multi-line double-quoted value on an escaped quote on a continuation line (mutation-testing gap: yamlLineClosesQuote must skip past a backslash-escaped quote as two chars, not one)', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'escaped-quote-continuation.yaml')
+
+      const content = `description: "This spans multiple lines and
+has an escaped \\" quote here and
+fake_key: this looks like a key but is really string content
+still wrapping"
+real_key: value
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('description')
+      expect(names).toContain('real_key')
+      expect(names).not.toContain('fake_key')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('toml symbols', () => {
