@@ -89,7 +89,7 @@ function safeStringify(value: unknown): string {
   }
 }
 
-const FILE_PATH_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit'])
+const FILE_PATH_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 
 function extractFilePath(name: string, input: unknown): string | null {
   if (!FILE_PATH_TOOLS.has(name)) return null
