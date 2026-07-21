@@ -161,6 +161,23 @@ Line one appended last
     const outline = buildTranscriptOutline(cues, 10)
     expect(outline.markers.length).toBeLessThanOrEqual(10)
   })
+
+  // Regression: Math.max(...cues.map(...)) spreads every cue as an individual call argument,
+  // which throws "RangeError: Maximum call stack size exceeded" once the array is large enough
+  // (empirically >~120k elements on V8/Node) instead of computing the max -- a real crash on
+  // any long auto-generated word-level caption transcript, not just a theoretical concern.
+  it('does not throw on a very large cue array (Math.max spread call-stack limit)', () => {
+    const cues = Array.from({ length: 150000 }, (_, i) => ({
+      index: i + 1,
+      startSeconds: i,
+      endSeconds: i + 1,
+      speaker: null,
+      text: `cue ${i}`,
+    }))
+    expect(() => buildTranscriptOutline(cues, 10)).not.toThrow()
+    const outline = buildTranscriptOutline(cues, 10)
+    expect(outline.durationSeconds).toBe(150000)
+  })
 })
 
 describe('sliceTranscript', () => {
