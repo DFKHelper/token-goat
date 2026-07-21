@@ -2044,6 +2044,22 @@ export interface ChangedOptions {
  * A pure-deletion hunk (new-side count of 0) has no new-side lines to report; it is anchored
  * to its single insertion point instead, so a symbol sitting at that point still counts as touched.
  */
+/** Matches a unified-diff hunk header (`@@ -a,b +c,d @@`); shared by parseDiffHunks and splitDiffHunks. */
+const HUNK_HEADER_RE = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
+
+/**
+ * Computes a hunk's new-side line range from its header match. A pure-deletion hunk (new-side
+ * count of 0) has no new-side lines to report; it is anchored to its single insertion point
+ * instead, so a symbol sitting at that point still counts as touched.
+ */
+function hunkHeaderRange(m: RegExpExecArray): { start: number; end: number } {
+  const newStart = parseInt(m[1]!, 10)
+  const newLines = m[2] !== undefined ? parseInt(m[2], 10) : 1
+  return newLines === 0
+    ? { start: Math.max(newStart, 1), end: Math.max(newStart, 1) }
+    : { start: newStart, end: newStart + newLines - 1 }
+}
+
 export function parseDiffHunks(diffText: string): Map<string, Array<{ start: number; end: number }>> {
   const hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
   let currentFile: string | null = null
@@ -2058,14 +2074,9 @@ export function parseDiffHunks(diffText: string): Map<string, Array<{ start: num
       currentFile = null
       continue
     }
-    const hunkMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    const hunkMatch = HUNK_HEADER_RE.exec(line)
     if (hunkMatch !== null && currentFile !== null) {
-      const newStart = parseInt(hunkMatch[1]!, 10)
-      const newLines = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1
-      const range =
-        newLines === 0
-          ? { start: Math.max(newStart, 1), end: Math.max(newStart, 1) }
-          : { start: newStart, end: newStart + newLines - 1 }
+      const range = hunkHeaderRange(hunkMatch)
       const existing = hunksByFile.get(currentFile)
       if (existing !== undefined) {
         existing.push(range)
@@ -2181,10 +2192,9 @@ function splitDiffHunks(diffText: string): {
   hunks: Array<{ text: string; start: number; end: number }>
 } {
   const lines = diffText.split(/\r?\n/)
-  const hunkHeaderRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/
   let preambleEnd = lines.length
   for (let i = 0; i < lines.length; i++) {
-    if (hunkHeaderRe.test(lines[i]!)) {
+    if (HUNK_HEADER_RE.test(lines[i]!)) {
       preambleEnd = i
       break
     }
@@ -2194,20 +2204,15 @@ function splitDiffHunks(diffText: string): {
   let i = preambleEnd
   while (i < lines.length) {
     const line = lines[i]!
-    const m = hunkHeaderRe.exec(line)
+    const m = HUNK_HEADER_RE.exec(line)
     if (m === null) {
       i++
       continue
     }
-    const newStart = parseInt(m[1]!, 10)
-    const newLines = m[2] !== undefined ? parseInt(m[2], 10) : 1
-    const range =
-      newLines === 0
-        ? { start: Math.max(newStart, 1), end: Math.max(newStart, 1) }
-        : { start: newStart, end: newStart + newLines - 1 }
+    const range = hunkHeaderRange(m)
     const bodyLines = [line]
     let j = i + 1
-    while (j < lines.length && !hunkHeaderRe.test(lines[j]!)) {
+    while (j < lines.length && !HUNK_HEADER_RE.test(lines[j]!)) {
       bodyLines.push(lines[j]!)
       j++
     }
