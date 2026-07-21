@@ -27,10 +27,14 @@ export interface DoctorResult {
 }
 
 /**
- * Check if the token-goat worker process is running.
+ * Check if the token-goat worker process is running for `dataDir`. Accepts an explicit
+ * `dataDir` (defaulting to the real install dir via isWorkerRunning's own default) so a
+ * caller diagnosing a specific data directory -- as runDoctor does when given a non-default
+ * `dataDir`, exactly like checkDbExists/checkSymbolCount/checkDirtyQueueHealth already do --
+ * checks that directory's pid file rather than always the real default one.
  */
-export function checkWorkerRunning(): boolean {
-  return isWorkerRunning()
+export function checkWorkerRunning(dataDir?: string): boolean {
+  return dataDir !== undefined ? isWorkerRunning(dataDir) : isWorkerRunning()
 }
 
 /**
@@ -386,14 +390,14 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
  */
 export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[] {
   const results: DoctorResult[] = []
+  const actualDataDir = dataDir || defaultDataDir()
 
   // Basic checks
   results.push(checkInstall())
   results.push(checkTsCompiler())
-  results.push(checkWorkerRunning() ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
+  results.push(checkWorkerRunning(actualDataDir) ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
   // File checks
-  const actualDataDir = dataDir || defaultDataDir()
   results.push(checkDbExists(actualDataDir))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db')))
   results.push(checkDirtyQueueHealth(actualDataDir))

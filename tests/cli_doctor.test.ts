@@ -343,6 +343,21 @@ describe('cli_doctor', () => {
         expect(['ok', 'warn', 'fail']).toContain(result.status)
       }
     })
+
+    it('scopes the Worker check to the passed-in dataDir, not the real default install dir', () => {
+      // checkDbExists/checkSymbolCount/checkDirtyQueueHealth all correctly scope to the
+      // dataDir runDoctor was given -- the Worker check must too, or a caller diagnosing
+      // one dataDir gets a report describing an entirely different directory's worker.
+      // A real, currently-alive pid (this test process itself) makes isWorkerRunning's
+      // process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
+      fs.mkdirSync(tempDir, { recursive: true })
+      fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
+
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const worker = results.find((r) => r.name === 'Worker')
+      expect(worker?.status).toBe('ok')
+      expect(worker?.message).toBe('running')
+    })
   })
 
   describe('checkCopilotCli', () => {
