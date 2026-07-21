@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { extractFileDiff } from '../src/pr_slice.js'
 
 // The gh CLI subprocess (pr_slice.ts) and the git subprocess (util.ts::runGit, used for
 // `origin` remote resolution) are mocked independently so no real network/gh-auth/git access
@@ -206,6 +207,23 @@ describe('runPrSlice', () => {
     expect(parsed.diff).toContain('+b')
   })
 
+  it('diff:<path> slice: a Windows-style backslash path still matches the forward-slash git diff header', async () => {
+    const fullDiff = ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1 +1 @@', '-old', '+new'].join('\n')
+    spawnSyncMock
+      .mockReturnValueOnce(GH_OK) // gh --version
+      .mockReturnValueOnce(GH_OK) // gh auth status
+      .mockReturnValueOnce({ status: 0, stdout: fullDiff }) // gh pr diff
+    const { runPrSlice } = await loadModule()
+    let code: number | undefined
+    const { stdout } = capture(() => {
+      code = runPrSlice({ pr: '42', slice: String.raw`diff:src\a.ts`, repo: 'acme/widgets' })
+    })
+    expect(code).toBe(0)
+    expect(stdout).toContain('diff --git a/src/a.ts b/src/a.ts')
+    expect(stdout).toContain('-old')
+    expect(stdout).toContain('+new')
+  })
+
   it('diff:<path> slice: unknown path in the diff reports a clear error', async () => {
     spawnSyncMock
       .mockReturnValueOnce(GH_OK)
@@ -324,5 +342,17 @@ describe('runPrSlice', () => {
     expect(code).toBe(0)
     const parsed = JSON.parse(stdout)
     expect(parsed).toMatchObject({ number: 42, title: 'Add pr-slice command', body: null, author: null, isDraft: true })
+  })
+})
+
+describe('extractFileDiff', () => {
+  const fullDiff = ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1 +1 @@', '-old', '+new'].join('\n')
+
+  it('matches a forward-slash path against git\'s always-forward-slash diff header', () => {
+    expect(extractFileDiff(fullDiff, 'src/a.ts')).toContain('-old')
+  })
+
+  it('matches a Windows-style backslash path against the same forward-slash header', () => {
+    expect(extractFileDiff(fullDiff, String.raw`src\a.ts`)).toContain('-old')
   })
 })
