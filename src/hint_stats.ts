@@ -198,6 +198,15 @@ export function extractPathCorrelator(text: string): string | null {
 
 /** Classifier for hooks_bash.ts's preBashHandler hints. */
 export function classifyBashHint(text: string): Classification {
+  // The `--file "<path>"` form (used by the tasks-output and Python-transcript hints) must be
+  // matched before the bare-id form below: `[A-Za-z0-9_.-]+` includes `-`, so it would otherwise
+  // capture the literal flag token `--file` itself as the correlator, and isActedOn's
+  // `command.includes(correlator)` would then credit ANY later `bash-output --file <anything>`
+  // call as having followed this hint, regardless of which file it actually points at.
+  const fileMatch = /token-goat bash-output --file "([^"]+)"/.exec(text)
+  if (fileMatch?.[1] !== undefined) {
+    return { category: 'bash_recall', correlator: fileMatch[1] }
+  }
   const idMatch = /token-goat bash-output ([A-Za-z0-9_.-]+)/.exec(text)
   if (idMatch?.[1] !== undefined) {
     return { category: 'bash_recall', correlator: idMatch[1] }
