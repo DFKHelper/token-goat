@@ -89,12 +89,14 @@ function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, is
  * surgicalHintFor} covers) can also point at `token-goat skeleton` for the non-doc,
  * non-config case since the caller already knows the file structure is what's wanted.
  */
-function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean): string {
+function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean): string {
   return isConfig
     ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-    : isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    : isSql
+      ? 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
+      : isDoc
+        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
 }
 
 /**
@@ -226,11 +228,12 @@ function classifyFileExtensions(filePath: string): { isDoc: boolean; isEnv: bool
   return { isDoc, isEnv, isConfig, isSql }
 }
 
-/** Shared isDoc/isConfig classification for the tail/head/Get-Content extractors, which fold .sql into isDoc (unlike classifyFileExtensions, which tracks isSql separately). */
-function classifyDocConfig(filePath: string): { isDoc: boolean; isConfig: boolean } {
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+/** Shared isDoc/isConfig/isSql classification for the tail/head/Get-Content/node-read extractors, mirroring classifyFileExtensions's flags so all of them can point a .sql read at the same `table_name`-based hint. */
+function classifyDocConfig(filePath: string): { isDoc: boolean; isConfig: boolean; isSql: boolean } {
+  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { isDoc, isConfig }
+  const isSql = /\.sql$/i.test(filePath)
+  return { isDoc, isConfig, isSql }
 }
 
 function classifyCatPath(
@@ -432,7 +435,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
 }
 
 /** Extracts file path from `head -n X <path>` or `head -X <path>` commands. Returns null for unrecognized patterns or temp files. Also checks N < 10 (already surgical). */
-function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   const m = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const n = parseInt(m[1] ?? m[2] ?? '0', 10)
@@ -441,8 +444,8 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const { isDoc, isConfig } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig }
+  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql }
 }
 
 function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
@@ -525,15 +528,15 @@ function sedOverlapHint(filePath: string, prior: readonly [number, number], star
 }
 
 /** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
-function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   if (!/^node\s+-e/.test(cmd)) return null
   const readSync = /readFileSync\(['"]([^'"]+\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql))['"]/i.exec(cmd)
   if (readSync?.[1]) {
     const filePath = readSync[1]
     if (isOrchestratorStateFile(filePath)) return null
     if (isTempPath(filePath)) return null
-    const { isDoc, isConfig } = classifyDocConfig(filePath)
-    return { filePath, isDoc, isConfig }
+    const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+    return { filePath, isDoc, isConfig, isSql }
   }
   // Also catch require('path/to/file.json') — common for one-liner version lookups
   const requireM = /require\(['"]([^'"]+\.json)['"]\)/i.exec(cmd)
@@ -543,13 +546,13 @@ function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; i
     if (filePath.includes('node_modules')) return null
     if (isOrchestratorStateFile(filePath)) return null
     if (isTempPath(filePath)) return null
-    return { filePath, isDoc: false, isConfig: true }
+    return { filePath, isDoc: false, isConfig: true, isSql: false }
   }
   return null
 }
 
 /** Extracts file path from `tail -n X <path>` or `tail -X <path>` commands on source files. Excludes -f (follow), -c (byte mode), and +N (offset). */
-function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   if (/-f\b/.test(cmd)) return null // follow mode — legitimate streaming
   if (/-c\b/.test(cmd)) return null // byte mode
   if (/-n\s*\+/.test(cmd)) return null // tail from line N offset — legitimate
@@ -561,12 +564,12 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
-  const { isDoc, isConfig } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig }
+  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql }
 }
 
 // Extracts file path from `Get-Content <path> -Tail N` or `Get-Content -Tail N <path>` (PowerShell).
-function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   // Match: Get-Content <file> -Tail <N> or Get-Content -Tail <N> <file>
   const tailMatch = /-Tail\s+(\d+)/i.exec(cmd)
   if (!tailMatch) return null
@@ -582,12 +585,12 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const { isDoc, isConfig } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig }
+  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql }
 }
 
 // Extracts file path from `Get-Content <path> | Select-Object -First N` (PowerShell).
-function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
   if (!m) return null
   const filePath = m[2]?.trim() ?? ''
@@ -596,8 +599,8 @@ function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: b
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
-  const { isDoc, isConfig } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig }
+  const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
+  return { filePath, isDoc, isConfig, isSql }
 }
 
 /**
@@ -1382,41 +1385,43 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const tailResult = extractTailFile(cmd)
   if (tailResult !== null) {
-    const { filePath, isDoc, isConfig } = tailResult
+    const { filePath, isDoc, isConfig, isSql } = tailResult
     recordStat('session_hint', 0, 0)
-    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
+    return contextOutput('`tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
   }
 
   const headResult = extractHeadFile(cmd)
   if (headResult !== null) {
-    const { filePath, isDoc, isConfig } = headResult
+    const { filePath, isDoc, isConfig, isSql } = headResult
     recordStat('session_hint', 0, 0)
-    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
+    return contextOutput('`head` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
   }
 
   const gcTailResult = extractGetContentTail(cmd)
   if (gcTailResult !== null) {
-    const { filePath, isDoc, isConfig } = gcTailResult
+    const { filePath, isDoc, isConfig, isSql } = gcTailResult
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
   }
 
   const gcSelectResult = extractGetContentSelectFirst(cmd)
   if (gcSelectResult !== null) {
-    const { filePath, isDoc, isConfig } = gcSelectResult
+    const { filePath, isDoc, isConfig, isSql } = gcSelectResult
     recordStat('session_hint', 0, 0)
-    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc))
+    return contextOutput('`Select-Object -First` bypasses read hooks. ' + surgicalHintForConfigDoc(filePath, isConfig, isDoc, isSql))
   }
 
   const nodeRead = extractNodeFileRead(cmd)
   if (nodeRead !== null) {
-    const { filePath, isDoc, isConfig } = nodeRead
+    const { filePath, isDoc, isConfig, isSql } = nodeRead
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
-    const hint = isDoc
-      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-      : isConfig
-        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    const hint = isSql
+      ? 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
+      : isDoc
+        ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+        : isConfig
+          ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint) : denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
   }

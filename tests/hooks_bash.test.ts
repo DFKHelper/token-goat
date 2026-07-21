@@ -532,11 +532,27 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('emits advisory context for head command on SQL file', () => {
-    const result = preBashHandler(makeBashEvent('head -15 supabase/migrations/0001_init.sql'))
+  it(
+    'head command on a SQL file suggests table_name, matching cat\'s SQL hint for the same file type ' +
+      '(regression: classifyDocConfig folded .sql into isDoc with no isSql flag, so `head file.sql` got the ' +
+      'generic "SectionHeading" doc phrasing instead of the table_name phrasing `cat file.sql` already gets)',
+    () => {
+      const result = preBashHandler(makeBashEvent('head -15 supabase/migrations/0001_init.sql'))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('table_name')
+        expect(result.context).toContain('CREATE TABLE')
+        expect(result.context).not.toContain('SectionHeading')
+      }
+    },
+  )
+
+  it('tail command on a SQL file suggests table_name, matching head\'s SQL hint', () => {
+    const result = preBashHandler(makeBashEvent('tail -n 30 supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('table_name')
+      expect(result.context).not.toContain('SectionHeading')
     }
   })
 
