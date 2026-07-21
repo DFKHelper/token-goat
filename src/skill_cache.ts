@@ -686,7 +686,11 @@ export function formatAge(ageMs: number): string {
 
 export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]> {
   try {
-    const metas = await listOutputs()
+    // Sort newest-first before the dedup pass below: fs.readdir's returned order is
+    // filesystem-dependent (commonly filename order, not chronological), and the outputId's
+    // sha suffix is unrelated to recency. Without this sort, the dedup-by-first-seen loop below
+    // could pick an arbitrary older version of a multiply-cached skill instead of the newest.
+    const metas = (await listOutputs()).sort((a, b) => b.ts - a.ts)
     const results: CachedSkillInfo[] = []
     const seen = new Set<string>()
 

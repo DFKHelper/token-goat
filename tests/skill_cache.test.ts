@@ -600,6 +600,29 @@ describe('listSkills regression - hyphenated session id', () => {
     expect(skill).toBeDefined()
     expect(skill!.compactLen).toBeGreaterThan(0)
   })
+
+  it('picks the newest cached version of a skill, not whichever meta file readdir happens to return first (fail-on-buggy: dedup-by-first-seen without a ts sort surfaces an arbitrary older version)', async () => {
+    const sessionId = 'sessionrepro12345'
+    const skillName = 'myskill'
+    // Deliberately give the OLDER entry an outputId that sorts alphabetically BEFORE the
+    // NEWER entry's (fs.readdir's order is filesystem-dependent, commonly filename order,
+    // not chronological -- the sha suffix is unrelated to recency).
+    await fs.writeFile(
+      path.resolve(tempDir, `${sessionId}-${skillName}-aaaaaaaa.meta`),
+      JSON.stringify({ outputId: `${sessionId}-${skillName}-aaaaaaaa`, skillName, contentSha: 'aaaaaaaa', bodyBytes: 5, ts: 1000, truncated: false }),
+    )
+    await fs.writeFile(path.resolve(tempDir, `${sessionId}-${skillName}-aaaaaaaa.txt`), 'old')
+    await fs.writeFile(
+      path.resolve(tempDir, `${sessionId}-${skillName}-zzzzzzzz.meta`),
+      JSON.stringify({ outputId: `${sessionId}-${skillName}-zzzzzzzz`, skillName, contentSha: 'zzzzzzzz', bodyBytes: 500, ts: Date.now(), truncated: false }),
+    )
+    await fs.writeFile(path.resolve(tempDir, `${sessionId}-${skillName}-zzzzzzzz.txt`), 'new'.repeat(200))
+
+    const skills = await listSkills(sessionId)
+    const skill = skills.find((s) => s.name === skillName)
+    expect(skill).toBeDefined()
+    expect(skill!.bodyLen).toBe(500)
+  })
 })
 
 describe('hasSessionOutput', () => {
