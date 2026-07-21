@@ -52,52 +52,19 @@ export function stripCstyleComments(
   text: string,
   lineCommentRe?: RegExp,
 ): string {
-  // Strip block comments first, quote-aware (like isInsideStringLiteral /
-  // stripBlockCommentSpan below) so a stray "/*" inside a string literal is not
-  // mistaken for a real comment opener. Comment content is blanked with spaces
-  // (not removed) so line/column offsets are preserved.
+  // Strip block comments first, quote-aware (like isInsideStringLiteral) so a stray "/*" inside a
+  // string literal is not mistaken for a real comment opener. Comment content is blanked with
+  // spaces (not removed) so line/column offsets are preserved. Delegates the actual per-line
+  // scan to `stripBlockCommentSpan` (below), threading `inComment` across lines the same way that
+  // function's own doc comment describes -- this used to duplicate that scan inline; the two
+  // drifting out of sync was a real risk since both are on the tree-sitter-adapter critical path.
   const lines = text.split('\n')
   let inComment = false
   const outLines: string[] = []
   for (const line of lines) {
-    let result = ''
-    let j = 0
-    while (j < line.length) {
-      if (!inComment) {
-        const lineCommentIdx = lineCommentStartIndex(line, ['//'], j)
-        let open = line.indexOf('/*', j)
-        while (
-          open !== -1 &&
-          (isInsideStringLiteral(line, open, j) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
-        ) {
-          open = line.indexOf('/*', open + 1)
-        }
-        if (open === -1) {
-          result += line.slice(j)
-          break
-        }
-        result += line.slice(j, open)
-        const close = line.indexOf('*/', open + 2)
-        if (close === -1) {
-          result += ' '.repeat(line.length - open)
-          inComment = true
-          break
-        }
-        result += ' '.repeat(close + 2 - open)
-        j = close + 2
-        inComment = false
-      } else {
-        const close = line.indexOf('*/', j)
-        if (close === -1) {
-          result += ' '.repeat(line.length - j)
-          break
-        }
-        result += ' '.repeat(close + 2 - j)
-        j = close + 2
-        inComment = false
-      }
-    }
-    outLines.push(result)
+    const { code, inComment: nextInComment } = stripBlockCommentSpan(line, inComment)
+    outLines.push(code)
+    inComment = nextInComment
   }
   let out = outLines.join('\n')
   if (lineCommentRe !== undefined) {
