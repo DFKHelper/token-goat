@@ -725,11 +725,13 @@ export class BanditFilter extends ToolFilter {
       if (inIssue) {
         issueBuf.push(line)
         if (line.trim() === '' || line.trim().startsWith('--')) {
+          // flushIssue() already emits this closing line via issueBuf (for HIGH/MEDIUM);
+          // pushing it again here would duplicate it, and for LOW severity (fully dropped)
+          // it would leak the separator despite the whole issue being collapsed.
           flushIssue()
           inIssue = false
           issueBuf = []
           currentSeverity = ''
-          if (line.trim()) kept.push(line)
         } else {
           const sevM = /Severity:\s*(\w+)/i.exec(line)
           if (sevM) currentSeverity = sevM[1] ?? ''
