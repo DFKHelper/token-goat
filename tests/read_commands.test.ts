@@ -3530,6 +3530,34 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     expect(stderr.toLowerCase()).toContain('top')
     expect(mockQueryRefs).not.toHaveBeenCalled()
   })
+
+  // Regression: queryRefs defaults to a 100-row cap ordered by file_path/line (an alphabetical
+  // ordering, not count-based) -- sized for "read these individual matches", not for the
+  // by-file aggregation --top exists specifically to serve on high-fanout (100+ ref) symbols.
+  // Without overriding that default, --top's ranking silently drops every ref in
+  // alphabetically-later files before the count comparison ever happens.
+  it('scans well beyond the default 100-row cap when --top is given without an explicit --limit (single-symbol spec)', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
+    capture(() => runRefs({ spec: 'login', top: 2 }))
+    const call = mockQueryRefs.mock.calls[0]?.[0] as { limit?: number }
+    expect(call.limit).toBeGreaterThan(100)
+  })
+
+  it('scans well beyond the default 100-row cap when --top is given without an explicit --limit (multi-symbol spec)', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
+    capture(() => runRefs({ spec: 'login,refresh', top: 2 }))
+    for (const call of mockQueryRefs.mock.calls) {
+      const opts = call[0] as { limit?: number }
+      expect(opts.limit).toBeGreaterThan(100)
+    }
+  })
+
+  it('still honors an explicit --limit alongside --top instead of overriding it with the wide top-scan limit', () => {
+    mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x')])
+    capture(() => runRefs({ spec: 'login', top: 2, limit: 5 }))
+    const call = mockQueryRefs.mock.calls[0]?.[0] as { limit?: number }
+    expect(call.limit).toBe(5)
+  })
 })
 
 // A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the
