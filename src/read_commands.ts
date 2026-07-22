@@ -3065,6 +3065,20 @@ export function extractImports(text: string, ext: string): string[] {
       const m = /^\s*using\s+(?:static\s+)?([\w.]+)\s*;/.exec(line)
       if (m) push(m[1])
     }
+  } else if (e === '.php') {
+    // PHP's require_once/include_once are the idiomatic form (avoids double-inclusion) -- far
+    // more common in real code than bare require/include -- but the generic `import|require|
+    // use|#include` fallback below requires whitespace immediately after the matched keyword,
+    // so "require_once 'x.php'" never matches at all (the `_once` suffix sits where `\s+` is
+    // expected): every require_once/include_once line silently reported zero imports/deps.
+    // Mirrors php.ts's REQUIRE_RE/USE_RE, which already extract these same directives correctly
+    // for the symbol index.
+    for (const line of lines) {
+      const req = /^\s*(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/.exec(line)
+      if (req) { push(req[1]); continue }
+      const use = /^\s*use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/.exec(line)
+      if (use) push(use[1])
+    }
   } else if (['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'].includes(e)) {
     for (const line of lines) {
       const m = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/.exec(line)
