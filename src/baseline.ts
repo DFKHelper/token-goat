@@ -31,6 +31,8 @@ export interface ProjectMap {
   readonly languages: Record<string, number>
   readonly topSymbols: SymbolEntry[]
   readonly recentFiles: string[]
+  // Effective compact decision this map was built with -- true when the caller passed --compact, OR the file count crossed repomap.compact_file_threshold. Callers MUST pass this (not their own raw opts.compact) to formatProjectMap so the rendering matches what topSymbols/recentFiles were actually sized for.
+  readonly compact: boolean
 }
 
 // Directories never worth walking for a project overview. Matched by basename.
@@ -183,8 +185,11 @@ export function buildProjectMap(
   opts: { compact?: boolean } = {},
 ): ProjectMap {
   const root = path.resolve(rootDir)
-  const { files, languages } = walkProject(root, { excludeTests: loadConfig().repomap.exclude_tests })
-  const symbolLimit = opts.compact ? 10 : 30
+  const config = loadConfig()
+  const { files, languages } = walkProject(root, { excludeTests: config.repomap.exclude_tests })
+  // Auto-switch to the compact rendering once a project's file count crosses repomap.compact_file_threshold, even when the caller didn't pass --compact -- keeps the default `map`/`baseline` output within a sane token budget on large repos without requiring every large-project user to remember the flag.
+  const compact = opts.compact === true || files.length > config.repomap.compact_file_threshold
+  const symbolLimit = compact ? 10 : 30
   const topSymbols = fetchTopSymbols(symbolLimit, globalDbPath(), root)
 
   // Recent files: most-recently-modified source files, capped for the summary.
@@ -199,7 +204,7 @@ export function buildProjectMap(
       return { f, mtime }
     })
     .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, opts.compact ? 5 : 15)
+    .slice(0, compact ? 5 : 15)
     .map((x) => path.relative(root, x.f))
 
   return {
@@ -208,6 +213,7 @@ export function buildProjectMap(
     languages,
     topSymbols,
     recentFiles,
+    compact,
   }
 }
 

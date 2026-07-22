@@ -26,7 +26,7 @@ beforeEach(() => {
   // unaffected; individual tests override as needed. indexing.skip_dirs is set empty so
   // walkProject's merge of it never trips on these fixtures.
   vi.mocked(loadConfig).mockReturnValue({
-    repomap: { exclude_tests: false },
+    repomap: { exclude_tests: false, compact_file_threshold: 50 },
     indexing: { skip_dirs: [] },
   } as unknown as ReturnType<typeof loadConfig>)
 })
@@ -99,6 +99,39 @@ describe('buildProjectMap', () => {
     const map = buildProjectMap(TMP)
 
     expect(map.fileCount).toBe(2)
+  })
+
+  // Regression: repomap.compact_file_threshold was validated from TOML and exported by
+  // `token-goat config export`, but buildProjectMap never consulted it -- a project over the
+  // threshold rendered the full (non-compact) map even without --compact, same bug shape as the
+  // exclude_tests regression above.
+  it('auto-enables compact once file count crosses repomap.compact_file_threshold, even without --compact', () => {
+    write('a.ts', 'export const a = 1\n')
+    write('b.ts', 'export const b = 2\n')
+    vi.mocked(loadConfig).mockReturnValue({
+      repomap: { exclude_tests: false, compact_file_threshold: 1 },
+      indexing: { skip_dirs: [] },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const map = buildProjectMap(TMP)
+
+    expect(map.fileCount).toBe(2)
+    expect(map.compact).toBe(true)
+    // Compact caps recentFiles at 5 (irrelevant here) but the observable proof is the flag
+    // itself and that formatProjectMap(map, map.compact) renders the terser form.
+    expect(formatProjectMap(map, map.compact)).not.toContain('## Recent files')
+  })
+
+  it('stays non-compact under the threshold when --compact was not requested', () => {
+    write('a.ts', 'export const a = 1\n')
+    vi.mocked(loadConfig).mockReturnValue({
+      repomap: { exclude_tests: false, compact_file_threshold: 50 },
+      indexing: { skip_dirs: [] },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const map = buildProjectMap(TMP)
+
+    expect(map.compact).toBe(false)
   })
 })
 
