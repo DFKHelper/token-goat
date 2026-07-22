@@ -1251,9 +1251,15 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       return 0
     }
     if (opts.json === true) {
+      // queryCsv already applies --head to `result.rows` before returning, so a bare
+      // rowsJson.length (== capped.totalCount below) would report the head-limited count, not
+      // the true number of matching rows -- result.totalRows (computed pre-head inside queryCsv)
+      // is the only honest total. Same fix shape as runQueryCommand's json-query/yaml-query and
+      // symbol/refs's SQL-LIMIT totalCount fix.
       const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+      const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
-      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows }))
     } else {
       emit(formatCsvTable(result))
     }
@@ -1737,17 +1743,21 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
 
   try {
     const result = runReadOnlySqliteQuery(opts.file, opts.sql)
+    const totalCount = result.rows.length
     const headTruncated = head !== undefined && result.rows.length > head
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
     if (opts.json === true) {
+      // totalCount must come from `result.rows.length` (captured above, before --head slices
+      // `rows`) -- capped.totalCount would report the already-head-limited row count instead of
+      // the true result size, same lie as runCsvQuery's --head/--json bug.
       const capped = guardJsonRows(rows)
       emit(
         JSON.stringify({
           columns: result.columns,
           items: capped.items,
           truncated: capped.truncated || headTruncated || result.rowCapped,
-          totalCount: capped.totalCount,
+          totalCount,
           rowCapped: result.rowCapped,
         }),
       )

@@ -1903,6 +1903,23 @@ describe('read_commands', () => {
       expect(stdout).not.toContain('Bob')
     })
 
+    // Regression: --json + --head reported totalCount/truncated off the already-head-limited
+    // rows array (queryCsv applies --head internally before returning), so a 50-row CSV capped
+    // to --head 5 showed totalCount:5 truncated:false -- indistinguishable from "the file only
+    // has 5 rows" even though 45 real rows were silently dropped. Fixed by reading
+    // queryCsv's own pre-head result.totalRows instead of the post-head array's length.
+    it('reflects --head truncation honestly in the --json envelope (regression: totalCount used to equal the head-limited count, not the true row count)', () => {
+      const f = path.join(tempDir, 'head_json.csv')
+      const lines = ['id,name']
+      for (let i = 1; i <= 50; i++) lines.push(`${i},row${i}`)
+      fs.writeFileSync(f, lines.join('\n') + '\n')
+      const { stdout } = capture(() => { runCsvQuery({ file: f, head: '5', json: true }) })
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.items.length).toBe(5)
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(50)
+    })
+
     // Regression: --head was parsed with raw parseInt instead of the same
     // requireNonNegativeInt validation the parallel xlsx --head path already uses. A
     // non-numeric value produced NaN, which `.slice(0, NaN)` silently turns into 0 rows
@@ -2420,6 +2437,18 @@ describe('read_commands', () => {
         const parsed = JSON.parse(stdout)
         expect(parsed.items).toEqual([{ id: 1 }])
         expect(parsed.truncated).toBe(true)
+      })
+
+      // Regression: totalCount was read off the already-head-sliced rows array (capped.totalCount),
+      // so --head 1 against a 3-row result reported totalCount:1 instead of the true row count 3 --
+      // a JSON consumer had no honest signal of how many rows the query actually matched.
+      it('reports the true row count in totalCount, not the --head-limited count', () => {
+        const f = makeFixtureDb()
+        const { stdout } = capture(() => {
+          runSqliteQuery({ file: f, sql: 'SELECT id FROM users ORDER BY id', head: '1', json: true })
+        })
+        const parsed = JSON.parse(stdout)
+        expect(parsed.totalCount).toBe(3)
       })
 
       it('caps an oversized result at overflow_guard.max_tokens under --json', () => {
