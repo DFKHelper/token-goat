@@ -3853,6 +3853,14 @@ AFTER_HEREDOC=ok
     expect(symbols.find((s) => s.name === 'REAL_VAR')).toBeDefined()
   })
 
+  it('extracts a readonly/export declaration with a flag the same way declare does (regression: VAR_RE let declare take optional -\\w+ flags before the name but required readonly/export to be immediately followed by NAME=, so `readonly -a ARR=(...)` -- a common idiom for a read-only constant array -- never matched at all and was silently dropped)', () => {
+    const content = `readonly -a COLORS=(red green blue)\nexport -x PORT=8080\ndeclare -a LIST=(1 2 3)\n`
+    const symbols = extractBash(content, 'flags.sh')
+    expect(symbols.find((s) => s.name === 'COLORS')).toMatchObject({ kind: 'variable', lineStart: 1 })
+    expect(symbols.find((s) => s.name === 'PORT')).toMatchObject({ kind: 'variable', lineStart: 2 })
+    expect(symbols.find((s) => s.name === 'LIST')).toMatchObject({ kind: 'variable', lineStart: 3 })
+  })
+
   it('returns an empty array for empty input', () => {
     expect(extractBash('', 'empty.sh')).toHaveLength(0)
   })
