@@ -14,7 +14,7 @@ import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessio
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput } from './hooks_common.js'
+import { contextOutput, passOutput } from './hooks_common.js'
 import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB } from './util.js'
 import type { HookOutput } from './types.js'
@@ -267,11 +267,14 @@ function buildMemEpochSection(): string[] {
 /**
  * pre_compact handler: inject the session manifest as context.
  *
- * Always returns a `context` output so the manifest reaches the compaction
- * summary even for an otherwise empty session (the counts confirm nothing was
- * dropped).
+ * Returns `pass` (no-op) when `compact_assist.enabled` is off -- the config field is fully
+ * wired through TOML parsing/validation/env-override (TOKEN_GOAT_COMPACT_ASSIST) and `config
+ * export`, but nothing previously read it, so setting it false had zero effect on this hook.
+ * Otherwise always returns a `context` output so the manifest reaches the compaction summary
+ * even for an otherwise empty session (the counts confirm nothing was dropped).
  */
 export function preCompactHandler(event: HookEvent): HookOutput {
+  if (!loadConfig().compact_assist.enabled) return passOutput()
   return contextOutput(buildManifest(event.sessionId))
 }
 
