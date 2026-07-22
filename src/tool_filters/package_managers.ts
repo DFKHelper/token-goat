@@ -1086,59 +1086,61 @@ function compressNpmAuditJson(text: string): string {
   return JSON.stringify(result, null, 2)
 }
 
+// Modern `npm audit` (npm 7+, the only versions in real-world use) prints each advisory as
+// "<pkg>  <range>\nSeverity: <level>\n...\n" with no leading "<level>  <pkg>" header line and no
+// "found N vulnerabilit…" summary prefix -- both of which the old block detector below required.
+// Real npm 11 output looks like:
+//   @hono/node-server  <2.0.5
+//   Severity: moderate
+//   ...
+//   16 vulnerabilities (6 moderate, 8 high, 2 critical)
+// Detecting blocks by a "<severity>  <pkg>" header line (npm 6's format) or a "found N
+// vulnerabilit…" summary line never matches this, so the whole 10-block cap silently never
+// engaged on any output a currently-shipped npm actually produces.
+const _NPM_AUDIT_SEVERITY_LINE_RE = /^Severity:\s*(critical|high|moderate|low)/i
+const _NPM_AUDIT_LEGACY_HDR_RE = /^(critical|high|moderate|low)\s+\S/i
+
 function compressNpmAuditHuman(text: string): string {
-  // Keep the first 10 advisory blocks; collapse the rest with a count per severity.
-  const lines = text.split('\n')
+  // Keep the first 10 advisory blocks; collapse the rest with a count per severity. Advisory
+  // blocks are blank-line-delimited paragraphs (npm audit separates each package's advisory,
+  // including its "Depends on ..." dependents, from the next with a single blank line);
+  // non-advisory paragraphs (the "# npm audit report" header, the trailing vulnerability-count
+  // summary, and the "To address issues ..." hint blocks) are always kept verbatim.
+  const paragraphs: string[][] = [[]]
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') paragraphs.push([])
+    else paragraphs[paragraphs.length - 1]!.push(line)
+  }
+
+  const blockSeverity = (para: string[]): string | null => {
+    for (const l of para) {
+      const modern = _NPM_AUDIT_SEVERITY_LINE_RE.exec(l)
+      if (modern) return modern[1]!.toLowerCase()
+      if (_NPM_AUDIT_LEGACY_HDR_RE.test(l)) return l.trim().split(/\s+/)[0]!.toLowerCase()
+    }
+    return null
+  }
+
   const kept: string[] = []
   const severityCounts: Record<string, number> = {}
   let blockCount = 0
-  let inBlock = false
-  let blockLines: string[] = []
-  const SEVERITY_HDR_RE = /^(critical|high|moderate|low)\s+\S/i
-  const FOUND_SUMMARY_RE = /^found \d+ vulnerabilit/i
-  for (const line of lines) {
-    if (FOUND_SUMMARY_RE.test(line)) { kept.push(line); continue }
-    if (SEVERITY_HDR_RE.test(line)) {
-      if (inBlock && blockLines.length) {
-        if (blockCount < 10) kept.push(...blockLines)
-        else {
-          const sev = (blockLines[0] ?? '').split(/\s+/)[0]!.toLowerCase()
-          severityCounts[sev] = (severityCounts[sev] ?? 0) + 1
-        }
-        blockCount += 1
-      }
-      inBlock = true
-      blockLines = [line]
-      continue
-    }
-    if (inBlock) {
-      if (line.trim() === '') {
-        blockLines.push(line)
-        if (blockCount < 10) kept.push(...blockLines)
-        else {
-          const sev = (blockLines[0] ?? '').split(/\s+/)[0]!.toLowerCase()
-          severityCounts[sev] = (severityCounts[sev] ?? 0) + 1
-        }
-        blockLines = []
-        blockCount += 1
-        inBlock = false
-      } else {
-        blockLines.push(line)
-      }
+  for (const para of paragraphs) {
+    if (!para.length) continue
+    const severity = blockSeverity(para)
+    if (severity === null || blockCount < 10) {
+      if (kept.length) kept.push('')
+      kept.push(...para)
+      if (severity !== null) blockCount += 1
     } else {
-      kept.push(line)
-    }
-  }
-  if (inBlock && blockLines.length) {
-    if (blockCount < 10) kept.push(...blockLines)
-    else {
-      const sev = (blockLines[0] ?? '').split(/\s+/)[0]!.toLowerCase()
-      severityCounts[sev] = (severityCounts[sev] ?? 0) + 1
+      severityCounts[severity] = (severityCounts[severity] ?? 0) + 1
+      blockCount += 1
     }
   }
   if (Object.keys(severityCounts).length) {
-    const parts = Object.entries(severityCounts).map(([s, n]) => `${n} ${s}`)
-    kept.push(`[token-goat: collapsed ${Object.values(severityCounts).reduce((a, b) => a + b, 0)} additional advisory blocks (${parts.join(', ')})]`)
+    kept.push(
+      '',
+      `[token-goat: collapsed ${Object.values(severityCounts).reduce((a, b) => a + b, 0)} additional advisory blocks (${Object.entries(severityCounts).map(([s, n]) => `${n} ${s}`).join(', ')})]`,
+    )
   }
   return squeezeBlankLines(kept.join('\n'))
 }
