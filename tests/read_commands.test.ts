@@ -3343,8 +3343,9 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     capture(() => runRefs({ spec: 'src/auth.ts::login,refresh' }))
     const names = mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)
     expect(names).toEqual(['login', 'refresh'])
+    const expectedFilePath = resolveIndexPath('src/auth.ts')
     for (const call of mockQueryRefs.mock.calls) {
-      expect((call[0] as { filePath?: string }).filePath).toBeDefined()
+      expect((call[0] as { filePath?: string }).filePath).toBe(expectedFilePath)
     }
   })
 
