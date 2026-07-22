@@ -526,6 +526,25 @@ describe('parseFile', () => {
     // constructor_declaration: 'Foo' = the class plus 2 constructors post-fix (1 pre-fix)
     expect(symNames.filter((n) => n === 'Foo').length).toBeGreaterThanOrEqual(2)
   })
+
+  it('keeps base HTML heading/id symbols alongside lwc:ref/c-* extraction for an LWC template', async () => {
+    const lwcDir = path.join(TMP, 'force-app', 'main', 'default', 'lwc', 'checkoutPanel')
+    fs.mkdirSync(lwcDir, { recursive: true })
+    const file = path.join(lwcDir, 'checkoutPanel.html')
+    fs.writeFileSync(
+      file,
+      '<template>\n' +
+        '  <h2 id="panel-title">Checkout</h2>\n' +
+        '  <div lwc:ref="panel"><c-line-item></c-line-item></div>\n' +
+        '</template>\n',
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('html')
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('Checkout') // base HTML heading — dropped pre-fix
+    expect(symNames).toContain('panel-title') // base HTML anchor-id — dropped pre-fix
+    expect(symNames).toContain('panel') // lwc_ref, still present
+  })
 })
 
 describe('parseFile', () => {
