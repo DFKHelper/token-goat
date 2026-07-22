@@ -1488,6 +1488,19 @@ describe('read_commands', () => {
       expect(parsed.totalCount).toBe(4)
     })
 
+    it('does not report truncated:true when hit count exactly equals --max-lines (boundary, not off-by-one)', () => {
+      // Regression/mutation-verification target: the JSON truncation flag is `hits.length >
+      // maxLines`, not `>=` -- when the real hit count exactly equals the cap, every hit was
+      // returned and nothing was actually elided, so truncated must stay false.
+      const f = path.join(tempDir, 'jexact.txt')
+      fs.writeFileSync(f, 'needle\nneedle')
+      const { stdout } = capture(() => { runGrep({ pattern: 'needle', path: f, maxLines: 2, json: true }) })
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.items).toHaveLength(2)
+      expect(parsed.truncated).toBe(false)
+      expect(parsed.totalCount).toBe(2)
+    })
+
     it('matches a $-anchored pattern on CRLF line endings (M3)', () => {
       // A trailing \r left on each line by a naive split('\n') sits between the match
       // text and the string end, so a $-anchor never lines up on CRLF files.

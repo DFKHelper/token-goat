@@ -954,6 +954,39 @@ describe('runDeps integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('prefers the earlier SOURCE_EXTENSIONS candidate when a barrel directory has multiple index.* files', () => {
+    // Regression/mutation-verification target: the extension-probe loop must `break` on the
+    // first match. Without the break, a later-iterated extension (e.g. index.js, tried after
+    // index.ts in SOURCE_EXTENSIONS) silently overwrites the earlier, correct match instead of
+    // being ignored.
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-barrel-precedence-'))
+    try {
+      const utilsDir = join(dir, 'utils')
+      mkdirSync(utilsDir)
+      const indexTs = join(utilsDir, 'index.ts')
+      writeFileSync(join(utilsDir, 'index.js'), 'exports.foo = 1\n')
+      writeFileSync(indexTs, 'export function foo() { return 1 }\n')
+      const entryFile = join(dir, 'entry.ts')
+      writeFileSync(entryFile, "import { foo } from './utils'\n")
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file: entryFile, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[] }
+      expect(parsed.internal).toContain(indexTs)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallChain against the real repo index -----------------
@@ -1371,6 +1404,25 @@ describe('findCycles', () => {
     const g = new Map([['a', ['a']], ['b', []]])
     const cycles = findCycles(g)
     expect(cycles).toEqual([['a', 'a']])
+  })
+
+  it('still finds a cycle when one of its nodes also points at an already-finished unrelated component', () => {
+    // Regression/mutation-verification target: tarjanSCCs's back-edge branch must gate on
+    // `onStack.has(w)` -- a neighbor that has already been indexed but is NOT on the current
+    // Tarjan stack (i.e. it finished as its own earlier, unrelated component) must NOT feed its
+    // index into the current node's lowlink. Dropping that guard lets a's lowlink get dragged
+    // down to x's (already-closed, lower) index via the a->x edge, so a's real lowlink==index
+    // check at the end of its DFS frame never fires -- the entire a<->b cycle silently vanishes
+    // from the result instead of being reported.
+    const g = new Map([
+      ['x', []],
+      ['a', ['b', 'x']],
+      ['b', ['a']],
+    ])
+    const cycles = findCycles(g)
+    const flat = cycles.flat()
+    expect(flat).toContain('a')
+    expect(flat).toContain('b')
   })
 
   it('does not crash with a stack overflow on a deep linear import chain (large real-world repo)', () => {

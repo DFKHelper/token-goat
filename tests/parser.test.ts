@@ -229,6 +229,25 @@ describe('parseFile', () => {
     expect(method?.body.startsWith('@Log()')).toBe(true)
   })
 
+  it('stops the decorator walk-back at a preceding sibling method, not bleeding its body into a later decorated method', async () => {
+    const file = write(
+      'decorated2.ts',
+      'class Foo {\n  @A()\n  one() {\n    return 1\n  }\n\n  @B()\n  two() {\n    return 2\n  }\n}\n',
+    )
+    const result = await parseFile(file)
+    const one = result.symbols.find((s) => s.name === 'one')
+    const two = result.symbols.find((s) => s.name === 'two')
+    // Regression: a decorator walk-back that fails to stop at the first non-`decorator` sibling
+    // would consume the previous method (`one`, including its own decorator and body) into
+    // `two`'s range instead of stopping at `two`'s own `@B()`.
+    expect(one?.lineStart).toBe(2)
+    expect(one?.lineEnd).toBe(5)
+    expect(two?.lineStart).toBe(7)
+    expect(two?.lineEnd).toBe(10)
+    expect(two?.body.startsWith('@B()')).toBe(true)
+    expect(two?.body).not.toContain('one()')
+  })
+
   it('labels a method defined inside a control-flow block in a class as a method', async () => {
     const file = write(
       'c.py',
