@@ -63,10 +63,16 @@ const CONST_RE = new RegExp(
   '(?:const\\s+)?val\\s+([A-Z_][A-Z0-9_]*)\\s*(?::|=)',
 )
 
+// The keyword itself is captured (group 1) alongside the name (group 2) so the caller can tell
+// `class`/`interface`/`object`/`enum class` apart -- without it, every declaration this matches
+// was hardcoded to kind 'class' regardless of which keyword actually introduced it, silently
+// mislabeling every Kotlin `interface Foo { ... }` and singleton `object Foo { ... }` (both very
+// common idioms - dependency-inversion interfaces and Kotlin's idiomatic singleton/utility
+// pattern) as a plain class in the index.
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|internal|protected|private|open|abstract|sealed|data|' +
   'inner|expect|actual|value|annotation|fun)\\s+)*' +
-  '(?:class|interface|object|enum\\s+class)\\s+([A-Za-z_][A-Za-z0-9_]*)',
+  '(class|interface|object|enum\\s+class)\\s+([A-Za-z_][A-Za-z0-9_]*)',
 )
 
 // A companion object precedes `object` with the `companion` keyword, which is not a member of
@@ -192,9 +198,15 @@ export function extractKotlin(
       symbols.push(makeLineSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     } else if (cm) {
-      const cname = cm[1] ?? ''
+      const ckeyword = cm[1] ?? 'class'
+      const cname = cm[2] ?? ''
+      // `enum class` collapses to the `class` branch (matches csharp.ts's precedent of no
+      // distinct 'enum' kind for a class-flavored declaration); `object` maps to 'object'
+      // (matching the companion-object branch above's own kind) rather than 'class', since a
+      // top-level `object Foo { ... }` singleton is not a class in the index's kind vocabulary.
+      const ckind = ckeyword === 'interface' ? 'interface' : ckeyword === 'object' ? 'object' : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, ckind, lineNum, line.trimEnd().slice(0, 200), parent))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     }
 

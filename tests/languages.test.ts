@@ -1427,6 +1427,29 @@ class Bar {
     expect(symbols.find((s) => s.name === 'help')).toBeUndefined()
   })
 
+  it('classifies interface and singleton object declarations with their own kind instead of collapsing everything CLASS_HEADER_RE matches to "class"', () => {
+    // Regression: CLASS_HEADER_RE's single capture group only grabbed the declaration name, never
+    // the keyword (class/interface/object) that introduced it, so the caller hardcoded kind
+    // 'class' for every match -- silently mislabeling a real `interface Foo { ... }` and a
+    // singleton `object Foo { ... }` (both very common idioms) as a plain class in the index.
+    const content = `interface Animal {
+    fun speak(): String
+}
+
+object Constants {
+    const val PI = 1
+}
+
+class Dog : Animal {
+    override fun speak(): String = "woof"
+}
+`
+    const { symbols } = extractKotlin(content, 'Foo.kt')
+    expect(symbols.find((s) => s.name === 'Animal')?.kind).toBe('interface')
+    expect(symbols.find((s) => s.name === 'Constants')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'Dog')?.kind).toBe('class')
+  })
+
   it('detects .kt language via parseFile', async () => {
     const file = tmp('Foo.kt', 'fun main() {}')
     const result = await parseFile(file)
