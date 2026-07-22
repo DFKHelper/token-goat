@@ -91,6 +91,28 @@ describe('TaskOutput poll-delta hook (real runHook dispatch)', () => {
     expect(second.hookType).toBe('pass')
   })
 
+  it('still recognizes a simple append as a delta even after a secret-shaped token appeared in an earlier poll', async () => {
+    // storeBlob() (disk_cache.ts) redacts secret-shaped tokens before persisting a blob, so once
+    // this poll's snapshot round-trips through disk, a later poll's getBashOutput() sees the
+    // REDACTED text back as `prior.output` while the live tool_response is still the raw text.
+    // If the handler diffs raw `output` against that redacted `prior.output` directly, the
+    // startsWith() append-check desyncs (mismatched lengths/content at the redacted span) and
+    // falls through to the "buffer reset" branch on every subsequent poll -- permanently
+    // disabling delta compression for this task the moment a secret-shaped token ever appears,
+    // even though the accumulated output really is a simple append each time.
+    const withSecret = `line1\nAKIA${'1'.repeat(16)}\n`
+    const first = await runHook(buildEvent('post_tool_use', postPayload(withSecret)))
+    expect(first.hookType).toBe('pass')
+
+    const appended = 'z'.repeat(600)
+    const second = await runHook(buildEvent('post_tool_use', postPayload(withSecret + appended)))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType === 'rewriteOutput') {
+      expect(second.updatedOutput).toContain('delta since last poll')
+      expect(second.updatedOutput).toContain(appended)
+    }
+  })
+
   it('does not act on a call with no sessionId', async () => {
     const payload = { tool_name: toolName, tool_input: { task_id: taskId }, tool_response: { output: bigChunk }, session_id: '' }
     const res = await runHook(buildEvent('post_tool_use', payload))
