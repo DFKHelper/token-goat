@@ -19,6 +19,7 @@ import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
+import { loadConfig } from './config.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
 const MEM_EPOCH_TIMEOUT_MS = 800
@@ -133,7 +134,23 @@ export function buildManifest(sessionId?: string): string {
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())
 
-  return lines.join('\n')
+  return capManifestChars(lines.join('\n'))
+}
+
+/**
+ * Enforce `compact_assist.max_manifest_chars` (default 1600) on the fully-built manifest --
+ * this module's own doc comment promises the manifest stays "well under 2000 chars", but
+ * nothing previously bounded the actual string: MAX_ROWS only caps rows *per section*, not the
+ * manifest's total length, so a session with many populated sections (reads, edits, web
+ * fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest.
+ * `max_manifest_chars <= 0` means "no cap" (mirrors max_section_lines's own 0-means-unlimited
+ * convention), so a 0 value never truncates.
+ */
+function capManifestChars(manifest: string): string {
+  const cap = loadConfig().compact_assist.max_manifest_chars
+  if (cap <= 0 || manifest.length <= cap) return manifest
+  const omitted = manifest.length - cap
+  return manifest.slice(0, cap) + `\n...(manifest truncated at ${cap} chars; ${omitted} chars omitted)`
 }
 
 /**

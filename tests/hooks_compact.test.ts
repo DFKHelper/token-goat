@@ -4,11 +4,25 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// vi.mock is hoisted -- this redirects configPath() to a per-test-file temp file so the
+// compact_assist.max_manifest_chars wiring test below can set a non-default config value
+// deterministically. Mirrors tests/hooks_read.test.ts's config.toml mock.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return {
+    ...original,
+    configPath: () => _testConfigPath,
+  }
+})
+
+const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-compact-config-test-${process.pid}.toml`)
+
 import type { HookEvent } from '../src/hook_registry.js'
 import { buildManifest, preCompactHandler } from '../src/hooks_compact.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordFileRead, recordWebFetch, recordBashOutput, recordBashRerun } from '../src/session.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 
 // `mem epoch` (Item I) shells out via spawnSync -- mocked so the suite is deterministic
 // regardless of whether a real `mem` binary happens to be on the machine running it, and so
@@ -300,5 +314,60 @@ describe('mem epoch section', () => {
     spawnSyncMock.mockReturnValue({ error: new Error('ENOENT'), status: null, stdout: '' })
 
     expect(() => buildManifest()).not.toThrow()
+  })
+})
+
+// Regression: compact_assist.max_manifest_chars was defined, validated, persisted, and
+// displayed in config.ts but had zero consumers -- buildManifest() concatenated every section
+// unconditionally with no overall length cap, contradicting this module's own doc comment
+// promising a manifest "well under 2000 chars".
+describe('compact_assist.max_manifest_chars wiring', () => {
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
+  })
+
+  it('truncates a manifest that exceeds the configured cap', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.max_manifest_chars = 200
+    saveConfig(cfg)
+
+    for (let i = 0; i < 40; i++) {
+      recordFileRead(makeTmpFile(`file-${i}`))
+    }
+
+    const manifest = buildManifest()
+    // Cap (200) plus the appended truncation-note suffix, generously bounded.
+    expect(manifest.length).toBeLessThanOrEqual(260)
+    expect(manifest).toContain('manifest truncated at 200 chars')
+  })
+
+  it('does not truncate a manifest within the configured cap', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.max_manifest_chars = 100_000
+    saveConfig(cfg)
+
+    const p = makeTmpFile('hello')
+    recordFileRead(p)
+
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('manifest truncated at')
+  })
+
+  it('max_manifest_chars <= 0 disables the cap entirely', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.max_manifest_chars = 0
+    saveConfig(cfg)
+
+    for (let i = 0; i < 40; i++) {
+      recordFileRead(makeTmpFile(`file-${i}`))
+    }
+
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('manifest truncated at')
   })
 })
