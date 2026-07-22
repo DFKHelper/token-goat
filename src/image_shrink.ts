@@ -185,12 +185,19 @@ export async function shrinkImage(
 /**
  * pre_tool_use handler for Read on image files.
  *
- * Passes through unless the target is an image at or above the size threshold.
+ * Passes through unless the target is an image at or above the size
+ * threshold OR whose longest edge exceeds `DEFAULT_MAX_DIMENSION` — a small,
+ * highly-compressible PNG (e.g. a large flat-color screenshot) can sail under
+ * the byte threshold on disk while still decoding to well beyond Claude
+ * Vision's optimal edge, and Claude Code's own internal re-encode for vision
+ * then inflates it far past its on-disk size. When the byte size alone
+ * doesn't already qualify the file, a cheap header-only `sharp().metadata()`
+ * probe checks the decoded dimensions before falling through to a pass.
  * On a successful shrink it returns a `context` output carrying the shrunk
  * image as a base64 data URL plus a one-line savings summary, so the model
  * sees the cheaper image instead of the original. Any failure (non-image,
- * small file, unreadable, sharp unavailable, no net saving) is a pass — the
- * hook never blocks a Read.
+ * small file/dimensions, unreadable, sharp unavailable, no net saving) is a
+ * pass — the hook never blocks a Read.
  */
 export async function preReadImageHandler(event: HookEvent): Promise<HookOutput> {
   if (loadConfig().image_shrink.enabled === false) return passOutput()
@@ -200,16 +207,47 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (!isImagePath(filePath)) return passOutput()
 
   const size = statSize(filePath)
-  if (size === null || size < DEFAULT_SIZE_THRESHOLD_BYTES) return passOutput()
+  if (size === null) return passOutput()
 
-  let input: Buffer
-  try {
-    input = fs.readFileSync(filePath)
-  } catch {
-    return passOutput()
+  let input: Buffer | null = null
+  let qualifies = size >= DEFAULT_SIZE_THRESHOLD_BYTES
+
+  if (!qualifies) {
+    // Under the byte threshold: probe decoded dimensions before giving up on
+    // this file. The probe reads the file once and reuses that same buffer
+    // for the shrink below on a hit, so a qualifying file is never read twice.
+    try {
+      input = fs.readFileSync(filePath)
+    } catch {
+      return passOutput()
+    }
+
+    const sharp = await loadSharp()
+    if (sharp === null) return passOutput()
+
+    try {
+      const cfg = loadConfig().image_shrink
+      const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
+      const meta = await sharp(input, { limitInputPixels }).metadata()
+      const longestEdge = Math.max(meta.width ?? 0, meta.height ?? 0)
+      qualifies = longestEdge > DEFAULT_MAX_DIMENSION
+    } catch {
+      // Undecodable / unsupported input: treat as not-shrinkable, same as shrinkImage's own convention.
+      return passOutput()
+    }
   }
 
-  const result = await shrinkImage(input)
+  if (!qualifies) return passOutput()
+
+  if (input === null) {
+    try {
+      input = fs.readFileSync(filePath)
+    } catch {
+      return passOutput()
+    }
+  }
+
+  const result = await shrinkImage(input, { sizeThresholdBytes: 0 })
   if (result === null) return passOutput()
 
   const basename = path.basename(filePath)
