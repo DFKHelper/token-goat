@@ -90,6 +90,39 @@ describe('preCompactHandler', () => {
   })
 })
 
+// Regression: compact_assist.enabled was defined, validated, persisted, exported, and even had
+// an env-var override (TOKEN_GOAT_COMPACT_ASSIST) wired in config.ts, but preCompactHandler
+// injected the manifest unconditionally -- nothing ever read the flag, so disabling it had zero
+// effect on the actual pre_compact hook.
+describe('compact_assist.enabled wiring', () => {
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(_testConfigPath)
+    } catch {
+      // ok -- may not exist
+    }
+  })
+
+  it('returns pass and injects no manifest when compact_assist.enabled is false', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.enabled = false
+    saveConfig(cfg)
+
+    const result = preCompactHandler(compactEvent)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still injects the manifest when compact_assist.enabled is true (default)', () => {
+    const cfg = defaultConfig()
+    cfg.compact_assist.enabled = true
+    saveConfig(cfg)
+
+    const result = preCompactHandler(compactEvent)
+    expect(result.hookType).toBe('context')
+  })
+})
+
 describe('buildManifest', () => {
   it('lists read files with a count', () => {
     const p = makeTmpFile('hello')
