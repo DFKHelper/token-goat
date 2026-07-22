@@ -1105,6 +1105,43 @@ describe('NodePackageFilter', () => {
     // npm WARN deprecated lines are silently dropped by the progress RE — no collapsed note
     expect(result.text).toContain('added 42 packages')
   })
+
+  // Regression: real `npm audit` (npm 7+, the only versions in current use) prints each
+  // advisory as "<pkg>  <range>\nSeverity: <level>\n..." with a blank line between packages and
+  // a trailing "N vulnerabilities (...)" summary -- npm 6's "<level>  <pkg>" header line and
+  // "found N vulnerabilit…" summary prefix that the old block detector required never appear in
+  // this format, so the "keep first 10, collapse the rest" cap silently never engaged on any
+  // output a currently-shipped npm actually produces (verified against real `npm audit` output
+  // from this repo, npm 11.6.2).
+  it('collapses npm audit human advisory blocks beyond the first 10 (real npm 7+ format)', () => {
+    const block = (n: number) =>
+      [
+        `pkg-${n}  <1.0.${n}`,
+        `Severity: high`,
+        `pkg-${n} has a vulnerability - https://github.com/advisories/GHSA-xxxx-${n}`,
+        'fix available via `npm audit fix`',
+        `node_modules/pkg-${n}`,
+      ].join('\n')
+    const blocks = Array.from({ length: 12 }, (_, i) => block(i + 1))
+    const stdout = [
+      '# npm audit report',
+      '',
+      blocks.join('\n\n'),
+      '',
+      '12 vulnerabilities (0 low, 0 moderate, 12 high, 0 critical)',
+      '',
+      'To address issues that do not require attention, run:',
+      '  npm audit fix',
+    ].join('\n')
+    const result = npmFilter.apply(stdout, '', 1, ['npm', 'audit'])
+    expect(result.text).toContain('pkg-1 ')
+    expect(result.text).toContain('pkg-10 ')
+    expect(result.text).not.toContain('pkg-11 ')
+    expect(result.text).not.toContain('pkg-12 ')
+    expect(result.text).toMatch(/collapsed 2 additional advisory blocks \(2 high\)/)
+    expect(result.text).toContain('12 vulnerabilities')
+    expect(result.text).toContain('To address issues')
+  })
 })
 
 // ---------------------------------------------------------------------------
