@@ -555,6 +555,22 @@ export function runDeps(opts: DepsOptions): number {
             break
           }
         }
+        // A specifier pointing at a directory (barrel import, e.g. "./utils" backed by
+        // "./utils/index.ts") never matches the bareBase+ext probes above -- those only try
+        // appending an extension directly onto the directory's own path, never look inside it.
+        // Without this fallback the raw unresolved specifier is pushed instead of the real file,
+        // unlike runArch's resolveRelImport (which already has this same index.* fallback), so
+        // `token-goat deps` silently under-resolves barrel imports that `token-goat arch` resolves
+        // correctly.
+        if (resolved === imp && fs.existsSync(base) && fs.statSync(base).isDirectory()) {
+          for (const srcExt of SOURCE_EXTENSIONS) {
+            const candidate = path.join(base, 'index' + srcExt)
+            if (fs.existsSync(candidate)) {
+              resolved = candidate
+              break
+            }
+          }
+        }
       }
       internal.push(resolved)
     } else if (/^\.+/.test(imp)) {

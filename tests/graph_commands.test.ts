@@ -925,6 +925,35 @@ describe('runDeps integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('resolves a barrel-style directory import ("./utils" backed by "./utils/index.ts") to the real file, not the raw specifier', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-barrel-'))
+    try {
+      const utilsDir = join(dir, 'utils')
+      mkdirSync(utilsDir)
+      const indexFile = join(utilsDir, 'index.ts')
+      writeFileSync(indexFile, 'export function foo() { return 1 }\n')
+      const entryFile = join(dir, 'entry.ts')
+      writeFileSync(entryFile, "import { foo } from './utils'\n")
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file: entryFile, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[] }
+      expect(parsed.internal).toContain(indexFile)
+      expect(parsed.internal).not.toContain('./utils')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallChain against the real repo index -----------------
