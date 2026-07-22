@@ -33,6 +33,7 @@ import { shortFingerprint } from './fingerprint.js'
 import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
+import { redactSecrets } from './secret_redact.js'
 
 /**
  * Deterministic, session-scoped recall id for a BashOutput poll snapshot --
@@ -76,7 +77,18 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     if (getToolName(event) !== 'BashOutput' || !event.sessionId) return passOutput()
     const bashId = getBashId(getToolInput(event))
     if (bashId === undefined) return passOutput()
-    const output = extractToolResultText(event.raw)
+    const rawOutput = extractToolResultText(event.raw)
+    if (!rawOutput) return passOutput()
+    // Redact before any comparison/storage, not just at the storeBlob() choke point: storeBlob
+    // (disk_cache.ts) already redacts secret-shaped tokens before persisting, so a `prior` value
+    // recovered from disk on a later poll (a near-certainty -- hooks run as a fresh process per
+    // call, so there is no living in-memory cache to hit instead) is always the REDACTED text.
+    // Diffing that against a still-raw `output` desyncs the startsWith()/slice() append-check the
+    // instant a secret-shaped token appears anywhere in the accumulated output, permanently
+    // falling through to the "buffer reset" branch on every later poll for this bash_id. Redacting
+    // here keeps both sides of every comparison on equal footing (mirrors hooks_taskoutput.ts's
+    // fix for the same shared bug, and storeBashOutput's own redact-before-compare pattern).
+    const output = redactSecrets(rawOutput).text
     if (!output) return passOutput()
 
     const prior = getBashOutput(pollCacheId(event.sessionId, bashId))
