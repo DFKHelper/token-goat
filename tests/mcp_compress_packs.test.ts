@@ -192,6 +192,31 @@ function driveFileContent() {
   }
 }
 
+/**
+ * A realistic accessibility-tree snapshot text blob in the documented
+ * `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" ...` shape
+ * (chrome-devtools-mcp `take_snapshot` / claude-in-chrome `read_page`).
+ * Mixes short interactive-element lines (must survive untouched), one
+ * long-text `StaticText` line (must be truncated), and one malformed line
+ * with an unexpected shape (must pass through unchanged).
+ */
+function a11ySnapshotText() {
+  const longParagraph = (
+    'This paragraph describes the quarterly results in extensive detail, covering revenue trends, ' +
+    'headcount changes, and forward-looking guidance for the next fiscal year across every region. '
+  ).repeat(5)
+  return [
+    'uid=1 RootWebArea "Example Page"',
+    '  uid=2 heading "Welcome"',
+    '  uid=3 generic',
+    '    uid=4 StaticText "Short label"',
+    `    uid=5 StaticText "${longParagraph}"`,
+    '  uid=6 button "Submit" disabled',
+    '  uid=7 link "Email address" href="mailto:test@example.com"',
+    'this line does not match the expected node shape at all',
+  ].join('\n')
+}
+
 // --- compressGithubMcpResult -------------------------------------------------
 
 describe('compressGithubMcpResult', () => {
@@ -326,6 +351,52 @@ describe('compressBrowserMcpResult', () => {
     const rows = Array.from({ length: 2 }, (_, i) => ({ url: `https://example.com/${i}`, method: 'GET', status: 200 }))
     const text = JSON.stringify(rows)
     expect(compressBrowserMcpResult('mcp__claude-in-chrome__read_network_requests', text)).toBeNull()
+  })
+
+  describe('accessibility-tree snapshot (take_snapshot / read_page)', () => {
+    it('truncates a long StaticText name while leaving every uid byte-identical, short names untouched, and the malformed line passed through', () => {
+      const text = a11ySnapshotText()
+      const compressed = compressBrowserMcpResult('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot', text)
+      expect(compressed).not.toBeNull()
+      if (compressed === null) return
+
+      const origLines = text.split('\n')
+      const outLines = compressed.split('\n')
+      expect(outLines.length).toBe(origLines.length)
+
+      // Every uid= token survives byte-identical, on every line, regardless of role/name.
+      for (let i = 0; i < origLines.length; i++) {
+        const origUid = origLines[i]?.match(/uid=\S+/)?.[0]
+        const outUid = outLines[i]?.match(/uid=\S+/)?.[0]
+        expect(outUid).toBe(origUid)
+      }
+
+      // Short interactive-element lines are untouched.
+      expect(outLines[1]).toBe(origLines[1]) // heading "Welcome"
+      expect(outLines[3]).toBe(origLines[3]) // StaticText "Short label"
+      expect(outLines[5]).toBe(origLines[5]) // button "Submit" disabled
+      expect(outLines[6]).toBe(origLines[6]) // link "Email address" href=...
+
+      // The long StaticText line is truncated with the repo's existing
+      // capLongLines-style "N chars elided" marker, and trailing attributes
+      // (none here, but the shape) plus indentation/uid/role survive.
+      const longOut = outLines[4] ?? ''
+      expect(longOut).not.toBe(origLines[4])
+      expect(longOut).toContain('uid=5 StaticText "')
+      expect(longOut).toMatch(/chars elided\]"$/)
+      expect(longOut.length).toBeLessThan((origLines[4] ?? '').length)
+
+      // The malformed line (no uid/role/quoted-name shape) passes through unchanged.
+      expect(outLines[7]).toBe(origLines[7])
+
+      // Overall byte-size reduction on a realistic multi-line fixture.
+      expect(compressed.length).toBeLessThan(text.length)
+    })
+
+    it('returns null when no line needs truncation (savings bar not cleared)', () => {
+      const text = ['uid=1 RootWebArea "Page"', '  uid=2 button "OK"'].join('\n')
+      expect(compressBrowserMcpResult('mcp__claude-in-chrome__read_page', text)).toBeNull()
+    })
   })
 })
 

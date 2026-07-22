@@ -177,17 +177,88 @@ const BROWSER_NETWORK_STRIP_KEYS = new Set([
   'cookies',
 ])
 
+/** Matches the method segment for both servers' accessibility-tree snapshot tools: `take_snapshot` (chrome-devtools-mcp), `read_page` (claude-in-chrome), and `snapshot`/`page_snapshot` (playwright and other naming variants). */
+const BROWSER_SNAPSHOT_METHOD_RE = /(?:^|_)(?:take_snapshot|read_page|page_snapshot|snapshot)$/i
+
 /**
- * Compress a browser-automation MCP tool result (console-message or
- * network-request list). Returns `null` when *toolName* is not a recognized
- * browser-automation server tool, its method is neither a console-message
- * nor network-request list tool, *resultText* is not JSON, or the stripped
- * result still does not clear the savings bar -- in every such case the
- * caller falls through to the generic pass unchanged.
+ * Maximum length of a snapshot node's accessible-name text before it gets
+ * truncated. Half of {@link file://./tool_filters/helpers.ts}'s
+ * `FALLBACK_MAX_LINE_CHARS` (400) -- that constant caps a whole raw output
+ * *line*, while this caps a single quoted *field* embedded within one such
+ * line, so it should clear well under the full-line budget on its own.
+ * Interactive-element names (buttons, links, form labels -- e.g. "Submit",
+ * "Email address") are almost always far under this, so truncation only
+ * fires on genuinely prose-heavy `StaticText`/`paragraph`-role nodes, never
+ * on the identifiers a caller needs to click/fill/hover an element.
+ */
+const SNAPSHOT_NAME_MAX_CHARS = 200
+
+/**
+ * Matches one accessibility-tree node line from a `take_snapshot`/`read_page`
+ * result, per the reference chrome-devtools-mcp `SnapshotFormatter`:
+ * `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" attr2 ...`.
+ * Captures: (1) leading indentation, (2) the `uid=` token including its id,
+ * (3) the role token, (4) the quoted name's inner text, (5) everything after
+ * the closing quote (further attributes), verbatim. A line that doesn't
+ * match this shape (unexpected tool version, verbose-mode extra fields, a
+ * blank/header line) is left completely untouched by the caller -- this
+ * regex only identifies lines safe to touch, it never itself decides to drop
+ * or alter content.
+ */
+const SNAPSHOT_NODE_LINE_RE = /^( *)(uid=\S+) (\S+) "((?:[^"\\]|\\.)*)"(.*)$/
+
+/**
+ * Truncate one snapshot node line's accessible-name field when it exceeds
+ * {@link SNAPSHOT_NAME_MAX_CHARS}, leaving indentation, `uid=`, role, and any
+ * trailing attributes byte-identical. Lines that don't match the expected
+ * shape pass through unchanged -- fail-open per line, matching this file's
+ * fail-closed-per-pack convention at the whole-result level.
+ */
+function truncateSnapshotLine(line: string): string {
+  const m = SNAPSHOT_NODE_LINE_RE.exec(line)
+  if (!m) return line
+  const [, indent, uid, role, name, rest] = m
+  if (name === undefined) return line
+  if (name.length <= SNAPSHOT_NAME_MAX_CHARS) return line
+  const elided = name.length - SNAPSHOT_NAME_MAX_CHARS
+  return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`
+}
+
+/**
+ * Compress an accessibility-tree snapshot result by truncating only the
+ * long prose text carried in each line's quoted accessible-name field.
+ * Operates on the raw text directly (not via JSON.parse/deepStrip like the
+ * other packs here) because the snapshot payload's outer JSON usually wraps
+ * a single large indentation-formatted text blob, not a homogeneous array
+ * `finishWithGenericPass`'s table-ifying pass can do anything useful with.
+ */
+function compressSnapshotText(resultText: string): string | null {
+  const compressed = resultText.split('\n').map(truncateSnapshotLine).join('\n')
+  if (compressed.length >= resultText.length) return null
+  if (compressed.length > resultText.length * (1 - PACK_MIN_SAVINGS_RATIO)) return null
+  return compressed
+}
+
+/**
+ * Compress a browser-automation MCP tool result (console-message list,
+ * network-request list, or accessibility-tree snapshot). Returns `null` when
+ * *toolName* is not a recognized browser-automation server tool, its method
+ * matches none of the known shapes, *resultText* is not JSON (for the
+ * console/network shapes) or does not clear the savings bar -- in every such
+ * case the caller falls through to the generic pass unchanged.
  */
 export function compressBrowserMcpResult(toolName: string, resultText: string): string | null {
   if (!BROWSER_TOOL_RE.test(toolName)) return null
   const method = toolName.split('__').pop() || ''
+
+  if (BROWSER_SNAPSHOT_METHOD_RE.test(method)) {
+    try {
+      return compressSnapshotText(resultText)
+    } catch {
+      return null
+    }
+  }
+
   let shouldStrip: ((key: string) => boolean) | null = null
   if (BROWSER_CONSOLE_METHOD_RE.test(method)) shouldStrip = (key) => BROWSER_CONSOLE_STRIP_KEYS.has(key)
   else if (BROWSER_NETWORK_METHOD_RE.test(method)) shouldStrip = (key) => BROWSER_NETWORK_STRIP_KEYS.has(key)
