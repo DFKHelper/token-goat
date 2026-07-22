@@ -95,16 +95,15 @@ function applyRootDirScope(
   params.push(param(rootDir))
 }
 
-export function querySymbols(
-  opts: {
-    name?: string
-    filePath?: string
-    kind?: string
-    limit?: number
-    rootDir?: string
-  } = {},
-  dbPath: string = globalDbPath(),
-): SymbolEntry[] {
+interface SymbolQueryOpts {
+  name?: string
+  filePath?: string
+  kind?: string
+  rootDir?: string
+}
+
+/** Shared WHERE-clause builder for {@link querySymbols} and {@link countSymbols} -- both filter the same `symbols` table by the same name/filePath/kind/rootDir combination, so the clause/params construction lives in one place instead of drifting between a "fetch rows" and a "count rows" copy. */
+function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (string | number)[] } {
   const where: string[] = []
   const params: (string | number)[] = []
 
@@ -122,8 +121,15 @@ export function querySymbols(
   }
   applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
+  return { clause: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', params }
+}
+
+export function querySymbols(
+  opts: SymbolQueryOpts & { limit?: number } = {},
+  dbPath: string = globalDbPath(),
+): SymbolEntry[] {
+  const { clause, params } = buildSymbolWhere(opts)
   const limit = opts.limit ?? 100
-  const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
   const sql =
     `SELECT file_path, name, kind, line_start, line_end, body, docstring ` +
     `FROM symbols ${clause} ORDER BY file_path, line_start LIMIT ?`
@@ -131,6 +137,22 @@ export function querySymbols(
   const db = getDb(dbPath)
   const rows = db.prepare(sql).all(...params, limit) as SymbolRow[]
   return rows.map(toSymbolEntry)
+}
+
+/**
+ * True count of symbols matching the same name/filePath/kind/rootDir filters
+ * {@link querySymbols} accepts, ignoring `limit` entirely -- used so `token-goat
+ * symbol --json` can report an honest `totalCount` instead of the count of
+ * whatever `querySymbols`'s own SQL `LIMIT` happened to let through (the same
+ * "SQL LIMIT applied before the count is taken" shape that undercounted
+ * `refs --top`; see that fix's commit for the sibling bug).
+ */
+export function countSymbols(opts: SymbolQueryOpts = {}, dbPath: string = globalDbPath()): number {
+  const { clause, params } = buildSymbolWhere(opts)
+  const sql = `SELECT COUNT(*) as cnt FROM symbols ${clause}`
+  const db = getDb(dbPath)
+  const row = db.prepare(sql).get(...params) as { cnt: number }
+  return row.cnt
 }
 
 /**
