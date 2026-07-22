@@ -442,10 +442,11 @@ describe('GhFilter gh run view pass/fail collapsing', () => {
 describe('GhFilter gh list truncation', () => {
   const f = new GhFilter()
 
+  // Real `gh pr/run/issue list` output (verified against gh 2.81.0, non-TTY/piped -- exactly
+  // how the bash hook captures it) has NO header row: every non-empty line is a data row.
   function makeListOutput(nRows: number): string {
-    const header = 'NUMBER  TITLE              BRANCH'
-    const rows = Array.from({ length: nRows }, (_, i) => `${i + 1}      PR title #${i + 1}   feature/branch-${i + 1}`)
-    return [header, ...rows].join('\n')
+    const rows = Array.from({ length: nRows }, (_, i) => `${i + 1}\tPR title #${i + 1}\tfeature/branch-${i + 1}`)
+    return rows.join('\n')
   }
 
   it('passes through 30 data rows without truncation', () => {
@@ -458,9 +459,9 @@ describe('GhFilter gh list truncation', () => {
     expect(out).toContain('showing first 30 of 31 prs')
   })
 
-  it('header is preserved after truncation', () => {
+  it('first row (a real data row, not a fabricated header) is preserved after truncation', () => {
     const out = apply(f, makeListOutput(31), ['gh', 'pr', 'list'])
-    expect(out).toContain('NUMBER  TITLE              BRANCH')
+    expect(out).toContain('PR title #1')
   })
 
   it('31st row is absent after truncation', () => {
@@ -471,6 +472,14 @@ describe('GhFilter gh list truncation', () => {
   it('note pluralises subcommand name correctly for run', () => {
     const out = apply(f, makeListOutput(31), ['gh', 'run', 'list'])
     expect(out).toContain('31 runs')
+  })
+
+  it('regression: real headerless gh output does not misclassify the first data row as a header, undercounting the total by 1', () => {
+    // Before the fix, compressGhList treated line 0 as a "header" and skipped it when
+    // scanning for data rows, so a 32-row real (headerless) gh list output was miscounted
+    // as 31 data rows and the summary undercounted the true total by one.
+    const out = apply(f, makeListOutput(32), ['gh', 'pr', 'list'])
+    expect(out).toContain('showing first 30 of 32 prs')
   })
 })
 

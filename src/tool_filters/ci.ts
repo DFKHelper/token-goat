@@ -250,15 +250,17 @@ function compressGhRunView(text: string): string {
 /** Truncate `gh pr/run/issue list` output to first 30 rows + count. */
 function compressGhList(text: string, subcommand: string): string {
   const lines = text.split('\n')
-  // Find header line (first non-empty line).
-  let headerIdx = 0
+  // `gh pr/run/issue list` emits no header row when piped/non-TTY (exactly how the bash hook
+  // captures it -- verified against gh 2.81.0) -- every non-empty line is a data row. Treating
+  // the first non-empty line as a header (skipping it when counting/slicing data) silently
+  // dropped the true first row from the count and undercounted the reported total by 1.
+  let dataStart = 0
   for (let i = 0; i < lines.length; i++) {
     if (lines[i]!.trim()) {
-      headerIdx = i
+      dataStart = i
       break
     }
   }
-  const dataStart = headerIdx + 1
   let dataEnd = lines.length
   for (let i = dataStart; i < lines.length; i++) {
     if (!lines[i]!.trim()) {
