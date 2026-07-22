@@ -303,6 +303,45 @@ describe('postMcpHandler generic compression (real runHook dispatch)', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // Bug: take_snapshot trips MUTATING_VERBS_RE's `snapshot` token (isMcpReadOnly
+  // returns false), but mcp_compress_packs.ts's browser-snapshot pack exists
+  // specifically for take_snapshot/read_page results. Before the fix, postMcpHandler
+  // gated the entire compression attempt behind isMcpReadOnly, so a non-idempotent
+  // but compressible tool like take_snapshot never reached the pack at all — this
+  // asserts it now does, while still never being cached/dedup'd on the pre side.
+  it('compresses a non-idempotent take_snapshot result via its pack, without caching/dedup', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const snapshotTool = 'mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot'
+    const snapshotInput = {}
+    const longParagraph = (
+      'This paragraph describes the quarterly results in extensive detail, covering revenue trends, ' +
+      'headcount changes, and forward-looking guidance for the next fiscal year across every region. '
+    ).repeat(5)
+    const rows = Array.from({ length: 20 }, (_, i) => `    uid=${i} StaticText "${longParagraph}"`)
+    const text = ['uid=1 RootWebArea "Example Page"', ...rows].join('\n')
+
+    const post = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: snapshotTool,
+        tool_input: snapshotInput,
+        session_id: sessionId,
+        tool_response: text,
+      }),
+    )
+    expect(post.hookType).toBe('rewriteOutput')
+    if (post.hookType === 'rewriteOutput') {
+      expect(post.updatedOutput).toMatch(/^\[token-goat: compressed, full via mcp-output mcp_[0-9a-f]{16}\]\n/)
+      expect(post.updatedOutput).toContain('chars elided')
+    }
+
+    // Never cached/dedup'd: take_snapshot's result can legitimately differ between
+    // identical calls, so a repeat must still be let through, not denied.
+    const pre = await runHook(
+      buildEvent('pre_tool_use', { tool_name: snapshotTool, tool_input: snapshotInput, session_id: sessionId }),
+    )
+    expect(pre.hookType).toBe('pass')
+  })
+
   it('is disabled by TOKEN_GOAT_MCP_COMPRESS=0, still caches the raw result', async () => {
     process.env['TOKEN_GOAT_MCP_COMPRESS'] = '0'
     const rows = homogeneousRows(200)

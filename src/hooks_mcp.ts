@@ -51,25 +51,49 @@ function preMcpHandler(event: HookEvent): HookOutput {
 
 function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !event.sessionId) return passOutput()
+  if (!toolName || !event.sessionId || !toolName.startsWith('mcp__')) return passOutput()
   const toolInput = getToolInput(event)
-  if (!isMcpReadOnly(toolName, toolInput)) return passOutput()
   // An in-band MCP error is a valid response, not a cacheable one — never let a
   // transient or now-resolved failure block every later identical retry.
   if (isMcpErrorResponse(event.raw)) return passOutput()
-  const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
-  // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
-  if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
+  const readOnly = isMcpReadOnly(toolName, toolInput)
   const resultText = extractToolResultText(event.raw)
   if (!resultText) return passOutput()
-  const id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
-  // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts): only attempted when the full result was actually cached (id !== null), so the "full via mcp-output <id>" label always resolves, size-gated so small results are never touched, and opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match TOKEN_GOAT_BASH_COMPRESS's existing convention elsewhere in this codebase. Per-server packs run first (GitHub, browser-automation): a schema-aware pack strips known boilerplate before handing the result to the same generic table-ifying pass. When no pack matches or pays off, the generic pass runs on the untransformed text exactly as before the packs existed.
-  if (id !== null && resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
+  // Caching/dedup remains strictly read-only-gated: a mutating or non-idempotent
+  // call (e.g. a browser-automation `take_snapshot`, which trips MUTATING_VERBS_RE's
+  // `snapshot` token even though its result is compressible) must never be served
+  // back to a later identical pre_tool_use call, since its output can legitimately
+  // differ call to call.
+  let id: string | null = null
+  if (readOnly) {
+    const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
+    // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
+    if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
+    id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+  }
+  // Deterministic structural compression (see mcp_compress.ts and mcp_compress_packs.ts) is gated
+  // on compressibility, not on cache-eligibility: it used to require id !== null (i.e. the call was
+  // already read-only-cached), which silently excluded every non-idempotent tool a compression pack
+  // was written for -- e.g. chrome-devtools-mcp's take_snapshot, which trips MUTATING_VERBS_RE's
+  // `snapshot` token, never reached mcp_compress_packs.ts's dedicated browser-snapshot pack in
+  // production even though that pack exists specifically for it. Size-gated so small results are
+  // never touched, and opt-out (not opt-in) via TOKEN_GOAT_MCP_COMPRESS=0 to match
+  // TOKEN_GOAT_BASH_COMPRESS's existing convention elsewhere in this codebase. Per-server packs run
+  // first (GitHub, browser-automation): a schema-aware pack strips known boilerplate before handing
+  // the result to the same generic table-ifying pass. When no pack matches or pays off, the generic
+  // pass runs on the untransformed text exactly as before the packs existed.
+  if (resultText.length >= MCP_COMPRESS_MIN_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
     const compressed = compressMcpResultWithPacks(toolName, resultText) ?? compressMcpResult(resultText)
     if (compressed !== null) {
-      return {
-        hookType: 'rewriteOutput',
-        updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${compressed}`,
+      // A mutating/non-idempotent call was never cached above (readOnly is false), but the "full via
+      // mcp-output <id>" label still needs somewhere to resolve, so store it now purely for recall --
+      // this never feeds preMcpHandler's dedup check, which independently re-gates on isMcpReadOnly.
+      if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
+      if (id !== null) {
+        return {
+          hookType: 'rewriteOutput',
+          updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${compressed}`,
+        }
       }
     }
   }
