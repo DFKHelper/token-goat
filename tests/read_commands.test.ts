@@ -2763,6 +2763,11 @@ describe('read_commands', () => {
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
+
+    it('extracts C# using directives, including using static', () => {
+      const src = 'using System.Collections.Generic;\nusing static System.Math;\nnamespace Foo {}'
+      expect(extractImports(src, '.cs')).toEqual(['System.Collections.Generic', 'System.Math'])
+    })
   })
 
   // ---- extractExportNames ---------------------------------------------------
