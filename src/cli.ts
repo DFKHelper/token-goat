@@ -20,7 +20,7 @@ import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
-import { formatLocalTimestamp } from './stats.js'
+import { formatLocalTimestamp, recordStat } from './stats.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -314,7 +314,27 @@ export async function cmdIndex(
 
 function cmdMap(opts: { compact?: boolean }): void {
   const map = buildProjectMap(process.cwd(), { compact: opts.compact === true })
-  out(formatProjectMap(map, map.compact))
+  const text = formatProjectMap(map, map.compact)
+  out(text)
+  // `map_lookup` has carried a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry
+  // since the Python->TS port, but nothing ever called recordStat for it -- the `map`/`baseline`
+  // dashboard bucket was permanently zero regardless of real usage (same class of gap fixed for
+  // changed_lookup, see project_runchanged_missing_stat memory). "Full source" is approximated as
+  // the on-disk size of every file the map actually surfaces (recentFiles + topSymbols' files),
+  // deduplicated -- the same set of files a caller would otherwise have had to read individually
+  // to get the same information the compact map text now conveys in one shot.
+  const referencedFiles = new Set<string>([...map.recentFiles, ...map.topSymbols.map((s) => s.filePath)])
+  let fullSourceBytes = 0
+  for (const fp of referencedFiles) {
+    try {
+      fullSourceBytes += fs.statSync(fp).size
+    } catch {
+      // Stale index entry pointing at a deleted/moved file -- contributes nothing.
+    }
+  }
+  const emittedBytes = Buffer.byteLength(text, 'utf8')
+  const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
+  recordStat('map_lookup', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 function cmdBridgesStatus(opts: { json?: boolean }): void {
