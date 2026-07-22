@@ -7,7 +7,7 @@
  *
  * Extracts two kinds: top-level `function` declarations (`function name`, `function name()`,
  * or bare POSIX `name()`, all optionally followed by `{` on the same line) and top-level
- * `NAME=value` variable assignments (optionally prefixed with `export`/`declare .../`readonly`).
+ * `NAME=value` variable assignments (optionally prefixed with `export`/`declare`/`readonly`, each optionally followed by getopts-style flags like `-a`/`-A`/`-x`/`-r`).
  * "Top-level" means not nested inside another function body -- mirrors the powershell adapter's
  * `braceDepth === 0 && currentClass === null` gate, one level simpler since bash has no classes.
  * Heredoc bodies (`<<EOF ... EOF`, `<<'EOF' ... EOF`, `<<-EOF ... EOF`) are masked out entirely
@@ -22,7 +22,7 @@ const MAX_SYMBOLS = 500
 
 const FUNC_KEYWORD_RE = /^function\s+([A-Za-z_]\w*)\s*(?:\(\s*\))?/
 const FUNC_POSIX_RE = /^([A-Za-z_]\w*)\s*\(\s*\)/
-const VAR_RE = /^(?:export\s+|declare\s+(?:-\w+\s+)*|readonly\s+)?([A-Za-z_]\w*)=/
+const VAR_RE = /^(?:(?:export|declare|readonly)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=/
 const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/
 
 /**
