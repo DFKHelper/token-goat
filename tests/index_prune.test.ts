@@ -14,7 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // for). vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot
 // redefine property"), so a module mock with a hoisted flag is the portable way to do this while
 // every other fs call in this file passes straight through to the real module untouched.
-const mockState = vi.hoisted(() => ({ blockedPath: undefined as string | undefined }))
+const mockState = vi.hoisted(() => ({
+  blockedPath: undefined as string | undefined,
+  // Fires once, synchronously, from inside statSync for this exact path -- used to simulate a
+  // concurrent recreate-and-reindex landing in the gap between a prune scan observing "file
+  // gone" and the prune's own delete of that path actually running.
+  onStatOnce: undefined as (() => void) | undefined,
+  onStatOncePath: undefined as string | undefined,
+}))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedExistsSync = ((p: fs.PathLike) => {
@@ -24,6 +31,15 @@ vi.mock('node:fs', async (importOriginal) => {
   const guardedStatSync = ((...args: Parameters<typeof fs.statSync>) => {
     if (mockState.blockedPath !== undefined && args[0] === mockState.blockedPath) {
       throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+    }
+    if (mockState.onStatOncePath !== undefined && args[0] === mockState.onStatOncePath) {
+      const cb = mockState.onStatOnce
+      mockState.onStatOnce = undefined
+      mockState.onStatOncePath = undefined
+      cb?.()
+      const opts = args[1] as { throwIfNoEntry?: boolean } | undefined
+      if (opts?.throwIfNoEntry === false) return undefined
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     }
     return actual.statSync(...args)
   }) as typeof fs.statSync
@@ -64,6 +80,8 @@ describe('index_prune', () => {
 
   afterEach(() => {
     mockState.blockedPath = undefined
+    mockState.onStatOnce = undefined
+    mockState.onStatOncePath = undefined
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {
@@ -261,6 +279,42 @@ describe('index_prune', () => {
     const result2 = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result2).toBe(0)
     expect(symbolCount(dbPath, aKey)).toBe(0)
+  })
+
+  // Regression: findDeletablePaths scans every candidate path for disk existence, THEN a second
+  // pass deletes every path found gone -- these are not one atomic step. If a file is recreated
+  // and reindexed (by a concurrent edit hook, worker drain, or second `token-goat index`
+  // invocation) in the gap between "this path was observed gone" and "this path's row is
+  // actually deleted", the unconditional delete used to wipe the freshly-written row too,
+  // silently losing the new content even though the file exists on disk again with fresh index
+  // rows. Simulated here via a statSync hook that fires exactly once for the target path (mid
+  // prune scan) and, as a side effect, recreates the file with different content and reindexes
+  // it before the mocked stat call reports "gone" -- faithfully reproducing the race without
+  // needing real wall-clock timing.
+  it('does not delete a file that was recreated and reindexed mid-scan (delete-recreate race)', () => {
+    const aPath = path.join(dir, 'race.ts')
+    fs.writeFileSync(aPath, 'export const oldSym = 1\n')
+    const aKey = normalizePath(aPath)
+    indexFileSync(aKey, dbPath)
+    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+
+    mockState.onStatOncePath = aKey
+    mockState.onStatOnce = () => {
+      fs.writeFileSync(aPath, 'export const newSym = 2\n')
+      indexFileSync(aKey, dbPath)
+    }
+
+    const result = pruneDeletedFiles(normalizePath(dir), dbPath)
+
+    // The recreated file must survive with its fresh content indexed, not get wiped by the
+    // prune pass that observed it "gone" a moment before the recreate landed.
+    expect(result).toBe(0)
+    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    const db = getDb(dbPath)
+    const row = db.prepare('SELECT body FROM symbols WHERE file_path = ?').get(aKey) as
+      | { body: string }
+      | undefined
+    expect(row?.body).toContain('newSym')
   })
 
   // Regression: removeFileFromIndex called deleteFileRows then deleteFileEmbeddings with no

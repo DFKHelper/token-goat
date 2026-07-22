@@ -81,11 +81,24 @@ function removeFilesBestEffort(db: DbHandle, paths: string[]): string[] {
   return removed
 }
 
+// Same as removeFilesBestEffort, but re-checks disk existence immediately before each delete. findDeletablePaths' scan and this loop's deletes are not one atomic step -- across a large root the gap between "checked, file was gone" and "actually delete the row" can be wide enough for the file to be recreated and reindexed by a concurrent writer (an edit hook, a second worker/CLI invocation, a git checkout) in between. Without this recheck, deleteFileRows deletes unconditionally by path and would wipe that freshly-written row, silently losing the new content. This can only shrink the race window (down to the gap between this statSync and the delete itself), not eliminate it -- true atomicity would need a DB-level guard -- but it closes the far wider window that findDeletablePaths' full-scan-then-delete-all shape otherwise leaves open. Used only where "gone from disk" is the deletion trigger (pruneDeletedFiles, sweepKnownRoots's live-root branch); pruneSystemTempFiles intentionally does NOT use this since its rows are stale regardless of current disk existence.
+function removeDeletedFilesBestEffort(db: DbHandle, paths: string[]): string[] {
+  const stillGone = paths.filter((p) => {
+    try {
+      return fs.statSync(p, { throwIfNoEntry: false }) === undefined
+    } catch {
+      // Can't confirm the file is actually gone (EPERM/EBUSY/etc) -- don't delete this pass.
+      return false
+    }
+  })
+  return removeFilesBestEffort(db, stillGone)
+}
+
 // Remove index rows for files under rootPrefix that no longer exist on disk. Scoped by absolute-path prefix so the shared global DB never prunes another project's rows, and keeps every file still present on disk. Returns the count pruned.
 export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbPath()): number {
   if (isTooShallowToPrune(rootPrefix)) return 0
   const db = getDb(dbPath)
-  return removeFilesBestEffort(db, findDeletablePaths(rootPrefix, dbPath)).length
+  return removeDeletedFilesBestEffort(db, findDeletablePaths(rootPrefix, dbPath)).length
 }
 
 // Scan all indexed files and return the absolute paths that live under the OS system temp directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral, so any indexed row under it is stale regardless of which scratch checkout produced it. Exported so cmdProject's --dry-run can report what would be pruned before committing.
@@ -213,7 +226,7 @@ export function sweepKnownRoots(
       continue
     }
 
-    prunedRows += removeFilesBestEffort(db, deletable).length
+    prunedRows += removeDeletedFilesBestEffort(db, deletable).length
     prunedRoots.push(root)
   }
 
