@@ -121,6 +121,25 @@ public class MyTestClass {
     expect(cls?.body).toContain('@IsTest')
   })
 
+  it('folds a multi-line annotation argument list into the annotated method\'s span (regression: annotationStartLine only recognized a standalone annotation as foldable when the whole line, including a balanced same-line paren pair, matched PURE_ANNOTATION_LINE_RE in one shot - an annotation whose argument list spans multiple physical lines, idiomatic for `@InvocableMethod(label=..., description=...)`, never matched that per-line regex on any of its lines, so the fold-back stopped immediately and silently dropped the whole annotation from the method\'s lineStart/body)', () => {
+    const content = `public class MyFlowAction {
+  @InvocableMethod(
+    label='Do something'
+    description='Runs the process'
+  )
+  public static void execute() {
+    System.debug('run');
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyFlowAction.cls')
+    const method = symbols.find((s) => s.name === 'execute')
+    expect(method?.lineStart).toBe(2)
+    expect(method?.body).toContain('@InvocableMethod')
+    expect(method?.body).toContain("label='Do something'")
+  })
+
   it('extracts an interface annotated with a same-line annotation (regression: same TYPE_DECL_RE gap as the class case above)', () => {
     const content = `@SuppressWarnings('PMD') public interface MyIntf {
   void doThing();

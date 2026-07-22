@@ -63,16 +63,40 @@ function lineEndOffset(content: string, lineIndex: readonly number[], line: numb
 // preceding pure-annotation lines a method/constructor's own span walks back through - doing so
 // swallows the class's own header line into the member's span instead of the class's.
 const PURE_ANNOTATION_LINE_RE = new RegExp(`^(?:@${IDENT}(?:\\([^)]*\\))?[ \\t]*)+$`)
+// An annotation's own argument list is legally allowed to span multiple physical lines
+// (`@InvocableMethod(\n    label='Do something'\n    description='...'\n)`, idiomatic for
+// Flow-invocable methods) - PURE_ANNOTATION_LINE_RE alone can never match any of those lines
+// individually since none of them is a self-contained, paren-balanced annotation on its own.
+// Without this, the fold-back below stops at the first such line and silently drops the whole
+// annotation from the member's span, the same failure mode the same-line/standalone-single-line
+// cases above were already fixed for.
+const ANNOTATION_OPENER_RE = new RegExp(`^@${IDENT}\\(`)
 
 function annotationStartLine(lines: readonly string[], line: number): number {
   let start = line
+  let depth = 0
   for (let i = line - 2; i >= 0; i--) {
     const trimmed = lines[i]?.trim() ?? ''
-    if (PURE_ANNOTATION_LINE_RE.test(trimmed)) {
+    if (depth === 0 && trimmed === '') continue
+    if (depth === 0 && PURE_ANNOTATION_LINE_RE.test(trimmed)) {
       start = i + 1
       continue
     }
-    if (trimmed === '') continue
+    const opens = (trimmed.match(/\(/g) ?? []).length
+    const closes = (trimmed.match(/\)/g) ?? []).length
+    const nextDepth = depth + closes - opens
+    if (nextDepth > 0) {
+      // Still inside an annotation argument list whose closing paren was already consumed below.
+      depth = nextDepth
+      continue
+    }
+    if (nextDepth === 0 && ANNOTATION_OPENER_RE.test(trimmed)) {
+      // This line opens the multi-line annotation argument list; fold it (and everything below
+      // it that was already consumed) into the member's span.
+      depth = 0
+      start = i + 1
+      continue
+    }
     break
   }
   return start
