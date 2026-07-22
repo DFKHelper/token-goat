@@ -111,6 +111,7 @@ export {
   Sqlite3Filter, sqlite3Filter,
   RedisCLIFilter, redisCLIFilter,
   SysPackageFilter, sysPackageFilter,
+  WmicFilter, wmicFilter,
   ProtocFilter, protocFilter,
   SassFilter, sassFilter,
   ToxFilter, toxFilter,

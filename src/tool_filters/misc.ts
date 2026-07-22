@@ -1,6 +1,6 @@
 // Miscellaneous compression filter family (Batch K2).
 //
-// Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 14 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: it's content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command — matches() always returns false — so its tail position is precautionary, not load-bearing.
+// Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 15 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: it's content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command — matches() always returns false — so its tail position is precautionary, not load-bearing.
 
 import { ToolFilter } from './base.js'
 import { loadConfig } from '../config.js'
@@ -673,6 +673,48 @@ export class SysPackageFilter extends ToolFilter {
 export const sysPackageFilter = new SysPackageFilter()
 
 // ===========================================================================
+// WmicFilter
+// ===========================================================================
+// Deprecated Windows `wmic` prints its default table format with every
+// column right-padded to a fixed width drawn from the WMI property schema
+// (often far wider than any real value, e.g. 30+ spaces between `Name` and
+// `ProcessId`), and pads the final column too, leaving long runs of trailing
+// whitespace on every row. Collapsing runs of 2+ spaces/tabs to a fixed
+// 2-space delimiter (and trimming trailing padding) keeps column order and
+// readability while stripping the wasted whitespace; `/format:csv` and
+// `/format:list` output has no such padding, so the collapse is a no-op there.
+
+export class WmicFilter extends ToolFilter {
+  readonly name = 'wmic'
+  override readonly binaries = new Set(['wmic'])
+
+  protected override compressBody(
+    stdout: string,
+    stderr: string,
+    _exitCode: number,
+    _argv: string[],
+  ): string {
+    const merged = this.combineOutput(stdout, stderr)
+    const lines = merged.split('\n')
+    let padCount = 0
+    const kept = lines.map((line) =>
+      line
+        .replace(/[ \t]{2,}/g, () => {
+          padCount++
+          return '  '
+        })
+        .replace(/[ \t]+$/, ''),
+    )
+    const notes: string[] = []
+    maybeNote(notes, padCount, `collapsed ${padCount} runs of fixed-width column padding`)
+    this.emitNotes(kept, notes)
+    return this.finalize(kept)
+  }
+}
+
+export const wmicFilter = new WmicFilter()
+
+// ===========================================================================
 // ProtocFilter
 // ===========================================================================
 
@@ -1342,6 +1384,7 @@ export const MISC_FILTERS: ToolFilter[] = [
   sqlite3Filter,
   redisCLIFilter,
   sysPackageFilter,
+  wmicFilter,
   protocFilter,
   sassFilter,
   toxFilter,
