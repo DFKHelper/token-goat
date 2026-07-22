@@ -10,7 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
-import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -350,7 +350,13 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
+    // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the
+    // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
+    // is not the real number of matching symbols -- countSymbols reruns the same filters with
+    // no LIMIT to report an honest total, the same distinction json_query's --head already
+    // makes (its totalCount survives --head unlike this one used to).
+    const trueTotal = countSymbols(queryOpts)
+    const payload = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
     return { text, code: 0 }

@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 // Stub the DB-layer imports so tests don't need a real SQLite DB
 vi.mock('../src/index_reader.js', () => ({
   querySymbols: vi.fn(() => []),
+  countSymbols: vi.fn(() => 0),
   queryRefs: vi.fn(() => []),
   getFileEntry: vi.fn(() => null),
   queryRefCounts: vi.fn(() => new Map()),
@@ -83,7 +84,7 @@ import {
   runScreenshot,
   runZipRead,
 } from '../src/read_commands.js'
-import { querySymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
+import { querySymbols, countSymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
@@ -97,6 +98,7 @@ import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
+const mockCountSymbols = vi.mocked(countSymbols)
 const mockAppendDirtyPath = vi.mocked(enqueueDirtyPathSafe)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
 const mockGetFileEntry = vi.mocked(getFileEntry)
@@ -180,11 +182,25 @@ describe('read_commands', () => {
       const sym: MockSymbol = { name: 'fn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function fn() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
+      mockCountSymbols.mockReturnValue(1)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(Array.isArray(parsed.items)).toBe(true)
       expect(parsed.truncated).toBe(false)
       expect(parsed.totalCount).toBe(1)
+    })
+
+    it('reports the true DB total (ignoring the SQL LIMIT already applied to `results`) in --json totalCount, marking truncated even when overflow_guard never kicks in (regression: totalCount used to equal results.length, silently hiding matches beyond --limit)', () => {
+      const sym: MockSymbol = { name: 'main', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function main() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      // 105 real matches in the DB; querySymbols's own LIMIT already cut that down to the 1 row returned above.
+      mockCountSymbols.mockReturnValue(105)
+      const { text: stdout } = runSymbol({ name: 'main', json: true, limit: 1 })
+      const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      expect(parsed.items).toHaveLength(1)
+      expect(parsed.totalCount).toBe(105)
+      expect(parsed.truncated).toBe(true)
     })
 
     it('caps --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of emitting an unbounded array (regression: JSON mode had no overflow guard at all, unlike the text branch\'s guardText)', () => {
@@ -202,6 +218,7 @@ describe('read_commands', () => {
       }))
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
+      mockCountSymbols.mockReturnValue(50)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.truncated).toBe(true)
@@ -224,6 +241,7 @@ describe('read_commands', () => {
       }))
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
+      mockCountSymbols.mockReturnValue(50)
       const { text: stdout } = runSymbol({ name: 'fn', json: true })
       const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
       expect(parsed.truncated).toBe(false)
