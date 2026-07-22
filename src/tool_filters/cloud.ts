@@ -468,7 +468,15 @@ export class AwsCliFilter extends ToolFilter {
         this._JSON_ARRAY_THRESHOLD,
         this._JSON_ARRAY_KEEP,
       )
-      if (compressed !== null) text = compressed
+      if (compressed !== null) {
+        text = compressed
+      } else if (text.includes('\n') && text.includes('|')) {
+        // `--output table` results (e.g. `aws ec2 describe-instances --output table`) are
+        // not JSON, so _tryCompressJsonArray never fires. AwsCliFilter always wins dispatch
+        // over AwsFilter for real aws commands (see CLOUD_FILTERS ordering), so this fallback
+        // must live here — AwsFilter's copy below is unreachable in practice.
+        text = _compressTable(text, 25)
+      }
     }
 
     if (stderr.trim()) {
