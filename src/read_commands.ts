@@ -63,6 +63,16 @@ const GREP_MAX_LINES = 200
 // Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
 // this tool's own index (thousands of symbols) without paging.
 const FIND_SCAN_LIMIT = 20_000
+// `refs --top` exists specifically for high-fanout symbols (hundreds+ of references) and
+// aggregates by file before truncating, so it must scan far more rows than the default
+// per-line `refs` cap (100, sized for "read these individually"). queryRefs orders rows by
+// file_path then line -- an alphabetical, not count-based, ordering -- so applying the
+// default 100-row cap ahead of the by-file grouping silently drops every ref in
+// alphabetically-later files (regardless of how many refs they actually hold) before the
+// count comparison ever happens, producing a "top files by reference count" that is really
+// just "top files among whichever ones sort first alphabetically". Large enough to cover any
+// realistic single-symbol fanout in this codebase without paging.
+const REFS_TOP_SCAN_LIMIT = 20_000
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -848,6 +858,7 @@ export function runRefs(opts: RefsOptions): number {
     // anywhere in the codebase, so --callers must never scope the search to that file.
     if (file !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
+    else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     const results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
@@ -892,6 +903,7 @@ function runRefsSingle(opts: RefsOptions): number {
   const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
   if (defFileHint !== undefined && opts.callers !== true) queryOpts.filePath = defFileHint
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
 
   const results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
 
