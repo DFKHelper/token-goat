@@ -313,9 +313,8 @@ export async function cmdIndex(
 }
 
 function cmdMap(opts: { compact?: boolean }): void {
-  const compact = opts.compact === true
-  const map = buildProjectMap(process.cwd(), { compact })
-  out(formatProjectMap(map, compact))
+  const map = buildProjectMap(process.cwd(), { compact: opts.compact === true })
+  out(formatProjectMap(map, map.compact))
 }
 
 function cmdBridgesStatus(opts: { json?: boolean }): void {

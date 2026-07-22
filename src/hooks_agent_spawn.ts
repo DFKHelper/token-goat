@@ -47,7 +47,7 @@ function buildSubagentBriefing(): string {
     // 1. Project map summary
     try {
       const map = buildProjectMap(process.cwd(), { compact: true })
-      const mapText = formatProjectMap(map, true)
+      const mapText = formatProjectMap(map, map.compact)
       lines.push(mapText)
     } catch {
       // Project map unavailable — skip it and continue with cached ids/reminder
