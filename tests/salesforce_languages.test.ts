@@ -140,6 +140,24 @@ public class MyTestClass {
     expect(method?.body).toContain("label='Do something'")
   })
 
+  it('folds a multi-line annotation whose own string argument contains a literal unbalanced paren (regression: annotationStartLine counted `(`/`)` on the raw, unstripped source line, so a literal paren inside an annotation argument string like `label=\'Do something (\'` desynced the depth tracker and broke the walk-back early, silently dropping the whole annotation fold - the fix must count parens on the string/comment-blanked `code` text instead)', () => {
+    const content = `public class MyFlowAction {
+  @InvocableMethod(
+    label='Do something ('
+    description='Runs the process'
+  )
+  public static void execute() {
+    System.debug('run');
+  }
+}
+`
+
+    const { symbols } = extractApex(content, 'MyFlowAction.cls')
+    const method = symbols.find((s) => s.name === 'execute')
+    expect(method?.lineStart).toBe(2)
+    expect(method?.body).toContain('@InvocableMethod')
+  })
+
   it('extracts an interface annotated with a same-line annotation (regression: same TYPE_DECL_RE gap as the class case above)', () => {
     const content = `@SuppressWarnings('PMD') public interface MyIntf {
   void doThing();

@@ -160,7 +160,6 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const lineIndex = buildLineIndex(content)
-  const rawLines = content.split(/\r?\n/)
   // Block comments must be stripped BEFORE string-literal blanking, not after: `stripCstyleComments`
   // already skips a `/*` opener that falls inside an open quote (isInsideStringLiteral), so it does
   // not need string-free input to find real comment spans. Doing it the other way around - as this
@@ -177,6 +176,13 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // everything through end-of-line, corrupting any code that follows on the same line.
   const stringFree = stripStringLiterals(blockCommentFree)
   const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
+  // annotationStartLine's paren-depth counter must walk this string/comment-blanked `code` text,
+  // not the raw source: a literal `(`/`)` inside a multi-line annotation's own string argument
+  // (e.g. `label='Do something ('`) is real code-adjacent text on a raw line but not a real paren,
+  // and counting it as one desyncs the depth tracker - either breaking the walk-back early (silently
+  // dropping the whole annotation fold, the very failure mode the multi-line-annotation fix above
+  // already covers for the no-parens case) or over/under-folding into unrelated lines.
+  const codeLines = code.split(/\r?\n/)
 
   const emit = (name: string, kind: string, span: AdapterSpan, docstring = ''): void => {
     if (!name || symbols.length >= MAX_SYMBOLS) return
@@ -191,7 +197,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const objectName = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
-    const bodyStartLine = annotationStartLine(rawLines, line)
+    const bodyStartLine = annotationStartLine(codeLines, line)
     emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]), objectName)
   }
 
@@ -210,7 +216,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const name = match[2] ?? ''
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
-    const bodyStartLine = annotationStartLine(rawLines, line)
+    const bodyStartLine = annotationStartLine(codeLines, line)
     const kind = typeKind === 'class' ? 'apex_class' : `apex_${typeKind}`
     typeNames.add(name)
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
@@ -233,7 +239,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
       const startOffset = match.index ?? 0
       const line = offsetToLine(lineIndex, startOffset)
       if (overlapsExisting(symbols, line)) continue
-      const bodyStartLine = annotationStartLine(rawLines, line)
+      const bodyStartLine = annotationStartLine(codeLines, line)
       emit(name, 'apex_constructor', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
     }
   }
@@ -244,7 +250,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const startOffset = match.index ?? 0
     const line = offsetToLine(lineIndex, startOffset)
     if (overlapsExisting(symbols, line)) continue
-    const bodyStartLine = annotationStartLine(rawLines, line)
+    const bodyStartLine = annotationStartLine(codeLines, line)
     const kind = typeNames.has(name) ? 'apex_constructor' : 'apex_method'
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
