@@ -164,6 +164,36 @@ describe('TaskOutput poll-delta hook (real runHook dispatch)', () => {
     expect(taskFirst.hookType).toBe('pass')
   })
 
+  it('collapses a repeat-storm already present in the very first poll payload', async () => {
+    const preamble = 'startup line\n'
+    const repeatedWarning = 'WARNING: deprecated flag used\n'.repeat(247)
+    const firstOutput = preamble + repeatedWarning
+
+    const first = await runHook(buildEvent('post_tool_use', postPayload(firstOutput)))
+    expect(first.hookType).toBe('rewriteOutput')
+    if (first.hookType === 'rewriteOutput') {
+      expect(first.updatedOutput.length).toBeLessThan(repeatedWarning.length / 4)
+      expect(first.updatedOutput).toContain('WARNING: deprecated flag used')
+      expect(first.updatedOutput).toMatch(/×2\d\d/)
+    }
+
+    // The poll-snapshot cache must still hold the RAW (uncollapsed) first output --
+    // not the collapsed copy -- since future delta diffs compare against the real
+    // prior output. Confirm by appending more raw output and checking the delta
+    // resolves cleanly as a simple append, not a buffer-reset mismatch.
+    const moreOutput = 'z'.repeat(600)
+    const second = await runHook(buildEvent('post_tool_use', postPayload(firstOutput + moreOutput)))
+    expect(second.hookType).toBe('rewriteOutput')
+    if (second.hookType === 'rewriteOutput') {
+      expect(second.updatedOutput).toContain(moreOutput)
+    }
+  })
+
+  it('passes the first poll through untouched when there is nothing to collapse', async () => {
+    const res = await runHook(buildEvent('post_tool_use', postPayload(bigChunk)))
+    expect(res.hookType).toBe('pass')
+  })
+
   it('collapses many repeated consecutive lines within a delta poll payload', async () => {
     const firstOutput = 'preamble line\n'
     const first = await runHook(buildEvent('post_tool_use', postPayload(firstOutput)))

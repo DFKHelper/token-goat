@@ -99,9 +99,21 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     const minBytes = loadConfig().bash_compress.cache_min_bytes
 
     if (prior === null) {
-      // First poll ever seen for this task this session -- nothing to diff against yet.
+      // First poll ever seen for this task this session -- nothing to diff against
+      // yet, but the payload can still carry within-payload line-repeat storms (a
+      // single warning line repeated 247 times has been observed in one poll), so
+      // apply the same collapse the delta path applies below. Cache stores the
+      // original raw output (not the collapsed copy) since future delta diffs must
+      // compare against the real prior output.
       storePollSnapshot(event.sessionId, taskId, output)
-      return passOutput()
+      const collapsed = collapseRepeatedLines(output)
+      if (collapsed === output) return passOutput()
+      const savings = Buffer.byteLength(output, 'utf-8') - Buffer.byteLength(collapsed, 'utf-8')
+      if (savings < minBytes) return passOutput()
+      return {
+        hookType: 'rewriteOutput',
+        updatedOutput: collapsed,
+      }
     }
 
     if (output === prior.output) {
