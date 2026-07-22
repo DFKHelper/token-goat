@@ -310,6 +310,25 @@ describe('parseFile', () => {
     expect(symNames).toContain('compute') // out-of-line method — dropped pre-fix
   })
 
+  it('sniffs a .h file with C++ syntax and parses it with the cpp grammar, not the c grammar', async () => {
+    const hFile = write(
+      'widget.h',
+      ['class Widget {', 'public:', '  int area() { return 4; }', '};', ''].join('\n'),
+    )
+    const result = await parseFile(hFile)
+    expect(result.language).toBe('c') // stored Language stays 'c' for .h, same as tsx stays 'typescript'
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('Widget') // class_specifier -- only resolves under the cpp grammar
+    expect(symNames).toContain('area')
+  })
+
+  it('parses a plain C .h file with the c grammar (no false-positive cpp routing)', async () => {
+    const hFile = write('plain.h', 'int add(int a, int b);\n#define MAX 100\n')
+    const result = await parseFile(hFile)
+    expect(result.language).toBe('c')
+    expect(result.symbols).toEqual([])
+  })
+
   it('indexes Go type, const, var, and method symbols (names live on *_spec nodes)', async () => {
     const goFile = write(
       'sym.go',
