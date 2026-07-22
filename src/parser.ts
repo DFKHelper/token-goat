@@ -112,10 +112,25 @@ function loadParserCtor(): TsParserCtor | null {
   return _parserCtor
 }
 
+// `.h` is inherently ambiguous between C and C++ (unlike `.hpp`, which is unambiguous cpp) -- the
+// same extension is used for both languages. None of `class`, `namespace`, `template<`, `::`, or an
+// access-specifier label (`public:`/`private:`/`protected:`) are valid C syntax, so any match is a
+// strong, low-false-positive signal that a `.h` file is genuinely a C++ header. Used to route such
+// files to the cpp grammar instead of the c grammar -- parsing C++-only syntax with tree-sitter-c
+// still "succeeds" (error recovery doesn't throw) but produces ERROR nodes around it, silently
+// dropping or mis-scoping symbols/refs, exactly the same failure mode `useTsx` below guards against.
+const CPP_HEADER_SNIFF_RE = /\bclass\s+\w|\bnamespace\s+\w|\btemplate\s*<|::\s*\w|\b(?:public|private|protected)\s*:/
+
 // `tree-sitter-typescript` ships two distinct grammars from one package: `typescript` (plain .ts/.mts/.cts — rejects JSX syntax) and `tsx` (a superset that also parses JSX). Both share the `Language` value 'typescript', so the caller's file path — not the Language — is what distinguishes them. Parsing a .tsx file with the `typescript` grammar still "succeeds" (tree-sitter's error recovery doesn't throw) but produces ERROR nodes around JSX, silently dropping or mis-scoping symbols/refs.
-function loadGrammar(lang: Language, filePath?: string): Grammar | null {
+function loadGrammar(lang: Language, filePath?: string, content?: string): Grammar | null {
   const useTsx = lang === 'typescript' && filePath !== undefined && path.extname(filePath).toLowerCase() === '.tsx'
-  const cacheKey = useTsx ? 'typescript:tsx' : lang
+  const useCppHeader =
+    lang === 'c' &&
+    filePath !== undefined &&
+    path.extname(filePath).toLowerCase() === '.h' &&
+    content !== undefined &&
+    CPP_HEADER_SNIFF_RE.test(content)
+  const cacheKey = useTsx ? 'typescript:tsx' : useCppHeader ? 'c:cpp-header' : lang
   const cached = _grammarCache.get(cacheKey)
   if (cached !== undefined) return cached
 
@@ -137,7 +152,7 @@ function loadGrammar(lang: Language, filePath?: string): Grammar | null {
     } else if (lang === 'java') {
       grammar = _require('tree-sitter-java') as Grammar
     } else if (lang === 'c') {
-      grammar = _require('tree-sitter-c') as Grammar
+      grammar = useCppHeader ? (_require('tree-sitter-cpp') as Grammar) : (_require('tree-sitter-c') as Grammar)
     } else if (lang === 'cpp') {
       grammar = _require('tree-sitter-cpp') as Grammar
     }
@@ -1753,7 +1768,7 @@ function parseContent(content: string, filePath: string, language: Language): Pa
   if (isTreeSitterAvailable(language)) {
     try {
       const Ctor = loadParserCtor()
-      const grammar = loadGrammar(language, filePath)
+      const grammar = loadGrammar(language, filePath, content)
       if (Ctor !== null && grammar !== null) {
         const parser = new Ctor()
         parser.setLanguage(grammar)
