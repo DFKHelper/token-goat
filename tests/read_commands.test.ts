@@ -9,6 +9,7 @@ vi.mock('../src/index_reader.js', () => ({
   querySymbols: vi.fn(() => []),
   countSymbols: vi.fn(() => 0),
   queryRefs: vi.fn(() => []),
+  countRefs: vi.fn(() => 0),
   getFileEntry: vi.fn(() => null),
   queryRefCounts: vi.fn(() => new Map()),
 }))
@@ -84,7 +85,7 @@ import {
   runScreenshot,
   runZipRead,
 } from '../src/read_commands.js'
-import { querySymbols, countSymbols, queryRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
+import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
@@ -105,6 +106,7 @@ const mockGetFileEntry = vi.mocked(getFileEntry)
 const mockFindContainingSection = vi.mocked(findContainingSection)
 const mockResolveCallers = vi.mocked(resolveCallers)
 const mockQueryRefs = vi.mocked(queryRefs)
+const mockCountRefs = vi.mocked(countRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
 const mockIndexFileSync = vi.mocked(indexFileSync)
@@ -3323,11 +3325,29 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).not.toContain('login:')
   })
 
+  it('reports the true DB total (ignoring the SQL LIMIT already applied to `results`) in single-symbol --json totalCount, marking truncated even when overflow_guard never kicks in (regression: totalCount used to equal results.length, silently hiding refs beyond --limit)', () => {
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
+    mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
+    // 219 real references in the DB; queryRefs's own LIMIT already cut that down to the 1 row returned above.
+    mockCountRefs.mockReturnValue(219)
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'login', json: true, limit: 1 })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+    expect(parsed.items).toHaveLength(1)
+    expect(parsed.totalCount).toBe(219)
+    expect(parsed.truncated).toBe(true)
+  })
+
   it('caps a single-symbol --json output at overflow_guard.max_tokens, wrapping with items/truncated/totalCount instead of an unbounded array', () => {
     mockLoadConfig.mockReturnValue({
       overflow_guard: { enabled: true, max_tokens: 60 },
     } as unknown as ReturnType<typeof loadConfig>)
     mockQueryRefs.mockReturnValue(Array.from({ length: 50 }, (_, i) => ref('src/auth.ts', i + 1, 'x'.repeat(50))))
+    mockCountRefs.mockReturnValue(50)
     const { stdout } = capture(() => {
       const code = runRefs({ spec: 'login', json: true })
       expect(code).toBe(0)
@@ -3378,6 +3398,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     mockQueryRefs.mockImplementation((opts: { name: string }) =>
       opts.name === 'login' ? [ref('src/auth.ts', 10, 'login()')] : [],
     )
+    mockCountRefs.mockImplementation((opts: { name: string }) => (opts.name === 'login' ? 1 : 0))
     const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
     const parsed = JSON.parse(stdout) as Record<string, { items: unknown[]; truncated: boolean; totalCount: number }>
     expect(Object.keys(parsed)).toEqual(['login', 'refresh'])
@@ -3398,6 +3419,7 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
         ? Array.from({ length: 50 }, (_, i) => ref('src/auth.ts', i + 1, 'x'.repeat(50)))
         : [ref('src/auth.ts', 1, 'refresh()')],
     )
+    mockCountRefs.mockImplementation((opts: { name: string }) => (opts.name === 'login' ? 50 : 1))
     const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
     const parsed = JSON.parse(stdout) as Record<string, { items: unknown[]; truncated: boolean; totalCount: number }>
     const login = parsed.login as { items: unknown[]; truncated: boolean; totalCount: number }
