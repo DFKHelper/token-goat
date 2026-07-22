@@ -2768,6 +2768,17 @@ describe('read_commands', () => {
       const src = 'using System.Collections.Generic;\nusing static System.Math;\nnamespace Foo {}'
       expect(extractImports(src, '.cs')).toEqual(['System.Collections.Generic', 'System.Math'])
     })
+
+    it('extracts PHP require_once/include_once alongside bare require/include and use', () => {
+      const src = [
+        "require_once 'a.php';",
+        "include_once 'b.php';",
+        "require 'c.php';",
+        "include 'd.php';",
+        'use App\\Foo;',
+      ].join('\n')
+      expect(extractImports(src, '.php')).toEqual(['a.php', 'b.php', 'c.php', 'd.php', 'App\\Foo'])
+    })
   })
 
   // ---- extractExportNames ---------------------------------------------------
