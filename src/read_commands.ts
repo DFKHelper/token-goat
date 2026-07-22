@@ -10,7 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
-import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -869,7 +869,17 @@ export function runRefs(opts: RefsOptions): number {
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
-      jsonOut[sym] = opts.top !== undefined ? topFilesJsonPayload(results, opts.top) : guardJsonRows(results)
+      if (opts.top !== undefined) {
+        jsonOut[sym] = topFilesJsonPayload(results, opts.top)
+      } else {
+        // `results` is already truncated by queryRefs's own SQL `LIMIT` (opts.limit, or the
+        // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
+        // is not the real number of matching refs -- countRefs reruns the same filters with no
+        // LIMIT to report an honest total (same fix as runSymbol's countSymbols call).
+        const capped = guardJsonRows(results)
+        const trueTotal = countRefs(queryOpts)
+        jsonOut[sym] = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+      }
       continue
     }
     if (results.length === 0) {
@@ -921,8 +931,15 @@ function runRefsSingle(opts: RefsOptions): number {
   const fullSourceBytes = sumFileSizes(results.map((r) => r.filePath))
 
   if (opts.json === true) {
-    const payload: RefsJsonEntry =
-      opts.top !== undefined ? topFilesJsonPayload(results, opts.top) : guardJsonRows(results)
+    let payload: RefsJsonEntry
+    if (opts.top !== undefined) {
+      payload = topFilesJsonPayload(results, opts.top)
+    } else {
+      // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
+      const capped = guardJsonRows(results)
+      const trueTotal = countRefs(queryOpts)
+      payload = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+    }
     const text = JSON.stringify(payload, null, 2)
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)

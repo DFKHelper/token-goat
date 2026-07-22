@@ -165,15 +165,11 @@ export function countSymbols(opts: SymbolQueryOpts = {}, dbPath: string = global
  * project root (see {@link querySymbols} for why this matters against the
  * machine-wide `global.db`).
  */
-export function queryRefs(
-  opts: {
-    name: string
-    filePath?: string
-    limit?: number
-    rootDir?: string
-  },
-  dbPath: string = globalDbPath(),
-): RefEntry[] {
+/** Shared WHERE-clause builder for {@link queryRefs} and {@link countRefs} -- both filter the same `refs` table by the same name/filePath/rootDir combination, so the clause/params construction lives in one place instead of drifting between a "fetch rows" and a "count rows" copy (mirrors {@link buildSymbolWhere}). */
+function buildRefsWhere(opts: { name: string; filePath?: string; rootDir?: string }): {
+  clause: string
+  params: (string | number)[]
+} {
   const where: string[] = ['name = ?']
   const params: (string | number)[] = [opts.name]
 
@@ -183,14 +179,39 @@ export function queryRefs(
   }
   applyRootDirScope(opts.rootDir, 'file_path', where, params)
 
+  return { clause: `WHERE ${where.join(' AND ')}`, params }
+}
+
+export function queryRefs(
+  opts: {
+    name: string
+    filePath?: string
+    limit?: number
+    rootDir?: string
+  },
+  dbPath: string = globalDbPath(),
+): RefEntry[] {
+  const { clause, params } = buildRefsWhere(opts)
   const limit = opts.limit ?? 100
-  const sql =
-    `SELECT file_path, name, line, col, context FROM refs ` +
-    `WHERE ${where.join(' AND ')} ORDER BY file_path, line LIMIT ?`
+  const sql = `SELECT file_path, name, line, col, context FROM refs ${clause} ORDER BY file_path, line LIMIT ?`
 
   const db = getDb(dbPath)
   const rows = db.prepare(sql).all(...params, limit) as RefRow[]
   return rows.map(toRefEntry)
+}
+
+/**
+ * True count of refs matching the same name/filePath/rootDir filters {@link queryRefs} accepts,
+ * ignoring `limit` entirely -- used so `token-goat refs --json` can report an honest `totalCount`
+ * instead of the count of whatever `queryRefs`'s own SQL `LIMIT` happened to let through (the
+ * same shape {@link countSymbols} fixed for `token-goat symbol --json`).
+ */
+export function countRefs(opts: { name: string; filePath?: string; rootDir?: string }, dbPath: string = globalDbPath()): number {
+  const { clause, params } = buildRefsWhere(opts)
+  const sql = `SELECT COUNT(*) as cnt FROM refs ${clause}`
+  const db = getDb(dbPath)
+  const row = db.prepare(sql).get(...params) as { cnt: number }
+  return row.cnt
 }
 
 /**
