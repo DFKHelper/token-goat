@@ -581,7 +581,7 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
   const afterCmd = cmd.slice(getnMatch[0].length)
   const beforeTail = afterCmd.split(/-Tail/i)[0]?.trim() ?? ''
   const afterTail = afterCmd.split(/-Tail\s+\d+/i)[1]?.trim() ?? ''
-  const filePath = beforeTail || afterTail
+  const filePath = (beforeTail || afterTail).replace(/^["']|["']$/g, '')
   if (!filePath) return null
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
@@ -593,7 +593,7 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
 function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
   const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
   if (!m) return null
-  const filePath = m[2]?.trim() ?? ''
+  const filePath = (m[2]?.trim() ?? '').replace(/^["']|["']$/g, '')
   const n = parseInt(m[5] ?? '0', 10)
   if (n <= 10) return null // already surgical -- matches extractGetContentTail's <=10 threshold
   if (!filePath) return null

@@ -1003,6 +1003,35 @@ describe('preBashHandler — PowerShell read commands', () => {
     expect(result.hookType).toBe('deny')
   })
 
+  it('Get-Content "src/auth.ts" -Tail 50 (double-quoted path) → suggests surgical read (regression: quotes were left on filePath, so the trailing " defeated the extension regex and the hint silently never fired)', () => {
+    const event = makeBashEvent('Get-Content "src/auth.ts" -Tail 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Get-Content')
+      expect(result.message).toContain('token-goat')
+    }
+  })
+
+  it("Get-Content -Tail 50 'src/auth.ts' (single-quoted, flag-first) → suggests surgical read", () => {
+    const event = makeBashEvent("Get-Content -Tail 50 'src/auth.ts'")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Get-Content -Tail')
+    }
+  })
+
+  it('Get-Content "src/auth.ts" | Select-Object -First 50 (quoted path) → suggests surgical read (regression: same quote-stripping gap in extractGetContentSelectFirst)', () => {
+    const event = makeBashEvent('Get-Content "src/auth.ts" | Select-Object -First 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Select-Object -First')
+      expect(result.context).toContain('token-goat')
+    }
+  })
+
   it('Get-Content src/auth.ts | Select-Object -First 50 → suggests surgical read', () => {
     const event = makeBashEvent('Get-Content src/auth.ts | Select-Object -First 50')
     const result = preBashHandler(event)
