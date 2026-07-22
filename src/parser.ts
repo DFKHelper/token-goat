@@ -1854,7 +1854,10 @@ function extractNoTreeSitter(
 ): ParseContentResult {
   if (language === 'salesforce_metadata') return extractSalesforceMetadata(content, filePath)
   if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
-  if (language === 'html' && isLwcFile(filePath, '.html')) return extractLwcTemplate(content, filePath)
+  if (language === 'html' && isLwcFile(filePath, '.html')) {
+    const base: ParseContentResult = { symbols: NO_TREE_SITTER_EXTRACTORS.html!(content, filePath), refs: [] }
+    return mergeParseResults(base, extractLwcTemplate(content, filePath))
+  }
   // Vue/Svelte/Astro adapters emit both symbols and refs (template component-tag references),
   // same shape as extractSalesforceMarkup above -- returned directly rather than forced through
   // the symbols-only NO_TREE_SITTER_EXTRACTORS map.
