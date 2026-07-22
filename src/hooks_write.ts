@@ -46,6 +46,18 @@ import type { HookOutput } from './types.js'
  */
 const MAX_LINES_FOR_DIFF = 4000
 
+/**
+ * Byte-size gate applied to the OLD file's `stat.size` before it is ever read into memory.
+ * `MAX_LINES_FOR_DIFF` above only rejects an oversized file AFTER `readFileSync` has already
+ * loaded the whole thing and `splitLines` has already run -- so a huge single-line file (a
+ * minified bundle, a data dump) or a huge multi-GB log sailed straight through that gate and
+ * synchronously read its entire content into a JS string on every single Write, exactly the
+ * unbounded-`readFileSync` pattern already fixed for the catch-all file-type dispatch in
+ * hooks_read.ts (see SLICE_ESTIMATE_SCAN_CAP_BYTES there). Checked against `stat.size`, which is
+ * already available post-`statSync`, before any read is attempted.
+ */
+const MAX_OLD_FILE_BYTES_FOR_DIFF = 4 * 1024 * 1024
+
 function splitLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/)
 }
@@ -77,8 +89,9 @@ function lcsLength(a: string[], b: string[]): number {
 /**
  * pre_tool_use handler for Write. Fails open on every path that isn't a clean "existing file,
  * mostly-unchanged rewrite" match: missing/non-string content, a path that doesn't exist yet
- * (brand-new file -- zero comparison attempted), a directory at that path, a read error, a file
- * below `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an
+ * (brand-new file -- zero comparison attempted), a directory at that path, an old file over
+ * `MAX_OLD_FILE_BYTES_FOR_DIFF` (never even read), a read error, a file below
+ * `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an
  * unchanged-line fraction below `hints.write_rewrite_unchanged_pct` all just `passOutput()`.
  */
 export function preWriteRewriteHandler(event: HookEvent): HookOutput {
@@ -98,6 +111,7 @@ export function preWriteRewriteHandler(event: HookEvent): HookOutput {
       return passOutput()
     }
     if (!stat.isFile()) return passOutput()
+    if (stat.size > MAX_OLD_FILE_BYTES_FOR_DIFF) return passOutput()
 
     let oldContent: string
     try {

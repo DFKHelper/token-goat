@@ -149,6 +149,24 @@ describe('preWriteRewriteHandler', () => {
     expect(preWriteRewriteHandler(writeEvent(bogus, makeLines(100))).hookType).toBe('pass')
   })
 
+  it('fails open without reading the old file when it exceeds the byte-size cap, even though its line count is well under MAX_LINES_FOR_DIFF', () => {
+    const target = path.join(FILES_DIR, 'huge-few-lines.ts')
+    // 200 lines of 30KB each (~6MB total) -- far over the 4MB byte cap, but only 200 lines, well
+    // under MAX_LINES_FOR_DIFF (4000). Pre-fix, the only gate was the line-count check performed
+    // AFTER the full file was already read and split, so this shape sailed straight through: full
+    // readFileSync of ~6MB, followed by a hint firing since 200 < 4000 and most lines are unchanged.
+    const oldLines: string[] = []
+    for (let i = 0; i < 200; i++) oldLines.push(`line ${i} ` + 'x'.repeat(30_000))
+    fs.writeFileSync(target, oldLines.join('\n') + '\n')
+
+    const newLines = [...oldLines]
+    newLines[10] = 'CHANGED line 10'
+    const result = preWriteRewriteHandler(writeEvent(target, newLines.join('\n') + '\n'))
+
+    expect(result.hookType).toBe('pass')
+    expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'write_rewrite_hint')).toBeUndefined()
+  })
+
   // Mutation guard: a lowered write_rewrite_min_lines / write_rewrite_unchanged_pct must actually
   // change behavior, proving the fields drive this gate rather than a hardcoded literal.
   it('write_rewrite_min_lines wiring: a file too small at the default floor fires once the floor is lowered', () => {
