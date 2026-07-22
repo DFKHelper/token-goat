@@ -135,6 +135,17 @@ describe('isMcpReadOnly', () => {
     expect(isMcpReadOnly('mcp__plugin_github_github__search_pull_requests', {})).toBe(true)
   })
 
+  it('classifies GitHub Actions run-noun read tools as read-only despite the trailing "run" token (regression: MUTATING_VERBS_RE previously matched "run" as a mid/trailing token, misclassifying these real, commonly-called read-only tools as mutating and permanently blocking their caching/dedup)', () => {
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_workflow_run', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_workflow_run_logs', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_workflow_run_usage', {})).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__list_workflow_run_artifacts', {})).toBe(true)
+  })
+
+  it('still excludes a leading "run" verb as mutating (e.g. run_workflow, a dispatch/trigger call)', () => {
+    expect(isMcpReadOnly('mcp__plugin_github_github__run_workflow', {})).toBe(false)
+  })
+
   it('returns true for genuinely read-only chrome-devtools tools, borderline ones excluded', () => {
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_pages', {})).toBe(true)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_console_message', {})).toBe(true)
