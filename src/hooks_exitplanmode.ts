@@ -12,14 +12,20 @@
  * 3. The plan text is separately persisted to the plans file by Claude Code's
  *    own plan-mode mechanism.
  *
- * This hook detects the "## Approved Plan:" marker and replaces the echoed
- * plan body with a short pointer, keeping only the "User has approved your
- * plan" confirmation line which is the actually load-bearing part.
+ * This hook detects the "## Approved Plan:" marker and, once it has verified
+ * the text after the marker actually corresponds to this same call's own
+ * `tool_input.plan`, replaces the echoed plan body with a short pointer,
+ * keeping only the "User has approved your plan" confirmation line which is
+ * the actually load-bearing part.
  *
- * post_tool_use only: inspects the tool result for the marker. If found,
- * rewrites to omit the plan body. If the marker is not found (e.g. plan was
- * rejected, or result has a different shape), passes through untouched to
- * avoid guess-truncating an unfamiliar format.
+ * post_tool_use only: inspects the tool result for the marker. If found, AND
+ * the post-marker text corresponds to `tool_input.plan`, rewrites to omit the
+ * plan body. Otherwise (marker not found -- e.g. plan was rejected, or result
+ * has a different shape; or `tool_input.plan` is missing; or the post-marker
+ * text doesn't correspond to it -- e.g. the marker string appears inside
+ * unrelated content, or Claude Code echoed something other than a verbatim
+ * plan copy) passes through untouched. Truncation is applied only once
+ * correspondence is positively confirmed, never on marker presence alone.
  *
  * No pre_tool_use handler: ExitPlanMode's `tool_input` is the plan text
  * itself -- nothing worth denying or annotating before the tool runs.
@@ -27,7 +33,7 @@
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { getToolName, passOutput, extractToolResultText } from './hooks_common.js'
+import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
 
 /**
  * Plan-body omission marker that replaces the echoed plan text after we
@@ -54,6 +60,17 @@ export function postExitPlanModeHandler(event: HookEvent): HookOutput {
     // it through untouched rather than guess-truncating.
     const markerIndex = output.indexOf(APPROVED_PLAN_MARKER)
     if (markerIndex === -1) return passOutput()
+
+    // The marker is an unanchored substring match, so it can appear inside
+    // unrelated content (including this very file's own source, which quotes
+    // it as a literal string). Never truncate on marker presence alone --
+    // verify the text after the marker actually corresponds to this call's
+    // own approved plan (tool_input.plan) before treating it as the echo.
+    const planValue = getToolInput(event)['plan']
+    if (typeof planValue !== 'string' || planValue.trim() === '') return passOutput()
+    const plan = planValue.trim()
+    const suffix = output.slice(markerIndex + APPROVED_PLAN_MARKER.length).trim()
+    if (suffix !== plan && !suffix.includes(plan) && !plan.includes(suffix)) return passOutput()
 
     // Keep everything up to and including the marker, then add the pointer.
     // This preserves the "User has approved your plan" confirmation line.
