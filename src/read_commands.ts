@@ -3056,6 +3056,15 @@ export function extractImports(text: string, ext: string): string[] {
       const m = /^\s*require(?:_relative)?\s+['"]([^'"]+)['"]/.exec(line)
       if (m) push(m[1])
     }
+  } else if (e === '.cs') {
+    // C# `using` directives don't fall through to the generic `import|require|use|#include`
+    // fallback branch below - "using" doesn't contain "use" as a substring (u-s-i vs u-s-e), so
+    // without this branch every .cs file silently reported zero imports/deps despite csharp.ts's
+    // language adapter (USING_RE) already extracting these same directives for the symbol index.
+    for (const line of lines) {
+      const m = /^\s*using\s+(?:static\s+)?([\w.]+)\s*;/.exec(line)
+      if (m) push(m[1])
+    }
   } else if (['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'].includes(e)) {
     for (const line of lines) {
       const m = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/.exec(line)
