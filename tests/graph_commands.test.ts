@@ -249,10 +249,22 @@ describe('bfsCallChains', () => {
 
 describe('runScope integration', () => {
   it('exits 0 and finds at least one enclosing symbol for a known source line', () => {
-    // src/cli.ts line 1 is in the module scope but the file is indexed. Use a line that is reliably inside buildProgram (~line 640).
-    const result = runScope({ spec: 'src/cli.ts:640' })
-    // buildProgram is a large function; line 640 should be inside it. We accept either 0 (found) or 1 (not found if line shifted); the key assertion is that it is a number and does not throw.
-    expect(typeof result).toBe('number')
+    // Resolve a line guaranteed to be inside a real function body at test-run time, rather than a
+    // hardcoded line number -- a fixed magic number (this test used to hardcode src/cli.ts:640
+    // under a stale "reliably inside buildProgram" comment) drifts as the file grows, and the
+    // old assertion (`typeof result === 'number'`) accepted either exit code, so it kept passing
+    // even after the comment's premise went stale and the line landed in a different, unrelated
+    // function -- silently no longer proving what the test's own title claims. Assert the actual
+    // claimed behavior: exit code 0.
+    // A symbol whose lineStart equals its lineEnd (a one-line class/const declaration) leaves no
+    // interior line to target, so require at least 2 lines of span before trusting lineStart+1
+    // to land inside it.
+    const symbols = querySymbols({ filePath: normalizePath(resolve('src/cli.ts')), limit: 50 })
+    const spanningSymbol = symbols.find((s) => s.lineEnd > s.lineStart)
+    expect(spanningSymbol).toBeDefined()
+    const line = (spanningSymbol?.lineStart ?? 1) + 1
+    const result = runScope({ spec: `src/cli.ts:${line}` })
+    expect(result).toBe(0)
   })
 
   it('exits 1 for a nonsense file', () => {
