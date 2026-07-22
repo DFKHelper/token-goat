@@ -466,6 +466,25 @@ describe('Sqlite3Filter row collapse', () => {
     expect(out).toContain('25 rows')
     expect(out).not.toContain('row24|data')
   })
+
+  it('does not let a .mode column header + separator row eat real data rows in the truncation', () => {
+    const header = 'id  label '
+    const separator = '--  ------'
+    const dataRows = Array.from({ length: 25 }, (_, i) => `${i + 1}   row_${i + 1}`)
+    const text = [header, separator, ...dataRows].join('\n')
+    const out = apply(sqlite3Filter, text, ['sqlite3'])
+    // Header/separator must survive and must not be counted as data rows.
+    expect(out).toContain(header)
+    expect(out).toContain(separator)
+    expect(out).toContain('25 rows')
+    // The "showing first 5" claim must actually show 5 real data rows, not 3.
+    expect(out).toContain('row_1')
+    expect(out).toContain('row_2')
+    expect(out).toContain('row_3')
+    expect(out).toContain('row_4')
+    expect(out).toContain('row_5')
+    expect(out).not.toContain('row_6')
+  })
 })
 
 // ---------------------------------------------------------------------------

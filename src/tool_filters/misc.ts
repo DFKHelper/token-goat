@@ -468,14 +468,25 @@ export class Sqlite3Filter extends ToolFilter {
 
     const errors = lines.filter((ln) => SQLITE3_ERROR_RE.test(ln))
     const dataLines = lines.filter((ln) => !SQLITE3_ERROR_RE.test(ln))
-    const nonEmptyData = dataLines.filter((ln) => ln.trim())
     const kept: string[] = [...errors]
 
-    if (nonEmptyData.length > Sqlite3Filter.ROW_THRESHOLD) {
-      kept.push(...nonEmptyData.slice(0, Sqlite3Filter.KEEP_ROWS))
-      kept.push(`[token-goat: ${nonEmptyData.length} rows (showing first ${Sqlite3Filter.KEEP_ROWS})]`)
+    // `.mode column`/`.headers on` output prefixes a header row + a dash-separator row before
+    // the actual data; without carving those out first they get eaten by the row-threshold slice
+    // below, so "showing first N" silently shows fewer than N real rows.
+    let headerRows: string[] = []
+    let bodyLines = dataLines
+    if (dataLines.length >= 2 && dataLines[0]!.trim() && /^[\s\-+]+$/.test(dataLines[1]!) && dataLines[1]!.trim()) {
+      headerRows = dataLines.slice(0, 2)
+      bodyLines = dataLines.slice(2)
+    }
+    kept.push(...headerRows)
+
+    const nonEmptyBody = bodyLines.filter((ln) => ln.trim())
+    if (nonEmptyBody.length > Sqlite3Filter.ROW_THRESHOLD) {
+      kept.push(...nonEmptyBody.slice(0, Sqlite3Filter.KEEP_ROWS))
+      kept.push(`[token-goat: ${nonEmptyBody.length} rows (showing first ${Sqlite3Filter.KEEP_ROWS})]`)
     } else {
-      kept.push(...dataLines)
+      kept.push(...bodyLines)
     }
     return this.finalize(kept)
   }
