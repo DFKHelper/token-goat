@@ -63,14 +63,21 @@ export function stripAnsiCodes(text: string): string {
  * Terminal progress renderers emit `state1\rstate2\rstate3` so each update
  * overwrites the previous one on a real terminal; in a captured stream only the
  * segment after the last `\r` was ever visible. Lines without `\r` pass through.
+ * A line whose only `\r` is its own trailing character (e.g. curl on Windows
+ * emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever
+ * consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real
+ * content with leftover line-ending debris, not a terminal overwrite — that
+ * trailing `\r` is stripped first so it isn't mistaken for an overwrite
+ * marker that wipes the whole line to empty.
  */
 function stripProgress(text: string): string {
   if (!text.includes('\r')) return text
   return text
     .split('\n')
     .map((line) => {
-      const idx = line.lastIndexOf('\r')
-      return idx === -1 ? line : line.slice(idx + 1)
+      const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
+      const idx = trimmed.lastIndexOf('\r')
+      return idx === -1 ? trimmed : trimmed.slice(idx + 1)
     })
     .join('\n')
 }

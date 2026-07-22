@@ -135,13 +135,22 @@ export function sanitizeControlChars(text: string): string {
 
 /**
  * Collapse `\r`-overwrite progress lines to their final rendered state.
- * Keeps only the segment after the last `\r` within each line.
+ * Keeps only the segment after the last `\r` within each line. A line whose
+ * only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n`
+ * per verbose line, and the preceding CRLF→LF pass only ever consumes one
+ * `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with
+ * leftover line-ending debris, not a terminal overwrite — strip that single
+ * trailing `\r` first so it isn't mistaken for an overwrite marker that wipes
+ * the whole line to empty.
  */
 export function stripProgress(text: string): string {
   if (!text.includes('\r')) return text
   return text
     .split('\n')
-    .map((line) => (line.includes('\r') ? line.slice(line.lastIndexOf('\r') + 1) : line))
+    .map((line) => {
+      const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
+      return trimmed.includes('\r') ? trimmed.slice(trimmed.lastIndexOf('\r') + 1) : trimmed
+    })
     .join('\n')
 }
 
