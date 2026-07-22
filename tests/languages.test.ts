@@ -1765,6 +1765,38 @@ class Calc {
     expect(names).toContain('gcd')
     expect(symbols.find((s) => s.name === 'gcd')?.docstring).toBe('Calc')
   })
+
+  it('extracts extension functions with a receiver type before the function name (regression: TOP_FUN_RE/FUN_RE captured the receiver identifier instead of the real function name, or failed to match at all against a generic receiver like List<T>, so every extension function/method in a Kotlin file was silently dropped)', () => {
+    const content = `fun String.reverse(): String {
+  return this.reversed()
+}
+
+fun <T> List<T>.second(): T {
+  return this[1]
+}
+
+suspend fun Flow<Int>.collectAll() {
+}
+
+class Utils {
+  fun MutableList<Int>.swap(i: Int, j: Int) {
+    val tmp = this[i]
+  }
+}
+`
+    const { symbols } = extractKotlin(content, 'Extensions.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('reverse')
+    expect(names).toContain('second')
+    expect(names).toContain('collectAll')
+    expect(names).toContain('swap')
+    // Must never capture the receiver identifier as the symbol name.
+    expect(names).not.toContain('String')
+    expect(names).not.toContain('List')
+    expect(names).not.toContain('Flow')
+    expect(names).not.toContain('MutableList')
+    expect(symbols.find((s) => s.name === 'swap')?.docstring).toBe('Utils')
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -48,10 +48,13 @@ function stripLeadingAnnotations(s: string): string {
   return s.replace(LEADING_ANNOTATION_RE, '')
 }
 
+// Kotlin extension functions (`fun String.reverse(): String {}`, `fun <T> List<T>.second(): T {}`) prefix the function name with a receiver type followed by a dot -- without this optional non-capturing receiver group, the capture group landed on the receiver's leading identifier (or the whole match failed once a generic `<...>` receiver like `List<T>` was involved), so every extension function/method in a Kotlin file was silently dropped from the index. RECEIVER_RE allows identifiers, generic brackets, `?` (nullable types), commas (multi-param generics), and dots (qualified receiver types) up to the final dot before the actual function name.
+const RECEIVER_RE = '(?:[A-Za-z_][A-Za-z0-9_<>?.,\\s]*\\.)?'
+
 const FUN_RE = new RegExp(
   '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
   'suspend|inline|infix|operator|external|actual|expect|final|sealed|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
+  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
 )
 
 const CONST_RE = new RegExp(
@@ -81,7 +84,7 @@ const COMPANION_RE = new RegExp(
 const TOP_FUN_RE = new RegExp(
   '^(?:(?:public|internal|private|suspend|inline|infix|operator|' +
   'external|actual|expect|tailrec)\\s+)*' +
-  'fun\\s+(?:<[^>]*>\\s*)?([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
+  'fun\\s+(?:<[^>]*>\\s*)?' + RECEIVER_RE + '([A-Za-z_][A-Za-z0-9_]*)\\s*[(<]',
 )
 
 export function extractKotlin(
