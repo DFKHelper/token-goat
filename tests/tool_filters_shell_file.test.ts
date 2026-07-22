@@ -638,6 +638,28 @@ describe('CurlFilter compression', () => {
   it('handles empty stdout without throwing', () => {
     expect(() => compress(f, '', argv)).not.toThrow()
   })
+
+  it('keeps the HTTP status line and useful response headers through the real apply() pipeline when curl emits \\r\\r\\n per verbose line (observed on Windows), not just the direct compress() call', () => {
+    // Real curl -v on Windows terminates each `> `/`< ` verbose line with its
+    // own \r\n on top of the stream's own line ending, producing a literal
+    // \r\r\n. apply() runs normalise() (CRLF collapse + stripProgress) before
+    // compressBody ever sees the text -- this is the production path, unlike
+    // the bare compress() calls above which bypass normalise() entirely.
+    const stderr = [
+      '*   Trying 93.184.216.34:443...\r',
+      '> GET /data HTTP/1.1\r\r',
+      '> Host: api.example.com\r\r',
+      '> \r\r',
+      '< HTTP/1.1 200 OK\r\r',
+      '< content-type: application/json\r\r',
+      '< \r\r',
+    ].join('\n')
+    const stdout = '{"result": "ok"}'
+    const result = f.apply(stdout, stderr, 0, argv)
+    expect(result.text).toContain('HTTP/1.1 200 OK')
+    expect(result.text).toContain('content-type: application/json')
+    expect(result.text).toContain('{"result": "ok"}')
+  })
 })
 
 // ---------------------------------------------------------------------------

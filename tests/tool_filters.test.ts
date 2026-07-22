@@ -48,6 +48,18 @@ describe('helpers: encoding + normalisation', () => {
     expect(stripProgress('a\nb')).toBe('a\nb')
   })
 
+  it('stripProgress does not wipe a line whose only \\r is a trailing one left behind by a \\r\\r\\n run (e.g. curl -v on Windows, whose per-line \\r\\n survives one CRLF-collapse pass as a lone trailing \\r)', () => {
+    // Simulates post-CRLF-collapse state: `replace(/\r\n/g, '\n')` on
+    // '> GET / HTTP/1.1\r\r\n' only consumes the second \r + \n, leaving a
+    // single trailing \r on the line.
+    expect(stripProgress('> GET / HTTP/1.1\r\n< HTTP/1.1 200 OK\r')).toBe(
+      '> GET / HTTP/1.1\n< HTTP/1.1 200 OK',
+    )
+    // A genuine mid-line progress overwrite immediately followed by a
+    // trailing \r must still collapse to the final state, not survive whole.
+    expect(stripProgress('10%\r50%\r100%\r')).toBe('100%')
+  })
+
   it('normalise collapses CRLF, strips ANSI, and collapses progress', () => {
     const input = `done\r\n${ESC}[32mgreen${ESC}[0m\r\nstep1\rstep2`
     const out = normalise(input)
