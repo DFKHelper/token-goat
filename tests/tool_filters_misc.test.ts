@@ -2,7 +2,7 @@
  * Tests for the miscellaneous filter family (Batch K2).
  *
  * Covers: PsqlFilter, MySQLFilter, Sqlite3Filter, RedisCLIFilter,
- * SysPackageFilter, ProtocFilter, SassFilter, ToxFilter, NoxFilter,
+ * SysPackageFilter, WmicFilter, ProtocFilter, SassFilter, ToxFilter, NoxFilter,
  * WasmPackFilter, NgFilter, PlaywrightFilter, CypressFilter,
  * DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter.
  *
@@ -23,6 +23,7 @@ import {
   Sqlite3Filter, sqlite3Filter,
   RedisCLIFilter, redisCLIFilter,
   SysPackageFilter, sysPackageFilter,
+  WmicFilter, wmicFilter,
   ProtocFilter, protocFilter,
   SassFilter, sassFilter,
   ToxFilter, toxFilter,
@@ -65,8 +66,8 @@ describe('MISC_FILTERS ordering', () => {
     expect(MISC_FILTERS[MISC_FILTERS.length - 2]).toBeInstanceOf(SeverityLogFilter)
   })
 
-  it('has 16 filters (PlaywrightFilter and CypressFilter are in dispatch.ts, not here)', () => {
-    expect(MISC_FILTERS).toHaveLength(16)
+  it('has 17 filters (PlaywrightFilter and CypressFilter are in dispatch.ts, not here)', () => {
+    expect(MISC_FILTERS).toHaveLength(17)
   })
 })
 
@@ -567,6 +568,64 @@ describe('SysPackageFilter brew compression', () => {
     const out = apply(sysPackageFilter, lines.join('\n'), ['brew', 'install', 'gcc'])
     expect(out).toContain('+7 more brew progress lines collapsed')
     expect(out).toContain('Downloading https://example.com/pkg0')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WmicFilter
+// ---------------------------------------------------------------------------
+
+/** Right-pad `s` with spaces to `width` chars, mirroring wmic's fixed-width column layout. */
+function wmicPad(s: string, width: number): string {
+  return s + ' '.repeat(Math.max(1, width - s.length))
+}
+
+describe('WmicFilter dispatch', () => {
+  it('selectFilter routes wmic', () =>
+    expect(selectFilter(['wmic', 'process', 'get', 'name,processid'])).toBeInstanceOf(WmicFilter))
+})
+
+describe('WmicFilter compression', () => {
+  it('collapses fixed-width column padding to a 2-space delimiter, preserving column order', () => {
+    // Realistic `wmic process get name,processid` output: every column is right-padded
+    // to a fixed width drawn from the WMI property schema, far wider than the data.
+    const header = wmicPad('Name', 80) + wmicPad('ProcessId', 15)
+    const row1 = wmicPad('System Idle Process', 80) + wmicPad('0', 15)
+    const row2 = wmicPad('System', 80) + wmicPad('4', 15)
+    const row3 = wmicPad('smss.exe', 80) + wmicPad('340', 15)
+    const stdout = [header, row1, row2, row3].join('\n') + '\n'
+
+    const out = apply(wmicFilter, stdout, ['wmic', 'process', 'get', 'name,processid'])
+
+    expect(out).toContain('Name  ProcessId')
+    expect(out).toContain('System Idle Process  0')
+    expect(out).toContain('System  4')
+    expect(out).toContain('smss.exe  340')
+    expect(out).toMatch(/collapsed \d+ runs of fixed-width column padding/)
+    // Column order preserved: ProcessId values never appear before their Name.
+    expect(out.indexOf('smss.exe')).toBeLessThan(out.indexOf('340'))
+    // No 3+ space runs survive.
+    expect(out).not.toMatch(/ {3,}/)
+  })
+
+  it('produces a real byte reduction end-to-end via apply()', () => {
+    const header = wmicPad('Name', 80) + wmicPad('ProcessId', 15)
+    const rows = Array.from({ length: 20 }, (_, i) => wmicPad(`proc${i}.exe`, 80) + wmicPad(String(1000 + i), 15))
+    const stdout = [header, ...rows].join('\r\n') + '\r\n'
+
+    const result = wmicFilter.apply(stdout, '', 0, ['wmic', 'process', 'get', 'name,processid'])
+
+    expect(result.percentSaved).toBeGreaterThan(50)
+    expect(result.text).toContain('proc0.exe  1000')
+    expect(result.text).toContain('proc19.exe  1019')
+  })
+
+  it('leaves already-compact output (e.g. /format:csv) effectively unchanged', () => {
+    const stdout = 'Node,Name,ProcessId\r\nDESKTOP-1,System,4\r\nDESKTOP-1,smss.exe,340\r\n'
+    const out = apply(wmicFilter, stdout, ['wmic', 'process', 'get', 'name,processid', '/format:csv'])
+    expect(out).toContain('Node,Name,ProcessId')
+    expect(out).toContain('DESKTOP-1,System,4')
+    expect(out).not.toContain('collapsed')
   })
 })
 
