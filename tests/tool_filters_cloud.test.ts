@@ -303,6 +303,25 @@ describe('AwsCliFilter', () => {
     const result = selectFilter(['aws', 's3', 'sync'])
     expect(result?.name).toBe('aws-cli')
   })
+
+  it('truncates a real --output table result (regression: AwsFilter table fallback was unreachable behind AwsCliFilter dispatch win)', () => {
+    // Shape captured from real `aws s3api list-objects-v2 --no-sign-request --output table` output.
+    const header = [
+      '-----------------------------------------------------------------------------',
+      '|                               ListObjectsV2                               |',
+      '+---------------------------------------------------------------------------+',
+    ]
+    const rows = Array.from(
+      { length: 40 },
+      (_, i) => `|  "etag-${i}"  |  key/path-${i}.dat  |  2024-01-01T00:00:00+00:00  |  ${i}  |  STANDARD  |`,
+    )
+    const text = [...header, ...rows].join('\n')
+    const { text: result } = apply(f, text, '', 0, [
+      'aws', 'ec2', 'describe-instances', '--output', 'table',
+    ])
+    expect(result).toContain('more rows')
+    expect(result).not.toContain('key/path-39.dat')
+  })
 })
 
 // ---------------------------------------------------------------------------
