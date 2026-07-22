@@ -43,4 +43,19 @@ describe('sharp unavailable degrade path', () => {
     const result = await preReadImageHandler(event)
     expect(result.hookType).toBe('pass')
   })
+
+  it('preReadImageHandler passes through the dimension-probe path too when sharp is unavailable (small byte size, would otherwise probe dimensions)', async () => {
+    const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-img-nosharp-'))
+    const smallPath = path.join(TMP, 'small.png')
+    // Well under the byte threshold, so this exercises the new dimension-probe
+    // branch specifically -- it must fail open (loadSharp() returns null) rather
+    // than crash the hook.
+    fs.writeFileSync(smallPath, Buffer.alloc(1024, 1))
+    const event = makeHookEvent({
+      toolName: 'Read',
+      toolInput: { file_path: smallPath },
+    })
+    const result = await preReadImageHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
 })

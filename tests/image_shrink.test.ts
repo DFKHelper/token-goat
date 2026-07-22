@@ -202,8 +202,43 @@ describe('preReadImageHandler', () => {
     expect(out.hookType).toBe('pass')
   })
 
+  it('shrinks a small-byte, large-dimension image (byte size under threshold, longest edge over DEFAULT_MAX_DIMENSION)', async () => {
+    // A solid-color 2200x1700 PNG compresses to a tiny byte count -- well
+    // under the 512KB size threshold -- but its decoded dimensions exceed
+    // Claude Vision's optimal 1568px edge. Before the dimension probe, the
+    // byte-only gate let this file pass through untouched; it must now shrink.
+    const bigDimsSmallBytesPng = await sharp({
+      create: { width: 2200, height: 1700, channels: 3, background: { r: 40, g: 90, b: 160 } },
+    })
+      .png()
+      .toBuffer()
+    expect(bigDimsSmallBytesPng.length).toBeLessThan(512 * 1024)
+
+    const filePath = path.join(TMP, 'big-dims-small-bytes.png')
+    fs.writeFileSync(filePath, bigDimsSmallBytesPng)
+    try {
+      const out = await preReadImageHandler(makeEvent(filePath))
+      expect(out.hookType).toBe('context')
+      if (out.hookType !== 'context') return
+      expect(out.context).toContain('data:image/')
+      expect(out.context).toContain('smaller')
+    } finally {
+      fs.rmSync(filePath, { force: true })
+    }
+  })
+
   it('passes for a missing image file', async () => {
     const out = await preReadImageHandler(makeEvent(path.join(TMP, 'nope.png')))
+    expect(out.hookType).toBe('pass')
+  })
+
+  it('passes for a small, corrupt/undecodable image file (dimension probe fails open)', async () => {
+    // Under the byte threshold, so this exercises the dimension-probe branch;
+    // the bytes are not a real image, so sharp's metadata() must throw and the
+    // handler must fail open rather than crash.
+    const corruptPath = path.join(TMP, 'corrupt.png')
+    fs.writeFileSync(corruptPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03]))
+    const out = await preReadImageHandler(makeEvent(corruptPath))
     expect(out.hookType).toBe('pass')
   })
 
