@@ -177,7 +177,9 @@ describe('trace --bodies', () => {
     expect(frames.length).toBe(2)
     expect(frames[0]?.bodySymbol?.name).toBe('helperF9k')
     expect(frames[0]?.body).toContain('def helperF9k():')
-    expect(frames[1]?.bodyDuplicateOf).toBeDefined()
+    // Must point back at the exact first-occurrence symbol (file::name), not just be present --
+    // a wrong/garbled reference would silently break any consumer trying to resolve it.
+    expect(frames[1]?.bodyDuplicateOf).toBe(`${normalizePath(modA)}::helperF9k`)
     expect(frames[1]?.body).toBeUndefined()
   })
 })
