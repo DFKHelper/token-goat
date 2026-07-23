@@ -381,6 +381,11 @@ describe('cmdCleanCache', () => {
     const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
     fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
     fs.writeFileSync(staleTmp, 'partial')
+    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated
+    // as abandoned (not an active in-progress download) -- backdate the mtime well past that
+    // threshold so this fixture actually is stale, matching its name.
+    const staleTime = new Date(Date.now() - 15 * 60 * 1000)
+    fs.utimesSync(staleTmp, staleTime, staleTime)
     try {
       cmdCleanCache({ json: true })
       const parsed = JSON.parse(capturedOutput()) as { removed: Record<string, number> }
@@ -420,6 +425,11 @@ describe('cmdPruneCache', () => {
     const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
     fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
     fs.writeFileSync(staleTmp, 'partial')
+    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated
+    // as abandoned (not an active in-progress download) -- backdate the mtime well past that
+    // threshold so this fixture actually is stale, matching its name.
+    const staleTime = new Date(Date.now() - 15 * 60 * 1000)
+    fs.utimesSync(staleTmp, staleTime, staleTime)
     try {
       cmdPruneCache({ maxCount: '1000', json: true })
       const parsed = JSON.parse(capturedOutput()) as { removed: Record<string, number> }

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, readdirSync, statSync, unlinkSync } from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import { isIPv4, isIPv6 } from 'net';
@@ -264,6 +264,12 @@ export function isPrivateIPv6(ip: string): boolean {
   return false;
 }
 
+// A download in progress writes its .tmp file continuously; 10 minutes with no further writes is
+// long enough that any real fetch (even a slow one) would have finished or timed out on its own,
+// so anything older is safe to treat as abandoned. Below this age, the file is left alone --
+// deleting it out from under an active concurrent download would corrupt or lose that fetch.
+const STALE_DOWNLOAD_AGE_MS = 10 * 60 * 1000;
+
 export function cleanupStaleDownloads(): number {
   const cacheDir = webCacheDir();
   if (!existsSync(cacheDir)) return 0;
@@ -273,11 +279,14 @@ export function cleanupStaleDownloads(): number {
     const files = readdirSync(cacheDir);
     for (const file of files) {
       if (file.endsWith('.tmp')) {
+        const filePath = resolve(cacheDir, file);
         try {
-          unlinkSync(resolve(cacheDir, file));
+          const stat = statSync(filePath);
+          if (Date.now() - stat.mtimeMs < STALE_DOWNLOAD_AGE_MS) continue;
+          unlinkSync(filePath);
           removed++;
         } catch {
-          // Ignore removal errors
+          // Ignore stat/removal errors (e.g. file removed concurrently by its own download)
         }
       }
     }
