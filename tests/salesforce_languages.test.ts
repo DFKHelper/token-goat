@@ -432,6 +432,70 @@ describe('salesforce metadata adapter', () => {
     })
   })
 
+  it('extracts an object-scoped record type with its object-qualified alias (regression-coverage gap: recordtype/fieldset/compactlayout/businessprocess/weblink/sharingreason all share this codepath but none had a test)', () => {
+    const file =
+      'force-app/main/default/objects/Example_Object__c/recordTypes/Example_Type.recordType-meta.xml'
+    const content = `<RecordType xmlns="http://soap.sforce.com/2006/04/metadata">
+  <fullName>Example_Type</fullName>
+  <label>Example Type</label>
+  <active>true</active>
+</RecordType>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols.map((s) => [s.name, s.kind, s.docstring])).toEqual([
+      ['Example_Object__c.Example_Type', 'sf_record_type', 'Example_Object__c'],
+    ])
+  })
+
+  it('extracts custom labels from a .labels-meta.xml file, one symbol per <labels> block', () => {
+    const file = 'force-app/main/default/labels/CustomLabels.labels-meta.xml'
+    const content = `<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">
+  <labels>
+    <fullName>Example_Label_One</fullName>
+    <value>First value</value>
+  </labels>
+  <labels>
+    <fullName>Example_Label_Two</fullName>
+    <value>Second value</value>
+  </labels>
+</CustomLabels>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols.map((s) => [s.name, s.kind])).toEqual([
+      ['CustomLabels', 'sf_custom_labels'],
+      ['Example_Label_One', 'sf_custom_label'],
+      ['Example_Label_Two', 'sf_custom_label'],
+    ])
+  })
+
+  it('extracts LWC targets and target-config properties from a .js-meta.xml file, deduped by name', () => {
+    const file = 'force-app/main/default/lwc/exampleComponent/exampleComponent.js-meta.xml'
+    const content = `<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+  <targets>
+    <target>lightning__RecordPage</target>
+    <target>lightning__AppPage</target>
+  </targets>
+  <targetConfigs>
+    <targetConfig targets="lightning__RecordPage">
+      <property name="exampleProp" type="String" />
+    </targetConfig>
+  </targetConfigs>
+</LightningComponentBundle>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    const names = symbols.map((s) => [s.name, s.kind])
+    expect(names).toEqual(
+      expect.arrayContaining([
+        ['lightning__RecordPage', 'sf_lwc_target'],
+        ['lightning__AppPage', 'sf_lwc_target'],
+        ['exampleProp', 'sf_lwc_property'],
+      ]),
+    )
+  })
+
   it('does not duplicate whole metadata files in symbol bodies', () => {
     const content = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
   <userPermissions><enabled>true</enabled><name>ExamplePermission</name></userPermissions>
