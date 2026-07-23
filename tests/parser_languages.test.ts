@@ -52,10 +52,8 @@ Some content here
       const result = await parseFile(jsonFile)
 
       expect(result.language).toBe('json')
-      expect(result.symbols.length).toBeGreaterThan(0)
-      const names = result.symbols.map((s) => s.name)
-      expect(names).toContain('name')
-      expect(names).toContain('version')
+      // Top-level keys only -- the nested "lodash" key under dependencies must not appear.
+      expect(result.symbols.map((s) => s.name)).toEqual(['name', 'version', 'dependencies'])
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
@@ -161,10 +159,8 @@ config:
       const result = await parseFile(yamlFile)
 
       expect(result.language).toBe('yaml')
-      expect(result.symbols.length).toBeGreaterThan(0)
-      const names = result.symbols.map((s) => s.name)
-      expect(names).toContain('name')
-      expect(names).toContain('version')
+      // Top-level keys only -- the nested "debug" key under config must not appear.
+      expect(result.symbols.map((s) => s.name)).toEqual(['name', 'version', 'author', 'config'])
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
@@ -375,9 +371,7 @@ testpaths = ["tests"]
       const result = await parseFile(tomlFile)
 
       expect(result.language).toBe('toml')
-      expect(result.symbols.length).toBeGreaterThan(0)
-      const names = result.symbols.map((s) => s.name)
-      expect(names).toContain('project')
+      expect(result.symbols.map((s) => s.name)).toEqual(['project', 'name', 'version', 'tool.pytest', 'testpaths'])
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
@@ -546,10 +540,7 @@ value = 1
       const result = await parseFile(cssFile)
 
       expect(result.language).toBe('css')
-      expect(result.symbols.length).toBeGreaterThan(0)
-      const names = result.symbols.map((s) => s.name)
-      expect(names).toContain('.button')
-      expect(names).toContain('#header')
+      expect(result.symbols.map((s) => s.name)).toEqual(['.button', '#header', '.active-item'])
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
