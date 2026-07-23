@@ -487,6 +487,7 @@ const _KIND_GROUPS: KindGroup[] = [
     members: new Set([
       'session_hint',
       'session_hint_overhead',
+      'read_count_deny',
       'read_dedup_hint',
       'grep_dedup_hint',
       'diff_hint',
