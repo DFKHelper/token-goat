@@ -173,13 +173,21 @@ interface Classification {
 // permanently 0 for every hint text that embeds one of these, silently pinning the category's
 // efficacy at 0% until it crosses shouldSuppress's threshold and gets auto-suppressed despite
 // perfect real-world follow-through. `::compilerOptions` is deliberately excluded -- that one
-// names a real, specific tsconfig field in its hint text, not a fill-in-the-blank.
+// names a real, specific tsconfig field in its hint text, not a fill-in-the-blank. `Heading`,
+// `sectionName`, and `table_name` (hooks_bash.ts's extractNodeFileRead/markdown-heading-grep
+// hints) were missing here for the same reason until this fix -- adding a new hint template
+// with a fresh `::<Placeholder>` string is exactly the failure mode this set exists to catch,
+// so grep the codebase for `::[A-Za-z][A-Za-z0-9_]*["'`]` in hint text before assuming it's
+// covered.
 const KNOWN_CORRELATOR_PLACEHOLDERS = new Set([
+  'Heading',
   'HeadingName',
   'SectionHeading',
   'SectionName',
+  'sectionName',
   'Symbol',
   'SymbolName',
+  'table_name',
   'name',
 ])
 
