@@ -127,6 +127,37 @@ export function stripXmlComments(text: string): string {
  * contain one), while a backtick template literal is allowed to span real newlines since it can
  * legitimately do so in JS.
  */
+/**
+ * Scan a `"`/`'`/`` ` ``-quoted string literal starting at `content[start]` (the opening quote)
+ * and return the index just past its closing quote. Handles `\`-escapes; a `"`/`'` string (not a
+ * backtick template literal) is also implicitly closed by an unescaped newline, since neither can
+ * legitimately span one. Returns `content.length` if the string is unterminated. Shared by
+ * stripJsComments below (which preserves the matched span verbatim) and sfc_idx.ts's
+ * blankJsStringLiterals (which blanks it) -- only the scan itself, not what each caller does with
+ * the matched span, was ever identical between the two.
+ */
+export function scanQuotedStringEnd(content: string, start: number): number {
+  const quote = content[start]
+  const n = content.length
+  let j = start + 1
+  while (j < n) {
+    if (content[j] === '\\' && j + 1 < n) {
+      j += 2
+      continue
+    }
+    if (content[j] === quote) {
+      j++
+      break
+    }
+    if (quote !== '`' && content[j] === '\n') {
+      j++
+      break
+    }
+    j++
+  }
+  return j
+}
+
 export function stripJsComments(content: string): string {
   let out = ''
   let i = 0
@@ -149,23 +180,7 @@ export function stripJsComments(content: string): string {
       continue
     }
     if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch
-      let j = i + 1
-      while (j < n) {
-        if (content[j] === '\\' && j + 1 < n) {
-          j += 2
-          continue
-        }
-        if (content[j] === quote) {
-          j++
-          break
-        }
-        if (quote !== '`' && content[j] === '\n') {
-          j++
-          break
-        }
-        j++
-      }
+      const j = scanQuotedStringEnd(content, i)
       out += content.slice(i, j)
       i = j
       continue
