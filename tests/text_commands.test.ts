@@ -653,9 +653,13 @@ describe('logfold command', () => {
     const r = run(['logfold', '--json'], { input })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { lines: Array<{ text: string; count: number }> }
-    expect(parsed.lines.length).toBeGreaterThan(0)
-    const folded = parsed.lines.find((l) => l.count > 1)
-    expect(folded).toBeDefined()
+    // Pin the exact fold result -- length > 0 plus "some entry has count > 1" would still
+    // pass if the fold logic grouped the wrong lines together or miscounted, as long as
+    // some entry happened to end up with count > 1.
+    expect(parsed.lines).toEqual([
+      { text: 'hello', count: 2 },
+      { text: '', count: 1 },
+    ])
   })
 
   it('reads from a file when a src path is given', () => {
