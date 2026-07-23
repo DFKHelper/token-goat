@@ -472,6 +472,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'stub_view',
       'outline',
       'exports',
+      'imports',
+      'changed_lookup',
     ]),
   },
   { label: 'Lookups', members: new Set(['symbol_lookup', 'semantic_search', 'map_lookup']) },

@@ -474,6 +474,21 @@ describe('Stats rendering', () => {
     expect(result).toContain('Bash')
   })
 
+  it('groups imports and changed_lookup kinds under Read savings, not Other (regression: both were missing from _KIND_GROUPS)', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'read_replacement', bytes: 10000, tokens: 1000, events: 20 },
+      { kind: 'imports', bytes: 4000, tokens: 400, events: 8 },
+      { kind: 'changed_lookup', bytes: 3000, tokens: 300, events: 6 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    expect(byKindBlock).toContain('imports')
+    expect(byKindBlock).toContain('changed_lookup')
+    // If either kind had fallen through to 'Other', a second group header would appear.
+    expect(byKindBlock).not.toContain('Other')
+  })
+
   it('renderStats handles project with path stripping', () => {
     const stats = { ...minimalStats }
     stats.by_project = [
