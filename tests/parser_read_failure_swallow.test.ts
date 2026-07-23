@@ -213,7 +213,7 @@ describe('cmdIndex per-file failure handling (regression)', () => {
     }
 
     // The rest of the walk must still be indexed...
-    expect(querySymbols({ name: 'knownGoodSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    expect(querySymbols({ name: 'knownGoodSymbol', limit: 10 }, dbPath).length).toBe(1)
     // ...and the failing file must not be silently counted as indexed.
     expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, dbPath).length).toBe(0)
     expect(getFileEntry(bad, dbPath)).toBeNull()
