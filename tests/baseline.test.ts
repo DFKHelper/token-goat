@@ -46,7 +46,7 @@ describe('buildProjectMap', () => {
     write('a.ts', 'export const x = 1\n')
     write('b.py', 'x = 1\n')
     const map = buildProjectMap(TMP)
-    expect(map.fileCount).toBeGreaterThan(0)
+    expect(map.fileCount).toBe(2)
     expect(map.rootDir).toBe(path.resolve(TMP))
   })
 
