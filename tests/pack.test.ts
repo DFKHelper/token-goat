@@ -149,7 +149,7 @@ describe('scanSecrets', () => {
       },
     ]
     const hits = scanSecrets(files)
-    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.length).toBe(1)
     expect(hits[0].kind).toBe('AWS access key')
   })
 
