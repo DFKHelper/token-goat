@@ -317,6 +317,46 @@ describe('runScope integration', () => {
     const result = runScope({ spec: 'src/cli.ts:1e3' })
     expect(result).toBe(1)
   })
+
+  // Regression-coverage gap: the existing "--json flag" test above only ever asserted
+  // `Array.isArray(parsed)`, never that the returned symbols are the right ones, in the right
+  // (innermost-first) order the CLI help text and doc comment both promise. A file with a class
+  // containing a method makes the ordering directly observable.
+  it('orders enclosing symbols innermost first for a nested class method', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-scope-nest-'))
+    try {
+      const file = join(dir, 'Nested.ts')
+      writeFileSync(
+        file,
+        [
+          'export class ScopeNestOuter {',
+          '  method() {',
+          '    return 1',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runScope({ spec: `${file}:3`, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((s) => s.name)).toEqual(['method', 'ScopeNestOuter'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runTypes against the real repo index ---------------------
