@@ -150,8 +150,9 @@ describe('cmdConfig get', () => {
     cmdConfig({ action: 'get', key: 'compact_assist.triggers' })
     const out = captured().trim()
     const parsed = JSON.parse(out) as unknown[]
-    expect(Array.isArray(parsed)).toBe(true)
-    expect(parsed.length).toBeGreaterThan(0)
+    // Pin the real default content, not just "is a non-empty array" -- that shape check alone
+    // would pass even if the returned array held the wrong section's values entirely.
+    expect(parsed).toEqual(['manual', 'auto'])
   })
 
   it('throws with a key-not-found message for an unknown key, without also writing directly to stderr (regression: cmdConfig used to emitErr AND throw the same message, double-printing once the CLI guard() catch also prints the thrown error)', () => {
