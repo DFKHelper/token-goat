@@ -474,6 +474,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'exports',
       'imports',
       'changed_lookup',
+      'dep_docs',
     ]),
   },
   { label: 'Lookups', members: new Set(['symbol_lookup', 'semantic_search', 'map_lookup']) },

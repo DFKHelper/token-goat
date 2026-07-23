@@ -474,18 +474,20 @@ describe('Stats rendering', () => {
     expect(result).toContain('Bash')
   })
 
-  it('groups imports and changed_lookup kinds under Read savings, not Other (regression: both were missing from _KIND_GROUPS)', () => {
+  it('groups imports, changed_lookup, and dep_docs kinds under Read savings, not Other (regression: all three were missing from _KIND_GROUPS)', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [
       { kind: 'read_replacement', bytes: 10000, tokens: 1000, events: 20 },
       { kind: 'imports', bytes: 4000, tokens: 400, events: 8 },
       { kind: 'changed_lookup', bytes: 3000, tokens: 300, events: 6 },
+      { kind: 'dep_docs', bytes: 2000, tokens: 200, events: 4 },
     ]
     const result = renderStats(stats)
     const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
     expect(byKindBlock).toContain('imports')
     expect(byKindBlock).toContain('changed_lookup')
-    // If either kind had fallen through to 'Other', a second group header would appear.
+    expect(byKindBlock).toContain('dep_docs')
+    // If any kind had fallen through to 'Other', a second group header would appear.
     expect(byKindBlock).not.toContain('Other')
   })
 

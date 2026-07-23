@@ -89,6 +89,10 @@ describe('stats', () => {
       expect(kindToSource('exports')).toBe(SOURCE_READ)
       expect(kindToSource('imports')).toBe(SOURCE_READ)
     })
+
+    it('maps the dep_docs kind to SOURCE_READ (regression: dep-docs recordStat calls existed but this kind was never registered)', () => {
+      expect(kindToSource('dep_docs')).toBe(SOURCE_READ)
+    })
   })
 
   describe('summarize', () => {
@@ -402,6 +406,43 @@ describe('stats', () => {
         expect(importsCmd.events).toBe(1)
         expect(importsCmd.tokens_saved).toBe(60)
         expect(importsCmd.bytes_saved).toBe(240)
+      }
+
+      expect(summary.by_source[SOURCE_READ]).toBeDefined()
+      expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
+    })
+
+    it('groups dep_docs kind under the dep-docs command bucket (regression: dep_docs was never registered in COMMAND_KINDS/KIND_TO_SOURCE)', () => {
+      const dbPath = path.join(tempDir, 'test-dep-docs.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+
+      const now = Math.floor(Date.now() / 1000)
+      const insert = db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved) VALUES (?, ?, ?, ?)',
+      )
+      insert.run(now, 'dep_docs', 90, 360)
+
+      const summary = summarize(30, db)
+      db.close()
+
+      const depDocsCmd = summary.by_command.find((r) => r.command === 'dep-docs')
+      expect(depDocsCmd).toBeDefined()
+      if (depDocsCmd) {
+        expect(depDocsCmd.events).toBe(1)
+        expect(depDocsCmd.tokens_saved).toBe(90)
+        expect(depDocsCmd.bytes_saved).toBe(360)
       }
 
       expect(summary.by_source[SOURCE_READ]).toBeDefined()

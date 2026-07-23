@@ -99,6 +99,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   outline: SOURCE_READ,
   exports: SOURCE_READ,
   imports: SOURCE_READ,
+  dep_docs: SOURCE_READ,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
@@ -127,6 +128,7 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   refs: new Set(['symbol_read']),
   map: new Set(['map_lookup']),
   changed: new Set(['changed_lookup']),
+  'dep-docs': new Set(['dep_docs']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',
