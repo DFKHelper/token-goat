@@ -837,10 +837,17 @@ function parsePackageLockJson(content: string): DepEntry[] {
     return deps
   }
   const pkgs = raw.packages ?? {}
-  const directDeps = (pkgs[''] as { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> } | undefined) ?? {}
+  // optionalDependencies must count as direct the same as dependencies/devDependencies -- an
+  // npm v2/v3 lockfile's root "" entry carries all three sibling maps (mirrors package.json's
+  // own three top-level dependency fields), and parsePnpmLock's rootSections handling already
+  // folds pnpm's equivalent root optionalDependencies into its direct-version set below. Omitting
+  // it here mislabeled any package declared only as optional (e.g. fsevents) as 'transitive'.
+  const directDeps =
+    (pkgs[''] as { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown>; optionalDependencies?: Record<string, unknown> } | undefined) ?? {}
   const allDirect = new Set([
     ...Object.keys(directDeps.dependencies ?? {}),
     ...Object.keys(directDeps.devDependencies ?? {}),
+    ...Object.keys(directDeps.optionalDependencies ?? {}),
   ])
   const deps: DepEntry[] = []
   for (const [key, val] of Object.entries(pkgs)) {
@@ -1091,8 +1098,18 @@ function buildNpmEdges(content: string): { edges: Map<string, string[]>; directN
 
   const pkgs = raw.packages
   if (pkgs === undefined) return null
-  const rootEntry = pkgs[''] as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } | undefined
-  const directNames = new Set([...Object.keys(rootEntry?.dependencies ?? {}), ...Object.keys(rootEntry?.devDependencies ?? {})])
+  // Same optionalDependencies gap as parsePackageLockJson's allDirect above: without it, a
+  // package declared only as optional at the project root is excluded from directNames and so
+  // never appears as a possible source in findReverseDirectDeps's "depended on by direct deps"
+  // DFS, even though it is genuinely one of the project's own top-level dependencies.
+  const rootEntry = pkgs[''] as
+    | { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }
+    | undefined
+  const directNames = new Set([
+    ...Object.keys(rootEntry?.dependencies ?? {}),
+    ...Object.keys(rootEntry?.devDependencies ?? {}),
+    ...Object.keys(rootEntry?.optionalDependencies ?? {}),
+  ])
   const edges = new Map<string, string[]>()
   for (const [key, val] of Object.entries(pkgs)) {
     if (key === '') continue
