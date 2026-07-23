@@ -979,11 +979,33 @@ function stripPnpmPeerSuffix(value: string): string {
   return value.replace(/(\([^()]*\))+$/, '')
 }
 
+// Legacy pnpm (`lockfileVersion` < 6) suffixes a resolved version with `_<peerSpec>` instead of
+// the modern `(peerName@peerVersion)` parenthetical form, e.g. `1.0.0_react@16.0.0`. Semver
+// versions never contain `_`, so truncating at the first one is safe.
+function stripPnpmLegacyPeerHash(value: string): string {
+  const idx = value.indexOf('_')
+  return idx === -1 ? value : value.slice(0, idx)
+}
+
 function splitPnpmPackageKey(rawKey: string): { name: string; version: string } | null {
   const key = stripPnpmPeerSuffix(rawKey.startsWith('/') ? rawKey.slice(1) : rawKey)
   const scoped = key.startsWith('@')
   const nameSearchStart = scoped ? key.indexOf('/') : 0
   if (scoped && nameSearchStart === -1) return null
+  // Legacy (lockfileVersion < 6) keys are slash-separated (`/lodash/4.17.21`,
+  // `/@babel/core/7.12.10_@babel+core@7.12.10`) rather than `@`-separated, and their optional
+  // `_<peerSpec>` suffix can itself contain an `@` -- so an `@`-first search can mis-split a
+  // legacy key at that embedded `@` instead of falling through to the slash-based parse below.
+  // Checking for an *additional* `/` past the scope's own first `/` (or, for an unscoped name,
+  // any `/` at all) distinguishes the two styles unambiguously: neither modern key style ever
+  // contains a second `/` before its version.
+  const additionalSlashIdx = key.indexOf('/', nameSearchStart + 1)
+  if (additionalSlashIdx !== -1) {
+    const name = key.slice(0, additionalSlashIdx)
+    const version = stripPnpmLegacyPeerHash(key.slice(additionalSlashIdx + 1))
+    if (!name || !version) return null
+    return { name, version }
+  }
   const versionSepIdx = key.indexOf('@', nameSearchStart + 1)
   if (versionSepIdx === -1) return null
   const name = key.slice(0, versionSepIdx)
@@ -994,11 +1016,16 @@ function splitPnpmPackageKey(rawKey: string): { name: string; version: string } 
 
 // Collects name -> resolved version (peer-suffix stripped, matching splitPnpmPackageKey's own
 // stripping of `packages` keys) from one importer dependency section
-// (`dependencies`/`devDependencies`/`optionalDependencies`), each entry shaped
-// `{ specifier: '^1.0.0', version: '1.0.0' }` in lockfileVersion 6+.
+// (`dependencies`/`devDependencies`/`optionalDependencies`). lockfileVersion 6+ shapes each entry
+// as `{ specifier: '^1.0.0', version: '1.0.0' }`; legacy (`lockfileVersion` < 6) root dependency
+// sections instead use a bare resolved-version string directly, e.g. `{ lodash: '4.17.21' }`.
 function collectPnpmDirectVersions(section: unknown, out: Map<string, string>): void {
   if (section === null || typeof section !== 'object') return
   for (const [name, val] of Object.entries(section as Record<string, unknown>)) {
+    if (typeof val === 'string' && val) {
+      out.set(name, stripPnpmLegacyPeerHash(stripPnpmPeerSuffix(val)))
+      continue
+    }
     const version = (val as { version?: unknown } | undefined)?.version
     if (typeof version === 'string' && version) out.set(name, stripPnpmPeerSuffix(version))
   }
