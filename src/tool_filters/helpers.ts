@@ -422,6 +422,25 @@ export function headTailCompress(lines: string[], head: number, tail: number, la
   )
 }
 
+/**
+ * Truncate a `--output table`/`kubectl get`-shaped result (header + N rows) to its first
+ * `maxRows` non-empty lines, appending an elision marker whose `hint` names the tool-specific
+ * flag(s) that actually narrow the row count. Shared by cloud.ts's AWS table truncation and
+ * containers.ts's kubectl table truncation, which each used to carry their own copy of this
+ * exact loop -- one of those copies once carried a hint borrowed verbatim from the other tool
+ * (kubectl's `--selector`/`-l` shown to AWS CLI users, who have no such flag), with nothing
+ * structural preventing a hint from drifting onto the wrong tool's copy again. One shared
+ * implementation with a required, per-call-site `hint` argument makes that mismatch
+ * impossible to reintroduce silently.
+ */
+export function truncateTableRows(text: string, maxRows: number, hint: string): string {
+  const lines = text.split('\n')
+  const nonEmpty = lines.filter((l) => l.trim())
+  if (nonEmpty.length <= maxRows + 1) return text
+  const elided = nonEmpty.length - maxRows - 1
+  return `${nonEmpty.slice(0, maxRows + 1).join('\n')}\n[token-goat: ${elided} more rows; ${hint}]`
+}
+
 /** Keep only the first `keep` lines matching `pattern`; drop the rest with a count. */
 export function trimRepeatedPrefix(lines: string[], pattern: RegExp, keep: number): string[] {
   const out: string[] = []
