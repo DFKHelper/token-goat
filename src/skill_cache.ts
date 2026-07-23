@@ -50,6 +50,7 @@ registerReset(() => {
   _skillOutputsDirOverride = null
   _skillsSourceDirOverride = null
   _pluginsManifestPathOverride = null
+  inProcessHitLockQueues.clear()
 })
 
 export interface SkillMeta {
@@ -613,6 +614,37 @@ const SKILL_HIT_LOCK_RETRY_MS = 5
 const SKILL_HIT_LOCK_STALE_MS = 5000
 const SKILL_HIT_LOCK_MAX_ATTEMPTS = Math.ceil(SKILL_HIT_LOCK_STALE_MS / SKILL_HIT_LOCK_RETRY_MS)
 
+// In-process mutex, keyed by lockPath: serializes concurrent callers within THIS process before
+// any of them touch the filesystem-based lock below. That lock's staleness check (comparing the
+// lock directory's mtime against SKILL_HIT_LOCK_STALE_MS) exists to arbitrate between separate OS
+// processes and recover one that crashed mid-hold -- it is inherently a wall-clock heuristic. Two
+// same-process callers polling that same heuristic against each other is a false positive waiting
+// to happen: under severe CPU contention (many parallel test workers, a loaded CI box) this
+// process can be scheduled off the CPU long enough that a live in-process holder's own critical
+// section looks "stale" to another in-process waiter, letting that waiter steal the lock mid-write
+// and drop the first caller's increment -- reproduced directly by tests/skill_cache.test.ts's
+// 5-way concurrency regression test under full-suite load. Routing same-process callers through
+// this queue first means they never reach that wall-clock check against each other at all: plain
+// JS promise chaining orders them deterministically no matter how delayed the underlying I/O or
+// timers get. Cross-process contention (the case the mkdir lock actually exists for) is untouched
+// -- this only removes the false-positive path this process can hit against itself.
+const inProcessHitLockQueues = new Map<string, Promise<unknown>>()
+
+function runExclusiveInProcess<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prior = inProcessHitLockQueues.get(key) ?? Promise.resolve()
+  const run = prior.then(fn, fn)
+  // Swallow rejection in the queued tail so a failed caller never wedges the next one behind it;
+  // the real result/rejection still flows to this call's own caller via `run`.
+  inProcessHitLockQueues.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  )
+  return run
+}
+
 // Acquires the lock directory for hitsFile, reclaiming a lock older than SKILL_HIT_LOCK_STALE_MS
 // as abandoned (left behind by a crashed process) instead of wedging future increments forever.
 // Returns false once every retry is exhausted so the caller can fall back to an unlocked
@@ -652,21 +684,23 @@ export async function incrementSkillHit(skillName: string): Promise<void> {
     const dir = skillOutputsDir()
     const hitsFile = resolve(dir, `${sanitizeSkillId(name)}.hits`)
     const lockPath = `${hitsFile}.lock`
-    const locked = await acquireSkillHitLock(lockPath)
-    // If the lock could not be acquired (another holder never released it, or the mkdir/rmdir
-    // pair raced on a filesystem where directory deletion isn't instantly visible to a
-    // subsequent create -- observed on Windows), skip the increment rather than falling back to
-    // an unprotected read-modify-write: that fallback was the exact TOCTOU race the lock exists
-    // to prevent, just gated behind a rarer trigger.
-    if (!locked) return
-    try {
-      const hits = await readSkillHits(name)
-      hits.count++
-      hits.lastTs = Date.now()
-      await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
-    } finally {
-      await fs.rmdir(lockPath).catch(() => {})
-    }
+    await runExclusiveInProcess(lockPath, async () => {
+      const locked = await acquireSkillHitLock(lockPath)
+      // If the lock could not be acquired (another holder never released it, or the mkdir/rmdir
+      // pair raced on a filesystem where directory deletion isn't instantly visible to a
+      // subsequent create -- observed on Windows), skip the increment rather than falling back to
+      // an unprotected read-modify-write: that fallback was the exact TOCTOU race the lock exists
+      // to prevent, just gated behind a rarer trigger.
+      if (!locked) return
+      try {
+        const hits = await readSkillHits(name)
+        hits.count++
+        hits.lastTs = Date.now()
+        await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
+      } finally {
+        await fs.rmdir(lockPath).catch(() => {})
+      }
+    })
   } catch {
     // fail-soft
   }
