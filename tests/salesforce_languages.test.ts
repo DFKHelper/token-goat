@@ -430,6 +430,33 @@ describe('salesforce metadata adapter', () => {
     expect(symbols.find((s) => s.name === 'Do_Action')?.docstring).toBe('Example_Flow')
   })
 
+  it('extracts a distinct ref for each of two same-named <field> filters inside one recordLookups block (regression-coverage gap: the running-cursor fix documented at this callsite -- guarding against a plain indexOf always resolving to the first occurrence and silently dropping the second, same-named field ref as a duplicate -- had no test)', () => {
+    const file = 'force-app/main/default/flows/Get_Account.flow-meta.xml'
+    const content = `<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+  <recordLookups>
+    <name>Get_Account</name>
+    <object>Account</object>
+    <filters>
+      <field>Status</field>
+      <operator>EqualTo</operator>
+    </filters>
+    <filters>
+      <field>Status</field>
+      <operator>NotEqualTo</operator>
+    </filters>
+  </recordLookups>
+</Flow>
+`
+
+    const refs = extractSalesforceMetadata(content, file).refs
+    const statusRefs = refs.filter((r) => r.name === 'Account.Status')
+    expect(statusRefs).toHaveLength(2)
+    // Distinct source locations -- the whole point of the running cursor: two same-named
+    // field refs must not collapse onto the same line/col (which emitRef would then dedupe).
+    expect(statusRefs[0]?.line).not.toBe(statusRefs[1]?.line)
+    expect(refs.map((r) => r.name)).toContain('Account')
+  })
+
   it('extracts permission sets and custom metadata record full names', () => {
     const permissionSet = extractSalesforceMetadata(
       `<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
