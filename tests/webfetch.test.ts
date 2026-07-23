@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import type * as HttpModule from 'http';
 import type * as DnsModule from 'dns';
 import { resolve } from 'path';
-import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 
 const httpRequestMock = vi.hoisted(() => vi.fn());
@@ -31,7 +31,9 @@ const {
   isPrivateIPv6,
   ssrfPinnedLookup,
   performHttpFetch,
+  cleanupStaleDownloads,
 } = await import('../src/webfetch.js');
+const { dataDir } = await import('../src/constants.js');
 
 describe('webfetch', () => {
   const tempDir = resolve(tmpdir(), 'webfetch-test');
@@ -208,6 +210,51 @@ describe('webfetch', () => {
           readdirSync(nonExistentDir);
         }
       }).not.toThrow();
+    });
+
+    describe('via the real export, age-gated', () => {
+      const realCacheDir = resolve(dataDir(), 'web_cache');
+
+      beforeEach(() => {
+        mkdirSync(realCacheDir, { recursive: true });
+      });
+
+      afterEach(() => {
+        for (const file of readdirSync(realCacheDir)) {
+          unlinkSync(resolve(realCacheDir, file));
+        }
+      });
+
+      it('removes only .tmp files older than the staleness threshold, leaving a fresh in-progress download alone', () => {
+        const staleTmp = resolve(realCacheDir, 'stale.jpg.tmp');
+        const freshTmp = resolve(realCacheDir, 'fresh.jpg.tmp');
+        const regularFile = resolve(realCacheDir, 'done.jpg');
+        writeFileSync(staleTmp, 'content1');
+        writeFileSync(freshTmp, 'content2');
+        writeFileSync(regularFile, 'content3');
+
+        // 11 minutes old: past the 10-minute staleness threshold.
+        const staleTime = new Date(Date.now() - 11 * 60 * 1000);
+        utimesSync(staleTmp, staleTime, staleTime);
+        // freshTmp keeps its just-written mtime, simulating an active in-progress download.
+
+        const removed = cleanupStaleDownloads();
+
+        expect(removed).toBe(1);
+        expect(existsSync(staleTmp)).toBe(false);
+        expect(existsSync(freshTmp)).toBe(true);
+        expect(existsSync(regularFile)).toBe(true);
+      });
+
+      it('removes nothing when all .tmp files are fresh', () => {
+        const freshTmp = resolve(realCacheDir, 'active.jpg.tmp');
+        writeFileSync(freshTmp, 'content');
+
+        const removed = cleanupStaleDownloads();
+
+        expect(removed).toBe(0);
+        expect(existsSync(freshTmp)).toBe(true);
+      });
     });
   });
 });
