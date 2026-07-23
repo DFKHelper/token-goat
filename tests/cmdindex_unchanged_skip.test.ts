@@ -61,11 +61,13 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
       .spyOn(parserModule, 'indexFileSync')
       .mockImplementation((filePath, dbp) => realIndexFileSync(filePath, dbp))
 
-    // First run: both files are new, so both must be parsed.
+    // First run: both files are new, so both must be parsed. Each fixture declares exactly one
+    // top-level function -- pin the exact symbol count instead of just ">0", so a regression
+    // that indexed the same file's symbol twice (still non-empty) is caught too.
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(indexFileSyncSpy).toHaveBeenCalledTimes(2)
-    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
-    expect(querySymbols({ name: 'mutableSymbolV1', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
+    expect(querySymbols({ name: 'mutableSymbolV1', limit: 10 }, dbPath).length).toBe(1)
 
     indexFileSyncSpy.mockClear()
 
@@ -73,7 +75,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(indexFileSyncSpy).not.toHaveBeenCalled()
     // The rows must still be intact -- "skipped" must not mean "lost".
-    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
 
     indexFileSyncSpy.mockClear()
 
@@ -84,8 +86,8 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     expect(indexFileSyncSpy).toHaveBeenCalledTimes(1)
     expect(indexFileSyncSpy).toHaveBeenCalledWith(expect.stringContaining('mutable.ts'), dbPath)
     expect(querySymbols({ name: 'mutableSymbolV1', limit: 10 }, dbPath).length).toBe(0)
-    expect(querySymbols({ name: 'mutableSymbolV2', limit: 10 }, dbPath).length).toBeGreaterThan(0)
-    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    expect(querySymbols({ name: 'mutableSymbolV2', limit: 10 }, dbPath).length).toBe(1)
+    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
   })
 
   // Regression: a parser.ts change to what extractRefs/valueRefIdentifiers extracts (e.g. the
@@ -114,7 +116,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     // With --force: same byte-identical content must still be reparsed.
     await cmdIndex(TMP, { walk: true, dbPath, force: true })
     expect(indexFileSyncSpy).toHaveBeenCalledTimes(1)
-    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
   })
 
   // A file only becomes fully skippable (indexFileSync AND indexFileEmbeddings both gated out,
@@ -200,13 +202,17 @@ describe('cmdIndex indexes embeddable document formats (task #337)', () => {
 
       expect(embedSpy).toHaveBeenCalledWith(expect.stringContaining('spec.docx'), dbPath, expect.anything())
       const key = resolveIndexPath(src)
-      expect(getFileEntry(key, dbPath)?.embedSha).toBeTruthy()
+      // buildDocxFixture's own zip encoding embeds a timestamp, so embedSha is NOT stable
+      // across runs even though the visible text is fixed -- verified empirically (two runs
+      // produced two different values) before landing this, so an exact pin isn't possible.
+      // Pin the real sha256-hex shape instead of just "truthy".
+      expect(getFileEntry(key, dbPath)?.embedSha).toMatch(/^[0-9a-f]{64}$/)
 
       const db = getDb(dbPath)
       const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(key) as {
         c: number
       }
-      expect(chunkRow.c).toBeGreaterThan(0)
+      expect(chunkRow.c).toBe(1)
     },
   )
 })
