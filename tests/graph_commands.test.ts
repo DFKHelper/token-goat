@@ -1463,7 +1463,7 @@ describe('findCycles', () => {
   it('mutation-verification: removing cycle back-edge eliminates all cycles', () => {
     const withCycle = new Map([['x', ['y']], ['y', ['z']], ['z', ['x']]])
     const withoutCycle = new Map([['x', ['y']], ['y', ['z']], ['z', []]])
-    expect(findCycles(withCycle).length).toBeGreaterThan(0)
+    expect(findCycles(withCycle)).toEqual([['z', 'x', 'y', 'z']])
     expect(findCycles(withoutCycle)).toHaveLength(0)
   })
 
@@ -2152,8 +2152,8 @@ describe('runContextFor / runAsk (#248 regression)', () => {
         }
         expect(code).toBe(0)
         const parsed = JSON.parse(captured) as Array<{ symbol: string }>
-        expect(parsed.length).toBeGreaterThan(0)
-        expect(parsed.some((r) => r.symbol === 'ctxWidenAlpha9k2' || r.symbol === 'ctxWidenBeta9k2')).toBe(true)
+        expect(parsed.length).toBe(2)
+        expect(parsed.map((r) => r.symbol).sort()).toEqual(['ctxWidenAlpha9k2', 'ctxWidenBeta9k2'])
       } finally {
         cwdSpy.mockRestore()
       }
@@ -2305,6 +2305,7 @@ describe('runArch', () => {
       }
 
       // main.ts is imported by nobody and imports others -- the only real entry point here.
+      expect(parsed.entryPoints).toHaveLength(1)
       expect(parsed.entryPoints.map((e) => e.file.replace(/\\/g, '/'))).toEqual(
         expect.arrayContaining([expect.stringContaining('main.ts')]),
       )
@@ -2316,7 +2317,7 @@ describe('runArch', () => {
       expect(parsed.entryPoints.some((e) => e.file.includes('b.ts'))).toBe(false)
 
       // a.ts <-> b.ts form a real 2-node cycle.
-      expect(parsed.cycles.length).toBeGreaterThan(0)
+      expect(parsed.cycles).toHaveLength(1)
       const hasAbCycle = parsed.cycles.some(
         (c) => c.some((f) => f.includes('a.ts')) && c.some((f) => f.includes('b.ts')),
       )
