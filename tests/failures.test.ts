@@ -170,7 +170,11 @@ test tests::example_test ... FAILED
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('cargo');
-      expect(result.blocks.length).toBeGreaterThan(0);
+      // Pin the exact block and its name, matching the parity check the go extractor's
+      // equivalent smoke test already does -- length > 0 alone would pass even with the wrong
+      // test name captured or extra spurious blocks.
+      expect(result.blocks).toHaveLength(1);
+      expect(result.blocks[0]?.name).toBe('tests::example_test');
     });
 
     it('should pull panic detail out of the separate ---- name stdout ---- section', () => {
@@ -278,7 +282,9 @@ FAIL
       const output = 'FAILED test1\nFAILED test2';
       const result = extractFailures(output);
       const count = getFailureCount(result);
-      expect(count).toBeGreaterThan(0);
+      // Pin the exact count of 2 -- length > 0 alone would still pass if the fallback
+      // undercounted (e.g. deduped or stopped early).
+      expect(count).toBe(2);
     });
 
     it('should return 0 for no failures', () => {
