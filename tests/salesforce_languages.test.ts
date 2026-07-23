@@ -46,7 +46,8 @@ describe('apex adapter', () => {
     expect(find('getValue', 'apex_method')?.lineStart).toBe(6)
     expect(find('getValue', 'apex_method')?.body).toContain('@AuraEnabled')
     expect(find('getURL', 'apex_method')?.body).toContain('String returnUrl')
-    expect(find('InnerDto', 'apex_class')).toBeDefined()
+    expect(find('InnerDto', 'apex_class')?.lineStart).toBe(16)
+    expect(find('InnerDto', 'apex_class')?.lineEnd).toBe(18)
   })
 
   it('extracts a constructor with no access modifier at all (regression: METHOD_RE requires either a modifier or a return-type token, but a constructor - legal Apex, modifier omission defaults to private - has neither, so it was silently dropped from the index while a sibling explicit-modifier constructor in the same class was found)', () => {
@@ -166,7 +167,16 @@ public class MyTestClass {
 
     const { symbols } = extractApex(content, 'MyIntf.cls')
     expect(symbols.find((s) => s.name === 'MyIntf')?.kind).toBe('apex_interface')
-    expect(symbols.find((s) => s.name === 'doThing')).toBeDefined()
+    // Regression: annotationStartLine's multi-line-annotation-opener branch used to fire even
+    // when depth was already 0 on entry (not resuming a prior fold), so a fully self-contained,
+    // balanced-paren same-line annotation on the interface's OWN header (with unrelated trailing
+    // declaration content, e.g. `@SuppressWarnings('PMD') public interface MyIntf {`) was
+    // misread as opening a multi-line annotation and folded into doThing's span, pulling
+    // doThing's lineStart back to line 1 instead of its real declaration line 2.
+    const doThing = symbols.find((s) => s.name === 'doThing' && s.kind === 'apex_method')
+    expect(doThing).toBeDefined()
+    expect(doThing?.lineStart).toBe(2)
+    expect(doThing?.lineEnd).toBe(2)
   })
 
   it('extracts every method signature in an interface, which never carries an access modifier (regression: same METHOD_RE gap, but total - every Apex interface method is modifier-less by language rule, so this dropped 100% of interface methods)', () => {
@@ -242,7 +252,8 @@ public class MyTestClass {
       symbols.find((s) => s.name === name && s.kind === kind)
 
     expect(find('getName', 'apex_method')?.lineEnd).toBe(3)
-    expect(find('getOther', 'apex_method')).toBeDefined()
+    expect(find('getOther', 'apex_method')?.lineStart).toBe(5)
+    expect(find('getOther', 'apex_method')?.lineEnd).toBe(7)
   })
 
   it('does not let an apostrophe inside a "//" comment open a phantom string that swallows the rest of the file', () => {
@@ -268,8 +279,10 @@ public class MyTestClass {
     const find = (name: string, kind: string) => symbols.find((s) => s.name === name && s.kind === kind)
 
     expect(find('AccountService', 'apex_class')?.lineEnd).toBe(10)
-    expect(find('MethodOne', 'apex_method')).toBeDefined()
-    expect(find('MethodTwo', 'apex_method')).toBeDefined()
+    expect(find('MethodOne', 'apex_method')?.lineStart).toBe(3)
+    expect(find('MethodOne', 'apex_method')?.lineEnd).toBe(5)
+    expect(find('MethodTwo', 'apex_method')?.lineStart).toBe(7)
+    expect(find('MethodTwo', 'apex_method')?.lineEnd).toBe(9)
   })
 
   it('does not let a semicolon-terminated abstract method swallow the next method body', () => {
