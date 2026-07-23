@@ -9,6 +9,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
+import type * as ChildProcess from 'child_process'
 
 // runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context
 // path used to call it fire-and-forget with no await, which turned a synchronous throw into a
@@ -17,6 +18,16 @@ import type * as CliContextStats from '../src/cli_context_stats.js'
 vi.mock('../src/cli_context_stats.js', async (importOriginal) => {
   const original = await importOriginal<typeof CliContextStats>()
   return { ...original, runContextStats: vi.fn(original.runContextStats) }
+})
+
+// spawnSync is mocked (wrapping the real implementation by default via importOriginal, same
+// pattern as the cli_context_stats mock above) only so one test below can force the df-fallback
+// path's output deterministically, since fs.statfsSync itself can't be stubbed (ESM namespace
+// exports are non-configurable -- see the existing "no module mocking needed" comment further
+// down this file) and a real machine's actual free space can't be controlled from a test.
+vi.mock('child_process', async (importOriginal) => {
+  const original = await importOriginal<typeof ChildProcess>()
+  return { ...original, spawnSync: vi.fn(original.spawnSync) }
 })
 
 describe('cli_doctor', () => {
@@ -471,6 +482,34 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('ok')
       expect(result.message).not.toBe('could not determine')
       expect(result.message).toMatch(/[\d.]+ (B|KB|MB|GB|TB) available/)
+    })
+
+    it('warns instead of reporting ok when free space is below the low-disk threshold', async () => {
+      // Regression: checkDiskSpace used to hardcode status: 'ok' on every successful read
+      // regardless of how little space was actually left, making it a "check" that could
+      // never flag the exact problem ("running out of disk") it exists to catch. Forces the
+      // df-fallback path (statfsSync throws on a nonexistent path, and platform is pinned to
+      // non-win32 so the fallback isn't skipped) with a mocked spawnSync returning a `df -k`
+      // response reporting only 100MB available, well under LOW_DISK_WARN_BYTES (1 GiB).
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { value: 'linux' })
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = spawnSync as unknown as ReturnType<typeof vi.fn>
+      mockedSpawnSync.mockReturnValueOnce({
+        status: 0,
+        error: undefined,
+        stdout: 'Filesystem     1K-blocks     Used Available Use% Mounted on\n/dev/sda1      102400000 92160000    102400  90% /\n',
+        stderr: '',
+      })
+      try {
+        const result = checkDiskSpace(path.join(tempDir, 'does-not-exist-xyz'))
+        expect(result.name).toBe('Disk Space')
+        expect(result.status).toBe('warn')
+        expect(result.message).toContain('running low')
+        expect(result.message).toMatch(/[\d.]+ (B|KB|MB|GB|TB) available/)
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform })
+      }
     })
 
     it('reports an explicit unavailable message, not a silent pass, when no check path works', () => {
