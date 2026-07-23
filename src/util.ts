@@ -80,6 +80,16 @@ export function foldCase(s: string): string {
  * THE ONLY git spawn site in the codebase. Always:
  *   - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from
  *     interfering with or being slowed by the agent's own git operations);
+ *   - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after
+ *     it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a
+ *     side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in-
+ *     depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at.
+ *     Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty*
+ *     `diff.external` value is not "disabled" to git, it is a literal empty-string command to
+ *     spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or
+ *     directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are
+ *     the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which
+ *     don't accept them) needs them;
  *   - passes `windowsHide: true` so no console window flashes on Windows;
  *   - passes the args array directly (no shell, so nothing is shell-escaped).
  *
@@ -87,7 +97,12 @@ export function foldCase(s: string): string {
  * non-zero `exitCode` with the error message on `stderr` rather than throwing.
  */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
-  const fullArgs = ['-c', 'core.fsmonitor=', '-c', 'core.quotepath=false', ...args]
+  const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
+  const fullArgs = [
+    '-c', 'core.fsmonitor=',
+    '-c', 'core.quotepath=false',
+    ...subArgs,
+  ]
   const result = spawnSync('git', fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),

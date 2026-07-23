@@ -362,6 +362,63 @@ describe('runGit', () => {
     expect(opts).not.toHaveProperty('timeout')
   })
 
+  it('inserts --no-ext-diff --no-textconv right after a diff subcommand, to block a repo-local .gitattributes diff driver/textconv filter from running', () => {
+    // Defense-in-depth: a repo-local .gitattributes textconv filter or a configured
+    // diff.external command could otherwise run as a side effect of this codebase's own
+    // `git diff` calls (e.g. gitDirtySignals in hooks_compact.ts, runDiff in read_commands.ts)
+    // on an untrusted repo.
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['diff', '--stat', 'HEAD'])
+    const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
+    expect(args).toEqual(expect.arrayContaining(['diff', '--no-ext-diff', '--no-textconv', '--stat', 'HEAD']))
+  })
+
+  it('does not inject diff-only flags for a non-diff subcommand (they are not valid options there)', () => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['status', '--porcelain'])
+    const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
+    expect(args).not.toContain('--no-ext-diff')
+    expect(args).not.toContain('--no-textconv')
+  })
+
+  it('a real repo-local diff.external config does not run when runGit diffs it, and the normal diff output is still returned', () => {
+    // End-to-end proof against a real repo, not just an args-array assertion: a naive
+    // `-c diff.external=` (empty-string) approach was tried first and made every diff fail
+    // outright ("cannot spawn : No such file or directory") rather than actually disabling the
+    // driver -- this test would have caught that regression, unlike the args-only test above.
+    const dir = mkdtempSync(path.join(tmpdir(), 'tg-rungit-extdiff-'))
+    try {
+      runGit(['init'], { cwd: dir })
+      runGit(['config', 'user.email', 'test@token-goat.local'], { cwd: dir })
+      runGit(['config', 'user.name', 'Token Goat Test'], { cwd: dir })
+      runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir })
+      const markerFile = path.join(dir, 'external-diff-ran.txt')
+      // Node's spawnSync argv handling on Windows can mangle a raw shell one-liner passed as a
+      // single git-config string, so drive the marker write through a tiny script file instead
+      // of an inline `echo`/redirection command -- portable across cmd.exe and POSIX shells.
+      const markerScriptExt = process.platform === 'win32' ? '.cmd' : '.sh'
+      const markerScript = path.join(dir, `write-marker${markerScriptExt}`)
+      writeFileSync(
+        markerScript,
+        process.platform === 'win32' ? `@echo ran > "${markerFile}"\n` : `#!/bin/sh\necho ran > "${markerFile}"\n`,
+      )
+      if (process.platform !== 'win32') runGit(['update-index', '--chmod=+x', markerScript], { cwd: dir })
+      runGit(['config', 'diff.external', markerScript], { cwd: dir })
+      writeFileSync(path.join(dir, 'a.txt'), 'hello\n')
+      runGit(['add', 'a.txt'], { cwd: dir })
+      runGit(['commit', '-m', 'init'], { cwd: dir })
+      writeFileSync(path.join(dir, 'a.txt'), 'hello\nworld\n')
+
+      const result = runGit(['diff', '--unified=0', 'HEAD'], { cwd: dir })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('+world')
+      expect(existsSync(markerFile)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
 })
 
 describe('runGit large output handling', () => {
