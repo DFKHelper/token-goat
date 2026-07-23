@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // Importing relay registers EVERY hook module (including hooks_agent_spawn) for its
 // side-effects, so runHook dispatches through the real production registry.
 // buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does.
@@ -10,6 +10,27 @@ import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
+
+// Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
+// over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
+// as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact
+// project map is far too small to trip BRIEFING_TARGET_TOKENS on its own.
+let _hugeProjectMapOverride = false
+vi.mock('../src/baseline.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return {
+    ...original,
+    formatProjectMap: (...args: unknown[]) => {
+      if (_hugeProjectMapOverride) {
+        // Sized so map+reminder alone fits BRIEFING_TARGET_TOKENS but map+cache-ids+reminder
+        // does not -- exercises the "drop cache-ids first, keep the reminder" path specifically,
+        // not the further last-resort tail-trim fallback for a still-oversized map alone.
+        return 'huge-project-map-line '.repeat(26)
+      }
+      return (original['formatProjectMap'] as (...a: unknown[]) => string)(...args)
+    },
+  }
+})
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -188,6 +209,41 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     // Both are acceptable outcomes — the important thing is no exception is thrown.
     const result = await runHook(buildEvent('pre_tool_use', payload))
     expect(result.hookType === 'pass' || result.hookType === 'rewriteInput').toBe(true)
+  })
+
+  // Regression: buildSubagentBriefing's over-budget truncation used to slice the assembled
+  // string from the end regardless of section order, contradicting its own "keep map + reminder,
+  // sacrifice cache ids if needed" comment -- since the reminder was appended LAST (after the
+  // cache-ids section), a tail-slice cut the reminder first, not the cache ids. The cache-ids
+  // block must now be dropped first, and the surgical-read reminder must survive whenever the
+  // map + reminder alone still fit the budget.
+  it('keeps the surgical-read reminder (and drops the cache-ids block first) when the briefing as a whole exceeds budget', async () => {
+    _hugeProjectMapOverride = true
+    try {
+      const outputId = await storeBashOutput('echo test', 'test output', 0)
+      recordBashOutput('hash1', outputId)
+
+      const prompt = 'Investigate the large refactor.'
+      const payload = {
+        tool_name: 'Agent',
+        tool_input: { prompt },
+        session_id: sessionId,
+      }
+      const result = await runHook(buildEvent('pre_tool_use', payload))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        const updatedPrompt = result.updatedInput['prompt'] as string
+        expect(typeof updatedPrompt).toBe('string')
+        expect(updatedPrompt).toContain(prompt)
+        // The load-bearing reminder must survive even though the briefing overall had to be
+        // trimmed to fit budget.
+        expect(updatedPrompt).toContain('Prefer surgical reads over full-file dumps')
+        // The nice-to-have cache-ids hint is the sacrificial section, so it's the one dropped.
+        expect(updatedPrompt).not.toContain('Cached outputs this session')
+      }
+    } finally {
+      _hugeProjectMapOverride = false
+    }
   })
 })
 

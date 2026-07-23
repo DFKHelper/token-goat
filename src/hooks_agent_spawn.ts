@@ -40,24 +40,25 @@ const BRIEFING_TARGET_TOKENS = 300
  */
 function buildSubagentBriefing(): string {
   try {
-    const lines: string[] = []
-    lines.push('')
-    lines.push('## Session briefing (for context)')
+    const head: string[] = []
+    head.push('')
+    head.push('## Session briefing (for context)')
 
     // 1. Project map summary
     try {
       const map = buildProjectMap(process.cwd(), { compact: true })
       const mapText = formatProjectMap(map, map.compact)
-      lines.push(mapText)
+      head.push(mapText)
     } catch {
       // Project map unavailable — skip it and continue with cached ids/reminder
     }
 
-    // 2. Recent cached output IDs (2-3 most recent)
+    // 2. Recent cached output IDs (2-3 most recent) -- built separately from `head`/`tail` so it
+    // can be dropped as a whole when over budget, without touching either.
+    let cacheIdsBlock = ''
     try {
       const outputs = getSessionBashOutputs()
       if (outputs.length > 0) {
-        lines.push('')
         const recent = outputs.slice(-3).reverse()
         const idsList = recent
           .map(([_hash, id]) => {
@@ -66,27 +67,34 @@ function buildSubagentBriefing(): string {
             return '`token-goat bash-output ' + id + '`' + label
           })
           .join(', ')
-        lines.push('Cached outputs this session: ' + idsList)
+        cacheIdsBlock = '\n\nCached outputs this session: ' + idsList
       }
     } catch {
       // Bash output unavailable — skip and continue with reminder
     }
 
     // 3. Surgical-read reminder
-    lines.push('')
-    lines.push('Prefer surgical reads over full-file dumps: `token-goat symbol <name>` / `token-goat read "file::symbol"` / `token-goat section "file::<heading>"` are cheaper alternatives that are already cached by the hook system.')
+    const tail: string[] = []
+    tail.push('')
+    tail.push('Prefer surgical reads over full-file dumps: `token-goat symbol <name>` / `token-goat read "file::symbol"` / `token-goat section "file::<heading>"` are cheaper alternatives that are already cached by the hook system.')
 
-    const briefing = lines.join('\n')
-
-    // Truncate if the briefing exceeds the token budget
-    const tokens = estimateTokens(briefing)
-    if (tokens > BRIEFING_TARGET_TOKENS) {
-      // Trim from the end to fit the budget (keep map + reminder, sacrifice cache ids if needed)
-      const trimmed = briefing.slice(0, Math.floor((briefing.length * BRIEFING_TARGET_TOKENS) / tokens))
-      return trimmed
+    const withCacheIds = head.join('\n') + cacheIdsBlock + '\n' + tail.join('\n')
+    if (estimateTokens(withCacheIds) <= BRIEFING_TARGET_TOKENS) {
+      return withCacheIds
     }
 
-    return briefing
+    // Over budget: drop the cache-ids block first -- it's the nice-to-have re-use hint, not the
+    // load-bearing map/reminder content -- and re-check before falling back to a lossy trim.
+    const withoutCacheIds = head.join('\n') + '\n' + tail.join('\n')
+    const tokens = estimateTokens(withoutCacheIds)
+    if (tokens <= BRIEFING_TARGET_TOKENS) {
+      return withoutCacheIds
+    }
+
+    // Still over budget with the map alone (e.g. a very large project tree): trim from the end as
+    // a last resort. This can still cut into the reminder, but only once dropping the cache-ids
+    // block was already insufficient, not as the first thing tried.
+    return withoutCacheIds.slice(0, Math.floor((withoutCacheIds.length * BRIEFING_TARGET_TOKENS) / tokens))
   } catch {
     // Any error during briefing construction: fail open
     return ''
