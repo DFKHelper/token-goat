@@ -361,6 +361,30 @@ describe('salesforce metadata adapter', () => {
     expect(symbols[0]).toMatchObject({ name: 'Example_Event__e', kind: 'sf_platform_event' })
   })
 
+  it('detects a platform event from the __e name suffix alone, with no <eventType> tag present (regression-coverage gap: isPlatformEvent is an OR of two independent arms -- name.endsWith("__e") and an <eventType> tag -- but every existing test only exercised the <eventType> arm)', () => {
+    const file = 'force-app/main/default/objects/Example_Event__e/Example_Event__e.object-meta.xml'
+    const content = `<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+  <label>Example Event</label>
+</CustomObject>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols).toHaveLength(1)
+    expect(symbols[0]).toMatchObject({ name: 'Example_Event__e', kind: 'sf_platform_event' })
+  })
+
+  it('classifies a standard custom object (no __e suffix, no eventType tag) as sf_object rather than sf_platform_event', () => {
+    const file = 'force-app/main/default/objects/Example_Object__c/Example_Object__c.object-meta.xml'
+    const content = `<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+  <label>Example Object</label>
+</CustomObject>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols).toHaveLength(1)
+    expect(symbols[0]).toMatchObject({ name: 'Example_Object__c', kind: 'sf_object' })
+  })
+
   it('extracts validation rules with object context and qualified alias', () => {
     const file =
       'force-app/main/default/objects/Example_Object__c/validationRules/Example_Rule.validationRule-meta.xml'
