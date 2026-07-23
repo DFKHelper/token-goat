@@ -101,6 +101,6 @@ describe('universal file-type handler readFileSync guard (regression)', () => {
 
     preReadHandler(readEventWithRange(p, 1, 50))
 
-    expect(mockState.callCount).toBeGreaterThan(0)
+    expect(mockState.callCount).toBe(1)
   })
 })
