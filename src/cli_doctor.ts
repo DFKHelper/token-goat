@@ -295,7 +295,9 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
       // `-k` (not `-h`) so the available-space column is a plain integer KB count this check
       // can compare against LOW_DISK_WARN_BYTES, instead of a human-formatted string like "1.2G"
       // that would need re-parsing (and whose unit suffix varies by platform's df) to threshold at all.
-      const result = spawnSync('df', ['-k', dataDir], { encoding: 'utf-8' })
+      // `-P` forces POSIX single-line output -- without it, a long filesystem/device name can wrap
+      // onto its own line, shifting lines[1] and desyncing the column parse below.
+      const result = spawnSync('df', ['-Pk', dataDir], { encoding: 'utf-8' })
       const stdout = typeof result.stdout === 'string' ? result.stdout : ''
       if (result.error === undefined && result.status === 0 && stdout) {
         const lines = stdout.trim().split('\n')
