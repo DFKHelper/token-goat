@@ -840,13 +840,16 @@ describe('cmdProject prune retroactively removes indexed system-temp files', () 
     const realKey = normalizePath(realFile)
     indexFileSync(realKey, globalDbPath())
 
-    expect(symbolCount(tempKey)).toBeGreaterThan(0)
-    expect(symbolCount(realKey)).toBeGreaterThan(0)
+    // Each fixture file declares exactly one export -- pin the exact symbol count instead of
+    // just ">0", so a regression that indexed the same file's symbol twice (still non-empty)
+    // is caught too.
+    expect(symbolCount(tempKey)).toBe(1)
+    expect(symbolCount(realKey)).toBe(1)
 
     cmdProject({ action: 'prune' })
 
     expect(symbolCount(tempKey)).toBe(0)
-    expect(symbolCount(realKey)).toBeGreaterThan(0)
+    expect(symbolCount(realKey)).toBe(1)
   })
 
   it('--json reports a prunedTempFiles count', () => {
@@ -857,7 +860,9 @@ describe('cmdProject prune retroactively removes indexed system-temp files', () 
 
     cmdProject({ action: 'prune', json: true })
     const parsed = JSON.parse(captured()) as { pruned: number; blocked_roots: string[]; prunedTempFiles: number }
-    expect(parsed.prunedTempFiles).toBeGreaterThan(0)
+    // Exactly one temp file was indexed in this test's scope -- pin the exact count instead of
+    // just ">0", so a regression that double-counted or over-pruned unrelated files is caught.
+    expect(parsed.prunedTempFiles).toBe(1)
     expect(symbolCount(tempKey)).toBe(0)
   })
 
@@ -869,9 +874,9 @@ describe('cmdProject prune retroactively removes indexed system-temp files', () 
 
     cmdProject({ action: 'prune', dryRun: true, json: true })
     const parsed = JSON.parse(captured()) as { wouldPruneTempFiles: number; staleTempFiles: string[] }
-    expect(parsed.wouldPruneTempFiles).toBeGreaterThan(0)
+    expect(parsed.wouldPruneTempFiles).toBe(1)
     expect(parsed.staleTempFiles).toContain(tempKey)
-    expect(symbolCount(tempKey)).toBeGreaterThan(0)
+    expect(symbolCount(tempKey)).toBe(1)
   })
 })
 
@@ -882,7 +887,10 @@ describe('cmdCompactDoc', () => {
     const md = path.join(tmpHome, 'test.md')
     fs.writeFileSync(md, '# Title\n\n<!-- COMPACT_END -->\n\n## Section\n\nAnother paragraph here. More text here.\n', 'utf8')
     cmdCompactDoc({ filePath: md })
-    expect(captured().length).toBeGreaterThan(0)
+    // The message embeds tmpHome's own randomly-generated path, so an exact-string pin isn't
+    // possible here -- pin the real structural content instead of just ">0" so a regression
+    // that dropped the sidecar-path confirmation text (still non-empty) is caught too.
+    expect(captured()).toMatch(/^Compact sidecar built at .+\(source: .+\)\. Use --show to print it, --force to rebuild\.\n$/)
   })
 
   it('throws when file does not exist', () => {
@@ -905,7 +913,10 @@ describe('cmdCompactDoc', () => {
     cmdCompactDoc({ filePath: md, json: true })
     const parsed = JSON.parse(captured()) as { path: string; compact: string }
     expect(typeof parsed.compact).toBe('string')
-    expect(parsed.compact.length).toBeGreaterThan(0)
+    // Pin the exact deterministic compact text (everything up to and including the
+    // COMPACT_END marker) instead of just ">0", so a regression that truncated too early/late
+    // or dropped the marker itself (still non-empty) is caught too.
+    expect(parsed.compact).toBe('# Doc\nIntro text.\n<!-- COMPACT_END -->\n')
   })
 })
 
@@ -1043,7 +1054,9 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
     expect(parsed.path).toBe(path.resolve(md))
     expect(parsed.compactPath).toBe(compactPathFor(md))
     expect(parsed.rebuilt).toBe(true)
-    expect(parsed.compact.length).toBeGreaterThan(0)
+    // Pin the exact deterministic extractive-sidecar output instead of just ">0", so a
+    // regression in the sentence-selection/truncation logic (still non-empty) is caught too.
+    expect(parsed.compact).toBe('# Title\nLine 1\nLine 2\n\n## Section 2\nOther 1\nOther 2\n')
   })
 })
 
@@ -1062,8 +1075,11 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
     performHttpFetchMock.mockImplementationOnce(
       async (url: string, opts: { maxSizeBytes: number; timeoutSec: number; redirectsLeft: number }) => {
         expect(url).toBe('http://example.test/image.png')
-        expect(opts.maxSizeBytes).toBeGreaterThan(0)
-        expect(opts.timeoutSec).toBeGreaterThan(0)
+        // Pin the real named constants (FETCH_IMAGE_MAX_SIZE_BYTES/FETCH_IMAGE_TIMEOUT_SEC)
+        // instead of just ">0", so a typo (e.g. dropping a `* 1024` factor, still non-zero)
+        // is caught too.
+        expect(opts.maxSizeBytes).toBe(50 * 1024 * 1024)
+        expect(opts.timeoutSec).toBe(30)
         expect(opts.redirectsLeft).toBe(5)
         return { status: 200, statusText: 'OK', headers: {}, body: fakeBytes }
       },
@@ -1226,6 +1242,8 @@ describe('cmdHistory', () => {
     cmdHistory({ json: true })
     const arr = JSON.parse(captured()) as unknown[]
     expect(Array.isArray(arr)).toBe(true)
-    expect(arr.length).toBeGreaterThan(0)
+    // Exactly one blob was stored in this test's isolated tmpHome -- pin the exact count
+    // instead of just ">0", so a regression that double-listed the same entry is caught too.
+    expect(arr.length).toBe(1)
   })
 })
