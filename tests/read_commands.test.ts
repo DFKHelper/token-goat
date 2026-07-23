@@ -2779,6 +2779,25 @@ describe('read_commands', () => {
       ].join('\n')
       expect(extractImports(src, '.php')).toEqual(['a.php', 'b.php', 'c.php', 'd.php', 'App\\Foo'])
     })
+
+    it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
+      const src = [
+        'Import-Module Az.Accounts',
+        'Import-Module -Name Pester',
+        'using module MyModule.psm1',
+        '. .\\helpers.ps1',
+      ].join('\n')
+      expect(extractImports(src, '.ps1')).toEqual([
+        'Az.Accounts',
+        'Pester',
+        'MyModule.psm1',
+        '.\\helpers.ps1',
+      ])
+    })
+
+    it('matches PowerShell Import-Module case-insensitively (regression: generic fallback is lowercase-only and never matched capitalized "Import-Module")', () => {
+      expect(extractImports('IMPORT-MODULE Az.Storage', '.psm1')).toEqual(['Az.Storage'])
+    })
   })
 
   // ---- extractExportNames ---------------------------------------------------
