@@ -14,12 +14,13 @@ import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessio
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, passOutput } from './hooks_common.js'
+import { contextOutput, passOutput, getCwd } from './hooks_common.js'
 import { listSiblingSessionStates } from './session_store.js'
-import { foldPath, toKB } from './util.js'
+import { foldPath, toKB, runGit } from './util.js'
 import type { HookOutput } from './types.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
+import { computeAdaptiveBudget, getContextPressure, loadSessionCache } from './compact.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
 const MEM_EPOCH_TIMEOUT_MS = 800
@@ -96,8 +97,13 @@ function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[]): Fil
  * a subagent's edits are invisible to the compaction manifest that is
  * supposed to preserve exactly that context across compaction. Sibling blobs
  * are read straight off disk and merged in; nothing is written back.
+ *
+ * `cwd`, when provided, is passed through to {@link capManifestChars} so its
+ * {@link adaptiveCharBonus} can check real git dirty state for this project
+ * before capping -- omitted (e.g. a harness that doesn't send `cwd` on
+ * `pre_compact`), the cap falls back to the fixed configured value unchanged.
  */
-export function buildManifest(sessionId?: string): string {
+export function buildManifest(sessionId?: string, cwd?: string): string {
   const ownFiles = [...getSessionFiles().values()]
   const siblingFiles = sessionId !== undefined ? listSiblingSessionStates(sessionId).flatMap((s) => s.files) : []
   const files = siblingFiles.length > 0 ? mergeManifestFiles(ownFiles, siblingFiles) : ownFiles
@@ -134,7 +140,71 @@ export function buildManifest(sessionId?: string): string {
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())
 
-  return capManifestChars(lines.join('\n'))
+  return capManifestChars(lines.join('\n'), sessionId, cwd)
+}
+
+/**
+ * Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the
+ * Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD`
+ * non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors
+ * `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked
+ * files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived
+ * bonuses via {@link adaptiveCharBonus}. Uses {@link runGit} (the only git spawn site in the
+ * codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls
+ * use) so a slow/hung git can never block compaction; any spawn failure or non-zero exit
+ * fails soft to `false` for that signal.
+ */
+function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommittedChanges: boolean } {
+  const timeoutMs = loadConfig().hints.git_hint_max_ms
+  let hasPendingDiff = false
+  try {
+    const diffResult = runGit(['diff', '--no-color', '--stat', 'HEAD'], { cwd, timeoutMs })
+    hasPendingDiff = diffResult.exitCode === 0 && diffResult.stdout.trim() !== ''
+  } catch {
+    // fail-soft: treat as no pending diff
+  }
+  let hasUncommittedChanges = false
+  try {
+    const statusResult = runGit(['status', '--porcelain'], { cwd, timeoutMs })
+    hasUncommittedChanges = statusResult.exitCode === 0 && statusResult.stdout.trim() !== ''
+  } catch {
+    // fail-soft: treat as no uncommitted changes
+  }
+  return { hasPendingDiff, hasUncommittedChanges }
+}
+
+/**
+ * Extra manifest-char budget to add on top of the configured
+ * `compact_assist.max_manifest_chars` cap, driven by real git dirty state right before this
+ * compaction fires.
+ *
+ * Reuses `compact.ts`'s `computeAdaptiveBudget` -- ported from the Python predecessor's
+ * `build_manifest_adaptive` (see `eb119425`) but never wired to this, the real production
+ * PreCompact path, until now -- rather than reimplementing its bonus formula here. Calls it
+ * twice with identical cache/age/pressure inputs, toggling only the git-derived opts, and
+ * returns the *delta* between the two (in chars, at `estimateTokens`'s ~3 chars/token, floored
+ * at 0). Using the delta -- instead of using `computeAdaptiveBudget`'s absolute result as the
+ * cap outright -- guarantees the common case (a clean working tree: no pending diff, no
+ * uncommitted changes) adds exactly 0 and therefore reproduces today's fixed
+ * `max_manifest_chars` cap unchanged; a dirty tree only ever grows the cap, giving the
+ * compaction LLM more room for the "Pending Changes"-equivalent git context precisely when
+ * there is git state worth preserving, without ever shrinking below the configured default.
+ *
+ * No-op (returns 0) when `cwd` is unavailable (harness didn't send one) -- fails soft rather
+ * than guessing a working directory for the git spawns.
+ */
+function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined): number {
+  if (!cwd) return 0
+  const cache = loadSessionCache(sessionId ?? '') ?? {}
+  const ageSecs = cache.created_ts !== undefined ? Math.max(0, Date.now() / 1000 - cache.created_ts) : 0
+  const contextPressure = getContextPressure(cache)
+  const { hasPendingDiff, hasUncommittedChanges } = gitDirtySignals(cwd)
+  if (!hasPendingDiff && !hasUncommittedChanges) return 0
+
+  const baseline = computeAdaptiveBudget(cache, ageSecs, { contextPressure })
+  const withGitSignal = computeAdaptiveBudget(cache, ageSecs, { hasPendingDiff, hasUncommittedChanges, contextPressure })
+  const deltaTokens = Math.max(0, withGitSignal - baseline)
+  return deltaTokens * 3
 }
 
 /**
@@ -144,13 +214,16 @@ export function buildManifest(sessionId?: string): string {
  * manifest's total length, so a session with many populated sections (reads, edits, web
  * fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest.
  * `max_manifest_chars <= 0` means "no cap" (mirrors max_section_lines's own 0-means-unlimited
- * convention), so a 0 value never truncates.
+ * convention), so a 0 value never truncates -- and never spends the git-spawn cost of
+ * {@link adaptiveCharBonus} either, since there is no cap for it to adjust.
  */
-function capManifestChars(manifest: string): string {
+function capManifestChars(manifest: string, sessionId?: string, cwd?: string): string {
   const cap = loadConfig().compact_assist.max_manifest_chars
-  if (cap <= 0 || manifest.length <= cap) return manifest
-  const omitted = manifest.length - cap
-  return manifest.slice(0, cap) + `\n...(manifest truncated at ${cap} chars; ${omitted} chars omitted)`
+  if (cap <= 0) return manifest
+  const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd)
+  if (manifest.length <= effectiveCap) return manifest
+  const omitted = manifest.length - effectiveCap
+  return manifest.slice(0, effectiveCap) + `\n...(manifest truncated at ${effectiveCap} chars; ${omitted} chars omitted)`
 }
 
 /**
@@ -275,7 +348,7 @@ function buildMemEpochSection(): string[] {
  */
 export function preCompactHandler(event: HookEvent): HookOutput {
   if (!loadConfig().compact_assist.enabled) return passOutput()
-  return contextOutput(buildManifest(event.sessionId))
+  return contextOutput(buildManifest(event.sessionId, getCwd(event)))
 }
 
 registerHook('pre_compact', preCompactHandler)
