@@ -2185,6 +2185,59 @@ describe('runArch', () => {
     expect(captured).toMatch(/hubs/)
   })
 
+  // Regression-coverage gap: every existing runArch test only ever asserted on `hubs` --
+  // `entryPoints` and `cycles`, the other two fields runArch's JSON payload actually returns,
+  // had no test exercising their content at all. Builds a small real repo with an unambiguous
+  // shape for both: `main.ts` imports `leaf.ts` and nothing imports `main.ts` (the entry point),
+  // and `a.ts`/`b.ts` import each other (a 2-node cycle) while also both being imported by
+  // `main.ts` so they're excluded from entryPoints.
+  it('reports entryPoints and cycles, not just hubs', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fields-'))
+    try {
+      writeFileSync(join(repo, 'leaf.ts'), 'export const leaf = 1\n')
+      writeFileSync(join(repo, 'a.ts'), "import { leaf } from './leaf'\nimport { b } from './b'\nexport const a = leaf + b\n")
+      writeFileSync(join(repo, 'b.ts'), "import { a } from './a'\nexport const b = 1\n")
+      writeFileSync(join(repo, 'main.ts'), "import { a } from './a'\nimport { b } from './b'\nconsole.log(a, b)\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 10, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as {
+        entryPoints: Array<{ file: string }>
+        cycles: string[][]
+      }
+
+      // main.ts is imported by nobody and imports others -- the only real entry point here.
+      expect(parsed.entryPoints.map((e) => e.file.replace(/\\/g, '/'))).toEqual(
+        expect.arrayContaining([expect.stringContaining('main.ts')]),
+      )
+      // leaf.ts is imported by a.ts but imports nothing itself -- not an entry point by this
+      // function's definition (entryPoints requires the file to also import something).
+      expect(parsed.entryPoints.some((e) => e.file.includes('leaf.ts'))).toBe(false)
+      // a.ts/b.ts are each imported (by main.ts and each other) -- not entry points either.
+      expect(parsed.entryPoints.some((e) => e.file.includes('a.ts'))).toBe(false)
+      expect(parsed.entryPoints.some((e) => e.file.includes('b.ts'))).toBe(false)
+
+      // a.ts <-> b.ts form a real 2-node cycle.
+      expect(parsed.cycles.length).toBeGreaterThan(0)
+      const hasAbCycle = parsed.cycles.some(
+        (c) => c.some((f) => f.includes('a.ts')) && c.some((f) => f.includes('b.ts')),
+      )
+      expect(hasAbCycle).toBe(true)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('resolves an import spec that differs only in case from the tracked file on a case-insensitive filesystem (regression: 7th case-fold instance)', () => {
     const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fold-'))
     const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
