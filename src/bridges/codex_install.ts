@@ -55,6 +55,7 @@ import { parse, stringify } from 'smol-toml'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
+import { groupHasTokenGoat } from './matcher_group.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
@@ -180,29 +181,6 @@ const CODEX_MARKER_PATTERN = anchoredMarkerPattern(CODEX_COMMAND_MARKER)
 /** True when `command` invokes token-goat's Codex shim -- anchored so a marker embedded as a substring inside an unrelated command (e.g. a longer path) can't false-positive. */
 function isCodexTokenGoatCommand(command: string): boolean {
   return typeof command === 'string' && CODEX_MARKER_PATTERN.test(command)
-}
-
-/**
- * True when `groups` already has a hook entry matching `predicate` under the exact `matcher`
- * value. Defaults to {@link isCodexTokenGoatCommand} (matches ANY token-goat entry, current or
- * stale); pass an exact-string predicate to instead check for a byte-equal current command --
- * see {@link hookCommandFor}'s stale-vs-current distinction at the `groupHasTokenGoat(groups,
- * matcher, (c) => c === expectedCommand)` call site below. Mirrors gemini_install.ts's
- * groupHasTokenGoat shape.
- */
-function groupHasTokenGoat(
-  groups: CodexMatcherGroup[] | undefined,
-  matcher: string,
-  predicate: (command: string) => boolean = isCodexTokenGoatCommand,
-): boolean {
-  if (groups === undefined) return false
-  for (const group of groups) {
-    if (group.matcher !== matcher) continue
-    for (const h of group.hooks ?? []) {
-      if (predicate(h.command)) return true
-    }
-  }
-  return false
 }
 
 /**
@@ -378,7 +356,7 @@ export function isCodexInstalled(): boolean {
   if (hooks === undefined) return false
   for (const event of CODEX_HOOK_EVENTS) {
     for (const matcher of CODEX_MATCHERS) {
-      if (!groupHasTokenGoat(hooks[event], matcher)) return false
+      if (!groupHasTokenGoat(hooks[event], matcher, isCodexTokenGoatCommand)) return false
     }
   }
   for (const event of CODEX_GLOBAL_HOOK_EVENTS) {

@@ -70,6 +70,7 @@ import * as path from 'node:path'
 import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { extractErrorMessage, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
+import { groupHasTokenGoat } from './matcher_group.js'
 
 /**
  * Marker substring identifying a legacy (pre exec-path-hardening) bare
@@ -238,23 +239,6 @@ function isCurrentGeminiTokenGoatCommand(command: string, desiredCommand: string
   if (typeof command !== 'string') return false
   return command === desiredCommand
 }
-
-/** True when `groups` already has a hook entry matching `predicate` under the exact `matcher` value (`undefined` for a no-matcher lifecycle group). */
-function groupHasTokenGoat(
-  groups: GeminiMatcherGroup[] | undefined,
-  matcher: string | undefined,
-  predicate: (command: string) => boolean = isGeminiTokenGoatCommand,
-): boolean {
-  if (groups === undefined) return false
-  for (const group of groups) {
-    if (group.matcher !== matcher) continue
-    for (const h of group.hooks ?? []) {
-      if (predicate(h.command)) return true
-    }
-  }
-  return false
-}
-
 
 /**
  * Build the shell command Gemini should run for one hook entry.
