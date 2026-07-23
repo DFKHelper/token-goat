@@ -514,6 +514,31 @@ describe('salesforce metadata adapter', () => {
     expect(names).toContain('exampleComponent')
   })
 
+  it('names an Apex class metadata companion "<ClassName>.metadata" rather than its bare fullName (regression-coverage gap: the companionName fallback -- reached for .cls/.trigger/.page/etc-meta.xml files, which never carry their own <fullName> tag -- had no test)', () => {
+    const file = 'force-app/main/default/classes/ExampleService.cls-meta.xml'
+    const content = `<ApexClass xmlns="http://soap.sforce.com/2006/04/metadata">
+  <apiVersion>59.0</apiVersion>
+  <status>Active</status>
+</ApexClass>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols).toHaveLength(1)
+    expect(symbols[0]).toMatchObject({ name: 'ExampleService.metadata', kind: 'sf_apex_class' })
+  })
+
+  it('falls back to the file basename for an unrecognized metadata suffix with no <fullName> tag (regression-coverage gap: metadataArtifactName, the last-resort naming fallback for suffixes not covered by any earlier branch, had no test)', () => {
+    const file = 'force-app/main/default/widgets/Example.widget-meta.xml'
+    const content = `<Widget xmlns="http://soap.sforce.com/2006/04/metadata">
+  <someProperty>value</someProperty>
+</Widget>
+`
+
+    const symbols = extractSalesforceMetadata(content, file).symbols
+    expect(symbols).toHaveLength(1)
+    expect(symbols[0]).toMatchObject({ name: 'Example', kind: 'sf_widget' })
+  })
+
   it('does not duplicate whole metadata files in symbol bodies', () => {
     const content = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
   <userPermissions><enabled>true</enabled><name>ExamplePermission</name></userPermissions>
