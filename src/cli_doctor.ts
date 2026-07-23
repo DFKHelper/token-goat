@@ -257,6 +257,17 @@ function formatDiskSpace(bytes: number): string {
 }
 
 /**
+ * Below this many free bytes in the data directory (1 GiB), flag `warn` instead of `ok`.
+ * The indexer, embeddings DB, and worker queue all live here, and a near-full disk fails
+ * writes to any of them silently from this check's point of view otherwise -- without a
+ * threshold, `checkDiskSpace` always reported `ok` as long as it could read *some* available
+ * figure, even at a few MB free, making it a "check" that could never actually flag the
+ * problem it exists to catch. 1 GiB is comfortably above global.db's typical size for a
+ * mid-sized project while still well below "nothing to worry about" territory.
+ */
+const LOW_DISK_WARN_BYTES = 1024 * 1024 * 1024
+
+/**
  * Check available disk space in data directory.
  *
  * Prefers Node's built-in `fs.statfsSync` (Node 18.15+): no subprocess, and it works on
@@ -270,7 +281,9 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
     try {
       const stats = fs.statfsSync(dataDir)
       const availableBytes = stats.bavail * stats.bsize
-      return { name: 'Disk Space', status: 'ok', message: `${formatDiskSpace(availableBytes)} available` }
+      const status = availableBytes < LOW_DISK_WARN_BYTES ? 'warn' : 'ok'
+      const suffix = status === 'warn' ? ' — running low, indexing/embeddings writes may start failing' : ''
+      return { name: 'Disk Space', status, message: `${formatDiskSpace(availableBytes)} available${suffix}` }
     } catch {
       // Fall through to the df-based check below.
     }
@@ -279,14 +292,22 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
   if (process.platform !== 'win32') {
     try {
       // Use spawnSync with an array argv so dataDir cannot inject shell metacharacters.
-      const result = spawnSync('df', ['-h', dataDir], { encoding: 'utf-8' })
+      // `-k` (not `-h`) so the available-space column is a plain integer KB count this check
+      // can compare against LOW_DISK_WARN_BYTES, instead of a human-formatted string like "1.2G"
+      // that would need re-parsing (and whose unit suffix varies by platform's df) to threshold at all.
+      const result = spawnSync('df', ['-k', dataDir], { encoding: 'utf-8' })
       const stdout = typeof result.stdout === 'string' ? result.stdout : ''
       if (result.error === undefined && result.status === 0 && stdout) {
         const lines = stdout.trim().split('\n')
         if (lines.length >= 2) {
           const parts = lines[1]!.trim().split(/\s+/)
-          const available = parts[3] || 'unknown'
-          return { name: 'Disk Space', status: 'ok', message: `${available} available` }
+          const availableKb = Number.parseInt(parts[3] ?? '', 10)
+          if (Number.isFinite(availableKb)) {
+            const availableBytes = availableKb * 1024
+            const status = availableBytes < LOW_DISK_WARN_BYTES ? 'warn' : 'ok'
+            const suffix = status === 'warn' ? ' — running low, indexing/embeddings writes may start failing' : ''
+            return { name: 'Disk Space', status, message: `${formatDiskSpace(availableBytes)} available${suffix}` }
+          }
         }
       }
     } catch {
