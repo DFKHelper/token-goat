@@ -2780,6 +2780,15 @@ describe('read_commands', () => {
       expect(extractImports(src, '.php')).toEqual(['a.php', 'b.php', 'c.php', 'd.php', 'App\\Foo'])
     })
 
+    it('extracts PHP require_once/include_once written in function-call form with parens', () => {
+      const src = [
+        "require_once('e.php');",
+        "include_once ('f.php');",
+        "require('g.php');",
+      ].join('\n')
+      expect(extractImports(src, '.php')).toEqual(['e.php', 'f.php', 'g.php'])
+    })
+
     it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
       const src = [
         'Import-Module Az.Accounts',
