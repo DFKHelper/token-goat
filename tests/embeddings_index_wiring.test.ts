@@ -101,19 +101,20 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
       const symRow = db
         .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'wiredSymbol'")
         .get(filePath) as { c: number }
-      expect(symRow.c).toBeGreaterThan(0)
+      expect(symRow.c).toBe(1)
 
       const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
         c: number
       }
-      expect(chunkRow.c).toBeGreaterThan(0)
+      // Single symbol, one chunk boundary -- confirmed stable across 3 consecutive runs.
+      expect(chunkRow.c).toBe(1)
 
       const vecRow = db
         .prepare(
           'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)',
         )
         .get(filePath) as { c: number }
-      expect(vecRow.c).toBeGreaterThan(0)
+      expect(vecRow.c).toBe(1)
     },
   )
 
@@ -131,7 +132,7 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     const symRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'gatedSymbol'")
       .get(filePath) as { c: number }
-    expect(symRow.c).toBeGreaterThan(0)
+    expect(symRow.c).toBe(1)
 
     const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
       c: number
@@ -211,7 +212,7 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
     const symRow = db
       .prepare("SELECT COUNT(*) c FROM symbols WHERE file_path = ? AND name = 'degradedSymbol'")
       .get(filePath) as { c: number }
-    expect(symRow.c).toBeGreaterThan(0)
+    expect(symRow.c).toBe(1)
   })
 })
 
@@ -239,19 +240,23 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
       const chunkRow = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get(filePath) as {
         c: number
       }
-      expect(chunkRow.c).toBeGreaterThan(0)
+      // Single section-boundary chunk (one heading) -- confirmed stable across 3 consecutive runs.
+      expect(chunkRow.c).toBe(1)
 
       const vecRow = db
         .prepare(
           'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)',
         )
         .get(filePath) as { c: number }
-      expect(vecRow.c).toBeGreaterThan(0)
+      expect(vecRow.c).toBe(1)
 
       const fileRow = db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(filePath) as
         | { embed_sha: string | null }
         | undefined
-      expect(fileRow?.embed_sha).toBeTruthy()
+      // buildDocxFixture's own zip encoding embeds a timestamp, so embed_sha is NOT stable
+      // across runs even though the visible text is fixed -- see the matching finding in
+      // tests/cmdindex_unchanged_skip.test.ts. Pin the real sha256-hex shape, not an exact value.
+      expect(fileRow?.embed_sha).toMatch(/^[0-9a-f]{64}$/)
 
       const hits = mergeNearbyHits(await searchSemantic(db, 'plan for the rollout across regions', 5))
       expect(hits.some((h) => h.filePath === filePath && h.text.includes('rollout plan'))).toBe(true)
