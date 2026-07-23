@@ -409,7 +409,11 @@ describe('runTypes integration', () => {
     }
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
-    expect((parsed as unknown[]).length).toBeGreaterThan(0)
+    // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter
+    // that fell through to every symbol in the project) -- assert a known real project type
+    // interface is actually present by name, matching the plain-text sibling test above's own
+    // toMatch(/SymbolEntry|RefEntry|Language/) content pin.
+    expect((parsed as SymbolEntry[]).some((r) => r.name === 'SymbolEntry')).toBe(true)
   })
 
   it('exits 1 for a nonexistent file even with --json (regression: emptiness check must run before format branching)', () => {
@@ -548,7 +552,10 @@ describe('runCallers integration', () => {
     } finally {
       process.stdout.write = origWrite
     }
-    expect(captured.length).toBeGreaterThan(0)
+    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
+    // documented plain-text shape (`{caller}\t{file}:{line}`, see runCallers' emit loop) so a
+    // regression that dropped the tab separator or the file:line suffix is caught here.
+    expect(captured).toMatch(/^\S+\t.+:\d+$/m)
   })
 
   it('exits 1 for an unknown symbol', () => {
@@ -1200,7 +1207,10 @@ describe('runImpact integration', () => {
     } finally {
       process.stdout.write = origWrite
     }
-    expect(captured.length).toBeGreaterThan(0)
+    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
+    // documented plain-text shape (`{symbol}\t(hops: {n})`, see runImpact's emit loop) so a
+    // regression that dropped the tab separator or the "hops:" suffix is caught here.
+    expect(captured).toMatch(/^\S+\t\(hops: \d+\)$/m)
   })
 
   it('exits 1 for an unknown symbol', () => {
@@ -1438,20 +1448,16 @@ describe('findCycles', () => {
   it('finds a simple two-node cycle', () => {
     const g = new Map([['a', ['b']], ['b', ['a']]])
     const cycles = findCycles(g)
-    expect(cycles.length).toBeGreaterThan(0)
-    const flat = cycles.flat()
-    expect(flat).toContain('a')
-    expect(flat).toContain('b')
+    // Length + flat-contains would still pass if findCycles found the same two nodes via a
+    // duplicated or malformed cycle path -- pin the exact single-cycle array (the node order the
+    // SCC walk actually produces) so a regression that emits duplicate/extra cycles is caught.
+    expect(cycles).toEqual([['b', 'a', 'b']])
   })
 
   it('finds a three-node cycle', () => {
     const g = new Map([['x', ['y']], ['y', ['z']], ['z', ['x']], ['standalone', []]])
     const cycles = findCycles(g)
-    expect(cycles.length).toBeGreaterThan(0)
-    const flat = cycles.flat()
-    expect(flat).toContain('x')
-    expect(flat).toContain('y')
-    expect(flat).toContain('z')
+    expect(cycles).toEqual([['z', 'x', 'y', 'z']])
   })
 
   it('mutation-verification: removing cycle back-edge eliminates all cycles', () => {
@@ -1816,7 +1822,12 @@ describe('runCoverageGaps', () => {
       process.stdout.write = origWrite
     }
     expect(code).toBe(0)
-    expect(captured.length).toBeGreaterThan(0)
+    // Length-only would still pass on the "No coverage gaps found." fallback line (also
+    // non-empty, also exit 0) -- so a regression that made every real gap silently disappear
+    // (e.g. a broken filter) would slip through undetected. Pin the actual documented row shape
+    // (`{name}\t{kind}\t{file}:{line}`, see runCoverageGaps' emit loop) to prove real gap rows
+    // were printed, not the empty-result fallback.
+    expect(captured).toMatch(/^\S+\t\S+\t.+:\d+$/m)
   })
 
   it('never includes ENTRY_NAMES in the gap list', () => {
