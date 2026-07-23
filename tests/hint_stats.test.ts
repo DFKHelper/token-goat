@@ -220,7 +220,12 @@ describe('logHintEmission', () => {
     expect(row).toBeDefined()
     expect(row?.resolved).toBe(0)
     expect(row?.acted_on).toBe(0)
-    expect(row?.calls_remaining).toBeGreaterThan(0)
+    // Pins the actual default (hint_stats.ts's private ACTED_ON_WINDOW = 5) rather than just
+    // "some positive number" -- a `toBeGreaterThan(0)` here would pass unchanged even if a
+    // regression made every emission carry the compensateSelfResolve +1 bump regardless of the
+    // call site (this call passes no fourth argument, so compensateSelfResolve defaults false
+    // and calls_remaining must be exactly ACTED_ON_WINDOW, not ACTED_ON_WINDOW + 1).
+    expect(row?.calls_remaining).toBe(5)
   })
 
   it('inserts an already-resolved, not-acted-on row when no correlator is available', () => {
