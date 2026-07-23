@@ -37,6 +37,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as util from '../src/util.js'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -162,6 +163,26 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     // false/zero (clean tree) means the reported cap must equal the configured value exactly,
     // not some perturbed number, proving the adaptive bonus contributed 0 in the common case.
     expect(truncatedAt(manifest)).toBe(CONFIGURED_CAP)
+  })
+
+  it('never spawns git at all when the manifest already fits under the configured base cap', async () => {
+    // Regression: capManifestChars used to compute adaptiveCharBonus() -- 2 real git spawns --
+    // unconditionally, even when the manifest was already short enough that no bonus could ever
+    // matter. Raising max_manifest_chars well above the seeded manifest's natural length (a few
+    // hundred chars) means truncation, and therefore the adaptive bonus, is never relevant here.
+    const cfg = defaultConfig()
+    cfg.compact_assist.max_manifest_chars = 100_000
+    cfg.hints.git_hint_max_ms = 5000
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    const runGitSpy = vi.spyOn(util, 'runGit')
+    const manifest = await runPreCompact(repoDir)
+    const callCount = runGitSpy.mock.calls.length
+    runGitSpy.mockRestore()
+
+    expect(truncatedAt(manifest)).toBeNull()
+    expect(callCount).toBe(0)
   })
 
   it('grows the manifest cap through the real relay/hook_registry dispatch when the repo has real uncommitted changes', async () => {
