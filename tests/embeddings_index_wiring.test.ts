@@ -336,7 +336,11 @@ describe('indexFileSync indexes Jupyter notebook (.ipynb) code cells as real sym
     expect(fileRow?.language).toBe('ipynb')
 
     const refs = queryRefs({ name: 'helper', filePath }, dbPath)
-    expect(refs.length).toBeGreaterThan(0)
+    // helper() is called exactly once, by notebook_main -- pin the exact count and enclosing
+    // caller so a regression that resolved the ref to the wrong scope (still non-empty) is
+    // caught, matching this test's own exact-count rigor on symbols above.
+    expect(refs.length).toBe(1)
+    expect(refs[0]?.context).toBe('notebook_main')
   })
 
   it('never throws and indexes zero symbols for a notebook with a non-Python kernel', () => {
