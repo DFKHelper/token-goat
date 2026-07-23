@@ -128,6 +128,17 @@ describe('extractPathCorrelator', () => {
     expect(extractPathCorrelator('Use `token-goat read "' + '/a/b.ts' + '::SymbolName"` for one function.')).toBe('/a/b.ts')
   })
 
+  // Regression: hooks_bash.ts's markdown-heading-grep and extractNodeFileRead hints splice
+  // `::Heading`, `::sectionName`, and `::table_name` onto the real path, but none of the three
+  // were in KNOWN_CORRELATOR_PLACEHOLDERS -- the exact same permanently-pinned-at-0%-efficacy
+  // bug the placeholder set exists to prevent, just for a hint family not covered by the
+  // original regression test above.
+  it('strips the hooks_bash.ts placeholder suffixes (Heading, sectionName, table_name)', () => {
+    expect(extractPathCorrelator('Use `token-goat outline "/a/b.md"` to get all headings — then `token-goat section "/a/b.md::Heading"` to read one section.')).toBe('/a/b.md')
+    expect(extractPathCorrelator('Use `token-goat config-get "/a/b.yaml" KEY_NAME` or `token-goat section "/a/b.yaml::sectionName"` to read a specific value.')).toBe('/a/b.yaml')
+    expect(extractPathCorrelator('Use `token-goat section "/a/b.sql::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')).toBe('/a/b.sql')
+  })
+
   it('keeps a concrete, non-placeholder :: suffix (e.g. a real tsconfig field name)', () => {
     expect(extractPathCorrelator('Use `token-goat section "/a/tsconfig.json::compilerOptions"` to extract compiler options.')).toBe(
       '/a/tsconfig.json::compilerOptions',
