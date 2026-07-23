@@ -84,8 +84,13 @@ export class GrepFilter extends ToolFilter {
     }
     if (sorted.length > _GREP_MAX_FILE_LINES) {
       const remaining = sorted.length - _GREP_MAX_FILE_LINES
+      // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with
+      // narrowing which FILES a search touches, so telling the user to reach for it here (the
+      // too-many-distinct-files case) never actually helped. A more specific pattern or a
+      // path/glob restriction (--include, or a narrower search root) is what actually reduces
+      // the file count this elision message is reporting.
       outLines.push(
-        `  [token-goat: +${remaining} more file(s) elided; use --context or -C flags to narrow]`,
+        `  [token-goat: +${remaining} more file(s) elided; use a more specific pattern or --include=<glob> to narrow]`,
       )
     }
     if (unattributed) {

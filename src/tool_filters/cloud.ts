@@ -580,9 +580,23 @@ export class AwsCliFilter extends ToolFilter {
 export const awsCliFilter = new AwsCliFilter()
 
 // ---------------------------------------------------------------------------
-// kubectl table helper (reused by AwsFilter fallback)
+// `--output table` row-truncation helper, used by both AwsCliFilter and
+// AwsFilter below.
 // ---------------------------------------------------------------------------
 
+/**
+ * Truncate an `--output table`-shaped result to `maxRows` rows.
+ *
+ * This used to be a copy-paste of containers.ts's `_compressKubectlTable`,
+ * including its hardcoded hint text `"use --selector or -l to narrow"` --
+ * `--selector`/`-l` are kubectl label-selector flags with no AWS CLI
+ * equivalent, so every AWS table truncation told the user to pass a flag
+ * that doesn't exist on the `aws` binary. `--query` (JMESPath) and
+ * `--max-items` are the real AWS CLI mechanisms for narrowing table output,
+ * so the hint here is AWS-specific rather than reused verbatim from the
+ * kubectl copy. tool_filters_cloud.test.ts's regression test only asserted
+ * `toContain('more rows')`, which passed either way and never caught this.
+ */
 function _compressTable(text: string, maxRows = 10): string {
   const lines = text.split('\n')
   const nonEmpty = lines.filter((l) => l.trim())
@@ -590,7 +604,7 @@ function _compressTable(text: string, maxRows = 10): string {
   const elided = nonEmpty.length - maxRows - 1
   return (
     nonEmpty.slice(0, maxRows + 1).join('\n') +
-    `\n[token-goat: ${elided} more rows; use --selector or -l to narrow]`
+    `\n[token-goat: ${elided} more rows; use --query or --max-items to narrow]`
   )
 }
 

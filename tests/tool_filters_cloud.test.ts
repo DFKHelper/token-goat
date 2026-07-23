@@ -321,6 +321,12 @@ describe('AwsCliFilter', () => {
     ])
     expect(result).toContain('more rows')
     expect(result).not.toContain('key/path-39.dat')
+    // Regression: this hint used to be copy-pasted verbatim from the kubectl table
+    // truncation helper ("use --selector or -l to narrow"), telling AWS CLI users to pass
+    // kubectl-only flags that don't exist on `aws`. It must name real AWS CLI narrowing
+    // mechanisms instead.
+    expect(result).toContain('use --query or --max-items to narrow')
+    expect(result).not.toContain('--selector')
   })
 })
 
