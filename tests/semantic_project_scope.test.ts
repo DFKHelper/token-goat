@@ -182,7 +182,7 @@ describe.skipIf(!canExerciseRealEmbeddings)('searchSemantic project scoping + ba
       const topK = 3
       const hits = await searchSemantic(db, SEED_QUERY, topK, undefined, 1.2, 'c:/rootA')
 
-      expect(hits.length).toBeGreaterThan(0)
+      expect(hits.length).toBe(1)
       expect(hits.every((h) => h.filePath.startsWith('c:/rootA'))).toBe(true)
       expect(hits.some((h) => h.filePath.includes('rootB'))).toBe(false)
     },
