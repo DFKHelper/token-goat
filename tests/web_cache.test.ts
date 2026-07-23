@@ -23,7 +23,11 @@ afterEach(() => {
 describe('storeWebOutput', () => {
   it('returns a non-empty cache id', () => {
     const id = storeWebOutput('https://example.com', '<html>hi</html>')
-    expect(id.length).toBeGreaterThan(0)
+    // The id is a deterministic function of the URL (shortFingerprint = first 16 hex chars of
+    // its SHA-256), not the content -- pin the exact value so a change to the id derivation
+    // (e.g. hashing content instead of URL, or a different slice length) is caught here rather
+    // than passing this loose a length-only check.
+    expect(id).toBe('100680ad546ce6a5')
   })
 
   it('returns the same id for the same URL', () => {
