@@ -1198,10 +1198,10 @@ describe('parseFile reference extraction', () => {
 })
 
 describe('isTreeSitterAvailable', () => {
-  it('returns a boolean without throwing for every language case', () => {
-    expect(typeof isTreeSitterAvailable('typescript')).toBe('boolean')
-    expect(typeof isTreeSitterAvailable('python')).toBe('boolean')
-    expect(typeof isTreeSitterAvailable('javascript')).toBe('boolean')
+  it('returns true for every bundled-grammar language (regression-coverage gap: only typeof was ever checked for the bundled languages, so a regression returning false for all of them -- e.g. an inverted condition -- would still pass "is a boolean")', () => {
+    expect(isTreeSitterAvailable('typescript')).toBe(true)
+    expect(isTreeSitterAvailable('python')).toBe(true)
+    expect(isTreeSitterAvailable('javascript')).toBe(true)
     // A language with no bundled grammar is always false.
     expect(isTreeSitterAvailable('erlang')).toBe(false)
     expect(isTreeSitterAvailable('unknown')).toBe(false)
