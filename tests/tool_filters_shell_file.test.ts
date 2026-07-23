@@ -84,6 +84,17 @@ describe('GrepFilter compression', () => {
     expect(out.split('\n').length).toBeLessThan(lines.length)
   })
 
+  it('elides the tail of a many-file result with a narrowing hint that actually applies to file count, not context flags', () => {
+    // Regression: this hint used to read "use --context or -C flags to narrow" -- -C/--context
+    // controls how many surrounding lines are printed per match, which has nothing to do with
+    // the number of distinct files listed here, so the advice never actually helped a user
+    // facing this exact elision.
+    const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
+    const out = compress(f, lines.join('\n'), argv)
+    expect(out).toContain('more file(s) elided; use a more specific pattern or --include=<glob> to narrow')
+    expect(out).not.toContain('-C flags')
+  })
+
   it('attributes matches on a Windows absolute path to its file instead of "unattributed" (regression: line.indexOf(\':\') picked up the drive-letter colon in "C:\\foo\\bar.py:12:text", leaving candidate as just "C")', () => {
     const lines = Array.from({ length: 35 }, (_, i) => `C:\\Users\\foo\\bar.py:${i + 1}: match`)
     const out = compress(f, lines.join('\n'), argv)
