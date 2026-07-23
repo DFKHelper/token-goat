@@ -1435,25 +1435,34 @@ export interface OpenApiOutlineCliOptions {
   json?: boolean
 }
 
-/** Handle ``token-goat openapi-outline file``: one compact line per operation (method, path,
- * operationId, summary, tags) instead of a raw Read of a multi-thousand-line OpenAPI/Swagger
- * spec (JSON or YAML). */
-export function runOpenApiOutline(opts: OpenApiOutlineCliOptions): number {
-  const text = readFileText(opts.file)
+/** Shared read-parse-extract path for the openapi-outline/openapi-op commands: reads `file`,
+ * parses it as an OpenAPI/Swagger spec (JSON or YAML), and extracts its operations. Emits the
+ * appropriate CLI error and returns `null` on either failure, mirroring each command's own
+ * pre-extraction error handling exactly so callers can just `if (operations === null) return 1`. */
+function loadOpenApiOperations(file: string): ReturnType<typeof extractOperations> | null {
+  const text = readFileText(file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
-    return 1
+    emitErr(`Could not read: ${file}`)
+    return null
   }
 
   let spec: unknown
   try {
-    spec = parseOpenApiSpec(text, opts.file)
+    spec = parseOpenApiSpec(text, file)
   } catch {
-    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${opts.file}`)
-    return 1
+    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${file}`)
+    return null
   }
 
-  const operations = extractOperations(spec)
+  return extractOperations(spec)
+}
+
+/** Handle ``token-goat openapi-outline file``: one compact line per operation (method, path,
+ * operationId, summary, tags) instead of a raw Read of a multi-thousand-line OpenAPI/Swagger
+ * spec (JSON or YAML). */
+export function runOpenApiOutline(opts: OpenApiOutlineCliOptions): number {
+  const operations = loadOpenApiOperations(opts.file)
+  if (operations === null) return 1
   if (opts.json === true) {
     emit(JSON.stringify(operations))
   } else {
@@ -1473,21 +1482,8 @@ export interface OpenApiOpCliOptions {
  * instead of a raw Read. Lookup tries an exact `operationId` match first, then a `METHOD path`
  * match -- same exact-then-fallback shape as `read`/`symbol`'s resolution elsewhere in this file. */
 export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
-  const text = readFileText(opts.file)
-  if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
-    return 1
-  }
-
-  let spec: unknown
-  try {
-    spec = parseOpenApiSpec(text, opts.file)
-  } catch {
-    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${opts.file}`)
-    return 1
-  }
-
-  const operations = extractOperations(spec)
+  const operations = loadOpenApiOperations(opts.file)
+  if (operations === null) return 1
   const match = findOperation(operations, opts.operation)
 
   if (match === undefined) {
