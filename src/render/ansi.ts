@@ -64,20 +64,38 @@ const _ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B
 const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/gu
 
 /**
- * Remove all ANSI/VT escape sequences from *s*.
- * Optimized with a fast path for plain text (no ESC byte), and handles:
- * - CSI colour/cursor sequences
- * - OSC hyperlinks and title sequences
- * - DCS/SOS/PM/APC strings
- * - Unicode Private Use Area characters (U+E000–U+F8FF, U+F0000–U+FFFFD)
+ * Remove ANSI/VT escape sequences only (CSI/OSC/DCS/SOS/PM/APC/bare-Fe), with no PUA stripping.
+ * This is the single source of truth for {@link _ANSI_ESCAPE_RE} -- `bash_compress.ts`'s
+ * `stripAnsiCodes` (output-cleaning for model-facing text, which has no reason to touch PUA
+ * glyphs) delegates to this instead of maintaining its own copy of the pattern. The two modules
+ * previously each hand-maintained an identical regex and once silently drifted out of sync (a
+ * missing `[` in the bracket range fixed here but not there until a later pass caught it) with no
+ * test to catch the next drift -- extracting one shared primitive removes that risk entirely
+ * rather than relying on the two copies being kept manually in sync forever. Optimized with a
+ * fast path for plain text (no ESC byte).
  */
-export function stripAnsi(s: string): string {
+export function stripAnsiEscapes(s: string): string {
   if (!s.includes('\x1b')) {
     return s
   }
+  return s.replace(_ANSI_ESCAPE_RE, '')
+}
 
-  const text = s.replace(_ANSI_ESCAPE_RE, '')
-  return text.replace(_PUA_RE, '')
+/**
+ * Remove all ANSI/VT escape sequences from *s*, plus Unicode Private Use Area characters
+ * (U+E000–U+F8FF, U+F0000–U+FFFFD) -- PUA glyphs (e.g. Nerd Font icons) often report
+ * inconsistent terminal cell widths, which breaks {@link vlen}'s padding/alignment math, so this
+ * rendering-specific concern is layered on top of {@link stripAnsiEscapes} here rather than
+ * folded into it (a plain output-cleaning caller like `bash_compress.ts` has no such width
+ * concern and should not have PUA characters silently disappear from model-facing text).
+ */
+export function stripAnsi(s: string): string {
+  // Preserves the original combined fast path exactly: PUA stripping is only reached when an ESC
+  // byte is present, same as before this function was split to share stripAnsiEscapes.
+  if (!s.includes('\x1b')) {
+    return s
+  }
+  return stripAnsiEscapes(s).replace(_PUA_RE, '')
 }
 
 /**

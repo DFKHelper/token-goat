@@ -12,6 +12,7 @@
  */
 
 import { FILTERS } from './filters.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 
 /** Tunables for {@link compressOutput}. All have defaults matching the spec. */
@@ -34,27 +35,19 @@ const DEFAULTS: Required<CompressOptions> = {
 }
 
 /**
- * Full VT/ANSI escape-sequence pattern.
+ * Remove all ANSI/VT escape sequences from `text` (CSI/OSC/DCS/SOS/PM/APC/bare-Fe -- see
+ * `render/ansi.ts::stripAnsiEscapes`'s doc comment for the exact pattern and its rationale).
  *
- * Ported verbatim from `render/ansi.ts::_ANSI_ESCAPE_RE` (itself ported from `render/ansi.py`). Covers CSI sequences
- * (SGR colour, cursor, erase), OSC sequences (terminal title / hyperlinks used
- * by pip/docker/cargo progress UIs), DCS/SOS/PM/APC strings, and bare two-byte
- * ESC sequences. The `s` (dotAll) flag lets OSC/DCS bodies span line breaks;
- * `g` is required for `String.replace` to remove every match. The OSC alternative also accepts end-of-string as a terminator (alongside BEL/ST): a truncated hyperlink/title sequence with no closing BEL/ST -- output cut off mid-write by this same compressor's own maxLines/maxLineLength truncation, or a stream chopped mid-hyperlink -- would otherwise never match, leaking the raw ESC byte and the entire dangling payload text straight into the compressed output. The bare-escape fallback covers the full Fe escape range (`@`-`_`, 0x40-0x5F) rather than a hand-picked subset that dropped `[`, so any single-character escape not claimed by CSI/OSC/DCS above still gets removed instead of leaking (this module's own subset previously excluded `[`, silently missing it while render/ansi.ts had already been fixed -- see bash_compress.test.ts's regression coverage).
- */
-const ANSI_ESCAPE_RE =
-  // eslint-disable-next-line no-control-regex -- intentionally matches ESC (\x1B) and BEL (\x07) control bytes
-  /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[PX^_].*?\x1B\\|\x1B[@-_]/gs
-
-/**
- * Remove all ANSI/VT escape sequences from `text`.
- *
- * Fast-pathed: if no ESC byte is present the input is returned unchanged so
- * the common case of already-clean output costs one `indexOf`.
+ * Delegates to `render/ansi.ts`'s `stripAnsiEscapes` rather than maintaining a second copy of the
+ * same regex: this module used to hand-roll an identical pattern here, and the two copies once
+ * silently drifted out of sync (a missing `[` in the bracket range, fixed in `render/ansi.ts` but
+ * not caught here until a later pass) with nothing to prevent it happening again. One shared
+ * primitive removes that risk instead of relying on two copies staying manually in sync forever.
+ * Kept as a re-export under this module's existing name so every call site here and in
+ * `overflow_guard.ts` needs no change.
  */
 export function stripAnsiCodes(text: string): string {
-  if (!text.includes('\x1B')) return text
-  return text.replace(ANSI_ESCAPE_RE, '')
+  return stripAnsiEscapes(text)
 }
 
 /**
