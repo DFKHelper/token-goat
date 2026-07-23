@@ -215,11 +215,16 @@ function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefine
  * fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest.
  * `max_manifest_chars <= 0` means "no cap" (mirrors max_section_lines's own 0-means-unlimited
  * convention), so a 0 value never truncates -- and never spends the git-spawn cost of
- * {@link adaptiveCharBonus} either, since there is no cap for it to adjust.
+ * {@link adaptiveCharBonus} either, since there is no cap for it to adjust. Likewise, when the
+ * manifest already fits under the base (non-adaptive) cap, there is nothing for the bonus to
+ * widen room for, so the two `git diff`/`git status` spawns in {@link adaptiveCharBonus} are
+ * skipped entirely rather than paid on every compaction regardless of whether truncation could
+ * ever happen.
  */
 function capManifestChars(manifest: string, sessionId?: string, cwd?: string): string {
   const cap = loadConfig().compact_assist.max_manifest_chars
   if (cap <= 0) return manifest
+  if (manifest.length <= cap) return manifest
   const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd)
   if (manifest.length <= effectiveCap) return manifest
   const omitted = manifest.length - effectiveCap
