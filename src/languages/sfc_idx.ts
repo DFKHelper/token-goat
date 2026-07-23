@@ -45,6 +45,7 @@ import {
   buildLineIndex,
   makeLineSymbol,
   offsetToLine,
+  scanQuotedStringEnd,
   stripJsComments,
   stripStringLiterals,
   stripXmlComments,
@@ -106,23 +107,7 @@ function blankJsStringLiterals(content: string): string {
   while (i < n) {
     const ch = content[i]
     if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch
-      let j = i + 1
-      while (j < n) {
-        if (content[j] === '\\' && j + 1 < n) {
-          j += 2
-          continue
-        }
-        if (content[j] === quote) {
-          j++
-          break
-        }
-        if (quote !== '`' && content[j] === '\n') {
-          j++
-          break
-        }
-        j++
-      }
+      const j = scanQuotedStringEnd(content, i)
       out += content[i] + content.slice(i + 1, j).replace(/[^\n]/g, ' ')
       i = j
       continue
