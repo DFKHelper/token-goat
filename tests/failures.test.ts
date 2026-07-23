@@ -239,7 +239,12 @@ FAILED component initialization
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('unknown');
-      expect(result.summaryLines.length).toBeGreaterThan(0);
+      // Pin the exact two matching lines (ERROR + FAILED), not just "at least one" -- the
+      // non-matching "Some random output" line must also be correctly excluded.
+      expect(result.summaryLines).toEqual([
+        'ERROR in module: something went wrong',
+        'FAILED component initialization',
+      ]);
     });
 
     it('should find FAILED and ERROR in case-insensitive way', () => {
