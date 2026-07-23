@@ -474,6 +474,45 @@ describe('Stats rendering', () => {
     expect(result).toContain('Bash')
   })
 
+  it('groups the remaining live SOURCE_IMAGE/SOURCE_HINT/SOURCE_WEB/SOURCE_SKILL kinds under their existing sibling groups, not Other (regression: image_shrink_cache_hit, image_ocr, session_hint_suppressed, structured_file_hint, glob_dedup_hint, write_rewrite_hint, websearch_dedup_hint, large_file_hint_followed, large_file_hint_ignored, web_fetch, injection_detected, skill_load, and skill_oversized_first_load were all registered in stats.ts KIND_TO_SOURCE but missing from _KIND_GROUPS -- secret_redacted is deliberately excluded, see tests/disk_cache.test.ts)', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'image_shrink_cache_hit', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'image_ocr', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'session_hint_suppressed', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'structured_file_hint', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'glob_dedup_hint', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'write_rewrite_hint', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'websearch_dedup_hint', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'large_file_hint_followed', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'large_file_hint_ignored', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'web_fetch', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'injection_detected', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'skill_load', bytes: 100, tokens: 10, events: 1 },
+      { kind: 'skill_oversized_first_load', bytes: 100, tokens: 10, events: 1 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    for (const kind of stats.by_kind) {
+      // The name column truncates long kind names with an ellipsis, so only assert on a
+      // length-safe prefix rather than the full (possibly-truncated) literal name.
+      expect(byKindBlock).toContain(kind.kind.slice(0, 10))
+    }
+    expect(byKindBlock).not.toContain('Other')
+  })
+
+  it('groups the webfetch: prefixed kind under Web, not Other (regression: only bash_compress: had a prefix special case in _kindGroupLabel)', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'web_dedup_hint', bytes: 10000, tokens: 1000, events: 20 },
+      { kind: 'webfetch:recall', bytes: 4000, tokens: 400, events: 8 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    expect(byKindBlock).toContain('webfetch:recall')
+    expect(byKindBlock).not.toContain('Other')
+  })
+
   it('groups read_count_deny under Hints, not Other (regression: it is SOURCE_HINT and recorded alongside session_hint but was missing from _KIND_GROUPS)', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [

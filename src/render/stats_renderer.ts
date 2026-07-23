@@ -480,19 +480,33 @@ const _KIND_GROUPS: KindGroup[] = [
   { label: 'Lookups', members: new Set(['symbol_lookup', 'semantic_search', 'map_lookup']) },
   {
     label: 'Images',
-    members: new Set(['image_shrink', 'gdrive_image', 'webfetch_image', 'image_shrink_skipped']),
+    members: new Set([
+      'image_shrink',
+      'gdrive_image',
+      'webfetch_image',
+      'image_shrink_skipped',
+      'image_shrink_cache_hit',
+      'image_ocr',
+    ]),
   },
   {
     label: 'Hints',
     members: new Set([
       'session_hint',
       'session_hint_overhead',
+      'session_hint_suppressed',
       'read_count_deny',
       'read_dedup_hint',
       'grep_dedup_hint',
+      'glob_dedup_hint',
       'diff_hint',
       'predictive_prefetch_hit',
       'read_partial_overlap_hint',
+      'structured_file_hint',
+      'write_rewrite_hint',
+      'websearch_dedup_hint',
+      'large_file_hint_followed',
+      'large_file_hint_ignored',
     ]),
   },
   {
@@ -522,6 +536,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'web_output_recall',
       'web_output_recall_miss',
       'web_dedup_stale',
+      'web_fetch',
+      'injection_detected',
     ]),
   },
   {
@@ -533,6 +549,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'skill_body_recall',
       'skill_compact_served',
       'skill_cached',
+      'skill_load',
+      'skill_oversized_first_load',
       'resume_packet',
       'decision_log',
     ]),
@@ -542,6 +560,12 @@ const _KIND_GROUPS: KindGroup[] = [
 function _kindGroupLabel(kind: string): string {
   if (kind.startsWith('bash_compress:')) {
     return 'Bash'
+  }
+  // Mirrors the bash_compress: special case above for stats.ts's other live colon-prefixed kind
+  // (webfetch:recall) -- KIND_PREFIX_TO_SOURCE maps it to SOURCE_WEB, but without this branch it
+  // fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
+  if (kind.startsWith('webfetch:')) {
+    return 'Web'
   }
   for (const group of _KIND_GROUPS) {
     if (group.members.has(kind)) {
