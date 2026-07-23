@@ -90,9 +90,14 @@ function annotationStartLine(lines: readonly string[], line: number): number {
       depth = nextDepth
       continue
     }
-    if (nextDepth === 0 && ANNOTATION_OPENER_RE.test(trimmed)) {
+    if (depth > 0 && nextDepth === 0 && ANNOTATION_OPENER_RE.test(trimmed)) {
       // This line opens the multi-line annotation argument list; fold it (and everything below
-      // it that was already consumed) into the member's span.
+      // it that was already consumed) into the member's span. Requires depth > 0 on entry (we
+      // must already be resolving a previously-opened multi-line fold from a line below) -
+      // otherwise a line with a fully self-contained, balanced-paren annotation followed by
+      // unrelated trailing content (e.g. `@SuppressWarnings('PMD') public interface Foo {`)
+      // nets to depth 0 on its own and would be misread as "opens a multi-line annotation",
+      // incorrectly folding that unrelated declaration's header line into the next member's span.
       depth = 0
       start = i + 1
       continue
