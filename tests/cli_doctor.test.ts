@@ -265,8 +265,14 @@ describe('cli_doctor', () => {
 
     it('includes message with version or error', () => {
       const result = checkInstall()
-      expect(result.message).toBeTruthy()
-      expect(result.message.length).toBeGreaterThan(0)
+      // message is bimodal on real, environment-dependent state (is token-goat installed
+      // globally on this machine?), so an exact pin isn't possible -- but each branch has a
+      // deterministic shape, so pin those instead of a bare ">0".
+      if (result.status === 'ok') {
+        expect(result.message).toMatch(/^\d+\.\d+\.\d+/)
+      } else {
+        expect(result.message).toBe('token-goat command not found; run: npm install -g token-goat-ts')
+      }
     })
   })
 
@@ -283,8 +289,10 @@ describe('cli_doctor', () => {
 
     it('includes message text', () => {
       const result = checkDiskSpace(tempDir)
-      expect(result.message).toBeTruthy()
-      expect(result.message.length).toBeGreaterThan(0)
+      // Real available-bytes count is environment-dependent, but the message's shape
+      // ("<formatted size> available[ -- warn suffix]") is deterministic -- pin that instead
+      // of a bare ">0".
+      expect(result.message).toMatch(/^\d+\.\d (B|KB|MB|GB|TB) available( — running low.*)?$/)
     })
 
     it('handles invalid paths gracefully', () => {
