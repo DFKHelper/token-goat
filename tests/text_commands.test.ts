@@ -949,6 +949,40 @@ describe('lockdeps command', () => {
     fs.rmSync(pnpmDir, { recursive: true, force: true })
   })
 
+  it('parses a true legacy pnpm-lock.yaml (lockfileVersion < 6, slash-separated "/name/version" package keys with no "@" version separator, and bare-string dependency-section values) instead of silently dropping every package (regression: splitPnpmPackageKey required an "@" separator and collectPnpmDirectVersions only read a `.version` field, both absent in this older format)', () => {
+    const pnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pnpm-lock-legacy-'))
+    const lockPath = path.join(pnpmDir, 'pnpm-lock.yaml')
+    fs.writeFileSync(
+      lockPath,
+      [
+        "lockfileVersion: '5.4'",
+        '',
+        'dependencies:',
+        '  lodash: 4.17.21',
+        '',
+        'packages:',
+        '',
+        '  /lodash/4.17.21:',
+        '    resolution: {integrity: sha512-fake}',
+        '',
+        '  /@babel/core/7.12.10_@babel+core@7.12.10:',
+        '    resolution: {integrity: sha512-fake}',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('pnpm')
+    expect(parsed.deps).toContainEqual({ name: 'lodash', version: '4.17.21', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: '@babel/core', version: '7.12.10', kind: 'transitive' })
+    fs.rmSync(pnpmDir, { recursive: true, force: true })
+  })
+
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))
     const r = run(['lockdeps', emptyDir])
