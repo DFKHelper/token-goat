@@ -155,7 +155,9 @@ describe('cost aggregation', () => {
     const costs = costPerCall(parseTranscript(transcript))
     const byTool = tokensByTool(costs)
     expect(byTool[0]?.key).toBe('Read')
-    expect(byTool.find((t) => t.key === 'Bash')?.tokens).toBeGreaterThan(0)
+    // Pin the exact deterministic estimateTokens() value for the 30-char Bash result instead of
+    // just ">0", so a regression in the token-estimate formula (still non-zero) is caught too.
+    expect(byTool.find((t) => t.key === 'Bash')?.tokens).toBe(11)
     expect(byTool[0]?.tokens).toBeGreaterThan(byTool.find((t) => t.key === 'Bash')?.tokens ?? 0)
   })
 
@@ -189,7 +191,10 @@ describe('cost aggregation', () => {
     const byFile = tokensByFile(costs)
     expect(byFile).toHaveLength(1)
     expect(byFile[0]?.key).toBe('/a.ts')
-    expect(byFile[0]?.tokens).toBeGreaterThan(0)
+    // Pin the exact sum of both calls' estimateTokens() values (90-char Read + 2-char Edit)
+    // instead of just ">0", so a regression that dropped one call's contribution (still
+    // non-zero) is caught too.
+    expect(byFile[0]?.tokens).toBe(32)
   })
 
   // Regression: FILE_PATH_TOOLS omitted MultiEdit, even though hooks_edit.ts registers it
@@ -204,7 +209,8 @@ describe('cost aggregation', () => {
     const byFile = tokensByFile(costs)
     expect(byFile).toHaveLength(1)
     expect(byFile[0]?.key).toBe('/b.ts')
-    expect(byFile[0]?.tokens).toBeGreaterThan(0)
+    // Pin the exact estimateTokens() value for the 100-char result instead of just ">0".
+    expect(byFile[0]?.tokens).toBe(34)
   })
 
   it('topExpensiveCalls returns the N highest-cost calls, descending', () => {
@@ -233,7 +239,8 @@ describe('neverTouchedAgain', () => {
     const flagged = neverTouchedAgain(costs)
     expect(flagged).toHaveLength(1)
     expect(flagged[0]).toMatchObject({ filePath: '/orphan.ts' })
-    expect(flagged[0]?.tokens).toBeGreaterThan(0)
+    // Pin the exact estimateTokens() value for the 100-char result instead of just ">0".
+    expect(flagged[0]?.tokens).toBe(34)
   })
 
   it('does not flag a file that is Read again later', () => {
@@ -282,7 +289,8 @@ describe('repeatedUncompressedBashCommands', () => {
     const flagged = await repeatedUncompressedBashCommands(costs)
     expect(flagged).toHaveLength(1)
     expect(flagged[0]).toMatchObject({ normalized: 'git status', count: 2 })
-    expect(flagged[0]?.totalTokens).toBeGreaterThan(0)
+    // Pin the exact sum of both 100-char results' estimateTokens() values instead of just ">0".
+    expect(flagged[0]?.totalTokens).toBe(68)
   })
 
   it('does not flag a command run only once', async () => {
@@ -308,9 +316,13 @@ describe('buildWasteReport', () => {
 
     const report = await buildWasteReport(transcript, { topN: 5 })
     expect(report.transcriptPath).toBe(transcript)
-    expect(report.totalTokens).toBeGreaterThan(0)
-    expect(report.tokensByTool.length).toBeGreaterThan(0)
-    expect(report.topCalls.length).toBeGreaterThan(0)
+    // Pin the exact deterministic values instead of just ">0"/">0": totalTokens is the sum of
+    // all three calls' estimateTokens() (300+100+100-char results), tokensByTool has exactly
+    // 2 distinct tool names (Read, Bash), and topCalls with topN:5 against only 3 calls returns
+    // all 3 (slice caps at the available count, not the requested N).
+    expect(report.totalTokens).toBe(169)
+    expect(report.tokensByTool.length).toBe(2)
+    expect(report.topCalls.length).toBe(3)
     expect(report.neverTouchedAgain.some((f) => f.filePath === '/orphan.ts')).toBe(true)
     expect(report.repeatedUncompressedBash.some((c) => c.normalized === 'git status')).toBe(true)
   })
