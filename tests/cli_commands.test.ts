@@ -37,14 +37,18 @@ describe('buildCommandManifest', () => {
     expect(bridgesStatus).toBeDefined()
     const jsonOpt = bridgesStatus?.options.find((o) => o.flags.includes('--json'))
     expect(jsonOpt).toBeDefined()
-    expect(jsonOpt?.description.length).toBeGreaterThan(0)
+    // Pin the real registered description text instead of just ">0", so a regression that
+    // swapped in the wrong option's description (still non-empty) is caught too.
+    expect(jsonOpt?.description).toBe('emit the matrix as JSON instead of text')
   })
 
   it('captures a real command\'s required argument', () => {
     const manifest = buildCommandManifest(buildProgram())
     const symbol = manifest.find((e) => e.name === 'symbol')
     expect(symbol).toBeDefined()
-    expect(symbol?.arguments.length).toBeGreaterThan(0)
+    // `symbol <name>` takes exactly one required argument -- pin the exact count so a
+    // regression that dropped or duplicated the argument list (still non-empty) is caught too.
+    expect(symbol?.arguments.length).toBe(1)
     expect(symbol?.arguments[0]?.required).toBe(true)
   })
 })
