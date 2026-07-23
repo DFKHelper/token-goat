@@ -3861,8 +3861,8 @@ NEXT_VAR=ok
     // which would truncate this line at the `#` inside ${APP_NAME#my} and never see NEXT_VAR.
     const content = 'PREFIX=${APP_NAME#my}\nNEXT_VAR=ok\n'
     const symbols = extractBash(content, 'expand.sh')
-    expect(symbols.find((s) => s.name === 'PREFIX')).toBeDefined()
-    expect(symbols.find((s) => s.name === 'NEXT_VAR')).toBeDefined()
+    expect(symbols.find((s) => s.name === 'PREFIX')).toMatchObject({ kind: 'variable', lineStart: 1 })
+    expect(symbols.find((s) => s.name === 'NEXT_VAR')).toMatchObject({ kind: 'variable', lineStart: 2 })
   })
 
   it('masks heredoc bodies so embedded #/=/{} content never desyncs parsing', () => {
@@ -3886,7 +3886,7 @@ AFTER_HEREDOC=ok
     const content = "cat <<'EOF'\nFAKE_VAR=nope\nEOF\nREAL_VAR=yes\n"
     const symbols = extractBash(content, 'deploy.sh')
     expect(symbols.find((s) => s.name === 'FAKE_VAR')).toBeUndefined()
-    expect(symbols.find((s) => s.name === 'REAL_VAR')).toBeDefined()
+    expect(symbols.find((s) => s.name === 'REAL_VAR')).toMatchObject({ kind: 'variable', lineStart: 4 })
   })
 
   it('extracts a readonly/export declaration with a flag the same way declare does (regression: VAR_RE let declare take optional -\\w+ flags before the name but required readonly/export to be immediately followed by NAME=, so `readonly -a ARR=(...)` -- a common idiom for a read-only constant array -- never matched at all and was silently dropped)', () => {
