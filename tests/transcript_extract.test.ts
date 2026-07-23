@@ -94,7 +94,10 @@ describe('buildTranscriptOutline', () => {
       ]),
     )
     expect(outline.durationSeconds).toBe(308)
-    expect(outline.markers.length).toBeGreaterThan(0)
+    expect(outline.markers).toEqual([
+      { timestamp: '00:00:01', preview: 'Welcome everyone to the quarterly review.' },
+      { timestamp: '00:05:00', preview: 'Revenue grew twenty percent year over year.' },
+    ])
   })
 
   it('returns an empty outline for zero cues', () => {
