@@ -28,7 +28,8 @@ describe('pptxOutline', () => {
     const slides = await pptxOutline(file)
     expect(slides).toHaveLength(3)
     expect(slides[0]).toMatchObject({ slide: 1, title: 'Quarterly Review', hasNotes: true })
-    expect(slides[0]?.bodyChars).toBeGreaterThan(0)
+    // 'Q3 2026 Results' is 15 chars; +1 for the trailing newline the body-join adds.
+    expect(slides[0]?.bodyChars).toBe(16)
     expect(slides[1]).toMatchObject({ slide: 2, title: 'Revenue Growth', hasNotes: false })
     expect(slides[2]).toMatchObject({ slide: 3, title: 'Empty slide', bodyChars: 0, hasNotes: false })
   })
