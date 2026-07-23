@@ -364,7 +364,7 @@ describe('WebFetch recall survives the process boundary', () => {
     })
     expect(first.status).toBe(0)
     expect(fs.existsSync(path.join(tgHome, 'web_outputs'))).toBe(true)
-    expect(fs.readdirSync(path.join(tgHome, 'web_outputs')).length).toBeGreaterThan(0)
+    expect(fs.readdirSync(path.join(tgHome, 'web_outputs')).length).toBe(1)
 
     // Process 2 (cold memory): the recall hint must cross the process boundary via the
     // persisted session state plus the on-disk web_outputs blob.
