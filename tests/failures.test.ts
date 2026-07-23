@@ -25,7 +25,7 @@ tests/test_foo.py:5: AssertionError
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('pytest');
-      expect(result.blocks.length).toBeGreaterThan(0);
+      expect(result.blocks.length).toBe(1);
       expect(result.blocks[0]?.name).toContain('test_example');
     });
 
@@ -103,7 +103,7 @@ FAIL
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('go');
-      expect(result.blocks.length).toBeGreaterThan(0);
+      expect(result.blocks.length).toBe(1);
       expect(result.blocks[0]?.name).toContain('TestExample');
       expect(result.blocks[0]?.body).toContain('main_test.go:15: assertion failed');
     });
@@ -416,7 +416,7 @@ ${longBody}
     it('should handle mixed line endings', () => {
       const output = '--- FAIL: Test1\r\n--- FAIL: Test2\n';
       const result = extractFailures(output);
-      expect(result.blocks.length).toBeGreaterThan(0);
+      expect(result.blocks.length).toBe(2);
     });
 
     it('should handle unicode in failure names', () => {
@@ -439,7 +439,7 @@ short test summary info
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('pytest');
-      expect(getFailureCount(result)).toBeGreaterThan(0);
+      expect(getFailureCount(result)).toBe(1);
     });
 
     it('should detect and extract colorized Go --- FAIL: blocks (ANSI-wrapped)', () => {
@@ -453,7 +453,7 @@ short test summary info
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('go');
-      expect(result.blocks.length).toBeGreaterThan(0);
+      expect(result.blocks.length).toBe(1);
       expect(result.blocks[0]?.name).toContain('TestExample');
     });
   });
@@ -469,7 +469,7 @@ short test summary info
       const result = extractFailures(output);
       expect(result.blocks.length).toBe(0);
       const sigs = failureSignatures(result);
-      expect(sigs.length).toBeGreaterThan(0);
+      expect(sigs.length).toBe(1);
       expect(sigs[0]).toContain('test_foo');
     });
 
