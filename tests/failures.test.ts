@@ -48,7 +48,12 @@ FAILED tests/test_a.py::test_foo - assertion error
 FAILED tests/test_b.py::test_bar - timeout
 `;
       const result = extractFailures(output);
-      expect(result.summaryLines.length).toBeGreaterThan(0);
+      // Pin the exact two FAILED lines, not just "at least one line was captured" -- a
+      // regression that stopped after the first match would still satisfy length > 0.
+      expect(result.summaryLines).toEqual([
+        'FAILED tests/test_a.py::test_foo - assertion error',
+        'FAILED tests/test_b.py::test_bar - timeout',
+      ]);
     });
   });
 
