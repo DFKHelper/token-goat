@@ -86,7 +86,7 @@ describe('removeFileFromIndex does not leak rows when the vec0 module is unloade
 
       // Sanity: exactly the one indexed file is present before the prune.
       expect((raw.prepare('SELECT COUNT(*) c FROM files').get() as { c: number }).c).toBe(1)
-      expect((raw.prepare('SELECT COUNT(*) c FROM symbols').get() as { c: number }).c).toBeGreaterThan(0)
+      expect((raw.prepare('SELECT COUNT(*) c FROM symbols').get() as { c: number }).c).toBe(1)
 
       // The fix makes this complete instead of aborting the transaction. Pre-fix this throws
       // ("no such module: vec0") from the chunk_vectors DELETE inside the transaction.
