@@ -458,6 +458,43 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression-coverage gap: `class` is not in TYPE_KINDS (line ~608), so the only path
+  // by which a class can ever appear in runTypes' output is the looksLikeTypeClass(cls.body)
+  // filter loop below the TYPE_KINDS scan. looksLikeTypeClass itself has thorough standalone
+  // unit tests (pydantic BaseModel, TypedDict, Protocol, @dataclass), but nothing exercised
+  // that filter loop through runTypes end-to-end -- a regression there (e.g. the loop being
+  // deleted, or its condition inverted) would pass every existing runTypes integration test
+  // while silently dropping every Python data-model class from `types` output.
+  it('surfaces a Python pydantic-style class via the looksLikeTypeClass filter, not just TYPE_KINDS symbols', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-pyclass-'))
+    try {
+      const file = join(dir, 'model.py')
+      writeFileSync(
+        file,
+        ['class TypesPyClassFixture(BaseModel):', '    x: int', ''].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesPyClassFixture')
+      expect(parsed.find((r) => r.name === 'TypesPyClassFixture')?.kind).toBe('class')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
