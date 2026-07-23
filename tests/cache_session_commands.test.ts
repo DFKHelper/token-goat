@@ -258,7 +258,7 @@ describe('cmdWebHistory', () => {
     const parsed = JSON.parse(capturedOutput()) as Array<{ id: string; url: string; bytes: number }>
     expect(parsed).toHaveLength(1)
     expect(parsed[0]!.url).toBe('https://a.com')
-    expect(parsed[0]!.bytes).toBeGreaterThan(0)
+    expect(parsed[0]!.bytes).toBe(4)
   })
 
   it('respects --limit', () => {
@@ -804,7 +804,7 @@ describe('cmdCost', () => {
     cmdCost({ session: true, json: true })
     const parsed = JSON.parse(capturedOutput()) as { session: boolean; totalFiles: number }
     expect(parsed.session).toBe(true)
-    expect(parsed.totalFiles).toBeGreaterThan(0)
+    expect(parsed.totalFiles).toBe(1)
   })
 })
 
