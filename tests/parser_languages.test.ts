@@ -837,7 +837,19 @@ CMD ["node", "server.js"]
       const result = await parseFile(dockerFile)
 
       expect(result.language).toBe('dockerfile')
-      expect(result.symbols.length).toBeGreaterThan(0)
+      // Pin the exact directive count and their names -- length > 0 plus a vacuously-true
+      // Array.prototype.every check (which passes even on an empty array) would miss a
+      // regression that dropped some directives or silently renamed them.
+      expect(result.symbols).toHaveLength(6)
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toEqual([
+        'FROM node:18-alpine',
+        'RUN npm install',
+        'COPY . /app',
+        'WORKDIR /app',
+        'EXPOSE 3000',
+        'CMD ["node", "server.js"]',
+      ])
       const kinds = result.symbols.map((s) => s.kind)
       expect(kinds.every((k) => k === 'directive')).toBe(true)
 
