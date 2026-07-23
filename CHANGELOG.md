@@ -4,6 +4,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+- **`extractImports` missed parenthesized PHP `require_once`/`include_once` calls.** The bare-keyword form (`require_once 'x.php'`) matched but the equally common function-call form (`require_once('x.php')`) did not, because the regex required whitespace directly before the quote. See [src/read_commands.ts](src/read_commands.ts), regression-tested in [tests/read_commands.test.ts](tests/read_commands.test.ts).
+- **`cleanupStaleDownloads` could delete an in-flight WebFetch download.** It swept every `.tmp` file in the download cache unconditionally, with no age check, so a concurrent download's temp file could be deleted mid-write. Added a 10-minute mtime-based staleness threshold. See [src/webfetch.ts](src/webfetch.ts), regression-tested in [tests/webfetch.test.ts](tests/webfetch.test.ts).
+- **`doctor`'s disk-space check could misparse `df` output on a long filesystem name.** `df -k` doesn't guarantee single-line rows; a wrapped name line shifted the column parse. Switched to `df -Pk`, which guarantees POSIX-portable single-line output. See [src/cli_doctor.ts](src/cli_doctor.ts), regression-tested in [tests/cli_doctor.test.ts](tests/cli_doctor.test.ts).
+- **Session transcript streaming leaked a file descriptor on early exit.** `streamTurns` called `rl.close()` on an early break but never destroyed the underlying `fs.ReadStream`, which `readline` does not do automatically. See [src/session_read.ts](src/session_read.ts), regression-tested in [tests/session_read.test.ts](tests/session_read.test.ts).
+- **`hooks_compact` spawned git unconditionally even when the manifest already fit.** `capManifestChars` ran `adaptiveCharBonus`'s two git spawns before checking whether the manifest was already under the base cap. See [src/hooks_compact.ts](src/hooks_compact.ts), regression-tested in [tests/hooks_compact_adaptive_budget.test.ts](tests/hooks_compact_adaptive_budget.test.ts).
+- **Legacy `pnpm-lock.yaml` (`lockfileVersion` < 6) failed to parse.** Legacy lockfiles use slash-separated package keys with no top-level `@` version separator (`/lodash/4.17.21`) and bare-string dependency-section values; the parser required an `@`-delimited key and an object-valued `.version`. See [src/text_commands.ts](src/text_commands.ts), regression-tested in [tests/text_commands.test.ts](tests/text_commands.test.ts).
+- **`runGit` did not defend against a repo-local `diff.external` or `.gitattributes` textconv driver.** A configured external-diff or textconv command would run arbitrary code on every `git diff` call. Hardened by inserting `--no-ext-diff --no-textconv` for `diff` subcommands. See [src/util.ts](src/util.ts), regression-tested in [tests/util.test.ts](tests/util.test.ts).
+
 ## [2.6.17] - 2026-07-22
 
 ### Added
