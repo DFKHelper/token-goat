@@ -188,7 +188,7 @@ describe('trace command', () => {
     const r = run(['trace', '--json'], { input: SAMPLE_TRACEBACK, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: unknown[]; exception: string }> }
-    expect(parsed.tracebacks.length).toBeGreaterThan(0)
+    expect(parsed.tracebacks.length).toBe(1)
     expect(parsed.tracebacks[0]?.exception).toContain('ValueError')
   })
 
