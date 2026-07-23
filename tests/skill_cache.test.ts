@@ -445,7 +445,10 @@ describe('storeOutput and getCompact round trip', () => {
     const storedPath = path.resolve(tempDir, `${meta!.outputId}.txt`)
     const stored = await fs.readFile(storedPath, 'utf-8')
     expect(stored).not.toContain('�')
-    expect(stored.length).toBeGreaterThan(0)
+    // Pin the exact deterministic post-truncation length (in UTF-16 code units) so an
+    // off-by-N shift in the boundary-finding logic -- which would still avoid replacement
+    // characters and still satisfy a bare ">0" check -- is caught too.
+    expect(stored.length).toBe(87381)
   })
 
   it('cross-session dedup returns existing entry', async () => {
@@ -533,7 +536,10 @@ describe('suite-named skill compact round-trip (colon in name)', () => {
 
     // Pre-fix: listSkills used .replace(':', '_') (no /g, only first colon) while storeCompact kept colons, so compactLen was always 0.
     expect(entry).toBeDefined()
-    expect(entry!.compactLen).toBeGreaterThan(0)
+    // compactLen is the on-disk byte size of compactText -- pin the exact deterministic value
+    // (fixed ASCII fixture, no sourceSha prefix here) instead of just ">0", which the pre-fix
+    // regression's zero value would also technically satisfy for any non-zero-length text.
+    expect(entry!.compactLen).toBe(Buffer.byteLength(compactText, 'utf-8'))
   })
 
   it('compact filename written by storeCompact contains no colon', async () => {
@@ -602,7 +608,10 @@ describe('listSkills regression - hyphenated session id', () => {
     const skills = await listSkills(sessionId)
     const skill = skills.find((s) => s.name === skillName)
     expect(skill).toBeDefined()
-    expect(skill!.compactLen).toBeGreaterThan(0)
+    // Pin the exact deterministic byte size instead of just ">0" -- the hyphen-splitting bug
+    // this test targets resolves to the WRONG skill entry (or none), not merely a zero length,
+    // but an exact-value pin also catches any regression in compactLen's own byte-count logic.
+    expect(skill!.compactLen).toBe(Buffer.byteLength('Compact content', 'utf-8'))
   })
 
   it('picks the newest cached version of a skill, not whichever meta file readdir happens to return first (fail-on-buggy: dedup-by-first-seen without a ts sort surfaces an arbitrary older version)', async () => {
@@ -1082,8 +1091,12 @@ describe('Compact staleness tracking', () => {
     const skills = await listSkills(sessionId)
     const skill = skills.find((s) => s.name === 'myskill')
     expect(skill).toBeDefined()
-    // compactStale should be false since we stored with matching SHA.
-    expect(skill!.compactStale).toBeDefined()
+    // compactStale is computed against the CURRENT body's contentSha, and the second
+    // storeOutput call above changed the body after the compact was stored against the
+    // original SHA, so it must be true here -- pin the real value instead of just
+    // "defined", which the old (inverted) inline comment's claimed "should be false" would
+    // also have silently passed under.
+    expect(skill!.compactStale).toBe(true)
   })
 })
 
