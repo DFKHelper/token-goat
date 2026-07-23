@@ -187,9 +187,9 @@ describe('tokens command', () => {
     const r = run(['tokens', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: Array<{ rel_path: string; tokens: number }>; total_tokens: number }
-    expect(parsed.entries.length).toBeGreaterThan(0)
-    expect(parsed.entries[0]?.tokens).toBeGreaterThan(0)
-    expect(parsed.total_tokens).toBeGreaterThan(0)
+    expect(parsed.entries.length).toBe(1)
+    expect(parsed.entries[0]?.tokens).toBe(26)
+    expect(parsed.total_tokens).toBe(26)
   })
 
   it('--json includes expected fields per entry', () => {
@@ -254,8 +254,8 @@ describe('budget command', () => {
     const r = run(['budget', 'hello.ts', '--json'])
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: unknown[]; total_tokens: number; total_lines: number }
-    expect(parsed.entries.length).toBeGreaterThan(0)
-    expect(parsed.total_tokens).toBeGreaterThan(0)
+    expect(parsed.entries.length).toBe(1)
+    expect(parsed.total_tokens).toBe(26)
   })
 
   it('total_tokens reflects actual content size', () => {
@@ -302,7 +302,7 @@ describe('failures command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { runner: string; failures: Array<{ name: string }> }
     expect(parsed.runner).toBe('pytest')
-    expect(parsed.failures.length).toBeGreaterThan(0)
+    expect(parsed.failures.length).toBe(1)
     expect(parsed.failures[0]?.name).toContain('test_add')
   })
 
