@@ -94,7 +94,7 @@ describe('index_prune', () => {
     fs.writeFileSync(aPath, 'export const aSym = 1\n')
     const aKey = normalizePath(aPath)
     indexFileSync(aKey, dbPath)
-    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, aKey)).toBe(1)
     fs.rmSync(aPath)
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result).toBe(1)
@@ -107,7 +107,7 @@ describe('index_prune', () => {
     const aKey = normalizePath(aPath)
     indexFileSync(aKey, dbPath)
     const countBefore = symbolCount(dbPath, aKey)
-    expect(countBefore).toBeGreaterThan(0)
+    expect(countBefore).toBe(1)
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result).toBe(0)
     expect(symbolCount(dbPath, aKey)).toBe(countBefore)
@@ -130,8 +130,8 @@ describe('index_prune', () => {
     const goneKey = normalizePath(goneePath)
     indexFileSync(lockedKey, dbPath)
     indexFileSync(goneKey, dbPath)
-    expect(symbolCount(dbPath, lockedKey)).toBeGreaterThan(0)
-    expect(symbolCount(dbPath, goneKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, lockedKey)).toBe(1)
+    expect(symbolCount(dbPath, goneKey)).toBe(1)
 
     // "gone" is genuinely deleted (real ENOENT via a plain fs.rmSync). "locked" stays on disk but
     // its existence is unconfirmable (simulated EPERM via the module-level mock above).
@@ -145,7 +145,7 @@ describe('index_prune', () => {
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result).toBe(1)
     // Locked file's rows must survive -- its existence was never disproven.
-    expect(symbolCount(dbPath, lockedKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, lockedKey)).toBe(1)
     // Genuinely deleted file's rows are still correctly pruned.
     expect(symbolCount(dbPath, goneKey)).toBe(0)
   })
@@ -168,8 +168,8 @@ describe('index_prune', () => {
     indexFileSync(app2Key, dbPath)
 
     // Verify both are indexed
-    expect(symbolCount(dbPath, appKey)).toBeGreaterThan(0)
-    expect(symbolCount(dbPath, app2Key)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, appKey)).toBe(1)
+    expect(symbolCount(dbPath, app2Key)).toBe(1)
 
     // Delete both files
     fs.rmSync(appFile)
@@ -181,7 +181,7 @@ describe('index_prune', () => {
 
     // app's row should be gone, app-2's row should remain
     expect(symbolCount(dbPath, appKey)).toBe(0)
-    expect(symbolCount(dbPath, app2Key)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, app2Key)).toBe(1)
   })
 
   it('refuses to prune at a drive/too-shallow root', () => {
@@ -216,8 +216,10 @@ describe('index_prune', () => {
 
     const result = pruneDeletedFiles('/mnt/c', dbPath)
     expect(result).toBe(0)
-    const row = db.prepare(`SELECT path FROM files WHERE path = ?`).get(fakePath)
-    expect(row).toBeDefined()
+    const row = db.prepare(`SELECT path FROM files WHERE path = ?`).get(fakePath) as
+      | { path: string }
+      | undefined
+    expect(row?.path).toBe(fakePath)
   })
 
   describe('case-insensitive filesystem path matching', () => {
@@ -240,7 +242,7 @@ describe('index_prune', () => {
       fs.writeFileSync(aPath, 'export const aSym = 1\n')
       const aKey = normalizePath(aPath)
       indexFileSync(aKey, dbPath)
-      expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+      expect(symbolCount(dbPath, aKey)).toBe(1)
       fs.rmSync(aPath)
 
       // Casing differs beyond the drive letter, which normalizePath does not fold.
@@ -261,7 +263,7 @@ describe('index_prune', () => {
       const differentlyCasedRoot = normalizePath(dir).toUpperCase()
       const result = pruneDeletedFiles(differentlyCasedRoot, dbPath)
       expect(result).toBe(0)
-      expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+      expect(symbolCount(dbPath, aKey)).toBe(1)
     })
   })
 
@@ -296,7 +298,7 @@ describe('index_prune', () => {
     fs.writeFileSync(aPath, 'export const oldSym = 1\n')
     const aKey = normalizePath(aPath)
     indexFileSync(aKey, dbPath)
-    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, aKey)).toBe(1)
 
     mockState.onStatOncePath = aKey
     mockState.onStatOnce = () => {
@@ -309,7 +311,7 @@ describe('index_prune', () => {
     // The recreated file must survive with its fresh content indexed, not get wiped by the
     // prune pass that observed it "gone" a moment before the recreate landed.
     expect(result).toBe(0)
-    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, aKey)).toBe(1)
     const db = getDb(dbPath)
     const row = db.prepare('SELECT body FROM symbols WHERE file_path = ?').get(aKey) as
       | { body: string }
@@ -330,7 +332,7 @@ describe('index_prune', () => {
     fs.writeFileSync(aPath, 'export const atomicSym = 1\n')
     const aKey = normalizePath(aPath)
     indexFileSync(aKey, dbPath)
-    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, aKey)).toBe(1)
 
     const db = getDb(dbPath)
     const filesRowCount = (): number => {
@@ -351,7 +353,7 @@ describe('index_prune', () => {
     // Pre-fix (no transaction): deleteFileRows' effect would have persisted despite the throw
     // -- symbols/files rows gone, orphaning the (untested-here) chunks rows nothing else could
     // ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
-    expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, aKey)).toBe(1)
     expect(filesRowCount()).toBe(1)
   })
 })
@@ -415,15 +417,15 @@ describe('findSystemTempFiles / pruneSystemTempFiles', () => {
     const realKey = normalizePath(realFile)
     indexFileSync(realKey, dbPath)
 
-    expect(symbolCount(dbPath, tempKey)).toBeGreaterThan(0)
-    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, tempKey)).toBe(1)
+    expect(symbolCount(dbPath, realKey)).toBe(1)
 
     const pruned = pruneSystemTempFiles(dbPath)
 
     expect(pruned).toContain(tempKey)
     expect(pruned).not.toContain(realKey)
     expect(symbolCount(dbPath, tempKey)).toBe(0)
-    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, realKey)).toBe(1)
   })
 
   it('is a no-op when nothing indexed lives under system temp', () => {
@@ -433,7 +435,7 @@ describe('findSystemTempFiles / pruneSystemTempFiles', () => {
     indexFileSync(realKey, dbPath)
 
     expect(pruneSystemTempFiles(dbPath)).toEqual([])
-    expect(symbolCount(dbPath, realKey)).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, realKey)).toBe(1)
   })
 })
 
@@ -534,7 +536,7 @@ describe('sweepKnownRoots', () => {
     expect(result.prunedRoots.map(normalizePath)).toContain(normalizePath(dir))
     expect(result.flaggedRoots).toEqual([])
     expect(symbolCount(dbPath, normalizePath(aPath))).toBe(0)
-    expect(symbolCount(dbPath, normalizePath(bPath))).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, normalizePath(bPath))).toBe(1)
   })
 
   it('does not prune an unreachable root on first sight -- starts the missing-since clock instead', () => {
@@ -550,7 +552,7 @@ describe('sweepKnownRoots', () => {
     const result = sweepKnownRoots(dbPath, { now: 1000 })
     expect(result.prunedRows).toBe(0)
     expect(result.prunedRoots).toEqual([])
-    expect(symbolCount(dbPath, normalizePath(aPath))).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBe(1)
 
     const db = getDb(dbPath)
     const row = db.prepare('SELECT first_missing_ms FROM known_roots').get() as {
@@ -574,7 +576,7 @@ describe('sweepKnownRoots', () => {
     const result = sweepKnownRoots(dbPath, { now: 1000 + graceMs - 1, missingGraceMs: graceMs })
 
     expect(result.prunedRows).toBe(0)
-    expect(symbolCount(dbPath, normalizePath(aPath))).toBeGreaterThan(0)
+    expect(symbolCount(dbPath, normalizePath(aPath))).toBe(1)
   })
 
   it('fully prunes and forgets a root once it has been missing past the grace period', () => {
@@ -621,7 +623,7 @@ describe('sweepKnownRoots', () => {
     // Every row -- including the genuinely-deleted ones -- survives; nothing was pruned this
     // cycle. A human can investigate and re-run a manual `token-goat index` once confirmed.
     for (const f of files) {
-      expect(symbolCount(dbPath, normalizePath(f))).toBeGreaterThan(0)
+      expect(symbolCount(dbPath, normalizePath(f))).toBe(1)
     }
   })
 
