@@ -225,7 +225,7 @@ describe('index_reader round-trips inserted rows', () => {
           .get() as { c: number }
       ).c > 0
     if (ftsExists) {
-      expect(hits.length).toBeGreaterThan(0)
+      expect(hits.length).toBe(1)
       expect(hits[0]?.name).toBe('authenticate')
     } else {
       expect(hits).toEqual([])
