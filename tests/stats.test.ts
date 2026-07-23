@@ -327,7 +327,9 @@ describe('stats', () => {
 
       expect(summary.total_events).toBe(1)
       expect(summary.by_kind['image_shrink']).toBeUndefined()
-      expect(summary.by_kind['symbol_read']).toBeDefined()
+      // Pin the real aggregated bucket content instead of just presence, so a regression that
+      // aggregated the wrong row into this bucket (still "defined") is caught too.
+      expect(summary.by_kind['symbol_read']).toEqual({ events: 1, bytes_saved: 200, tokens_saved: 50 })
     })
 
     it('aggregates stats by command', () => {
@@ -408,7 +410,9 @@ describe('stats', () => {
         expect(importsCmd.bytes_saved).toBe(240)
       }
 
-      expect(summary.by_source[SOURCE_READ]).toBeDefined()
+      // Pin the exact aggregated bucket -- only one 'imports' row was inserted -- instead of
+      // just presence, so a regression that double-counted the row into SOURCE_READ is caught.
+      expect(summary.by_source[SOURCE_READ]).toEqual({ events: 1, bytes_saved: 240, tokens_saved: 60 })
       expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
     })
 
@@ -445,7 +449,9 @@ describe('stats', () => {
         expect(depDocsCmd.bytes_saved).toBe(360)
       }
 
-      expect(summary.by_source[SOURCE_READ]).toBeDefined()
+      // Pin the exact aggregated bucket -- only one 'dep_docs' row was inserted -- instead of
+      // just presence, so a regression that double-counted the row into SOURCE_READ is caught.
+      expect(summary.by_source[SOURCE_READ]).toEqual({ events: 1, bytes_saved: 360, tokens_saved: 90 })
       expect(summary.by_source[SOURCE_OTHER]).toBeUndefined()
     })
 
