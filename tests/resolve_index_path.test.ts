@@ -72,7 +72,7 @@ describe('index lookup contract: raw relative misses, resolved hits', () => {
   it('resolveIndexPath maps the relative path onto the stored rows', () => {
     const key = resolveIndexPath('src/mod.ts', dir)
     const rows = querySymbols({ filePath: key, limit: 100 }, dbPath)
-    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.length).toBe(2)
     expect(rows.map((s) => s.name)).toEqual(expect.arrayContaining(['alpha', 'beta']))
   })
 
