@@ -189,7 +189,7 @@ describe('cli_context_stats', () => {
       }
 
       const parsed = JSON.parse(output) as { claude_md_total: number }
-      expect(parsed.claude_md_total).toBeGreaterThan(0)
+      expect(parsed.claude_md_total).toBe(2530)
     })
 
     it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', async () => {
