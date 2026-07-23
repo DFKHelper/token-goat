@@ -177,6 +177,14 @@ describe('cli_context_stats', () => {
       fs.mkdirSync(project)
       fs.writeFileSync(path.join(project, 'CLAUDE.md'), 'x'.repeat(400))
 
+      // Pin homedir to the isolated tempDir (no .claude/CLAUDE.md there) so
+      // claude_md_total is a pure function of this fixture. Without this, findClaudeMdFiles
+      // also folds in the *real* developer's ~/.claude/CLAUDE.md (see src/cli_context_stats.ts),
+      // which is machine-specific and absent entirely on a fresh CI runner -- an exact pin against
+      // the unmocked value would be right on one machine and wrong everywhere else, including CI.
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValue(tempDir)
+
       let output = ''
       const orig = process.stdout.write.bind(process.stdout)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -188,8 +196,9 @@ describe('cli_context_stats', () => {
         ;(process.stdout as any).write = orig
       }
 
+      // 400-byte fixture file / 4 = 100 tokens (see tok() in src/cli_context_stats.ts).
       const parsed = JSON.parse(output) as { claude_md_total: number }
-      expect(parsed.claude_md_total).toBe(2530)
+      expect(parsed.claude_md_total).toBe(100)
     })
 
     it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', async () => {
