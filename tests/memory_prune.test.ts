@@ -251,7 +251,10 @@ Some notes here
 
     const result = pruneIndex(tempDir)
 
-    expect(result.tokensSaved).toBeGreaterThan(0)
+    // Exactly one dead entry line ("- [Entry 2](missing.md)\n", 24 chars) is removed -- pin the
+    // real estimateTokens() value instead of just ">0", so a regression that dropped the wrong
+    // line's contribution (still non-zero) is caught too.
+    expect(result.tokensSaved).toBe(9)
   })
 
   it('tokensSaved is sum of per-entry estimates, not estimate of concatenated string', () => {
@@ -327,11 +330,12 @@ describe('findContentDuplicates', () => {
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    expect(result.length).toBeGreaterThan(0)
-    if (result.length > 0) {
-      expect(result[0]?.similarity).toBeGreaterThan(0)
-      expect(result[0]?.method).toBe('jaccard')
-    }
+    // Exactly one cluster of the two files -- pin the exact deterministic Jaccard similarity
+    // (7 shared words / 9 union words, rounded to 3dp) instead of just ">0"/">0", so a
+    // regression in the similarity math (still non-zero) is caught too.
+    expect(result.length).toBe(1)
+    expect(result[0]?.similarity).toBe(0.778)
+    expect(result[0]?.method).toBe('jaccard')
   })
 
   it('returns empty when similarity below threshold', async () => {
@@ -360,9 +364,9 @@ describe('findContentDuplicates', () => {
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    if (result.length > 0) {
-      expect(result[0]?.tokens).toBeGreaterThan(0)
-    }
+    // Both files are the identical 17-char 'some content here' snippet -- pin the exact sum of
+    // both members' estimateTokens() (6 each) instead of just ">0".
+    expect(result[0]?.tokens).toBe(12)
   })
 
   it('handles YAML frontmatter correctly', async () => {
@@ -380,7 +384,9 @@ the quick brown fox`
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    expect(result.length).toBeGreaterThan(0)
+    // Both files reduce to the identical post-frontmatter body -- pin the exact single-cluster
+    // count instead of just ">0".
+    expect(result.length).toBe(1)
   })
 })
 
@@ -502,7 +508,8 @@ content
 
     const reports = auditClaudeMd([file])
 
-    expect(reports[0]?.tokens).toBeGreaterThan(0)
+    // Pin the exact estimateTokens() value for the 13-char file content instead of just ">0".
+    expect(reports[0]?.tokens).toBe(5)
   })
 
   it('ignores blank lines', () => {
@@ -532,8 +539,12 @@ line 1
     const file1Report = reports.find((r) => r.path === file1)
     const file2Report = reports.find((r) => r.path === file2)
 
-    expect(file1Report?.crossFileOverlaps.length).toBeGreaterThan(0)
-    expect(file2Report?.crossFileOverlaps.length).toBeGreaterThan(0)
+    // Only the shared line overlaps (each file's "Other content" line is unique to it) -- pin
+    // the exact single-entry overlap text (including which sibling file it's shared with)
+    // instead of just ">0", so a regression that mis-attributed the overlap or dropped/doubled
+    // the "Other content" lines into the overlap set (still non-empty) is caught too.
+    expect(file1Report?.crossFileOverlaps).toEqual(['"This line appears in both files" also in CLAUDE2.md'])
+    expect(file2Report?.crossFileOverlaps).toEqual(['"This line appears in both files" also in CLAUDE1.md'])
   })
 
   it('caps cross-file overlaps to 10', () => {
