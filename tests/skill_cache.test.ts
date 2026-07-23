@@ -402,8 +402,12 @@ describe('storeOutput and getCompact round trip', () => {
 
     expect(meta).not.toBeNull()
     expect(meta!.skillName).toContain('testskill')
-    expect(meta!.contentSha).toMatch(/^[0-9a-f]{16}$/)
-    expect(meta!.bodyBytes).toBeGreaterThan(0)
+    // Both are deterministic functions of `body` (sha256 hex, first 16 chars; UTF-8 byte
+    // length) -- pin the exact values rather than just the format/positivity, which would
+    // still pass on a hash truncated to the wrong length or a byte count off by any amount
+    // that stays positive.
+    expect(meta!.contentSha).toBe('183c50b28c5a8ebd')
+    expect(meta!.bodyBytes).toBe(40)
   })
 
   it('marks truncated when body exceeds 256KB', async () => {
