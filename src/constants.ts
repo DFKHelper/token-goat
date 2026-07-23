@@ -119,11 +119,40 @@ function defaultDataDir(): string {
 }
 
 // Computed once at module load: the data directory never changes within a process lifetime, so caching avoids repeated env reads on the hot hook path.
-const DATA_DIR: string = defaultDataDir()
+let DATA_DIR: string = defaultDataDir()
 
 /** token-goat data directory (cached for the process lifetime). */
 export function dataDir(): string {
   return DATA_DIR
+}
+
+/**
+ * Test-only: force the next {@link dataDir}/{@link globalDbPath}/{@link configPath} call to
+ * re-resolve from the *current* LOCALAPPDATA/XDG_DATA_HOME/HOME env vars, instead of the value
+ * cached at whichever moment this module was first imported.
+ *
+ * DATA_DIR's module-load-time caching (see the comment above) is correct and desirable for the
+ * real hot hook path -- the data dir genuinely never changes within one real process's lifetime
+ * -- but it silently defeats per-test isolation in the test suite: `tests/setup/isolate-home.ts`
+ * pins LOCALAPPDATA/XDG_DATA_HOME once per Vitest *worker* (a forked process reused across many
+ * test files), so DATA_DIR is the SAME real directory for every test file that lands on that
+ * worker, unlike TOKEN_GOAT_HOME (read live from `process.env` on every call, so a test file's
+ * own `beforeEach` override already takes effect immediately with no extra step). A test file
+ * that writes real fixture files into `dataDir()`-derived paths (e.g. webCacheDir() in
+ * webfetch.ts) can therefore collide with -- or be collided into by -- a completely unrelated
+ * test file sharing the same worker, exactly like `TOKEN_GOAT_HOME`'s per-test override already
+ * prevents. A test file that needs that same guarantee for LOCALAPPDATA/XDG_DATA_HOME-derived
+ * paths must set a fresh per-test override AND call this function so the cached DATA_DIR picks
+ * it up -- mirroring the pattern this file's own `tests/constants.test.ts` already documents
+ * (see its "cross-pollute unrelated later test files... cache_session_commands.test.ts failing
+ * an unrelated assertion" regression comment) as a live, previously-hit failure mode of this
+ * exact caching. Deliberately NOT `vi.resetModules()` + re-import -- that same test comment
+ * documents `vi.resetModules()` on this module as itself causing permanent cross-file pollution
+ * when done in-process; mutating the cached binding directly avoids the module registry
+ * entirely.
+ */
+export function _resetDataDirCacheForTesting(): void {
+  DATA_DIR = defaultDataDir()
 }
 
 /** Path to the global SQLite DB. */
