@@ -301,7 +301,7 @@ describe('project_memory', () => {
       writeMock.mockClear();
       setEntry('proj-lock', 'k1', 'v1');
       const lockWrites = writeMock.mock.calls.filter((args: unknown[]) => String(args[0]).endsWith('.lock'));
-      expect(lockWrites.length).toBeGreaterThan(0);
+      expect(lockWrites.length).toBe(1);
       // The lock must be released (unlinked) once the write completes, or a later call under a
       // fresh process would find a live-looking lock file it can never acquire.
       const lockPath = String(lockWrites[0]?.[0]);
