@@ -2286,33 +2286,48 @@ function splitDiffHunks(diffText: string): {
  * "uncommitted changes" summary -- there is no existing "vs HEAD~N" precedent for a single
  * current-state diff view the way there is for `changed`'s historical file/symbol listing.
  */
-export function runDiff(opts: DiffOptions): number {
-  const { file, symbol } = parseReadSpec(opts.spec)
+/**
+ * Shared spec-resolution path for symbol-scoped git commands (runDiff, runLog): requires a
+ * `file::symbol` spec (not just a bare file), resolves it via resolveSymbolSpec, and emits the
+ * standard ambiguous/did-you-mean error (same shape as runRead's own branches) on failure.
+ * Returns null on any failure so callers can just `if (r === null) return 1`.
+ */
+function resolveSymbolSpecOrEmitError(
+  commandName: string,
+  spec: string,
+  projectRoot: string | undefined,
+): SymbolEntry | null {
+  const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') {
-    emitErr(`'token-goat diff' requires a 'file::symbol' spec (got '${opts.spec}')`)
-    return 1
+    emitErr(`'token-goat ${commandName}' requires a 'file::symbol' spec (got '${spec}')`)
+    return null
   }
 
-  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
+  const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
 
   if (resolution.kind === 'ambiguous') {
     // Same hard-refuse shape as runRead's ambiguous branch -- never guess which candidate the
     // caller meant.
     emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
-    return 1
+    return null
   }
 
   if (resolution.kind === 'none') {
     // Same "not found" + did-you-mean shape as runRead's none branch.
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
-    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
+    const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
     emitErr(messages.join('\n'))
-    return 1
+    return null
   }
 
-  const match = resolution.entry
+  return resolution.entry
+}
+
+export function runDiff(opts: DiffOptions): number {
+  const match = resolveSymbolSpecOrEmitError('diff', opts.spec, opts.projectRoot)
+  if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()
 
   // `--unified=0` (no surrounding context lines), same as runChanged's own symbolMode
@@ -2464,32 +2479,8 @@ function parseLogDashLOutput(stdout: string): LogEntry[] {
  * than intersecting per-commit diffs against a fixed range after the fact.
  */
 export function runLog(opts: LogOptions): number {
-  const { file, symbol } = parseReadSpec(opts.spec)
-  if (symbol === undefined || symbol === '') {
-    emitErr(`'token-goat log' requires a 'file::symbol' spec (got '${opts.spec}')`)
-    return 1
-  }
-
-  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
-
-  if (resolution.kind === 'ambiguous') {
-    // Same hard-refuse shape as runDiff's ambiguous branch -- never guess which candidate the
-    // caller meant.
-    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
-    return 1
-  }
-
-  if (resolution.kind === 'none') {
-    // Same "not found" + did-you-mean shape as runDiff's none branch.
-    const messages = [`Symbol '${symbol}' not found in '${file}'`]
-    const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
-    if (closes.length > 0) messages.push(didYouMean(closes))
-    emitErr(messages.join('\n'))
-    return 1
-  }
-
-  const match = resolution.entry
+  const match = resolveSymbolSpecOrEmitError('log', opts.spec, opts.projectRoot)
+  if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()
   const maxCount = opts.maxCount ?? DEFAULT_LOG_MAX_COUNT
 
