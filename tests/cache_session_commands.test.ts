@@ -761,15 +761,20 @@ describe('cmdSessionSummary', () => {
   })
 
   it('emits JSON with sessionId, filesRead, filesEdited when a blob exists', () => {
-    const session = { files: [{ path: 'src/c.ts', readCount: 3, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 20 }, { path: 'src/d.ts', readCount: 1, lastReadAt: Date.now(), wasEdited: true, sizeBytes: 8 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
+    const session = { files: [{ path: 'src/c.ts', readCount: 3, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 20 }, { path: 'src/d.ts', readCount: 1, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 8 }, { path: 'src/e.ts', readCount: 2, lastReadAt: Date.now(), wasEdited: true, sizeBytes: 5 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'summ-test-2', session)
     cmdSessionSummary({ json: true })
     const parsed = JSON.parse(capturedOutput()) as { sessionId: string; sessionCount: number; filesRead: number; filesEdited: number; topFiles: string[] }
-    expect(typeof parsed.sessionId).toBe('string')
-    expect(parsed.sessionCount).toBeGreaterThan(0)
-    expect(typeof parsed.filesRead).toBe('number')
-    expect(typeof parsed.filesEdited).toBe('number')
-    expect(Array.isArray(parsed.topFiles)).toBe(true)
+    expect(parsed.sessionId).toBe('summ-test-2')
+    // Pin the real counts and content, not just their types -- a regression swapping the
+    // filesRead/filesEdited filters (both are `f.wasEdited === true`/`!== true` predicates over
+    // the same array, an easy copy-paste-and-flip mistake) would still satisfy "is a number".
+    // Asymmetric fixture (2 unedited, 1 edited) so the two counts differ and a swap is
+    // observable -- a 1-and-1 split would make either filter's result indistinguishable.
+    expect(parsed.filesRead).toBe(2)
+    expect(parsed.filesEdited).toBe(1)
+    // Sorted by readCount descending: src/c.ts (3), src/e.ts (2), src/d.ts (1).
+    expect(parsed.topFiles).toEqual(['src/c.ts', 'src/e.ts', 'src/d.ts'])
   })
 })
 
