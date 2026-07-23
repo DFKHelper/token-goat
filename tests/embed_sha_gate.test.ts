@@ -106,8 +106,10 @@ describe('large_file_symbol_only_kb gates embedding independently of symbol inde
       expect(fs.readFileSync(file, 'utf8').length).toBeGreaterThan(1024)
 
       indexFileSync(file, dbPath)
+      // querySymbols defaults limit to 100, so this caps at 100 even though the fixture writes
+      // 200 functions -- pin to the real capped count, not the fixture's total.
       const symbols = querySymbols({ filePath: file }, dbPath)
-      expect(symbols.length).toBeGreaterThan(0)
+      expect(symbols.length).toBe(100)
       expect(symbols.some((s) => s.name === 'fn0')).toBe(true)
 
       const sha = fingerprintFile(file)
