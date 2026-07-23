@@ -11,7 +11,7 @@ import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, normalizePathForwardSlash, sanitizeIdForFilename } from './util.js'
-import { stripAnsiCodes } from './bash_compress.js'
+import { estimateTokens } from './overflow_guard.js'
 import { readSessionStateFile, AGENT_SALT_MARKER } from './session_store.js'
 import type { FileEntry } from './session.js'
 
@@ -161,15 +161,9 @@ class Counter<T> {
 // Core functions
 // ---------------------------------------------------------------------------
 
-/**
- * Rough token estimate: ~3 chars/token (conservative vs. the true 3.5 ratio). Strips ANSI color
- * codes before counting (matches overflow_guard.ts's estimateTokens) so colored bash/tool output
- * embedded in transcripts and briefings doesn't inflate the estimate.
- */
-export function estimateTokens(text: string): number {
-  const stripped = stripAnsiCodes(text)
-  return Math.max(1, Math.floor(stripped.length / 3) + 1)
-}
+// estimateTokens is re-exported from overflow_guard.ts (single canonical implementation) so
+// existing `import { estimateTokens } from './compact.js'` call sites keep working.
+export { estimateTokens }
 
 /**
  * Map a context-fill fraction to its qualitative pressure tier.
