@@ -83,5 +83,16 @@ describe('concurrent saveSessionState across real OS processes', () => {
       }
     }
     expect(missing).toEqual([])
-  }, 30_000)
+    // 240 total saveSessionState calls (2 workers * 120 iterations) each acquire
+    // withFileLock's hardened lock, and every acquisition unconditionally spawns a real Node
+    // child process for the lock's staleness heartbeat (see startHeartbeat in util.ts) --
+    // deliberately kept unconditional, since skipping it on a "probably fast" hold is exactly
+    // the false-staleness class of bug fixed in skill_cache.ts's incrementSkillHit lock. That
+    // spawn/kill overhead is real and highly sensitive to host CPU contention: an isolated run
+    // of just this file measured 12s wall time with zero competing load, so 240 spawns
+    // multiplied by a full 249-file parallel suite's worth of contention can plausibly exceed a
+    // tight budget even though every save is completing correctly. Matches the 60-120s
+    // precedent this codebase already uses for its other real-subprocess e2e races
+    // (session_persistence_e2e.test.ts, worker_index_e2e.test.ts, salesforce_worker_e2e.test.ts).
+  }, 120_000)
 })
