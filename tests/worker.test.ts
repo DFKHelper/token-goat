@@ -638,9 +638,9 @@ describe('drainOnce', () => {
     const projectDb = path.join(DIR, 'global.db')
     try {
       const all = querySymbols({ limit: 1000 }, projectDb)
-      expect(all.length).toBeGreaterThan(0)
+      expect(all.length).toBe(1)
       const found = querySymbols({ name: 'knownWorkerSymbol', limit: 10 }, projectDb)
-      expect(found.length).toBeGreaterThan(0)
+      expect(found.length).toBe(1)
       expect(found[0]?.name).toBe('knownWorkerSymbol')
     } finally {
       // Release the better-sqlite3 handle so afterEach can remove DIR on Windows.
@@ -665,7 +665,7 @@ describe('drainOnce', () => {
     const projectDb = path.join(DIR, 'global.db')
     try {
       const refs = queryRefs({ name: 'knownCallee' }, projectDb)
-      expect(refs.length).toBeGreaterThan(0)
+      expect(refs.length).toBe(1)
       expect(refs[0]?.context).toBe('knownCaller')
     } finally {
       closeDb(projectDb)
@@ -700,13 +700,13 @@ describe('drainOnce', () => {
     const projectDb = path.join(DIR, 'global.db')
     try {
       const resource = querySymbols({ name: 'aws_instance.web', limit: 10 }, projectDb)
-      expect(resource.length).toBeGreaterThan(0)
+      expect(resource.length).toBe(1)
       expect(resource[0]?.kind).toBe('tf_resource')
       expect(resource[0]?.lineStart).toBe(1)
       expect(resource[0]?.lineEnd).toBe(3)
 
       const variable = querySymbols({ name: 'var.region', limit: 10 }, projectDb)
-      expect(variable.length).toBeGreaterThan(0)
+      expect(variable.length).toBe(1)
       expect(variable[0]?.kind).toBe('tf_variable')
     } finally {
       closeDb(projectDb)
@@ -732,12 +732,12 @@ describe('drainOnce', () => {
     const projectDb = path.join(DIR, 'global.db')
     try {
       const func = querySymbols({ name: 'deploy', limit: 10 }, projectDb)
-      expect(func.length).toBeGreaterThan(0)
+      expect(func.length).toBe(1)
       expect(func[0]?.kind).toBe('function')
       expect(func[0]?.lineStart).toBe(4)
 
       const variable = querySymbols({ name: 'APP_NAME', limit: 10 }, projectDb)
-      expect(variable.length).toBeGreaterThan(0)
+      expect(variable.length).toBe(1)
       expect(variable[0]?.kind).toBe('variable')
     } finally {
       closeDb(projectDb)
@@ -756,7 +756,7 @@ describe('drainOnce', () => {
     try {
       expect(
         querySymbols({ name: 'doomedWorkerSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
       fs.rmSync(src)
       writeQueue(DIR, [norm])
       drainOnce(DIR)
@@ -790,7 +790,7 @@ describe('drainOnce', () => {
     try {
       expect(
         querySymbols({ name: 'growableWorkerSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
       expect(getFileEntry(norm, projectDb)).not.toBeNull()
 
       // Edit the file (sha changes, so the parseUnchanged gate in makeIndexer will not skip
@@ -847,7 +847,7 @@ describe('drainOnce', () => {
     try {
       expect(
         querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
       expect(getFileEntry(norm, projectDb)).not.toBeNull()
 
       // Make the file skip-eligible via a CONFIG CHANGE ONLY -- content and sha are untouched,
@@ -897,7 +897,7 @@ describe('drainOnce', () => {
     try {
       expect(
         querySymbols({ name: 'prunedWorkerSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
 
       // Simulate the git-mv/git-clean scenario: the file is gone from disk, but its old path
       // is never re-enqueued (unlike the sibling test above, which explicitly re-queues the
@@ -927,7 +927,7 @@ describe('drainOnce', () => {
     try {
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
-      expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBeGreaterThan(0)
+      expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(1)
 
       // Corrupt the index: drop the file's symbol rows but leave its files row (and stored sha) intact.
       getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
@@ -970,7 +970,7 @@ describe('drainOnce', () => {
       expect(drainOnce(DIR)).toBe(1)
       expect(
         querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
 
       getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
       expect(querySymbols({ name: 'shaGatedInvalidUtf8', limit: 10 }, projectDb).length).toBe(0)
@@ -1007,7 +1007,7 @@ describe('drainOnce', () => {
     const projectDb = path.join(DIR, 'global.db')
     try {
       const found = querySymbols({ name: 'Known Bom Heading', limit: 10 }, projectDb)
-      expect(found.length).toBeGreaterThan(0)
+      expect(found.length).toBe(1)
       expect(found[0]?.lineStart).toBe(1)
     } finally {
       closeDb(projectDb)
@@ -1229,7 +1229,7 @@ describe('makeIndexer failure handling (regression)', () => {
       expect(count).toBe(1)
       expect(
         querySymbols({ name: 'knownGoodSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
       expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBe(0)
 
       // (a) The swallowed failure must be surfaced somewhere discoverable: the worker's error
@@ -1285,7 +1285,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       expect(embedSpy).toHaveBeenCalledTimes(1)
       expect(
         querySymbols({ name: 'embedCrashSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
       expect(getFileEntry(norm, projectDb)?.embedSha).toBe('')
       // Let the first (rejected) embed call's promise chain settle and clear itself from
       // worker.ts's per-file in-flight map (embedFileSerialized) before the second drain --
@@ -1344,10 +1344,10 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       expect(embedSpy).toHaveBeenCalledTimes(1)
       expect(
         querySymbols({ name: 'embedDisabledSymbol', limit: 10 }, projectDb).length,
-      ).toBeGreaterThan(0)
+      ).toBe(1)
 
       const entry = getFileEntry(norm, projectDb)
-      expect(entry?.sha).toBeTruthy()
+      expect(entry?.sha).toBe('d2b91fcdbf299a026bf4785fc440ce1467c8707d6fb624de247f962a2a846d17')
       expect(entry?.embedSha).toBe(parserModule.disabledEmbedSha(entry?.sha ?? ''))
       // Never the bare sha: that would be indistinguishable from a real successful embed.
       expect(entry?.embedSha).not.toBe(entry?.sha)
@@ -1610,7 +1610,7 @@ describe('runWorkerLoop known-roots auto-prune sweep (regression)', () => {
     const db = getDb(dbPath)
     const symbolCountFor = (key: string): number =>
       (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE file_path = ?').get(key) as { n: number }).n
-    expect(symbolCountFor(aKey)).toBeGreaterThan(0)
+    expect(symbolCountFor(aKey)).toBe(1)
 
     let calls = 0
     const shouldStop = (): boolean => {
