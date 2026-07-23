@@ -81,7 +81,7 @@ export interface ParsedTranscript {
   resultTextById: Map<string, string>
 }
 
-function safeStringify(value: unknown): string {
+export function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value) ?? ''
   } catch {
@@ -118,7 +118,8 @@ function summarizeInput(name: string, input: unknown, filePath: string | null, c
   return s.length > 100 ? `${s.slice(0, 100)}…` : s
 }
 
-function extractResultText(content: unknown): string {
+/** Flatten a `tool_result` block's `content` (string or array of `{type:'text',text}` blocks) to plain text. */
+export function extractResultText(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     return content
