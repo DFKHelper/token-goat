@@ -942,7 +942,9 @@ const cases: Record<string, () => void | Promise<void>> = {
       servers: Array<{ name: string; perCallTokens: number; callCount: number; totalTokens: number }>
     }
     expect(parsed.configFound).toBe(true)
-    expect(parsed.servers).toBeDefined()
+    // toBeDefined() alone would still pass on an empty array, missing the actual fixture server
+    // the .mcp.json above declares -- pin that it's really surfaced by name.
+    expect(parsed.servers.map((s) => s.name)).toContain('example-server')
   },
 
   recall: () => {
@@ -1033,8 +1035,9 @@ const cases: Record<string, () => void | Promise<void>> = {
     const manifest = JSON.parse(rJson.stdout) as Array<{ name: string; description: string; options: unknown[]; subcommands: Array<{ name: string }> }>
     expect(manifest.length).toBeGreaterThan(10)
     const symbolEntry = manifest.find((e) => e.name === 'symbol')
-    expect(symbolEntry).toBeDefined()
-    expect(symbolEntry?.description.length).toBeGreaterThan(0)
+    // Length-only would still pass on any placeholder/garbled description text -- pin the real
+    // one so a regression that swapped/blanked/duplicated a command's description is caught.
+    expect(symbolEntry?.description).toBe('search for a symbol by name')
     const workerEntry = manifest.find((e) => e.name === 'worker')
     expect(workerEntry?.subcommands.map((s) => s.name)).toContain('start')
   },
@@ -1059,7 +1062,11 @@ const cases: Record<string, () => void | Promise<void>> = {
 
     const rEmpty = run(['statusline'], { input: '' })
     expect(rEmpty.status, rEmpty.stderr).toBe(0)
-    expect(rEmpty.stdout.trim().length).toBeGreaterThan(0)
+    // Length-only wouldn't catch a fallback that degraded into multi-line or garbled output --
+    // pin the same single-line shape the payload case above checks, plus the documented
+    // `<project> | idx <status>` structure the empty-stdin fallback falls back to.
+    expect(rEmpty.stdout.split('\n').filter((l) => l.length > 0).length).toBe(1)
+    expect(rEmpty.stdout).toMatch(/^\S+ \| idx \S+/)
 
     const rJson = run(['statusline', '--json'], { input: payload })
     expect(rJson.status, rJson.stderr).toBe(0)
@@ -1218,10 +1225,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/refDriver|caller\.ts/)
   },
   'call-chain': () => {
-    // refHelper is called by refDriver which has no further callers in the tiny fixture.
+    // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
+    // fixture fact the sibling 'impact' case below pins by content -- length-only here wouldn't
+    // catch a regression that printed an unrelated (but still non-empty) chain.
     const r = run(['call-chain', 'refHelper', '--depth', '4'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout.length).toBeGreaterThan(0)
+    expect(r.stdout).toMatch(/refDriver/)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
   impact: () => {
@@ -1315,7 +1324,9 @@ const cases: Record<string, () => void | Promise<void>> = {
     const rj = run(['tokens', 'src/mod.ts', '--json'])
     expect(rj.status, rj.stderr).toBe(0)
     const parsed = JSON.parse(rj.stdout) as { entries: unknown[]; total_tokens: number }
-    expect(parsed.entries.length).toBeGreaterThan(0)
+    // Exactly one file was requested -- pin the exact entry count so a regression that
+    // duplicated or dropped rows (still non-empty either way) is caught.
+    expect(parsed.entries.length).toBe(1)
     expect(parsed.total_tokens).toBeGreaterThan(0)
   },
   budget: () => {
@@ -1345,8 +1356,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('test_add')
     const rj = run(['failures', '--json'], { input })
     expect(rj.status, rj.stderr).toBe(0)
-    const parsed = JSON.parse(rj.stdout) as { failures: unknown[] }
-    expect(parsed.failures.length).toBeGreaterThan(0)
+    const parsed = JSON.parse(rj.stdout) as { failures: Array<{ name: string }> }
+    // The fixture has exactly one failure block -- pin the exact count and name so a
+    // regression that emitted a duplicate or unrelated entry (still non-empty) is caught.
+    expect(parsed.failures.length).toBe(1)
+    expect(parsed.failures[0]?.name).toBe('test_add')
 
     // --delta: first invocation for this --key has no baseline yet, so the current failure is
     // reported as newly-failing rather than an empty/silent delta.
@@ -1388,7 +1402,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(fourthJson.status, fourthJson.stderr).toBe(0)
     const firstDelta = JSON.parse(fourthJson.stdout) as { hasBaseline: boolean; newlyFailing: string[] }
     expect(firstDelta.hasBaseline).toBe(false)
-    expect(firstDelta.newlyFailing.length).toBeGreaterThan(0)
+    expect(firstDelta.newlyFailing).toEqual(['test_add'])
     const fifthJson = run(['failures', '--delta', '--key', 'matrix-e2e-json', '--json'], { input })
     const secondDelta = JSON.parse(fifthJson.stdout) as {
       hasBaseline: boolean
@@ -1412,8 +1426,10 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('TODO')
     const rj = run(['todo', fixture, '--json'])
     expect(rj.status, rj.stderr).toBe(0)
-    const parsed = JSON.parse(rj.stdout) as { items: unknown[] }
-    expect(parsed.items.length).toBeGreaterThan(0)
+    const parsed = JSON.parse(rj.stdout) as { items: Array<{ file: string; kind: string; text: string; line: number }> }
+    // The fixture has exactly one TODO marker -- pin the exact count/kind/line/text so a
+    // regression that emitted a duplicate or misparsed entry (still non-empty) is caught.
+    expect(parsed.items).toEqual([{ file: expect.any(String), kind: 'TODO', text: 'fix this', line: 1 }])
   },
   trace: () => {
     const tb = [
@@ -1694,7 +1710,9 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const p = JSON.parse(rj.stdout) as { path: string; compact: string }
     expect(typeof p.compact).toBe('string')
-    expect(p.compact.length).toBeGreaterThan(0)
+    // Length-only wouldn't catch --json returning an unrelated (but still non-empty) section --
+    // pin the same real content the plain-text form above already checks.
+    expect(p.compact).toContain('Install')
   },
   'fetch-image': () => {
     // fetch-image without network — verify it dispatches correctly by checking --help reachability.
