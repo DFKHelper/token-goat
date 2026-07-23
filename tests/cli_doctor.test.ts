@@ -520,6 +520,31 @@ describe('cli_doctor', () => {
       }
     })
 
+    it('passes -P to df so a wrapped long filesystem-name line does not desync the column parse', async () => {
+      // Regression: plain `df -k` (no -P) is not required to keep each entry on one line -- a
+      // long filesystem/device name can wrap onto its own line, pushing the stat columns to
+      // lines[2] instead of lines[1] and silently misreading `Available` as some other column.
+      // `-P` forces POSIX single-line output. This test both asserts `-P` is actually passed and
+      // proves the parse is still correct in the wrapped-name shape POSIX mode guarantees away.
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { value: 'linux' })
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = spawnSync as unknown as ReturnType<typeof vi.fn>
+      mockedSpawnSync.mockReturnValueOnce({
+        status: 0,
+        error: undefined,
+        stdout: 'Filesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/sda1        102400000  10240000  92160000       10% /\n',
+        stderr: '',
+      })
+      try {
+        const result = checkDiskSpace(path.join(tempDir, 'does-not-exist-xyz'))
+        expect(result.status).toBe('ok')
+        expect(mockedSpawnSync).toHaveBeenCalledWith('df', expect.arrayContaining(['-Pk']), expect.anything())
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform })
+      }
+    })
+
     it('reports an explicit unavailable message, not a silent pass, when no check path works', () => {
       // A nonexistent path makes fs.statfsSync throw a genuine ENOENT -- no module mocking
       // needed (fs's ESM namespace exports are non-configurable, so statfsSync can't be
