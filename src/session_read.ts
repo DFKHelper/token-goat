@@ -167,40 +167,66 @@ function toolCallsForBlocks(blocks: SessionBlock[]): string[] {
   return blocks.filter((b) => b.type === 'tool_use' && b.name !== undefined).map((b) => b.name as string)
 }
 
+/** One valid (parseable, user/assistant) turn yielded by {@link streamTurns}. */
+interface StreamedTurn {
+  turn: number
+  lineNumber: number
+  trimmed: string
+  role: string
+  blocks: SessionBlock[]
+}
+
+/**
+ * Stream a transcript line-by-line, yielding one entry per valid turn -- blank lines,
+ * malformed JSON, and non-user/assistant lines are silently skipped, mirroring
+ * `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once.
+ * Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise
+ * differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops
+ * early once past its turn range). `rl.close()` runs in `finally` so an early `break` in a
+ * `for await` consumer (which invokes this generator's `return()`) still releases the stream.
+ */
+async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn> {
+  const rl = readline.createInterface({ input: fs.createReadStream(transcriptPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+  try {
+    let lineNumber = 0
+    let turn = 0
+    for await (const line of rl) {
+      lineNumber++
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      let obj: unknown
+      try {
+        obj = JSON.parse(trimmed)
+      } catch {
+        continue
+      }
+      const parsed = toTurnBlocks(obj)
+      if (parsed === null) continue
+      turn++
+      yield { turn, lineNumber, trimmed, role: parsed.role, blocks: parsed.blocks }
+    }
+  } finally {
+    rl.close()
+  }
+}
+
 /**
  * Stream a transcript line-by-line, building the compact per-turn outline.
  * Never loads the whole file into memory at once.
  */
 export async function buildSessionOutline(transcriptPath: string): Promise<SessionOutlineTurn[]> {
-  const rl = readline.createInterface({ input: fs.createReadStream(transcriptPath, { encoding: 'utf8' }), crlfDelay: Infinity })
   const out: SessionOutlineTurn[] = []
-  let lineNumber = 0
-  let turn = 0
-
-  for await (const line of rl) {
-    lineNumber++
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    let obj: unknown
-    try {
-      obj = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-    const parsed = toTurnBlocks(obj)
-    if (parsed === null) continue
-    turn++
+  for await (const t of streamTurns(transcriptPath)) {
     out.push({
-      turn,
-      lineNumber,
-      role: parsed.role,
-      preview: previewForBlocks(parsed.blocks),
-      toolCalls: toolCallsForBlocks(parsed.blocks),
-      tokens: estimateTokens(trimmed),
-      bytes: Buffer.byteLength(trimmed, 'utf8'),
+      turn: t.turn,
+      lineNumber: t.lineNumber,
+      role: t.role,
+      preview: previewForBlocks(t.blocks),
+      toolCalls: toolCallsForBlocks(t.blocks),
+      tokens: estimateTokens(t.trimmed),
+      bytes: Buffer.byteLength(t.trimmed, 'utf8'),
     })
   }
-
   return out
 }
 
@@ -215,32 +241,12 @@ export async function sliceSessionTurns(
   startTurn: number,
   endTurn: number,
 ): Promise<SessionTurnDetail[]> {
-  const rl = readline.createInterface({ input: fs.createReadStream(transcriptPath, { encoding: 'utf8' }), crlfDelay: Infinity })
   const out: SessionTurnDetail[] = []
-  let lineNumber = 0
-  let turn = 0
-
-  for await (const line of rl) {
-    lineNumber++
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    let obj: unknown
-    try {
-      obj = JSON.parse(trimmed)
-    } catch {
-      continue
-    }
-    const parsed = toTurnBlocks(obj)
-    if (parsed === null) continue
-    turn++
-    if (turn < startTurn) continue
-    if (turn > endTurn) {
-      rl.close()
-      break
-    }
-    out.push({ turn, lineNumber, role: parsed.role, blocks: parsed.blocks })
+  for await (const t of streamTurns(transcriptPath)) {
+    if (t.turn < startTurn) continue
+    if (t.turn > endTurn) break
+    out.push({ turn: t.turn, lineNumber: t.lineNumber, role: t.role, blocks: t.blocks })
   }
-
   return out
 }
 
