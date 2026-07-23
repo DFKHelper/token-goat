@@ -337,7 +337,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
         const rows = db
           .prepare('SELECT DISTINCT file_path FROM symbols')
           .all() as Array<{ file_path: string }>
-        expect(rows.length).toBeGreaterThan(0)
+        expect(rows.length).toBe(1)
         const expectedKey = normalizePath(path.resolve(relRepo, 'src', 'mod.ts'))
         const keys = rows.map((r) => r.file_path)
         // The pre-fix bug stored the relative 'src/mod.ts'; the fix stores the absolute-normalized key that every reader resolves to.
@@ -447,11 +447,11 @@ describe('cmdIndex prunes deleted files (shipping path)', () => {
     const db = getDb(dbPath)
     const count = (sym: string): number =>
       (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE name = ?').get(sym) as { n: number }).n
-    expect(count('goneSym')).toBeGreaterThan(0)
+    expect(count('goneSym')).toBe(1)
     fs.rmSync(goneFile)
     await cmdIndex(dir, { walk: true, dbPath })
     expect(count('goneSym')).toBe(0)
-    expect(count('keepSym')).toBeGreaterThan(0)
+    expect(count('keepSym')).toBe(1)
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {
@@ -489,7 +489,7 @@ describe('cmdIndex honors worker.blocked_roots (shipping path)', () => {
     const db = getDb(dbPath)
     const count = (sym: string): number =>
       (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE name = ?').get(sym) as { n: number }).n
-    expect(count('keepSym')).toBeGreaterThan(0)
+    expect(count('keepSym')).toBe(1)
     expect(count('blockedSym')).toBe(0)
 
     try {
