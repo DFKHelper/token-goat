@@ -182,11 +182,14 @@ interface StreamedTurn {
  * `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once.
  * Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise
  * differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops
- * early once past its turn range). `rl.close()` runs in `finally` so an early `break` in a
- * `for await` consumer (which invokes this generator's `return()`) still releases the stream.
+ * early once past its turn range). `rl.close()` and `input.destroy()` both run in `finally` so
+ * an early `break` in a `for await` consumer (which invokes this generator's `return()`) still
+ * releases the stream -- `readline.close()` alone does not destroy the underlying input stream,
+ * so without the explicit destroy the fs read handle/fd would linger until GC.
  */
 async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn> {
-  const rl = readline.createInterface({ input: fs.createReadStream(transcriptPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+  const input = fs.createReadStream(transcriptPath, { encoding: 'utf8' })
+  const rl = readline.createInterface({ input, crlfDelay: Infinity })
   try {
     let lineNumber = 0
     let turn = 0
@@ -207,6 +210,7 @@ async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn
     }
   } finally {
     rl.close()
+    input.destroy()
   }
 }
 

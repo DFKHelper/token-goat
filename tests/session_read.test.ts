@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import type * as NodeOs from 'node:os'
+import type * as NodeFs from 'node:fs'
 
 // vi.mock is hoisted -- wrap homedir so projectTranscriptsDir/resolveSessionTranscript resolve
 // against an isolated fake home instead of the real developer machine's
@@ -12,6 +13,17 @@ vi.mock('node:os', async (importOriginal) => {
   return {
     ...original,
     homedir: vi.fn((...args: Parameters<typeof original.homedir>) => original.homedir(...args)),
+  }
+})
+
+// vi.mock is hoisted -- wrap createReadStream as a transparent passthrough spy (delegates to the
+// real implementation) so one test below can assert streamTurns' finally block actually destroys
+// the underlying stream on an early break, without altering real behavior for any other test.
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>()
+  return {
+    ...original,
+    createReadStream: vi.fn((...args: Parameters<typeof original.createReadStream>) => original.createReadStream(...args)),
   }
 })
 
@@ -196,6 +208,19 @@ describe('sliceSessionTurns', () => {
     expect(slice).toHaveLength(1)
     expect(slice[0]?.role).toBe('user')
     expect(slice[0]?.blocks[0]?.text).toBe('Please read config.ts and summarize it.')
+  })
+
+  it('destroys the underlying read stream, not just the readline interface, on an early break', async () => {
+    // Regression: streamTurns' `finally` block only called rl.close(), which does not itself
+    // destroy the fs.ReadStream backing it -- an early `break` (any range ending before the
+    // transcript's last turn, like this 1-1 slice) left the file's read handle/fd open until GC.
+    const file = writeFixture(fixtureLines())
+    const createReadStreamSpy = vi.mocked(fs.createReadStream)
+    createReadStreamSpy.mockClear()
+    await sliceSessionTurns(file, 1, 1)
+    expect(createReadStreamSpy).toHaveBeenCalledTimes(1)
+    const stream = createReadStreamSpy.mock.results[0]?.value as fs.ReadStream
+    expect(stream.destroyed).toBe(true)
   })
 })
 
