@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import type * as os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import * as path from 'node:path'
-import { dataDirForHome } from '../src/constants.js'
+import { dataDirForHome, dataDir, _resetDataDirCacheForTesting } from '../src/constants.js'
 import { BUNDLE } from './helpers/bundle.js'
 
 describe('dataDirForHome', () => {
@@ -62,6 +62,41 @@ describe('dataDirForHome', () => {
       const fresh = await import('../src/constants.js')
       expect(fresh.dataDirForHome(fakeHome)).toBe(fresh.dataDir())
     })
+  })
+
+  // Regression: DATA_DIR is cached at module-load time (see the doc comment on
+  // _resetDataDirCacheForTesting in constants.ts), so a test file that overrides
+  // LOCALAPPDATA/XDG_DATA_HOME per-test (mirroring the already-established TOKEN_GOAT_HOME
+  // per-test pattern used elsewhere in this suite) would otherwise see dataDir() keep returning
+  // whatever value was cached the first time this module was imported in this worker process --
+  // silently defeating the override with no error. _resetDataDirCacheForTesting must make
+  // dataDir() pick up the new override immediately, without going through vi.resetModules()
+  // (which this same describe block's other test documents as itself causing cross-file
+  // pollution when used on this module).
+  it('_resetDataDirCacheForTesting makes dataDir() pick up a fresh LOCALAPPDATA/XDG_DATA_HOME override', () => {
+    const savedLocalAppData = process.env['LOCALAPPDATA']
+    const savedXdg = process.env['XDG_DATA_HOME']
+    try {
+      const before = dataDir()
+      const override = path.join(before, 'a-fresh-override-dir')
+      process.env['LOCALAPPDATA'] = override
+      process.env['XDG_DATA_HOME'] = override
+      // Without the reset, dataDir() would still return `before` here -- the whole point under test.
+      expect(dataDir()).toBe(before)
+      _resetDataDirCacheForTesting()
+      expect(dataDir()).not.toBe(before)
+      if (process.platform === 'win32') {
+        expect(dataDir()).toBe(path.join(override, 'dfk-helper', 'token-goat'))
+      } else if (process.platform !== 'darwin') {
+        expect(dataDir()).toBe(path.join(override, 'token-goat'))
+      }
+    } finally {
+      if (savedLocalAppData === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = savedLocalAppData
+      if (savedXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = savedXdg
+      _resetDataDirCacheForTesting()
+    }
   })
 
   // Regression: production config.toml was found on this developer's machine holding
