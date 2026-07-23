@@ -51,7 +51,7 @@ public class UserService {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('UserService')
     // Regression: this test's name promises "method" coverage but only ever checked the class
-    // symbol -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed true as long as
+    // symbol -- `console.log('PSCOUNT', symbols.length, symbols.map(s=>s.name)); expect(symbols.length).toBeGreaterThan(0)` (removed) stayed true as long as
     // UserService alone indexed, so a broken METHOD_RE could drop GetUser silently and this test
     // would still pass. Verified this now fails if METHOD_RE is broken (temporarily forced to
     // never match during audit) and passes on the real implementation.
@@ -612,7 +612,7 @@ function helperFn() {}
     expect(names).toContain('UserService')
     expect(names).toContain('getUser')
     // Regression: this test's name promises "function" coverage (the top-level helperFn) but
-    // never actually checked it -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed
+    // never actually checked it -- `console.log('PSCOUNT', symbols.length, symbols.map(s=>s.name)); expect(symbols.length).toBeGreaterThan(0)` (removed) stayed
     // true from the class/method alone, so a broken top-level-function pattern could drop
     // helperFn silently with this test still green.
     expect(names).toContain('helperFn')
@@ -3184,7 +3184,10 @@ enum Color {
 }
 `
     const { symbols } = extractPowershell(content, 'script.ps1')
-    expect(symbols.length).toBeGreaterThan(0)
+    // 6, not 5: the Widget class's constructor is PowerShell's own class-name-as-method
+    // convention, so 'Widget' legitimately appears twice -- once as the class, once as its
+    // constructor method.
+    expect(symbols.length).toBe(6)
     const names = symbols.map((s) => s.name)
     
     // Should contain top-level definitions
