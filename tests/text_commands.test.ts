@@ -1100,6 +1100,42 @@ describe('lockdeps command', () => {
       expect(parsed.deps.length).toBe(4)
       fs.rmSync(dir, { recursive: true, force: true })
     })
+
+    // Regression: the root "" packages entry's optionalDependencies map was silently omitted
+    // from both parsePackageLockJson's allDirect set and buildNpmEdges's directNames set, so a
+    // package declared only as optional (e.g. fsevents) was misclassified as 'transitive' by the
+    // default dump, and excluded as a possible source in --package's reverse ("depended on by
+    // direct deps") lookup -- even though it is genuinely one of the project's own top-level
+    // dependencies, exactly like dependencies/devDependencies already are.
+    it('treats a root-level optionalDependencies entry as direct, same as dependencies/devDependencies', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockdeps-pkg-'))
+      const lockPath = path.join(dir, 'package-lock.json')
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          name: 'optional-fixture',
+          version: '1.0.0',
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { direct: '1.0.0' }, optionalDependencies: { fsevents: '2.3.3' } },
+            'node_modules/direct': { version: '1.0.0' },
+            'node_modules/fsevents': { version: '2.3.3', dependencies: { child: '^1.0.0' } },
+            'node_modules/child': { version: '1.0.0' },
+          },
+        }),
+        'utf8',
+      )
+      const r = run(['lockdeps', lockPath, '--package', 'fsevents', '--json'])
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { kind: string }
+      expect(parsed.kind).toBe('direct')
+
+      const reverse = run(['lockdeps', lockPath, '--package', 'child', '--json'])
+      expect(reverse.status, reverse.stderr).toBe(0)
+      const reverseParsed = JSON.parse(reverse.stdout) as { dependedOnBy: string[] }
+      expect(reverseParsed.dependedOnBy).toEqual(['fsevents'])
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
   })
 })
 
