@@ -20,12 +20,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // tests/hooks_grep.test.ts/hooks_bash.test.ts's pattern. Confirmed necessary: writing through
 // the shared config.toml here broke cmdCompactHint's "reflects the real session tier" test
 // further down this same file, even mutating only one unrelated field.
+//
+// dataDir() is redirected the same way, but per-TEST (not per-file, reassigned in beforeEach
+// below) to a fresh subdirectory of that test's own tmpHome -- unlike TOKEN_GOAT_HOME
+// (read live from process.env on every call), DATA_DIR is cached once at module load (see
+// constants.ts's own doc comment on _resetDataDirCacheForTesting), so tests/setup/isolate-home.ts
+// pins it to the SAME real directory for every test file sharing this Vitest worker. Any test in
+// this file that writes real fixture files under dataDir()-derived paths (e.g. webCacheDir() in
+// webfetch.ts, exercised by cmdCleanCache/cmdPruneCache's stale-.tmp-download sweep below) would
+// otherwise write into that shared worker-wide directory instead of an isolated one -- confirmed
+// to destabilize an unrelated test elsewhere in this exact file under full-suite load before this
+// mock existed (see the cmdPruneCache stale-download test's own regression comment below).
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
-  return { ...original, configPath: () => _testConfigPath }
+  return { ...original, configPath: () => _testConfigPath, dataDir: () => _testDataDir }
 })
 
 const _testConfigPath = path.join(os.tmpdir(), `tg-cache-session-commands-config-test-${process.pid}.toml`)
+let _testDataDir: string
 
 import { listBlobs, storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
@@ -47,6 +59,10 @@ beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-cache-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
+  // See the vi.mock('../src/constants.js', ...) comment above: a subdirectory of this test's own
+  // fresh tmpHome, so it's cleaned up by the existing tmpHome rmSync in afterEach with no separate
+  // teardown needed.
+  _testDataDir = path.join(tmpHome, 'data-dir')
   // Pin harness detection so getContextPressure's fillFraction (scaled by the
   // per-harness auto-trigger multiplier) doesn't depend on the ambient
   // environment this suite happens to run in.
@@ -389,6 +405,29 @@ describe('cmdPruneCache', () => {
     const parsed = JSON.parse(capturedOutput()) as { maxCount: number; maxAgeMs: number }
     expect(parsed.maxCount).toBe(3)
     expect(parsed.maxAgeMs).toBeCloseTo(2 * 3600 * 1000, -3)
+  })
+
+  // Regression: cmdCleanCache wires cleanupStaleDownloads (see the matching cmdCleanCache test
+  // above) but that wiring was never mirrored onto this sibling command -- prune-cache is
+  // documented as "clean-cache but with caller-specified eviction bounds", so a stale .tmp
+  // download left behind after a killed webfetch was silently NOT swept by prune-cache while
+  // clean-cache did sweep it, an unexplained behavior divergence between the two. Uses this
+  // file's own per-test dataDir() mock (see the vi.mock comment at the top of this file) rather
+  // than the real per-worker dataDir() -- an earlier attempt at this exact fix, before that mock
+  // existed, reproducibly destabilized the unrelated cmdCost "No stats recorded yet" test
+  // elsewhere in this file under full-suite load by touching the real worker-shared directory.
+  it('also sweeps orphaned .tmp download files from the web fetch cache dir, same as clean-cache', () => {
+    const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
+    fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
+    fs.writeFileSync(staleTmp, 'partial')
+    try {
+      cmdPruneCache({ maxCount: '1000', json: true })
+      const parsed = JSON.parse(capturedOutput()) as { removed: Record<string, number> }
+      expect(parsed.removed['web_cache_tmp']).toBeGreaterThanOrEqual(1)
+      expect(fs.existsSync(staleTmp)).toBe(false)
+    } finally {
+      try { fs.unlinkSync(staleTmp) } catch { /* already removed by the assertion above */ }
+    }
   })
 
   it('evicts entries beyond maxCount across subdirs', () => {

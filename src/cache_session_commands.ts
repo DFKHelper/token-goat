@@ -251,6 +251,17 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
     removed[sub] = n
     total += n
   }
+  // clean-cache (cmdCleanCache above) sweeps orphaned .tmp download files left behind by a
+  // process killed mid-download (see cleanupStaleDownloads in webfetch.ts); prune-cache is
+  // documented as "clean-cache but with caller-specified eviction bounds", so it must sweep the
+  // same web_cache_tmp files -- cleanupStaleDownloads takes no bounds of its own (it always
+  // removes every .tmp file, unconditionally), so there's nothing maxCount/maxAgeHours could
+  // even apply to here. Regression: this call was added to cmdCleanCache (30e16aee) but never
+  // mirrored onto this sibling command, so `token-goat prune-cache` silently left those files
+  // behind while `token-goat clean-cache` swept them.
+  const staleDownloads = cleanupStaleDownloads()
+  removed['web_cache_tmp'] = staleDownloads
+  total += staleDownloads
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ removed, total, maxCount, maxAgeMs }, null, 2) + '\n')
     return
