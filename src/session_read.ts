@@ -33,7 +33,7 @@ import * as path from 'node:path'
 import * as readline from 'node:readline'
 
 import { estimateTokens } from './compact.js'
-import { projectTranscriptsDir } from './waste.js'
+import { projectTranscriptsDir, safeStringify, extractResultText } from './waste.js'
 import { resolveProjectRoot } from './project.js'
 
 // ---- resolution -----------------------------------------------------------
@@ -133,31 +133,6 @@ const PREVIEW_MAX = 140
 function truncate(text: string, max: number): string {
   const collapsed = text.replace(/\s+/g, ' ').trim()
   return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? ''
-  } catch {
-    return ''
-  }
-}
-
-/** Flatten a `tool_result` block's `content` (string or array of `{type:'text',text}` blocks) to plain text. */
-function extractResultText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((b) => {
-        if (b !== null && typeof b === 'object' && (b as Record<string, unknown>)['type'] === 'text') {
-          const t = (b as Record<string, unknown>)['text']
-          return typeof t === 'string' ? t : ''
-        }
-        return ''
-      })
-      .join('\n')
-  }
-  return ''
 }
 
 /** Normalize one raw `message.content` block into a {@link SessionBlock}. */
