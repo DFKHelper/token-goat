@@ -3059,9 +3059,11 @@ export function extractImports(text: string, ext: string): string[] {
     // so "require_once 'x.php'" never matches at all (the `_once` suffix sits where `\s+` is
     // expected): every require_once/include_once line silently reported zero imports/deps.
     // Mirrors php.ts's REQUIRE_RE/USE_RE, which already extract these same directives correctly
-    // for the symbol index.
+    // for the symbol index. The optional `\(?` / trailing `\)?` also cover the equally common
+    // function-call form `require_once('x.php')`, which the earlier whitespace-only pattern
+    // still missed even after fixing the bare form.
     for (const line of lines) {
-      const req = /^\s*(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/.exec(line)
+      const req = /^\s*(?:require|include)(?:_once)?\s*\(?\s*['"]([^'"]+)['"]/.exec(line)
       if (req) { push(req[1]); continue }
       const use = /^\s*use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/.exec(line)
       if (use) push(use[1])
