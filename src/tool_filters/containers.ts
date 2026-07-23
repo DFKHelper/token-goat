@@ -12,6 +12,7 @@ import {
   pathName,
   pathStem,
   positionalArgs,
+  truncateTableRows,
 } from './helpers.js'
 
 // ---------------------------------------------------------------------------
@@ -244,13 +245,7 @@ export class DockerComposeFilter extends ToolFilter {
 // ---------------------------------------------------------------------------
 
 function _compressKubectlTable(text: string, maxRows = 10): string {
-  const lines = text.split('\n')
-  const nonEmpty = lines.filter((l) => l.trim())
-  if (nonEmpty.length <= maxRows + 1) return text
-  return (
-    nonEmpty.slice(0, maxRows + 1).join('\n') +
-    `\n[token-goat: ${nonEmpty.length - maxRows - 1} more rows; use --selector or -l to narrow]`
-  )
+  return truncateTableRows(text, maxRows, 'use --selector or -l to narrow')
 }
 
 const _MAX_PER_REASON = 3
