@@ -40,7 +40,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['symbol_lookup']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -61,7 +61,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['read_replacement']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -84,7 +84,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['section_read']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -110,7 +110,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['semantic_search']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -130,7 +130,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['imports']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -156,7 +156,7 @@ describe('read_commands surgical-read stat recording (#238)', () => {
 
       const after = summarize(30).by_kind['changed_lookup']
       expect(after).toBeDefined()
-      expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+      expect(after?.events ?? 0).toBe(beforeEvents + 1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
