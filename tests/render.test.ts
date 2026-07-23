@@ -474,6 +474,18 @@ describe('Stats rendering', () => {
     expect(result).toContain('Bash')
   })
 
+  it('groups read_count_deny under Hints, not Other (regression: it is SOURCE_HINT and recorded alongside session_hint but was missing from _KIND_GROUPS)', () => {
+    const stats = { ...minimalStats }
+    stats.by_kind = [
+      { kind: 'session_hint', bytes: 10000, tokens: 1000, events: 20 },
+      { kind: 'read_count_deny', bytes: 4000, tokens: 400, events: 8 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    expect(byKindBlock).toContain('read_count_deny')
+    expect(byKindBlock).not.toContain('Other')
+  })
+
   it('groups imports, changed_lookup, and dep_docs kinds under Read savings, not Other (regression: all three were missing from _KIND_GROUPS)', () => {
     const stats = { ...minimalStats }
     stats.by_kind = [
