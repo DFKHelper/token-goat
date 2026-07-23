@@ -33,7 +33,7 @@ import * as path from 'node:path'
 import * as readline from 'node:readline'
 
 import { estimateTokens } from './compact.js'
-import { projectTranscriptsDir, safeStringify, extractResultText } from './waste.js'
+import { projectTranscriptsDir, findLatestTranscript, safeStringify, extractResultText } from './waste.js'
 import { resolveProjectRoot } from './project.js'
 
 // ---- resolution -----------------------------------------------------------
@@ -65,28 +65,7 @@ export function resolveSessionTranscript(arg?: string, opts: { project?: string 
   }
 
   const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
-  return latestTranscriptInDir(projectTranscriptsDir(projectRoot))
-}
-
-function latestTranscriptInDir(dir: string): string | null {
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-  } catch {
-    return null
-  }
-  let best: { file: string; mtimeMs: number } | null = null
-  for (const name of entries) {
-    const full = path.join(dir, name)
-    let stat: fs.Stats
-    try {
-      stat = fs.statSync(full)
-    } catch {
-      continue
-    }
-    if (best === null || stat.mtimeMs > best.mtimeMs) best = { file: full, mtimeMs: stat.mtimeMs }
-  }
-  return best?.file ?? null
+  return findLatestTranscript(projectRoot)
 }
 
 // ---- parsing ----------------------------------------------------------------
