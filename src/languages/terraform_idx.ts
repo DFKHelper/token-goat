@@ -92,6 +92,12 @@ const PROVIDER_RE = /^[ \t]*provider\s+"([^"]*)"\s*\{/gm
 // symbol per assignment inside it (simpler MVP scope, still enough for symbol/read/outline).
 const LOCALS_RE = /^[ \t]*locals\s*\{/gm
 
+// terraform { } -- the settings block (required_version, required_providers, backend, cloud),
+// unlabeled just like locals { } above. Present in virtually every real root module, but had no
+// extraction at all until this fix -- unlike locals, it was completely invisible to
+// symbol/outline/skeleton rather than merely under-detailed.
+const TERRAFORM_SETTINGS_RE = /^[ \t]*terraform\s*\{/gm
+
 // resource/data/variable/output/module/provider/locals blocks can all contain nested
 // sub-blocks (a resource's `lifecycle { ... }` or `dynamic "..." { ... }`, a provider's nested
 // alias config, ...). The shared assignFlatEndLines/propagateEndLinesToSymbols helpers only do
@@ -173,6 +179,15 @@ export function extractTerraform(content: string, filePath: string): SymbolEntry
     matches.push({
       name: 'locals',
       kind: 'tf_locals',
+      matchIndex: m.index ?? 0,
+      openBraceOffsetFromMatchStart: m[0].length - 1,
+    })
+  }
+
+  for (const m of stripped.matchAll(TERRAFORM_SETTINGS_RE)) {
+    matches.push({
+      name: 'terraform',
+      kind: 'tf_settings',
       matchIndex: m.index ?? 0,
       openBraceOffsetFromMatchStart: m[0].length - 1,
     })
