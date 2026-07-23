@@ -3635,6 +3635,33 @@ locals {
     expect(extractTerraform('', 'empty.tf')).toHaveLength(0)
   })
 
+  it('extracts the unlabeled terraform {} settings block (regression: it was invisible to symbol/outline/skeleton, unlike its locals {} sibling)', () => {
+    const content = `terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+`
+    const symbols = extractTerraform(content, 'main.tf')
+    const byName = (name: string) => symbols.find((s) => s.name === name)
+
+    // Nested required_providers {} block proves the settings block's own end line is found via
+    // true brace matching, not truncated at the first nested { (same proof as the locals test).
+    expect(byName('terraform')?.kind).toBe('tf_settings')
+    expect(byName('terraform')).toMatchObject({ lineStart: 1, lineEnd: 10 })
+
+    expect(byName('aws_instance.web')?.kind).toBe('tf_resource')
+  })
+
   it('detects .tf, .tfvars, and .hcl language via parseFile', async () => {
     const tfFile = tmp('main.tf', 'resource "aws_instance" "web" {}')
     const tfvarsFile = tmp('terraform.tfvars', 'region = "us-east-1"')
