@@ -478,8 +478,22 @@ describe('stats', () => {
   })
 
   describe('renderStats', () => {
+    // These two tests used to reimplement the "No stats recorded yet" / formatted-summary
+    // logic inline instead of calling the real renderStats() -- so they always passed
+    // regardless of what renderStats() actually does, providing zero coverage of the
+    // production code path. Route through a homeDir-threaded temp DB and the real
+    // _renderStats(), matching the pattern the other tests in this describe block use.
     it('prints "No stats recorded yet" when empty', () => {
-      const dbPath = path.join(tempDir, 'test.db')
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-empty-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
       const db = new Database(dbPath)
       db.exec(`
         CREATE TABLE stats (
@@ -493,28 +507,39 @@ describe('stats', () => {
         CREATE INDEX idx_stats_ts ON stats(ts);
         CREATE INDEX idx_stats_kind ON stats(kind);
       `)
+      db.close()
 
       let output = ''
       const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       console.log = (msg: string) => {
         output += msg + '\n'
       }
 
       try {
-        const summary = summarize(30, db)
-        if (summary.total_events === 0) {
-          console.log('No stats recorded yet.')
-        }
+        _renderStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
-        db.close()
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
       }
 
       expect(output).toContain('No stats recorded yet')
     })
 
     it('formats and prints stats summary', () => {
-      const dbPath = path.join(tempDir, 'test.db')
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-summary-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
       const db = new Database(dbPath)
       db.exec(`
         CREATE TABLE stats (
@@ -536,41 +561,23 @@ describe('stats', () => {
 
       insert.run(now, 'image_shrink', 1000, 5000)
       insert.run(now, 'symbol_read', 500, 2000)
+      db.close()
 
       let output = ''
       const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
       console.log = (msg: string) => {
         output += msg + '\n'
       }
 
       try {
-        const summary = summarize(30, db)
-        const fmtBytes = (n: number): string => {
-          if (n < 1024) return `${n}B`
-          if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
-          return `${(n / (1024 * 1024)).toFixed(1)}MB`
-        }
-
-        const lines: string[] = [
-          '# token-goat stats',
-          `Total events:   ${summary.total_events}`,
-          `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
-          `Tokens saved:   ${summary.total_tokens_saved}`,
-          `Window:         ${summary.window_days} days`,
-        ]
-
-        if (Object.keys(summary.by_source).length > 0) {
-          lines.push('', '## By Source')
-        }
-
-        if (summary.by_command.length > 0) {
-          lines.push('', '## By Command')
-        }
-
-        console.log(lines.join('\n'))
+        _renderStats({ windowDays: 30, homeDir: customHome })
       } finally {
         console.log = originalLog
-        db.close()
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
       }
 
       expect(output).toContain('# token-goat stats')
