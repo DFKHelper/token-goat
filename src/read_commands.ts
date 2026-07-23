@@ -3084,6 +3084,21 @@ export function extractImports(text: string, ext: string): string[] {
       const m = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/.exec(line)
       if (m) push(m[1])
     }
+  } else if (['.ps1', '.psm1'].includes(e)) {
+    // PowerShell's idiomatic import forms ("Import-Module Foo", "using module Foo") don't fall
+    // through to the generic `import|require|use|#include` fallback below: PowerShell keywords
+    // are case-insensitive and commonly capitalized ("Import-Module"), but the fallback regex is
+    // lowercase-only, and "using" doesn't contain "use" as a substring (u-s-i vs u-s-e) -- the
+    // same reason .cs's `using` directives needed their own branch. Without this, every .ps1/
+    // .psm1 file silently reported zero imports/deps.
+    for (const line of lines) {
+      const importMod = /^\s*Import-Module\s+(?:-Name\s+)?['"]?([^\s'";]+)/i.exec(line)
+      if (importMod) { push(importMod[1]); continue }
+      const usingMod = /^\s*using\s+module\s+['"]?([^\s'";]+)/i.exec(line)
+      if (usingMod) { push(usingMod[1]); continue }
+      const dotSource = /^\s*\.\s+['"]?([^\s'";]+\.psm?1)['"]?\s*$/i.exec(line)
+      if (dotSource) push(dotSource[1])
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
