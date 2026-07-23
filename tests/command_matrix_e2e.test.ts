@@ -752,7 +752,13 @@ const cases: Record<string, () => void | Promise<void>> = {
 
     const rFull = run(['stats', '--full'])
     expect(rFull.status, rFull.stderr).toBe(0)
-    expect(rFull.stdout.length).toBeGreaterThan(0)
+    // Length-only (`>0`) wouldn't distinguish --full from the bare totals-only output checked
+    // above -- it would still pass even if --full silently stopped adding the by-source/
+    // by-command/by-day breakdown and just re-printed the same totals. Assert the real,
+    // documented difference structurally (strictly more content than the bare form) rather than
+    // pinning exact section-header text, since the actual rendered text depends on the TTY/color
+    // path this process takes and isn't guaranteed to be the plain "## By Source" markdown form.
+    expect(rFull.stdout.length).toBeGreaterThan(r.stdout.length)
   },
   doctor: () => {
     const r = run(['doctor'])
