@@ -133,11 +133,17 @@ describe('Salesforce DX worker default path', () => {
       }
 
       // The LWC bundle and its public API are addressable across JS/template/metadata files.
-      expect(querySymbols({ name: 'accountCard' }, dbPath).length).toBeGreaterThan(0)
-      expect(querySymbols({ name: 'recordId' }, dbPath).length).toBeGreaterThan(0)
-      expect(querySymbols({ name: 'refresh' }, dbPath).length).toBeGreaterThan(0)
-      expect(querySymbols({ name: 'refreshButton' }, dbPath).length).toBeGreaterThan(0)
-      expect(querySymbols({ name: 'variant' }, dbPath).length).toBeGreaterThan(0)
+      // Pin the exact deterministic count -- and kind, matching this fixture's own JS/HTML
+      // origin for each name -- rather than a bare ">0", so a regression that resolved the
+      // name to the wrong file or duplicated/dropped an entry is caught too.
+      expect(querySymbols({ name: 'accountCard' }, dbPath)).toMatchObject([{ kind: 'lwc_bundle' }])
+      expect(querySymbols({ name: 'recordId' }, dbPath)).toMatchObject([{ kind: 'lwc_api_property' }])
+      expect(querySymbols({ name: 'refresh' }, dbPath)).toMatchObject([
+        { kind: 'lwc_api_method' },
+        { kind: 'method' },
+      ])
+      expect(querySymbols({ name: 'refreshButton' }, dbPath)).toMatchObject([{ kind: 'lwc_ref' }])
+      expect(querySymbols({ name: 'variant' }, dbPath)).toMatchObject([{ kind: 'sf_lwc_property' }])
 
       // Selected metadata receives qualified symbols, while an unknown metadata type
       // still gets a stable top-level symbol and never stores the whole XML body.
@@ -149,12 +155,16 @@ describe('Salesforce DX worker default path', () => {
         body: '',
       })
 
-      // Canonical cross-file names make navigation independent of import aliases.
-      expect(queryRefs({ name: 'AccountController.loadAccount' }, dbPath).length).toBeGreaterThan(0)
-      expect(queryRefs({ name: 'Account.Name' }, dbPath).length).toBeGreaterThan(0)
-      expect(queryRefs({ name: 'refresh' }, dbPath).length).toBeGreaterThan(0)
-      expect(queryRefs({ name: 'c-child-card' }, dbPath).length).toBeGreaterThan(0)
-      expect(queryRefs({ name: 'Child_Account_Flow' }, dbPath).length).toBeGreaterThan(0)
+      // Canonical cross-file names make navigation independent of import aliases. Pin the exact
+      // deterministic count of refs per name -- both AccountController.loadAccount and
+      // Account.Name are referenced once from the Flow metadata's XML tag and once from the
+      // LWC JS import, so a resolver regression that drops (or double-counts) either origin is
+      // caught, not just "at least one ref exists somewhere".
+      expect(queryRefs({ name: 'AccountController.loadAccount' }, dbPath).length).toBe(2)
+      expect(queryRefs({ name: 'Account.Name' }, dbPath).length).toBe(2)
+      expect(queryRefs({ name: 'refresh' }, dbPath).length).toBe(1)
+      expect(queryRefs({ name: 'c-child-card' }, dbPath).length).toBe(1)
+      expect(queryRefs({ name: 'Child_Account_Flow' }, dbPath).length).toBe(1)
     } finally {
       closeDb(dbPath)
     }
