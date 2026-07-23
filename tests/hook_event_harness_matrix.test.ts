@@ -428,7 +428,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
       const parsed = JSON.parse(second.stdout) as { decision?: string; reason?: string }
       expect(parsed.decision).toBe('block')
       expect(typeof parsed.reason).toBe('string')
-      expect((parsed.reason ?? '').length).toBeGreaterThan(0)
+      expect(parsed.reason ?? '').toContain('was already read this session')
     })
   }
 
@@ -479,7 +479,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     const parsed = JSON.parse(second.stdout) as { permissionDecision?: string; permissionDecisionReason?: string }
     expect(parsed.permissionDecision).toBe('deny')
     expect(typeof parsed.permissionDecisionReason).toBe('string')
-    expect((parsed.permissionDecisionReason ?? '').length).toBeGreaterThan(0)
+    expect(parsed.permissionDecisionReason ?? '').toContain('was already read this session')
   })
 })
 
