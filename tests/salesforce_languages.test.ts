@@ -496,6 +496,24 @@ describe('salesforce metadata adapter', () => {
     )
   })
 
+  it('extracts refs to the sObject and component a Lightning page targets (regression-coverage gap: extractSalesforceMetadata\'s refs output, and the flexipage/quickaction/messagechannel tag-ref branches specifically, had no test at all)', () => {
+    const file = 'force-app/main/default/flexipages/Example_Page.flexipage-meta.xml'
+    const content = `<FlexiPage xmlns="http://soap.sforce.com/2006/04/metadata">
+  <sobjectType>Example_Object__c</sobjectType>
+  <flexiPageRegions>
+    <componentInstances>
+      <componentName>exampleComponent</componentName>
+    </componentInstances>
+  </flexiPageRegions>
+</FlexiPage>
+`
+
+    const refs = extractSalesforceMetadata(content, file).refs
+    const names = refs.map((r) => r.name)
+    expect(names).toContain('Example_Object__c')
+    expect(names).toContain('exampleComponent')
+  })
+
   it('does not duplicate whole metadata files in symbol bodies', () => {
     const content = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
   <userPermissions><enabled>true</enabled><name>ExamplePermission</name></userPermissions>
