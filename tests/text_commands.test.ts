@@ -861,6 +861,90 @@ describe('lockdeps command', () => {
     fs.rmSync(pipfileDir, { recursive: true, force: true })
   })
 
+  it('parses a pnpm-lock.yaml (lockfileVersion 9, workspace-style importers wrapper), distinguishing direct from transitive by matching both name AND resolved version against the root importer (regression: pnpm-lock.yaml was entirely unsupported -- absent from LOCK_PRIORITY and parseLockFile -- so "token-goat lockdeps" in any pnpm project failed with "No lockfile found", the same gap already fixed for npm/yarn/poetry/uv/Pipfile/Cargo)', () => {
+    const pnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pnpm-lock-'))
+    const lockPath = path.join(pnpmDir, 'pnpm-lock.yaml')
+    fs.writeFileSync(
+      lockPath,
+      [
+        "lockfileVersion: '9.0'",
+        '',
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        '      lodash:',
+        '        specifier: ^4.17.21',
+        '        version: 4.17.21',
+        '    devDependencies:',
+        '      typescript:',
+        '        specifier: ^5.0.0',
+        '        version: 5.0.0',
+        '',
+        'packages:',
+        '',
+        "  lodash@4.17.21:",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+        "  typescript@5.0.0:",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+        "  '@scope/transitive-dep@1.2.3':",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      total: number
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('pnpm')
+    expect(parsed.total).toBe(3)
+    expect(parsed.deps).toContainEqual({ name: 'lodash', version: '4.17.21', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: 'typescript', version: '5.0.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: '@scope/transitive-dep', version: '1.2.3', kind: 'transitive' })
+    fs.rmSync(pnpmDir, { recursive: true, force: true })
+  })
+
+  it('parses a pre-workspace pnpm-lock.yaml (lockfileVersion < 9, no importers wrapper, packages keys prefixed with "/" and peer-dependency-suffixed) without mis-splitting the scoped/peer-suffixed package keys', () => {
+    const pnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pnpm-lock-v6-'))
+    const lockPath = path.join(pnpmDir, 'pnpm-lock.yaml')
+    fs.writeFileSync(
+      lockPath,
+      [
+        "lockfileVersion: '6.0'",
+        '',
+        'dependencies:',
+        '  react-redux:',
+        '    specifier: ^8.1.0',
+        "    version: 8.1.0(react@18.2.0)",
+        '',
+        'packages:',
+        '',
+        "  /react-redux@8.1.0(react@18.2.0):",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+        "  /@babel/core@7.22.0:",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('pnpm')
+    expect(parsed.deps).toContainEqual({ name: 'react-redux', version: '8.1.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: '@babel/core', version: '7.22.0', kind: 'transitive' })
+    fs.rmSync(pnpmDir, { recursive: true, force: true })
+  })
+
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))
     const r = run(['lockdeps', emptyDir])

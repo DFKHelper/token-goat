@@ -8,6 +8,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
 
+import { load as loadYaml } from 'js-yaml'
+
 import { walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
@@ -761,6 +763,7 @@ interface DepEntry {
 const LOCK_PRIORITY = [
   'package-lock.json',
   'yarn.lock',
+  'pnpm-lock.yaml',
   'poetry.lock',
   'uv.lock',
   'Pipfile.lock',
@@ -958,11 +961,90 @@ function parseRequirementsTxt(content: string): DepEntry[] {
   return deps
 }
 
+// A pnpm-lock.yaml `packages` key is `name@version` (scoped: `@scope/name@version`), optionally
+// prefixed with a leading `/` (lockfileVersion < 9's key style) and/or suffixed with one or more
+// `(peerName@peerVersion)` parenthetical groups recording which peer-dependency resolution this
+// particular package variant was built against (e.g. `react-redux@8.1.0(react@18.2.0)`). Both
+// must be stripped before splitting on the version-separating `@`, and a scoped name's own
+// leading `@` must be skipped over when searching for that separator or `@scope/name@1.0.0`
+// mis-splits at the scope's `@` instead of the real one.
+function stripPnpmPeerSuffix(value: string): string {
+  return value.replace(/(\([^()]*\))+$/, '')
+}
+
+function splitPnpmPackageKey(rawKey: string): { name: string; version: string } | null {
+  const key = stripPnpmPeerSuffix(rawKey.startsWith('/') ? rawKey.slice(1) : rawKey)
+  const scoped = key.startsWith('@')
+  const nameSearchStart = scoped ? key.indexOf('/') : 0
+  if (scoped && nameSearchStart === -1) return null
+  const versionSepIdx = key.indexOf('@', nameSearchStart + 1)
+  if (versionSepIdx === -1) return null
+  const name = key.slice(0, versionSepIdx)
+  const version = key.slice(versionSepIdx + 1)
+  if (!name || !version) return null
+  return { name, version }
+}
+
+// Collects name -> resolved version (peer-suffix stripped, matching splitPnpmPackageKey's own
+// stripping of `packages` keys) from one importer dependency section
+// (`dependencies`/`devDependencies`/`optionalDependencies`), each entry shaped
+// `{ specifier: '^1.0.0', version: '1.0.0' }` in lockfileVersion 6+.
+function collectPnpmDirectVersions(section: unknown, out: Map<string, string>): void {
+  if (section === null || typeof section !== 'object') return
+  for (const [name, val] of Object.entries(section as Record<string, unknown>)) {
+    const version = (val as { version?: unknown } | undefined)?.version
+    if (typeof version === 'string' && version) out.set(name, stripPnpmPeerSuffix(version))
+  }
+}
+
+// pnpm-lock.yaml has real edge data (unlike yarn.lock/TOML/Pipfile.lock's flat resolved sets),
+// so direct-vs-transitive is derived precisely: a `packages` entry counts as 'direct' only when
+// its own name AND resolved version match a root-project dependency, not merely by name -- a
+// package can legitimately appear at one resolved version as a direct dependency and at another
+// as a transitive one (e.g. via peer-dependency-driven duplicate resolution), and a name-only
+// match would mislabel the transitive variant too.
+// lockfileVersion >= 9 nests every workspace project's dependency sections under `importers`,
+// keyed by project path relative to the lockfile ('.' for the root/only project in a
+// non-workspace repo); lockfileVersion < 9 has `dependencies`/`devDependencies` directly at the
+// document root instead, with no `importers` wrapper at all.
+function parsePnpmLock(content: string): DepEntry[] {
+  let raw: unknown
+  try {
+    raw = loadYaml(content)
+  } catch {
+    return []
+  }
+  if (raw === null || typeof raw !== 'object') return []
+  const doc = raw as {
+    importers?: Record<string, { dependencies?: unknown; devDependencies?: unknown; optionalDependencies?: unknown }>
+    dependencies?: unknown
+    devDependencies?: unknown
+    optionalDependencies?: unknown
+    packages?: Record<string, unknown>
+  }
+
+  const directVersions = new Map<string, string>()
+  const rootSections = doc.importers !== undefined ? doc.importers['.'] : doc
+  collectPnpmDirectVersions(rootSections?.dependencies, directVersions)
+  collectPnpmDirectVersions(rootSections?.devDependencies, directVersions)
+  collectPnpmDirectVersions(rootSections?.optionalDependencies, directVersions)
+
+  const deps: DepEntry[] = []
+  for (const key of Object.keys(doc.packages ?? {})) {
+    const parsed = splitPnpmPackageKey(key)
+    if (parsed === null) continue
+    const isDirect = directVersions.get(parsed.name) === parsed.version
+    deps.push({ name: parsed.name, version: parsed.version, kind: isDirect ? 'direct' : 'transitive' })
+  }
+  return deps
+}
+
 function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
   const base = path.basename(filePath)
   const content = fs.readFileSync(filePath, 'utf8')
   if (base === 'package-lock.json') return { format: 'npm', deps: parsePackageLockJson(content) }
   if (base === 'yarn.lock') return { format: 'yarn', deps: parseYarnLock(content) }
+  if (base === 'pnpm-lock.yaml') return { format: 'pnpm', deps: parsePnpmLock(content) }
   if (base === 'poetry.lock') return { format: 'poetry', deps: parseTomlPackages(content) }
   if (base === 'uv.lock') return { format: 'uv', deps: parseTomlPackages(content) }
   if (base === 'Cargo.lock') return { format: 'cargo', deps: parseTomlPackages(content) }

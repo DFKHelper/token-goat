@@ -2763,7 +2763,7 @@ export function buildProgram(): Command {
 
   program
     .command('lockdeps [path]')
-    .description('summarize a dependency lockfile (auto-detects package-lock.json, yarn.lock, poetry.lock, uv.lock, Pipfile.lock, Cargo.lock, requirements*.txt)')
+    .description('summarize a dependency lockfile (auto-detects package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, uv.lock, Pipfile.lock, Cargo.lock, requirements*.txt)')
     .option('-j, --json', 'output as JSON')
     .option('--package <name>', 'query one package only: its resolved version, direct dependencies, and which direct project dependencies depend on it (npm lockfiles only expose the dependency graph)')
     .action((filePath: string | undefined, opts: { json?: boolean; package?: string }) =>
