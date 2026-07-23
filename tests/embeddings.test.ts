@@ -63,7 +63,7 @@ describe('embeddings module', () => {
         .map((_, i) => `line ${i + 1}`)
       const content = lines.join('\n')
       const chunks = embeddings.chunkFile('test.ts', content, 80, 0)
-      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks.length).toBe(1)
       if (chunks.length > 0) {
         expect(chunks[0].filePath).toBe('test.ts')
       }
@@ -95,7 +95,7 @@ describe('embeddings module', () => {
         .map((_, i) => `function func${i}() { return ${i}; }`)
       const content = lines.join('\n')
       const chunks = embeddings.chunkFile('large.ts', content, 2000, 100)
-      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks.length).toBe(19)
       // All chunks should be in the same file
       for (const chunk of chunks) {
         expect(chunk.filePath).toBe('large.ts')
@@ -133,8 +133,12 @@ describe('embeddings module', () => {
       const chunksCRLF = embeddings.chunkFile('test.ts', contentCRLF, 500)
       const chunksLF = embeddings.chunkFile('test.ts', contentLF, 500)
 
-      expect(chunksCRLF.length).toBeGreaterThan(0)
-      expect(chunksLF.length).toBeGreaterThan(0)
+      // The regression this guards is that CRLF splitting behaves identically to LF splitting
+      // (content.split(/\r?\n/) normalizes both) -- pin the exact, equal chunk count on both
+      // sides instead of each independently being non-empty, which a mismatched count would
+      // still satisfy.
+      expect(chunksCRLF.length).toBe(4)
+      expect(chunksLF.length).toBe(4)
 
       if (chunksCRLF.length > 0 && chunksLF.length > 0) {
         const crlfText = chunksCRLF[0].text
@@ -302,7 +306,7 @@ describe('embeddings module', () => {
 
       const chunks = embeddings.chunkFile('barrel.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
 
-      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks.length).toBe(1)
       expect(chunks[0].startLine).toBe(1)
       expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
       expect(chunks.map((c) => c.text).join('\n')).toContain('const E = 5')
