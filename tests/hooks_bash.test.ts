@@ -770,6 +770,16 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  it('emits advisory (never deny) context for node -e readFileSync of a SQL migration file, matching cat\'s SQL hint (regression: this branch fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case, so a non-cd-prefixed node -e readFileSync of a .sql file was hard-denied while the equivalent `cat file.sql` was always advisory-only)', () => {
+    const event = makeBashEvent(`node -e "console.log(require('fs').readFileSync('migrations/0001_init.sql', 'utf8'))"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('table_name')
+    }
+  })
+
   it('passes through node -e without readFileSync', () => {
     const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
     const result = preBashHandler(event)
