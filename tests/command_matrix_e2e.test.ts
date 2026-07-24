@@ -22,7 +22,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
 import { zipSync, strToU8 } from 'fflate'
 
@@ -135,6 +135,22 @@ afterAll(() => {
     }
   }
 })
+
+// Mitigates a known vitest 2.x/3.x infra flake (vitest-dev/vitest#6479, #8164, fixed upstream in
+// v4.0.0-beta.4 / v4.1.6+ via PR #8297; we are pinned to 2.1.9): birpc, vitest's fork<->main-thread
+// RPC layer, has a hardcoded 60s timeout on its own heartbeat calls (e.g. onTaskUpdate) in this
+// version, independent of the user-configurable testTimeout. Each `it()` case here runs `run()`,
+// which shells out via `spawnSync` -- fully synchronous, so it blocks this fork's event loop for
+// the whole subprocess lifetime and can't service that heartbeat while blocked. Under heavy
+// system load (the full ~249-file suite running many parallel forks, plus two other
+// subprocess/CPU-heavy tests earlier in this same file), that can occasionally push a heartbeat
+// round trip past the fixed 60s ceiling, surfacing as `[vitest-worker]: Timeout calling
+// "onTaskUpdate"` with zero actual test-assertion failures (already absorbed via
+// `retry: process.env.CI ? 1 : 0` in vitest.config.ts as a second line of defense). Explicitly
+// yielding the event loop after every test gives that heartbeat a guaranteed chance to be
+// serviced between tests, which is the documented vitest-community mitigation for this exact
+// issue on pre-4.1.6 vitest. It doesn't change what any test does or asserts.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)))
 
 // Minimal hand-authored single-page PDF (Helvetica text object) for the pdf-extract case below.
 const MINIMAL_PDF = '%PDF-1.4\n' +
