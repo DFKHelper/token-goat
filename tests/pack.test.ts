@@ -263,6 +263,23 @@ describe('formatXml', () => {
     expect(xml).toContain('<source>f.py</source>')
     expect(xml).toContain('</documents>')
   })
+
+  // Regression (mutation-testing gap): escapeXml must escape '&' (in addition to '<' and '>'),
+  // so file content containing a literal ampersand doesn't produce malformed XML (an unescaped
+  // '&' followed by other content isn't a valid XML entity reference). A mutation dropping the
+  // '&' replacement still passed the full suite, since no fixture's content/path contains '&'.
+  it('escapes a literal ampersand in file content, not just < and >', () => {
+    const result = {
+      files: [
+        { path: 'f.ts', rel_path: 'f.ts', content: 'a && b < c', lines: 1, tokens: 5 },
+      ],
+      skipped: [],
+      total_lines: 1,
+      total_tokens: 5,
+    }
+    const xml = formatXml(result)
+    expect(xml).toContain('a &amp;&amp; b &lt; c')
+  })
 })
 
 describe('formatPlain', () => {
