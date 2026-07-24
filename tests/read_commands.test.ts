@@ -73,6 +73,7 @@ import {
   runSqliteQuery,
 
   runExports,
+  runImports,
   runChanged,
   runDiff,
   runLog,
@@ -2841,6 +2842,31 @@ describe('read_commands', () => {
     it('falls back to the real extension for everything else', () => {
       expect(importsExtensionFor('src/foo.ts')).toBe('.ts')
       expect(importsExtensionFor('build.mk')).toBe('.mk')
+    })
+  })
+
+  // Regression (command-entry-point coverage gap): extractImports(text, '.mk') and
+  // importsExtensionFor() are both unit-proven above, but nothing exercised them wired together
+  // through the real `token-goat imports` command handler against an actual file named
+  // "Makefile" on disk -- the exact injected-seam failure mode this project's own CLAUDE.md
+  // warns about (a helper-level test proving the pieces work individually while the real
+  // command-entry-point wiring could still be broken). Found via an independent Codex pre-push
+  // review of this batch's diff.
+  describe('runImports against a real Makefile (command-entry-point wiring)', () => {
+    it('reports the include directives of a file literally named "Makefile"', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-makefile-'))
+      try {
+        const file = path.join(dir, 'Makefile')
+        fs.writeFileSync(file, 'include config.mk\n-include optional.mk\n\nall:\n\techo build\n')
+        const { stdout } = capture(() => {
+          const code = runImports({ file })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('config.mk')
+        expect(stdout).toContain('optional.mk')
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 
