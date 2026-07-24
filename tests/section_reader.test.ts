@@ -432,6 +432,15 @@ describe('readSection', () => {
     expect(inner?.lineEnd).toBe(4)
   })
 
+  it('normalises a tab-indented method to the same nesting level as a 4-space-indented sibling (regression: indent was measured as raw character count, so a 1-tab method compared as shallower than its 4-space sibling and the section resolver nested the sibling one level deeper instead of ending the first method there)', () => {
+    const py = ['class Foo:', '\tdef method_a(self):', '\t\treturn 1', '    def method_b(self):', '        return 2', ''].join('\n')
+    const file = tmpFile('mixed_tabs.py', py)
+    const methodA = readSection(file, 'method_a')
+    expect(methodA?.lineStart).toBe(2)
+    expect(methodA?.lineEnd).toBe(3)
+    expect(methodA?.content).not.toContain('method_b')
+  })
+
   it('does not treat a def/class line inside a triple-quoted Python string as a phantom header (regression: findPythonHeaders had no open-delimiter tracking, unlike the tree-sitter indexer which never emits symbols from inside a string node, so text quoted inside a `"""..."""` template was misread as real headers and truncated the enclosing function at the string literal)', () => {
     const py = [
       'TEMPLATE = """',
