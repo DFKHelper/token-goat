@@ -315,6 +315,19 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
+  // Regression (mutation-testing gap): truncate's length check is `> max`, so a string exactly
+  // `max` chars long must pass through untouched (no ellipsis) -- only strings *longer* than max
+  // get cut. A mutation to `>= max` still passed the full suite, since no fixture pins the exact
+  // 140-char (PREVIEW_MAX) boundary.
+  it('previews a turn whose text is exactly 140 chars long without truncating it', async () => {
+    const file = writeFixture([
+      { type: 'user', message: { role: 'user', content: 'x'.repeat(140) } },
+    ])
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).toContain(`x${'x'.repeat(139)}  (`)
+    expect(text).not.toContain('…')
+  })
+
   it('reports no turns found / no turns in range for empty inputs', () => {
     expect(formatSessionOutline([])).toBe('(no turns found)')
     expect(formatSessionSlice([])).toBe('(no turns in range)')
