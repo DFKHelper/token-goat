@@ -188,6 +188,25 @@ describe('scanSecrets', () => {
     expect(hits.length).toBe(2)
     expect(hits.every((h) => h.kind === 'Generic API key')).toBe(true)
   })
+
+  // Regression (mutation-testing gap): once a line matches one secret pattern, scanning stops
+  // for that line (`break`) -- one hit per line, not one per matching pattern -- so a line that
+  // happens to match two patterns at once (e.g. an AWS key sitting next to a GitHub token) still
+  // only reports the first. A mutation dropping the `break` still passed the full suite, since no
+  // fixture line matches more than one pattern.
+  it('reports only the first matching pattern per line, not every pattern that matches', () => {
+    const files = [
+      {
+        path: 'creds.py',
+        rel_path: 'creds.py',
+        content: 'AKIAIOSFODNN7EXAMPLE ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+        lines: 1,
+        tokens: 20,
+      },
+    ]
+    const hits = scanSecrets(files)
+    expect(hits.length).toBe(1)
+  })
 })
 
 describe('formatMarkdown', () => {
