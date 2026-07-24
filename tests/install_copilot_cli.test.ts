@@ -402,7 +402,8 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const mapped = [...(mapMatch?.[1] ?? '').matchAll(/:\s*'([^']+)'/g)].map((m) => m[1])
-    expect(mapped.length).toBeGreaterThan(0)
+    // 6 entries: preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted.
+    expect(mapped.length).toBe(6)
     for (const eventName of mapped) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
