@@ -11,6 +11,7 @@ import {
   exportSessionState,
   getCurlDownloadPath,
   importSessionState,
+  MAX_RANGES_PER_FILE,
   recordCurlDownload,
   recordFileRead,
   recordLargeFileHintPending,
@@ -481,6 +482,14 @@ describe('line-range merge cap eviction fairness (#M6)', () => {
     for (const r of diskRanges) {
       expect(savedRanges).toContainEqual(r)
     }
+    // Regression (mutation-testing gap): the cap itself must actually be enforced -- the merge
+    // was already at MAX_RANGES_PER_FILE from disk alone, so this process's new range must be
+    // REJECTED, not silently appended past the cap. A mutation dropping the
+    // `prev.length >= MAX_RANGES_PER_FILE` guard still passed every prior assertion here since
+    // they only checked survival of the disk ranges, never the total count or the new range's
+    // absence.
+    expect(savedRanges.length).toBe(MAX_RANGES_PER_FILE)
+    expect(savedRanges).not.toContainEqual([9999, 10005])
   })
 })
 
