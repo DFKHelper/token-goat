@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   claimWorkerPidFile,
+  cleanupWorkerStateFiles,
+  dirtyQueuePathFor,
   drainHeartbeatPathFor,
   drainOnce,
   ensureWorkerAlive,
@@ -1587,6 +1589,53 @@ describe('runWorkerLoop worker state file rotation (regression)', () => {
 
     const statAfter = fs.statSync(logPath)
     expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
+  })
+})
+
+// Regression (mutation-testing gap): cleanupWorkerStateFiles' `.corrupt-*` quarantine cleanup
+// half had zero test coverage, even end-to-end -- only the worker-errors.log rotation half was
+// exercised above. A mutation removing the `.corrupt-` filter entirely (so every file in the
+// queue dir, corrupt-marked or not, becomes eligible for age-based deletion) still passed the
+// full suite. That's a real production risk: cleanupWorkerStateFiles runs periodically inside
+// runWorkerLoop, in the same directory as the live dirty queue and drain-heartbeat marker.
+describe('cleanupWorkerStateFiles quarantine-file cleanup (mutation-testing gap)', () => {
+  const queueDirFor = (dir: string): string => path.join(dir, 'queue')
+
+  it('removes a `.corrupt-*` quarantine file older than the max age', () => {
+    const queueDir = queueDirFor(DIR)
+    fs.mkdirSync(queueDir, { recursive: true })
+    const corruptPath = path.join(queueDir, 'dirty.txt.draining.corrupt-123')
+    fs.writeFileSync(corruptPath, 'stale quarantined content')
+    const oldTime = (Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000
+    fs.utimesSync(corruptPath, oldTime, oldTime)
+
+    cleanupWorkerStateFiles(DIR)
+
+    expect(fs.existsSync(corruptPath)).toBe(false)
+  })
+
+  it('keeps a `.corrupt-*` quarantine file younger than the max age', () => {
+    const queueDir = queueDirFor(DIR)
+    fs.mkdirSync(queueDir, { recursive: true })
+    const corruptPath = path.join(queueDir, 'dirty.txt.draining.corrupt-456')
+    fs.writeFileSync(corruptPath, 'recent quarantined content')
+
+    cleanupWorkerStateFiles(DIR)
+
+    expect(fs.existsSync(corruptPath)).toBe(true)
+  })
+
+  it('never removes a non-quarantine file in the queue dir, no matter how old', () => {
+    const queueDir = queueDirFor(DIR)
+    fs.mkdirSync(queueDir, { recursive: true })
+    const liveQueuePath = dirtyQueuePathFor(DIR)
+    fs.writeFileSync(liveQueuePath, '/still/live/file.ts\n')
+    const oldTime = (Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000
+    fs.utimesSync(liveQueuePath, oldTime, oldTime)
+
+    cleanupWorkerStateFiles(DIR)
+
+    expect(fs.existsSync(liveQueuePath)).toBe(true)
   })
 })
 
