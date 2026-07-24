@@ -16,6 +16,7 @@ import {
   importSessionState,
   markFileTruncated,
   markHintShown,
+  MAX_RANGES_PER_FILE,
   recordBashOutput,
   recordFileEdit,
   recordFileLineRange,
@@ -216,6 +217,25 @@ describe('recordFileEdit clears stale line ranges', () => {
 
     expect(getFileLineRanges(p)).toEqual([])
     expect(getFileLineRanges(backslashForm)).toEqual([])
+  })
+})
+
+// Regression (mutation-testing gap): MAX_RANGES_PER_FILE's own doc comment says
+// MAX_OUTSTANDING_AGENT_SPAWNS mirrors this cap's "cap-then-evict" shape, and that sibling cap
+// has a dedicated bound test (hooks_agent_spawn.test.ts), but this cap itself had none. A
+// mutation dropping the eviction splice entirely still passed the full suite -- a long session
+// issuing many distinct sed/read-range calls on the same file would grow this list unboundedly.
+describe('recordFileLineRange bounds ranges per file (mutation-testing gap)', () => {
+  it('never exceeds MAX_RANGES_PER_FILE, keeping the most recently recorded ranges', () => {
+    const p = normalizePath(makeTmpFile())
+    for (let i = 0; i < MAX_RANGES_PER_FILE + 10; i++) {
+      recordFileLineRange(p, i, i + 1)
+    }
+    const ranges = getFileLineRanges(p)
+    expect(ranges.length).toBe(MAX_RANGES_PER_FILE)
+    // Oldest ranges (0..9) evicted; most recent range retained.
+    expect(ranges).not.toContainEqual([0, 1])
+    expect(ranges).toContainEqual([MAX_RANGES_PER_FILE + 9, MAX_RANGES_PER_FILE + 10])
   })
 })
 
