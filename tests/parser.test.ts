@@ -660,7 +660,9 @@ describe('parseFile reference extraction', () => {
     )
     const result = await parseFile(file)
     // The defect: refs was hard-coded to []. With extraction wired in, the call to `helper` inside `driver` must be captured, attributed to `driver`.
-    expect(result.refs.length).toBeGreaterThan(0)
+    // 1, not 2: extractRefs's dedup key is (name, line) without column, so both `helper()`
+    // calls on line 5 collapse into a single recorded ref rather than one per call-site.
+    expect(result.refs.length).toBe(1)
     const helperRef = result.refs.find((r) => r.name === 'helper')
     expect(helperRef).toBeDefined()
     expect(helperRef?.context).toBe('driver')

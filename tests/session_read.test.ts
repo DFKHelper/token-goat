@@ -155,11 +155,14 @@ describe('buildSessionOutline', () => {
     expect(resultTurn?.preview.length).toBeLessThan(200)
     expect(resultTurn?.preview).not.toContain('export const X = 1\nexport const X = 1\nexport const X = 1')
 
-    for (const t of turns) {
-      expect(t.tokens).toBeGreaterThan(0)
-      expect(t.bytes).toBeGreaterThan(0)
-      expect(t.lineNumber).toBeGreaterThan(0)
-    }
+    // Exact per-turn tokens/bytes/lineNumber from the fixed fixtureLines() fixture -- pins the
+    // real computed values instead of just checking each is nonzero.
+    expect(turns.map((t) => ({ tokens: t.tokens, bytes: t.bytes, lineNumber: t.lineNumber }))).toEqual([
+      { tokens: 32, bytes: 93, lineNumber: 3 },
+      { tokens: 72, bytes: 215, lineNumber: 4 },
+      { tokens: 180, bytes: 538, lineNumber: 6 },
+      { tokens: 46, bytes: 136, lineNumber: 7 },
+    ])
   })
 
   it('returns an empty array for a transcript with no user/assistant turns', async () => {
