@@ -1628,6 +1628,30 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
   })
 })
 
+// Regression (mutation-testing gap): the loop body re-checks shouldStop() immediately after the
+// drain/housekeeping work, BEFORE the setTimeout poll-interval sleep, so a stop request that
+// arrives mid-cycle exits right away instead of waiting out one more full pollIntervalMs sleep
+// for nothing. Without that second check, the loop always sleeps once more before the next
+// `while (!shouldStop())` iteration catches it -- a real, measurable shutdown-latency regression
+// for a caller (e.g. stopWorker's own SIGTERM-driven exit path) that wants the daemon to stop
+// promptly. Uses a deliberately large pollIntervalMs and asserts on wall-clock elapsed time so a
+// wasted sleep is unambiguous rather than lost in test-runner jitter.
+describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
+  it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+    let calls = 0
+    const shouldStop = (): boolean => {
+      calls += 1
+      return calls > 1
+    }
+    const start = Date.now()
+    await runWorkerLoop(DIR, 2000, shouldStop)
+    const elapsed = Date.now() - start
+    // The loop body itself is fast (an empty-queue drain plus a couple of best-effort no-ops);
+    // a passing run must finish in well under one 2000ms poll interval.
+    expect(elapsed).toBeLessThan(1000)
+  })
+})
+
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called
 // them -- session_snapshots/<sessionId>/ directories accumulated forever. runWorkerLoop now
 // sweeps stale session snapshots on the same periodic loop as the dirty-queue drain. This drives
