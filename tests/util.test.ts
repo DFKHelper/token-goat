@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -595,6 +595,31 @@ describe('packageNameDistance', () => {
 
   it('short-circuits to cap+1 once the length difference exceeds the cap', () => {
     expect(packageNameDistance('ab', 'abcdef', 3)).toBe(4)
+  })
+})
+
+// Mutation-testing gap: escapeRegExp had zero test coverage anywhere in the suite (direct or
+// indirect) before this. It's used to build dynamic regexes from arbitrary strings (a config
+// key in read_commands.ts, an install marker in install.ts), so a dropped character from its
+// escape class is a real correctness bug, not just a style nit -- an unescaped regex
+// metacharacter changes what the resulting pattern actually matches.
+describe('escapeRegExp', () => {
+  it('escapes every JS regex metacharacter, including $ (mutation-testing gap: dropping it from the character class went unnoticed by the full suite)', () => {
+    const special = '.*+?^${}()|[]\\'
+    const escaped = escapeRegExp(special)
+    // The escaped string, compiled as a regex, must match the original literal string exactly.
+    expect(new RegExp(`^${escaped}$`).test(special)).toBe(true)
+  })
+
+  it('does not escape ordinary characters', () => {
+    expect(escapeRegExp('hello_world-123')).toBe('hello_world-123')
+  })
+
+  it('a literal $ in the input is escaped, not treated as an end-of-string anchor', () => {
+    // If $ were left unescaped, this pattern would match "abc" followed by end-of-string, not
+    // the literal three characters "abc$".
+    expect(new RegExp(escapeRegExp('abc$')).test('abc$xyz')).toBe(true)
+    expect(new RegExp(escapeRegExp('abc$')).test('abcxyz')).toBe(false)
   })
 })
 
