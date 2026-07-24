@@ -228,6 +228,28 @@ describe('TTL expiry (regression: getBashOutput had no read-time staleness check
   })
 })
 
+describe('coerceBashEntry disk-blob validation (mutation-testing gap)', () => {
+  // Regression: loadBlob's own docstring says "the caller validates the parsed
+  // shape" -- coerceBashEntry is that validator, gating every field the disk
+  // blob must carry (id/command/output/exitCode/storedAt/sizeBytes) behind a
+  // typeof check before trusting it. No test exercised a blob missing one of
+  // those required fields (e.g. written by a stale on-disk format, or hand-
+  // corrupted), so a mutation dropping one field's check from the guard still
+  // passed the full suite. A blob missing a required field must be rejected
+  // (getBashOutput -> null), not silently coerced with an undefined field.
+  it('getBashOutput returns null when the persisted blob is missing a required field', async () => {
+    const id = await storeBashOutput('echo placeholder', 'placeholder', 0)
+    const blobPath = path.join(tokenGoatHome(), 'bash_outputs', `${id}.json`)
+    const malformed = JSON.parse(fs.readFileSync(blobPath, 'utf8')) as Record<string, unknown>
+    delete malformed['sizeBytes']
+    fs.writeFileSync(blobPath, JSON.stringify(malformed))
+
+    clearModuleCaches()
+
+    expect(getBashOutput(id)).toBeNull()
+  })
+})
+
 describe('depLockfileFingerprint', () => {
   it('returns null when cwd is null', async () => {
     const result = await depLockfileFingerprint('npm ls', null)
