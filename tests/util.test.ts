@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -787,6 +787,46 @@ describe('isCodeFenceDelimiter', () => {
     expect(isCodeFenceDelimiter('regular text')).toBe(false)
     expect(isCodeFenceDelimiter('')).toBe(false)
     expect(isCodeFenceDelimiter('`` not a fence')).toBe(false)
+  })
+})
+
+// requireStrictInt/requireNonNegativeStrictInt/requirePositiveStrictInt had only a dedup guard
+// (tests/guards/require_int_dedup.test.ts) confirming callers import the shared helper instead
+// of reimplementing it -- no test anywhere actually exercised the helpers' own behavior. Note:
+// the `Number.isFinite(n)` guard in requireStrictInt was investigated and found to be dead code,
+// not a genuine gap -- removing it survives the full suite, because every input that passes the
+// `^-?\d+$` regex is a plain decimal digit string, which Number.parseInt always turns into a
+// finite number (even an enormous one loses precision, it doesn't become Infinity/NaN).
+describe('requireStrictInt / requireNonNegativeStrictInt / requirePositiveStrictInt', () => {
+  it('requireStrictInt accepts a plain integer literal, including negative', () => {
+    expect(requireStrictInt('--n', '30')).toBe(30)
+    expect(requireStrictInt('--n', '-30')).toBe(-30)
+    expect(requireStrictInt('--n', '0')).toBe(0)
+  })
+
+  it('requireStrictInt rejects trailing garbage (mutation-testing gap: the whole point of this helper over bare parseInt is rejecting "30x" -> 30)', () => {
+    expect(() => requireStrictInt('--n', '30x')).toThrow('--n must be a number, got: "30x"')
+  })
+
+  it('requireStrictInt rejects exponential notation (mutation-testing gap: bare parseFloat would accept "1e3" -> 1000)', () => {
+    expect(() => requireStrictInt('--n', '1e3')).toThrow('--n must be a number, got: "1e3"')
+  })
+
+  it('requireStrictInt rejects a decimal, empty string, and whitespace-padded input', () => {
+    expect(() => requireStrictInt('--n', '3.5')).toThrow()
+    expect(() => requireStrictInt('--n', '')).toThrow()
+    expect(() => requireStrictInt('--n', ' 30 ')).toThrow()
+  })
+
+  it('requireNonNegativeStrictInt accepts zero but rejects a negative value (mutation-testing gap: the sign check must be `< 0`, not `<= 0`)', () => {
+    expect(requireNonNegativeStrictInt('--n', '0')).toBe(0)
+    expect(() => requireNonNegativeStrictInt('--n', '-1')).toThrow('--n must be a non-negative number, got: "-1"')
+  })
+
+  it('requirePositiveStrictInt rejects zero as well as a negative value (mutation-testing gap: the sign check must be `<= 0`, not `< 0`)', () => {
+    expect(() => requirePositiveStrictInt('--n', '0')).toThrow('--n must be a positive number, got: "0"')
+    expect(() => requirePositiveStrictInt('--n', '-1')).toThrow()
+    expect(requirePositiveStrictInt('--n', '1')).toBe(1)
   })
 })
 
