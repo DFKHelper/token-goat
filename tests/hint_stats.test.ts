@@ -508,7 +508,8 @@ describe('applyHintTracking', () => {
     expect(result).toEqual(contextOut)
 
     const summary = getHintStatsSummary()
-    expect(summary.find((r) => r.category === 'bash_redirect')?.emitted).toBeGreaterThan(0)
+    // Exactly one applyHintTracking call above, isolated by beforeEach's resetHintStats().
+    expect(summary.find((r) => r.category === 'bash_redirect')?.emitted).toBe(1)
   })
 
   it('substitutes passOutput() and does not log when the category is suppressed and backoff_thresholds is empty (no probing)', () => {
