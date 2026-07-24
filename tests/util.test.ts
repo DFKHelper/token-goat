@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripLower, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripLower, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -658,6 +658,41 @@ describe('stripLower', () => {
     // "##  Double Space" sliced past "## " (3 chars) leaves " Double Space" (one leading space);
     // stripLower must fold that to the same string as a normally-spaced heading's stripLower.
     expect(stripLower(' Double Space'.slice(0))).toBe(stripLower('Double Space'))
+  })
+})
+
+// sanitizeIdForFilename had zero test coverage anywhere in the suite, despite being shared by
+// 5 call sites (compact.ts, disk_cache.ts, doc_compact.ts, session_store.ts x2, snapshots.ts)
+// that all turn a session/content id into a safe directory or file name. Note: mutating the
+// `fallback ?? safe` fallback join to `fallback || safe` was investigated and found to be a
+// dead mutation, not a genuine gap -- `safe` is always '' in that branch (only reached when
+// `safe.length === 0`), so for every possible fallback value the two operators produce an
+// identical result; no test was added for that case.
+describe('sanitizeIdForFilename', () => {
+  it('replaces every character outside [A-Za-z0-9_-] with an underscore', () => {
+    expect(sanitizeIdForFilename('abc:123/def.ts')).toBe('abc_123_def_ts')
+  })
+
+  it('leaves an already-safe id unchanged', () => {
+    expect(sanitizeIdForFilename('abc_123-DEF')).toBe('abc_123-DEF')
+  })
+
+  it('caps the result to maxLen characters', () => {
+    expect(sanitizeIdForFilename('abcdefghij', 4)).toBe('abcd')
+  })
+
+  it('returns the sanitized (possibly empty) result unchanged when no fallback is given', () => {
+    expect(sanitizeIdForFilename(':::')).toBe('___')
+    expect(sanitizeIdForFilename('', 8)).toBe('')
+  })
+
+  it('substitutes fallback when sanitization yields an empty string', () => {
+    expect(sanitizeIdForFilename('', 8, 'anon')).toBe('anon')
+  })
+
+  it('does not truncate when maxLen is omitted', () => {
+    const longId = 'a'.repeat(100)
+    expect(sanitizeIdForFilename(longId)).toBe(longId)
   })
 })
 
