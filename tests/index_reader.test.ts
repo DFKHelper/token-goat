@@ -11,6 +11,7 @@ import {
   queryRefs,
   queryRefsByContext,
   querySymbols,
+  sanitizeFtsQuery,
   searchSymbolsFts,
 } from '../src/index_reader.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -260,6 +261,38 @@ describe('index_reader round-trips inserted rows', () => {
     // Control: a plain query still works (no regression).
     const plain = searchSymbolsFts('parseNote', 10, dbPath)
     expect(plain.map((s) => s.name)).toContain('parseNote')
+  })
+
+  it('sanitizeFtsQuery doubles an embedded literal double-quote instead of leaving it unescaped (mutation-testing gap: an unescaped quote breaks the FTS5 string-literal boundary)', () => {
+    // A bare `"` inside a term must become `""` (FTS5's own escape for a literal quote within a
+    // quoted string), not pass through as-is -- an unescaped quote prematurely closes the FTS5
+    // string literal this function wraps every term in, corrupting the query syntax.
+    expect(sanitizeFtsQuery('say "hi"')).toBe('"say" """hi"""')
+  })
+
+  it('searchSymbolsFts still finds a match when the query contains a literal double-quote character', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('src/quote.ts', 'quotedNote', 'function', 1, 9, '// a "quoted" note', 'docs')
+
+    const ftsExists =
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = 'symbols_fts'",
+          )
+          .get() as { c: number }
+      ).c > 0
+    if (!ftsExists) return // FTS5 unavailable — sibling test covers the no-op path
+
+    // End-to-end confirmation that sanitizeFtsQuery's escaping keeps a query with an embedded
+    // quote resolving through the real FTS5 pipeline (the direct unit test above on
+    // sanitizeFtsQuery itself is what actually traps a regression in the escaping logic).
+    const hits = searchSymbolsFts('quoted "note"', 10, dbPath)
+    expect(hits.map((s) => s.name)).toContain('quotedNote')
   })
 
   describe('case-insensitive filesystem path matching', () => {
