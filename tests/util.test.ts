@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripLower, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -693,6 +693,71 @@ describe('sanitizeIdForFilename', () => {
   it('does not truncate when maxLen is omitted', () => {
     const longId = 'a'.repeat(100)
     expect(sanitizeIdForFilename(longId)).toBe(longId)
+  })
+})
+
+// stripDelimitedBlock/upsertDelimitedBlock had zero test coverage anywhere in the suite despite
+// being the exact functions install.ts uses to insert/remove token-goat's block in the user's
+// own CLAUDE.md/AGENTS.md file on install/uninstall -- a bug here corrupts real user files.
+describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
+  let dir: string
+  let filePath: string
+  const BEGIN = '<!-- BEGIN -->'
+  const END = '<!-- END -->'
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-delimited-block-'))
+    filePath = path.join(dir, 'CLAUDE.md')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('stripDelimitedBlock removes the marked span and joins surrounding content with a blank line', () => {
+    writeFileSync(filePath, `# Intro\n${BEGIN}\nblock content\n${END}\n# Outro\n`, 'utf8')
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe('# Intro\n\n# Outro\n')
+  })
+
+  it('stripDelimitedBlock returns false and does not touch the file when the end marker precedes the begin marker (mutation-testing gap: a corrupted/hand-edited file with markers out of order must not be sliced)', () => {
+    const original = `${END}\nstray\n${BEGIN}\n`
+    writeFileSync(filePath, original, 'utf8')
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(false)
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
+  })
+
+  it('stripDelimitedBlock returns false when either marker is missing', () => {
+    writeFileSync(filePath, '# No markers here\n', 'utf8')
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(false)
+  })
+
+  it('stripDelimitedBlock returns false for a missing file', () => {
+    expect(stripDelimitedBlock(path.join(dir, 'nonexistent.md'), BEGIN, END)).toBe(false)
+  })
+
+  it('upsertDelimitedBlock inserts the block into an empty/missing file', () => {
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nblock\n${END}`)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(`${BEGIN}\nblock\n${END}\n`)
+  })
+
+  it('upsertDelimitedBlock appends after existing content with a blank-line separator', () => {
+    writeFileSync(filePath, '# Existing content\n', 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nblock\n${END}`)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(`# Existing content\n\n${BEGIN}\nblock\n${END}\n`)
+  })
+
+  it('upsertDelimitedBlock replaces an existing block in place', () => {
+    writeFileSync(filePath, `# Intro\n${BEGIN}\nold\n${END}\n# Outro\n`, 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nnew\n${END}`)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(`# Intro\n${BEGIN}\nnew\n${END}\n# Outro\n`)
+  })
+
+  it('upsertDelimitedBlock returns false without writing when the block is already exactly current (mutation-testing gap: a no-op re-run must not touch the file or its mtime)', () => {
+    const content = `# Intro\n${BEGIN}\nsame\n${END}\n# Outro\n`
+    writeFileSync(filePath, content, 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nsame\n${END}`)).toBe(false)
+    expect(readFileSync(filePath, 'utf8')).toBe(content)
   })
 })
 
