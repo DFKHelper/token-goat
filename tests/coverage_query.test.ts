@@ -277,6 +277,35 @@ describe('parseLcov', () => {
     expect(report.files[0]!.filePath).toBe('src/partial.ts')
   })
 
+  // Regression (mutation-testing gap): rankAndFilter's sort has an explicit tie-break
+  // (a.filePath.localeCompare(b.filePath)) for files with equal uncoveredLineCount, so ordering
+  // is deterministic regardless of the source report's own file order. Dropping the tie-break
+  // still passed the full suite, since Array.prototype.sort is stable and every existing
+  // multi-file fixture's insertion order already happened to match alphabetical order for its
+  // tied entries -- masking the fact that without the tie-break, two equally-uncovered files
+  // sorted only by their position in the source report, not by path.
+  it('breaks a tie in uncovered-line-count by filePath ascending, independent of source order', () => {
+    // Both files have 0 uncovered lines but a real gap (an uncovered function), so both survive
+    // rankAndFilter's filter and tie on uncoveredLineCount -- and are inserted in
+    // reverse-alphabetical order, so a source-order-preserving (no tie-break) sort would list
+    // zzz.ts before aaa.ts.
+    const lcov = [
+      'SF:src/zzz.ts',
+      'FN:1,zzzFn',
+      'FNDA:0,zzzFn',
+      'DA:1,1',
+      'end_of_record',
+      'SF:src/aaa.ts',
+      'FN:1,aaaFn',
+      'FNDA:0,aaaFn',
+      'DA:1,1',
+      'end_of_record',
+      '',
+    ].join('\n')
+    const r = parseLcov(lcov)
+    expect(r.files.map((f) => f.filePath)).toEqual(['src/aaa.ts', 'src/zzz.ts'])
+  })
+
   it('tolerates a missing trailing end_of_record by closing the last open section at EOF', () => {
     const r = parseLcov('SF:src/noeor.ts\nDA:1,0\n')
     const f = r.files.find((f2) => f2.filePath === 'src/noeor.ts')
