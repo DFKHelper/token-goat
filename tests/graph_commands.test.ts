@@ -1051,6 +1051,36 @@ describe('runDeps integration', () => {
     }
   })
 
+  // Regression (command-entry-point coverage gap): read_commands.test.ts unit-proves
+  // extractImports(text, '.mk') and importsExtensionFor() in isolation, but nothing exercised
+  // them wired together through the real `runDeps` command handler against a file literally
+  // named "Makefile" -- the injected-seam failure mode this project's own CLAUDE.md warns
+  // about (helper-level proof without command-entry-point proof). Found via an independent
+  // Codex pre-push review of this batch's diff.
+  it('reports include directives as external deps for a file literally named "Makefile"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-makefile-'))
+    try {
+      const file = join(dir, 'Makefile')
+      writeFileSync(file, 'include config.mk\n-include optional.mk\n\nall:\n\techo build\n')
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
+      expect([...parsed.internal, ...parsed.external]).toEqual(expect.arrayContaining(['config.mk', 'optional.mk']))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('prefers the earlier SOURCE_EXTENSIONS candidate when a barrel directory has multiple index.* files', () => {
     // Regression/mutation-verification target: the extension-probe loop must `break` on the
     // first match. Without the break, a later-iterated extension (e.g. index.js, tried after
