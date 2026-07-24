@@ -205,6 +205,23 @@ describe('formatMarkdown', () => {
     expect(md).toContain('tokens')
   })
 
+  // Regression (mutation-testing gap): the file-count noun is singular ('file') only for exactly
+  // one file, plural ('files') otherwise -- a mutation that hardcoded 'files' unconditionally
+  // still passed the full suite, since the existing "1 file" assertion is also a substring of
+  // "1 files" and can't tell the two apart. Pin the exact boundary with a word-boundary match.
+  it('uses the singular noun for exactly 1 file and the plural noun otherwise', () => {
+    const one = formatMarkdown({
+      files: [{ path: 'f.ts', rel_path: 'f.ts', content: 'x', lines: 1, tokens: 1 }],
+      skipped: [],
+      total_lines: 1,
+      total_tokens: 1,
+    })
+    expect(one).toMatch(/\*\*1 file ·/)
+
+    const zero = formatMarkdown({ files: [], skipped: [], total_lines: 0, total_tokens: 0 })
+    expect(zero).toMatch(/\*\*0 files ·/)
+  })
+
   it('formats file sections correctly', () => {
     const result = {
       files: [
