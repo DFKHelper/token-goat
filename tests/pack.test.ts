@@ -1,9 +1,28 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget, formatBudgetText } from '../src/pack.js'
 import { estimateTokens as sharedEstimateTokens } from '../src/overflow_guard.js'
+
+// Mutable flag consumed by the 'node:fs' mock below, letting a single test simulate a
+// TOCTOU dev/ino mismatch for one specific realpath while every other fs.statSync call
+// (in this file's setup/teardown and in every other test) passes through unmodified.
+const toctouMismatchPath: { value: string | null } = vi.hoisted(() => ({ value: null }))
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>()
+  return {
+    ...actual,
+    statSync: ((p: fs.PathLike, opts?: unknown) => {
+      const real = actual.statSync(p as fs.PathOrFileDescriptor, opts as never)
+      if (toctouMismatchPath.value !== null && p === toctouMismatchPath.value) {
+        return { ...real, dev: real.dev + 1, ino: real.ino + 1 } as fs.Stats
+      }
+      return real
+    }) as typeof fs.statSync,
+  }
+})
 
 // Capability probe: creating a real symlink on Windows requires either an
 // elevated shell or Developer Mode. Run it once at module load so the suite
@@ -428,6 +447,32 @@ describe('symlink escape guard', () => {
       expect(result.skipped.some((s) => s.includes('prefix-escape-link.txt'))).toBe(true)
     } finally {
       fs.rmSync(siblingDir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression (mutation-testing gap): openWithinRoot opens the fd first, then separately
+  // resolves the realpath and re-stats it, and cross-checks that realStat's dev/ino match the
+  // already-open fd's own fstatSync result -- specifically to detect a TOCTOU race where the
+  // path was repointed between the open and the identity verification. A mutation that dropped
+  // this dev/ino comparison (`void realStat; void stat` in place of the check) still passed the
+  // full suite, since no existing fixture forces fs.statSync(realPath) to disagree with the
+  // already-open fd's fstatSync result. A real filesystem race can't be triggered deterministically
+  // in a synchronous test, so this simulates it by mocking fs.statSync to return a mismatched
+  // dev/ino for the target file's realpath only, leaving every other fs.statSync call untouched.
+  it('collectFiles treats a post-open dev/ino identity mismatch as an escape, not a benign in-root file', () => {
+    const targetPath = path.join(TMP, 'toctou-target.txt')
+    fs.writeFileSync(targetPath, 'TOCTOU_SHOULD_NOT_LEAK')
+    const realTargetPath = fs.realpathSync(targetPath)
+
+    toctouMismatchPath.value = realTargetPath
+    try {
+      const result = collectFiles(TMP, ['toctou-target.txt'])
+
+      const leaked = result.files.some((f) => f.content.includes('TOCTOU_SHOULD_NOT_LEAK'))
+      expect(leaked).toBe(false)
+      expect(result.skipped.some((s) => s.includes('toctou-target.txt'))).toBe(true)
+    } finally {
+      toctouMismatchPath.value = null
     }
   })
 })
