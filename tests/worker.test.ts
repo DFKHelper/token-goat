@@ -1128,6 +1128,39 @@ describe('drainOnce', () => {
       expect(fs.existsSync(drainingPath)).toBe(false)
       expect(fs.existsSync(altPath)).toBe(false)
     })
+
+    // Regression (mutation-testing gap): listDrainingFiles must exclude a `.draining.alt-<ts>`
+    // file that was itself already quarantined (renamed to `...alt-<ts>.corrupt-<ts2>` by
+    // drainOnce's own cleanup-failure fallback). Without the exclusion, a quarantined file's
+    // name still matches the `.alt-` prefix check, so it would be picked back up and
+    // reprocessed as live draining content on the very next cycle instead of being left alone
+    // for cleanupWorkerStateFiles' age-based sweep to eventually remove it.
+    it('does not reprocess an already-quarantined `.draining.alt-<ts>.corrupt-<ts2>` file', () => {
+      const D = path.join(DIR, 'stuck-a.ts')
+      fs.writeFileSync(D, 'export const stuckA = 1\n')
+
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      const altPath = `${drainingPath}.alt-1700000000000`
+      const quarantinedAltPath = `${altPath}.corrupt-1700000000001`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${D}\n`)
+      // Simulate an already-quarantined alt file left behind by a prior cycle -- its content
+      // must never be treated as a real path to index.
+      fs.writeFileSync(quarantinedAltPath, 'not a real path, deliberately corrupt content\n')
+
+      const indexedPaths: string[] = []
+      const count = drainOnce(DIR, (p) => {
+        indexedPaths.push(p)
+      })
+
+      expect(count).toBe(1)
+      expect(indexedPaths).toEqual([D])
+      expect(fs.existsSync(drainingPath)).toBe(false)
+      // The quarantined file is left untouched by drainOnce -- only cleanupWorkerStateFiles'
+      // age-based sweep may eventually remove it.
+      expect(fs.existsSync(quarantinedAltPath)).toBe(true)
+    })
   })
 
   describe('drainOnce rm-after-process (crash-safety regression)', () => {
