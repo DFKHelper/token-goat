@@ -1437,15 +1437,29 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (nodeRead !== null) {
     const { filePath, isDoc, isConfig, isSql } = nodeRead
     const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
-    const hint = isSql
-      ? 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.'
-      : isDoc
-        ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
-        : isConfig
-          ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
-          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
+    const lead = 'Node.js `fs.readFileSync()` bypasses read hooks. '
+    if (isSql) {
+      // SQL reads are always advisory-only (never denied), matching extractCatFile/
+      // extractWslCatFile/extractPowerShellWrappedGetContent's deliberate SQL-never-deny design
+      // (see the "Item 4 (nestpilot mining)" regression test) -- a schema/migration file is
+      // routinely read in full for review, and `token-goat section "file::table_name"` only
+      // extracts one block at a time, so denying the whole-file read here (as this handler did
+      // for every other file type, unconditionally, before this fix) would block a legitimate
+      // workflow this hint category was never meant to gate that hard. This branch previously
+      // fell through to the same cdStripped ? contextOutput : denyOutput as every non-SQL case
+      // below, so a non-cd-prefixed `node -e "readFileSync('x.sql')"` was hard-denied while the
+      // equivalent `cat x.sql` was always advisory -- the exact SQL-hint-classifier divergence
+      // already fixed for cat/head/tail/Get-Content.
+      recordStat('session_hint', 0, 0)
+      return contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+    }
+    const hint = isDoc
+      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
-    return cdStripped ? contextOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint) : denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
+    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
   if (extractGrepPipeChain(cmd)) {
