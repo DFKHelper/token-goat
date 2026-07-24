@@ -132,6 +132,15 @@ describe('resolveSessionTranscript', () => {
     expect(resolveSessionTranscript('does-not-exist', { project: projectRoot })).toBeNull()
   })
 
+  // Regression (mutation-testing gap): a session id passed with an already-present `.jsonl`
+  // suffix (not a literal existing path relative to cwd, so it falls through to id resolution)
+  // must resolve to `<id>.jsonl`, not `<id>.jsonl.jsonl`. A mutation always appending the suffix
+  // unconditionally still passed the full suite, since the only bare-id case tested omits it.
+  it('resolves a session id that already carries the .jsonl suffix without doubling it', () => {
+    const file = writeFixture(fixtureLines(), 'xyz-456.jsonl')
+    expect(resolveSessionTranscript('xyz-456.jsonl', { project: projectRoot })).toBe(file)
+  })
+
   it('returns null when no transcripts exist and no arg is given', () => {
     expect(resolveSessionTranscript(undefined, { project: path.join(tempDir, 'no-such-project') })).toBeNull()
   })
