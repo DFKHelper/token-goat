@@ -478,6 +478,21 @@ describe('formatCoverageGaps', () => {
     const text = formatCoverageGaps(report)
     expect(text).toContain('summary-only report')
   })
+
+  // Regression (mutation-testing gap): the uncovered-branches line pluralizes "line"/"lines"
+  // based on how many distinct branch lines there are. Hardcoding the plural form still passed
+  // the full suite, since no existing formatCoverageGaps test asserted the exact singular-vs-
+  // plural wording -- only that some text containing the data was present.
+  it('uses singular "line" for exactly one uncovered branch line, plural "lines" for more than one', () => {
+    const branchy = parseLcov(LCOV_FIXTURE)
+    const branchyText = formatCoverageGaps(branchy)
+    expect(branchyText).toContain('uncovered branches at line: 2')
+    expect(branchyText).not.toContain('uncovered branches at lines: 2')
+
+    const multi = parseLcov('SF:src/multi.ts\nDA:1,1\nBRDA:1,0,0,0\nBRDA:2,0,0,0\nend_of_record\n')
+    const multiText = formatCoverageGaps(multi)
+    expect(multiText).toContain('uncovered branches at lines: 1, 2')
+  })
 })
 
 describe('runCoverageReportGaps (CLI handler)', () => {
