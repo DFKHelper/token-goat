@@ -475,6 +475,27 @@ describe('shouldSuppress — threshold + minimum sample size', () => {
     // Same 50% data, now below a 60% threshold.
     expect(shouldSuppress('read_structural_nav', nonce())).toBe(true)
   })
+
+  // Regression (mutation-testing gap): getHintStatsSummary's per-category `suppressed` field is
+  // never asserted anywhere else in this file (every other test only checks emitted/actedOn/
+  // efficacyPct, or calls the standalone shouldSuppress() directly). Hardcoding
+  // `suppressed: false` in getHintStatsSummary still passed the full suite.
+  it('reflects a suppressed category in getHintStatsSummary\'s per-category suppressed field', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 100 // guarantee suppression on the first sample
+    saveConfig(cfg)
+
+    logHintEmission('bash_redirect', nonce(), null) // 0% acted-on, resolved
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    const summary = getHintStatsSummary()
+    const suppressedRow = summary.find((r) => r.category === 'bash_redirect')
+    const notSuppressedRow = summary.find((r) => r.category === 'bash_recall')
+    expect(suppressedRow?.suppressed).toBe(true)
+    // bash_recall has zero emissions -- below min_sample_size, never suppressed.
+    expect(notSuppressedRow?.suppressed).toBe(false)
+  })
 })
 
 describe('meetsSavingsFloor', () => {
