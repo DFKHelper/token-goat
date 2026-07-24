@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, isWithinQuietHours, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -578,6 +578,23 @@ describe('isWithinQuietHours', () => {
 
   it('treats an identical start and end as always-false', () => {
     expect(isWithinQuietHours('09:00-09:00', new Date(2026, 0, 1, 9, 0))).toBe(false)
+  })
+})
+
+// Mutation-testing gap: packageNameDistance's length-diff fast-path had no direct unit
+// coverage (only indirect e2e coverage via dep_docs.test.ts's "did you mean" assertions, which
+// only exercise near-miss/far-miss cases well inside or outside the cap, never the exact
+// length-diff == cap boundary). Mutating `> cap` to `>= cap` survived the full e2e suite.
+describe('packageNameDistance', () => {
+  it('still computes a real distance when the length difference exactly equals the cap (mutation-testing gap: the fast-path guard must be `>`, not `>=`)', () => {
+    // 'ab' -> 'abcde': length diff is exactly 3 (== cap), true edit distance is 3 (insert 'cde').
+    // A `>=` fast-path would short-circuit to cap+1 (4) here instead of computing the real,
+    // in-range distance, wrongly excluding a legitimate distance-3 match from suggestPackageNames.
+    expect(packageNameDistance('ab', 'abcde', 3)).toBe(3)
+  })
+
+  it('short-circuits to cap+1 once the length difference exceeds the cap', () => {
+    expect(packageNameDistance('ab', 'abcdef', 3)).toBe(4)
   })
 })
 
