@@ -507,6 +507,29 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
     }
   })
 
+  // Regression (mutation-testing gap): tokenizeShellArgs handles both `"` and `'` as quote
+  // delimiters, but every existing quoted-path test here used double quotes only, so a
+  // mutation that dropped single-quote handling entirely still passed the full suite. A
+  // single-quoted path (a common POSIX-shell quoting style, e.g. `cat 'release notes.txt'`)
+  // must resolve identically to the double-quoted case.
+  it('computes a file fingerprint for `cat \'<single-quoted path with a space>\'` and flags it stale once the file changes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-cat-squoted-'))
+    try {
+      const target = path.join(tmpDir, 'release notes.txt')
+      fs.writeFileSync(target, 'v1\n')
+      const id = await storeBashOutput("cat 'release notes.txt'", 'v1\n', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.file).toBeDefined()
+      expect(isBashEntryStale(entry!, "cat 'release notes.txt'", tmpDir)).toBe(false)
+
+      fs.writeFileSync(target, 'v2\n')
+
+      expect(isBashEntryStale(entry!, "cat 'release notes.txt'", tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('computes a dir fingerprint for `ls "<quoted dir with a space>"` and flags it stale once the dir changes', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-ls-quoted-'))
     try {
