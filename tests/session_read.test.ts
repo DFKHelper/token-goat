@@ -369,6 +369,26 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
+  // Regression (mutation-testing gap): formatSessionSlice only pushes a formatted block's text
+  // when it is non-empty (`text.length > 0`), so a block that formats to '' (e.g. a text block
+  // with an empty string) contributes no stray blank line to the slice. A mutation always
+  // pushing the formatted text, empty or not, still passed the full suite, since no fixture
+  // exercises a block that formats to an empty string.
+  it('skips a block that formats to empty content instead of inserting a stray blank line', () => {
+    const text = formatSessionSlice([
+      {
+        turn: 1,
+        lineNumber: 1,
+        role: 'user',
+        blocks: [
+          { type: 'text', text: '' },
+          { type: 'text', text: 'hello' },
+        ],
+      },
+    ])
+    expect(text.split('\n')).toEqual(['--- Turn 1 [user] (line 1) ---', 'hello'])
+  })
+
   // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
   // not appear in the outline's tool-calls list at all. A mutation removing the
   // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
