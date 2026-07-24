@@ -166,6 +166,14 @@ describe('extractSection', () => {
     expect(result?.content).not.toContain('[tool.mypy]')
     expect(result?.content).not.toContain('strict = true')
   })
+
+  it('does not absorb a later TOML table into an earlier one just because its name starts with the same characters (regression: tableSectionEndIndex compared the next heading against the current heading with no trailing "." separator, so a sibling table whose name is a plain string-prefix of another - e.g. [tool] followed by [toolbox], with no dotted relationship - was misread as a nested descendant and silently absorbed instead of ending the section)', () => {
+    const toml = ['[tool]', 'name = "a"', '', '[toolbox]', 'name = "b"', ''].join('\n')
+    const result = extractSection(toml, 'tool')
+    expect(result).not.toBeNull()
+    expect(result?.content).not.toContain('[toolbox]')
+    expect(result?.content).not.toContain('name = "b"')
+  })
 })
 
 describe('extractSection — CRLF line endings', () => {
