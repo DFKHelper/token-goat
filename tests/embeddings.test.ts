@@ -64,9 +64,7 @@ describe('embeddings module', () => {
       const content = lines.join('\n')
       const chunks = embeddings.chunkFile('test.ts', content, 80, 0)
       expect(chunks.length).toBe(1)
-      if (chunks.length > 0) {
-        expect(chunks[0].filePath).toBe('test.ts')
-      }
+      expect(chunks[0]!.filePath).toBe('test.ts')
     })
 
     it('should respect minimum chunk size', () => {
