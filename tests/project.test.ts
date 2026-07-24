@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as NodeFs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { runGit as runGitType } from '../src/util.js';
 
 // vi.mock is hoisted — wrap readdirSync (still delegating to the real implementation by default)
 // so the #M26 test below can simulate a Node < 20.1 Dirent (no `.path` property) without touching
@@ -15,9 +16,22 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+// vi.mock is hoisted — wrap runGit (still delegating to the real implementation by default) so
+// the resolveProjectRoot empty-stdout test below can simulate `git rev-parse --show-toplevel`
+// exiting 0 with empty stdout (an edge case real git essentially never produces from a normal
+// work tree, but resolveProjectRoot defends against it) without spawning a real git process.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>();
+  return {
+    ...original,
+    runGit: vi.fn((...args: Parameters<runGitType>) => (original['runGit'] as runGitType)(...args)),
+  };
+});
+
 import { execFileSync } from 'node:child_process';
 import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS, isUnderSystemTemp } from '../src/project.js';
 import { lowercaseDriveLetter } from '../src/paths.js';
+import { runGit } from '../src/util.js';
 
 describe('project', () => {
   let tmpDir: string;
@@ -493,6 +507,22 @@ describe('project', () => {
     });
 
     it('falls back to the base directory itself when neither a git repo nor a marker file is found', () => {
+      const root = resolveProjectRoot({ project: tmpDir });
+
+      expect(root).toBe(canonicalize(tmpDir));
+    });
+
+    // Mutation-testing gap: real `git rev-parse --show-toplevel` essentially never exits 0 with
+    // empty stdout from a normal work tree, so no existing test exercises this branch --
+    // resolveProjectRoot's `trimmed.length > 0` guard exists defensively for exactly this
+    // shape of result. Mocks runGit directly (via the top-level vi.mock) rather than spawning a
+    // real git process to hit this state.
+    it('falls through to findProject when git exits 0 but stdout is empty', () => {
+      const pyproject = path.join(tmpDir, 'pyproject.toml');
+      fs.writeFileSync(pyproject, '[project]\n');
+      const runGitMock = runGit as unknown as ReturnType<typeof vi.fn>;
+      runGitMock.mockReturnValueOnce({ exitCode: 0, stdout: '   \n', stderr: '' });
+
       const root = resolveProjectRoot({ project: tmpDir });
 
       expect(root).toBe(canonicalize(tmpDir));
