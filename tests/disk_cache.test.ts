@@ -142,7 +142,8 @@ describe('pruneBlobs', () => {
     const past = Date.now() - 48 * 3600 * 1000
     fs.utimesSync(oldPath, new Date(past), new Date(past))
     const removed = pruneBlobs('sub', 200, 24 * 3600 * 1000)
-    expect(removed).toBeGreaterThanOrEqual(1)
+    // Exactly one blob ('old') is backdated past the 24h maxAge; 'fresh' stays.
+    expect(removed).toBe(1)
     expect(fs.existsSync(oldPath)).toBe(false)
     expect(loadBlob('sub', 'fresh')).toEqual({ x: 2 })
   })

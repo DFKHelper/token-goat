@@ -231,7 +231,7 @@ describe('getOrCreateSidecar', () => {
 
   it('exports NB_STRIP_MIN_SAVINGS constant', () => {
     expect(typeof NB_STRIP_MIN_SAVINGS).toBe('number')
-    expect(NB_STRIP_MIN_SAVINGS).toBeGreaterThan(0)
+    expect(NB_STRIP_MIN_SAVINGS).toBe(4096)
   })
 
   it('strips multiple cells correctly', () => {
@@ -320,7 +320,8 @@ describe('pruneSidecars', () => {
 
     const removed = pruneSidecars(tempDir, 1000, 24 * 3600 * 1000)
 
-    expect(removed).toBeGreaterThanOrEqual(1)
+    // Only dir1 is backdated past the 24h maxAge; dir2 stays.
+    expect(removed).toBe(1)
     expect(fs.existsSync(dir1)).toBe(false)
     expect(fs.existsSync(path2)).toBe(true)
   })
