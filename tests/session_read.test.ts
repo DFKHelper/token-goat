@@ -345,6 +345,18 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).toContain('[image]')
   })
 
+  // Regression (mutation-testing gap): formatBlock's tool_result case only appends "for <id>"
+  // when the block actually carries a toolUseId; a mutation that appended it unconditionally
+  // (rendering "for undefined" on a tool_result missing tool_use_id) still passed the full
+  // suite, since no fixture exercises a tool_result block without that field.
+  it('omits the "for <id>" suffix on a tool_result block with no toolUseId', () => {
+    const text = formatSessionSlice([
+      { turn: 1, lineNumber: 1, role: 'user', blocks: [{ type: 'tool_result', resultText: 'ok' }] },
+    ])
+    expect(text).toContain('[tool_result]')
+    expect(text).not.toContain('undefined')
+  })
+
   // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
   // not appear in the outline's tool-calls list at all. A mutation removing the
   // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
