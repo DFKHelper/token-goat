@@ -12,6 +12,7 @@ import {
   hasSessionOutput,
   extractCompactFromMarker,
 } from './skill_cache.js';
+import { recordSkillVersionSnapshot } from './skill_version_drift.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
@@ -119,6 +120,9 @@ export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
     await storeOutput(event.sessionId, skillName, body, sourcePath ? { sourcePath } : undefined);
     // Increment hit count for skill recall tracking.
     await incrementSkillHit(skillName);
+    // Stamp this (re)load's CLI version/command set as the session's drift baseline -- see
+    // skill_version_drift.ts. No-op unless skillName is 'token-goat' itself.
+    recordSkillVersionSnapshot(event.sessionId, skillName);
 
     return passOutput();
   } catch {
