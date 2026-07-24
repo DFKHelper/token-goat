@@ -357,6 +357,18 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
+  // Regression (mutation-testing gap): formatBlock's tool_use case falls back to '?' when the
+  // block has no name, so a malformed tool_use block still renders a labeled placeholder instead
+  // of the literal string "undefined". A mutation dropping the `?? '?'` fallback still passed the
+  // full suite, since no fixture exercises a tool_use block missing its name in a slice.
+  it('renders a nameless tool_use block as "[tool_use: ?]", not "undefined"', () => {
+    const text = formatSessionSlice([
+      { turn: 1, lineNumber: 1, role: 'assistant', blocks: [{ type: 'tool_use', input: {} }] },
+    ])
+    expect(text).toContain('[tool_use: ?]')
+    expect(text).not.toContain('undefined')
+  })
+
   // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
   // not appear in the outline's tool-calls list at all. A mutation removing the
   // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
