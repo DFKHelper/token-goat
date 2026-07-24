@@ -1567,6 +1567,78 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
     expect(commits).toEqual([sha1, sha2])
   })
 
+  // Regression (mutation-testing gap): embedFileSerialized's cleanup only deletes the
+  // inFlightEmbeddings map entry for a settling call when that call is STILL the current entry
+  // -- an older call's cleanup running after a newer call has already replaced the map entry
+  // must be a no-op, not an unconditional delete. Exercises a THREE-generation chain (the
+  // two-generation test above cannot distinguish this: with only two calls, the older one's
+  // cleanup fires after the test has already finished asserting). Here, call1 resolves while
+  // call2 is still pending, which is exactly the point where call1's cleanup handler runs
+  // against a map entry that already names call2 -- and a THIRD edit arriving right after must
+  // still see call2 as `prior` and chain behind it, not race it, to prove the map entry for
+  // call2 survived call1's cleanup.
+  it('does not let an older call\'s cleanup delete a newer call\'s still-in-flight map entry out from under a third, later call', async () => {
+    const src = path.join(DIR, 'embed-race3.ts')
+    fs.writeFileSync(src, 'export function embedRace3V1(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+
+    const invocations: string[] = []
+    const pendingResolvers = new Map<string, () => void>()
+    const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
+    embedSpy.mockImplementation((_filePath, _dbPath, sha) => {
+      const label = sha ?? ''
+      invocations.push(label)
+      return new Promise<void>((resolve) => {
+        pendingResolvers.set(label, resolve)
+      })
+    })
+
+    // v1: dispatched immediately (no prior call).
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    expect(invocations.length).toBe(1)
+    const sha1 = invocations[0]
+
+    // v2: chained behind v1, not yet dispatched.
+    fs.writeFileSync(src, 'export function embedRace3V2(): number {\n  return 2\n}\n')
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    expect(invocations).toEqual([sha1])
+
+    // Resolve v1 -- this is what dispatches v2 AND fires v1's own cleanup handler. Flush
+    // several ticks so both settle before the third edit arrives.
+    pendingResolvers.get(sha1)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(invocations.length).toBe(2)
+    const sha2 = invocations[1]
+
+    // v3: v2 is still pending (unresolved). If v1's cleanup wrongly deleted the map entry for
+    // v2, this third call would see no `prior` and dispatch immediately, racing v2 instead of
+    // chaining behind it.
+    fs.writeFileSync(src, 'export function embedRace3V3(): number {\n  return 3\n}\n')
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // v3 must NOT have been dispatched yet -- it is chained behind the still-pending v2, not
+    // racing it concurrently.
+    expect(invocations).toEqual([sha1, sha2])
+
+    // Let v2 and v3 settle so this test's own promises don't dangle.
+    pendingResolvers.get(sha2)!()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(invocations.length).toBe(3)
+    pendingResolvers.get(invocations[2])!()
+    await Promise.resolve()
+  })
+
   // Regression (#250): inFlightEmbeddings above only serializes duplicate work on the SAME
   // file -- a dirty batch of N distinct changed files previously fired N concurrent
   // indexFileEmbeddings pipelines with no global cap at all. The fix routes every embed call
