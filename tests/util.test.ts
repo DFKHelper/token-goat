@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, upsertDelimitedBlock, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -758,6 +758,35 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
     writeFileSync(filePath, content, 'utf8')
     expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nsame\n${END}`)).toBe(false)
     expect(readFileSync(filePath, 'utf8')).toBe(content)
+  })
+})
+
+// isCodeFenceDelimiter had zero direct test coverage anywhere in the suite -- only exercised
+// indirectly via skill_cache.ts's 7 call sites, all of which happen to pre-trim their input
+// before calling it. That masks a genuine gap in the function's own trim() call: removing it
+// survives every test in the suite (including the full skill_cache.test.ts run) because no
+// caller currently passes untrimmed input, even though the function is exported and its doc
+// comment makes no such assumption.
+describe('isCodeFenceDelimiter', () => {
+  it('recognizes a backtick fence', () => {
+    expect(isCodeFenceDelimiter('```')).toBe(true)
+    expect(isCodeFenceDelimiter('```ts')).toBe(true)
+  })
+
+  it('recognizes a tilde fence', () => {
+    expect(isCodeFenceDelimiter('~~~')).toBe(true)
+    expect(isCodeFenceDelimiter('~~~python')).toBe(true)
+  })
+
+  it('trims leading/trailing whitespace before checking (mutation-testing gap: every current call site pre-trims, so this is otherwise unexercised)', () => {
+    expect(isCodeFenceDelimiter('  ```  ')).toBe(true)
+    expect(isCodeFenceDelimiter('\t~~~\t')).toBe(true)
+  })
+
+  it('returns false for a non-fence line', () => {
+    expect(isCodeFenceDelimiter('regular text')).toBe(false)
+    expect(isCodeFenceDelimiter('')).toBe(false)
+    expect(isCodeFenceDelimiter('`` not a fence')).toBe(false)
   })
 })
 
