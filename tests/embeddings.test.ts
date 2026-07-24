@@ -79,14 +79,16 @@ describe('embeddings module', () => {
     it('should create chunks with correct metadata', () => {
       const content = 'a'.repeat(100) + '\n' + 'b'.repeat(100)
       const chunks = embeddings.chunkFile('test.ts', content, 80)
-      if (chunks.length > 0) {
-        const chunk = chunks[0]
-        expect(chunk.filePath).toBe('test.ts')
-        expect(chunk.startLine).toBeGreaterThanOrEqual(1)
-        expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine)
-        expect(chunk.kind).toBe('window')
-        expect(chunk.text.length).toBeGreaterThan(0)
-      }
+      // Regression: the original `if (chunks.length > 0)` guard meant this test's body could
+      // silently execute zero assertions if chunking ever regressed to an empty result -- pin the
+      // real chunk count instead so that failure mode is caught rather than passing trivially.
+      expect(chunks.length).toBe(2)
+      const chunk = chunks[0]
+      expect(chunk.filePath).toBe('test.ts')
+      expect(chunk.startLine).toBe(1)
+      expect(chunk.endLine).toBe(1)
+      expect(chunk.kind).toBe('window')
+      expect(chunk.text.length).toBe(100)
     })
 
     it('should handle files with many lines', () => {
