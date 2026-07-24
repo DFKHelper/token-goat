@@ -100,7 +100,9 @@ describe('installCodex', () => {
     const config = readConfig()
     for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
       const groups = config.hooks?.[event] ?? []
-      expect(groups.length).toBeGreaterThan(0)
+      // Fresh install: stripStaleGroupHooks finds nothing to strip, so installCodex pushes
+      // exactly one matcher-less group per global event.
+      expect(groups.length).toBe(1)
       const commands = commandsFor(config, event)
       expect(commands.some((c) => c.includes('token-goat-shim'))).toBe(true)
       // No matcher: these are turn-scoped, not tool-scoped, events.

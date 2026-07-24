@@ -218,7 +218,8 @@ describe('isPiInstalled / uninstallPi', () => {
 describe('PI_EXTENSION_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...PI_EXTENSION_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
-    expect(calls.length).toBeGreaterThan(0)
+    // 3 real call sites in the extension script: pre_tool_use, post_tool_use, pre_compact.
+    expect(calls.length).toBe(3)
     for (const eventName of calls) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
