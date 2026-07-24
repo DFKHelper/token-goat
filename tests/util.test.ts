@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripLower, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -640,6 +640,24 @@ describe('normalizePathForwardSlash', () => {
 
   it('lowercases the whole path when toLowerCase is true', () => {
     expect(normalizePathForwardSlash('C:/Proj/MyComponent.tsx', true)).toBe('c:/proj/mycomponent.tsx')
+  })
+})
+
+// Mutation-testing gap: stripLower had no direct unit test. skill_cache.ts's
+// extractNamedSection/extractChecklistSection rely on the trim() half specifically to make a
+// heading like "##  Double Space" (an extra space after the "## " marker, which
+// stripped.slice(3) alone wouldn't remove) or a caller-supplied heading argument with stray
+// whitespace compare equal to a clean heading string -- removing trim() survived the full
+// skill_cache suite because none of its fixtures happen to exercise that whitespace case.
+describe('stripLower', () => {
+  it('trims surrounding whitespace as well as lowercasing', () => {
+    expect(stripLower('  Heading Text  ')).toBe('heading text')
+  })
+
+  it('makes an extra-space markdown heading remainder compare equal to its clean form', () => {
+    // "##  Double Space" sliced past "## " (3 chars) leaves " Double Space" (one leading space);
+    // stripLower must fold that to the same string as a normally-spaced heading's stripLower.
+    expect(stripLower(' Double Space'.slice(0))).toBe(stripLower('Double Space'))
   })
 })
 
