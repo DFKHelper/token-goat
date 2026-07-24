@@ -404,6 +404,32 @@ describe('symlink escape guard', () => {
       fs.rmSync(outsideDir, { recursive: true, force: true })
     }
   })
+
+  // Regression (mutation-testing gap): isPathWithinRoot uses path.relative rather than a naive
+  // string-prefix check, specifically so a sibling directory that merely shares root's path as a
+  // literal string prefix (e.g. root's own path with '-evil' appended) is never mistaken for a
+  // path inside root. A mutation to `resolvedPath.startsWith(rootReal)` still passed the full
+  // suite, since the existing outside-root fixtures use an unrelated mkdtempSync directory whose
+  // path never happens to share root's exact string prefix.
+  it.skipIf(!CAN_SYMLINK)('collectFiles does not embed content from a sibling dir sharing a string prefix with root', () => {
+    const siblingDir = `${TMP}-evil`
+    fs.mkdirSync(siblingDir)
+    try {
+      const secretPath = path.join(siblingDir, 'secret.txt')
+      fs.writeFileSync(secretPath, 'TOP_SECRET_SIBLING_PREFIX_VALUE')
+
+      const linkPath = path.join(TMP, 'prefix-escape-link.txt')
+      fs.symlinkSync(secretPath, linkPath)
+
+      const result = collectFiles(TMP, ['prefix-escape-link.txt'])
+
+      const leaked = result.files.some((f) => f.content.includes('TOP_SECRET_SIBLING_PREFIX_VALUE'))
+      expect(leaked).toBe(false)
+      expect(result.skipped.some((s) => s.includes('prefix-escape-link.txt'))).toBe(true)
+    } finally {
+      fs.rmSync(siblingDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('collectFiles token estimation matches the shared ratio', () => {
