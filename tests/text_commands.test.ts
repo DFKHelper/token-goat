@@ -716,8 +716,8 @@ describe('lockdeps command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string }> }
     const names = parsed.deps.map((d) => d.name)
-    expect(names).toContain('requests-oauthlib')
-    expect(names).not.toContain('git')
+    // The #egg= fragment recovers 'requests-oauthlib' as its own entry rather than a bogus 'git' one.
+    expect(names).toEqual(['requests', 'requests-oauthlib', 'numpy'])
   })
 
   it('does not fabricate a dependency from a "#egg=" fragment mentioned inside a comment line (regression: the #104 VCS-fragment recovery ran unconditionally on every raw line, so a doc comment giving a VCS-install example was parsed as a real dependency)', () => {

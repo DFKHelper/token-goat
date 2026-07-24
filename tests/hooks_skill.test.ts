@@ -75,7 +75,8 @@ describe('postSkillHandler — caches the loaded body under the real skill name'
 
     const cached = await getAllCachedSkills();
     const names = cached.map((s) => s.name);
-    expect(names).toContain('ollama');
+    // The cache is reset in beforeEach, so this one postSkillHandler call is the only entry.
+    expect(names).toEqual(['ollama']);
     const entry = cached.find((s) => s.name === 'ollama');
     expect(entry).toBeDefined();
     expect(entry!.bodyLen).toBe(Buffer.byteLength(body, 'utf-8'));
