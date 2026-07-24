@@ -389,6 +389,20 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text.split('\n')).toEqual(['--- Turn 1 [user] (line 1) ---', 'hello'])
   })
 
+  // Regression (mutation-testing gap): toSessionBlock defaults a content block's `type` to
+  // 'unknown' when the raw block has no `type` field at all, so formatBlock's default case
+  // renders a stable `[unknown]` placeholder instead of leaking the literal string "undefined".
+  // A mutation dropping that fallback (`b['type'] as string`) still passed the full suite, since
+  // no fixture exercises a content block missing its `type` field.
+  it('labels a content block with no type field as [unknown], not "undefined"', async () => {
+    const file = writeFixture([
+      { type: 'assistant', message: { role: 'assistant', content: [{ foo: 'bar' }] } },
+    ])
+    const text = formatSessionSlice(await sliceSessionTurns(file, 1, 1))
+    expect(text).toContain('[unknown]')
+    expect(text).not.toContain('undefined')
+  })
+
   // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
   // not appear in the outline's tool-calls list at all. A mutation removing the
   // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
