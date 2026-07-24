@@ -523,6 +523,15 @@ describe('project', () => {
       expect(isUnderSystemTemp(__filename)).toBe(false);
     });
 
+    // Mutation-testing gap: the exact-match branch (foldedTarget === foldedTemp) is what makes
+    // os.tmpdir() itself count as "under system temp", not just paths strictly beneath it -- the
+    // existing "directly inside" test above only exercises a child of os.tmpdir(), never the temp
+    // root itself, so a mutation that drops the exact-match branch and keeps only the
+    // startsWith(`${foldedTemp}/`) check went unnoticed.
+    it('returns true for os.tmpdir() itself, not only paths beneath it', () => {
+      expect(isUnderSystemTemp(os.tmpdir())).toBe(true);
+    });
+
     it('returns false for a sibling directory that merely shares os.tmpdir() as a string prefix', () => {
       // Guards against a naive startsWith(sysTemp) check (no separator) matching e.g.
       // "/tmp-other/file.ts" against a system temp dir of "/tmp".
