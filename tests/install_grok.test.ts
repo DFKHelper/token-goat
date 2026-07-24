@@ -366,7 +366,9 @@ describe('GROK_HOOK_SCRIPT', () => {
     const mapMatch = /VALID_HOOK_EVENTS = new Set\(\[([\s\S]*?)\]\)/.exec(GROK_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const events = [...(mapMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
-    expect(events.length).toBeGreaterThan(0)
+    // 7 entries: pre_tool_use, post_tool_use, notification, stop, pre_compact,
+    // user_prompt_submit, subagent_stop.
+    expect(events.length).toBe(7)
     for (const eventName of events) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
