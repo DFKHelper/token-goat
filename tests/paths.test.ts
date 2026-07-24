@@ -158,6 +158,18 @@ describe('normalizePath', () => {
       expect(spy).not.toHaveBeenCalled()
     })
 
+    // Mutation-testing gap: with two short-name-looking segments in one path, expandShortPath
+    // must resolve through the LAST one, not the first -- resolving through only the first would
+    // leave the second short-name segment (and hence the rest of the path key) unexpanded, so a
+    // path built from git's long-form output and one built through the short-form segment would
+    // never converge to the same normalized key.
+    it('resolves through the last short-name segment when a path contains two', () => {
+      setPlatform('win32')
+      const spy = vi.spyOn(fs.realpathSync, 'native').mockReturnValue('C:\\AAAA-long\\BBBB-long')
+      expect(normalizePath('C:\\AAAA~1\\BBBB~1\\file.txt')).toBe('c:/AAAA-long/BBBB-long/file.txt')
+      expect(spy).toHaveBeenCalledWith('C:/AAAA~1/BBBB~1')
+    })
+
     it('falls back to the original path when the native lookup throws (path does not exist)', () => {
       setPlatform('win32')
       vi.spyOn(fs.realpathSync, 'native').mockImplementation(() => {
