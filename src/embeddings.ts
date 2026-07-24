@@ -330,7 +330,8 @@ function splitRangeIntoChunks(
     const lineWithNewline = line + '\n'
     if (currentChunk.length + lineWithNewline.length > chunkSize && currentChunk.length > 0) {
       // Flush current chunk if adding the next line would exceed size.
-      if (currentChunk.length >= MIN_CHUNK_CHARS) {
+      const currentChunkTooSmall = currentChunk.length < MIN_CHUNK_CHARS
+      if (!currentChunkTooSmall) {
         chunks.push({
           filePath,
           startLine,
@@ -342,7 +343,19 @@ function splitRangeIntoChunks(
 
       // Start new chunk with overlap, never reaching before this range's own start.
       const overlapLines = Math.ceil(overlap / 40) // Rough estimate: ~40 chars per line.
-      const overlapStart = Math.max(rangeStart, currentLine - overlapLines)
+      const computedOverlapStart = Math.max(rangeStart, currentLine - overlapLines)
+      // A below-MIN_CHUNK_CHARS chunk is dropped above (never pushed) rather than merged, so its
+      // lines must not be silently lost -- overlapStart normally starts fresh at `currentLine -
+      // overlapLines`, which can land AFTER this dropped chunk's own startLine whenever it spans
+      // more lines than the overlap window covers (e.g. several short lines followed immediately
+      // by one line long enough alone to trip the size flush). Confirmed via a scratch repro:
+      // ~5 one-char lines ahead of an 8500-char line vanished from every emitted chunk entirely
+      // -- never embedded, never semantically searchable -- because the recomputed overlap
+      // window (5 lines back from the huge line) started after them. Flooring at this chunk's
+      // own `startLine` when it was too small to keep on its own guarantees every source line
+      // survives into some chunk, at the cost of a larger-than-usual overlap on the rare case
+      // this triggers.
+      const overlapStart = currentChunkTooSmall ? Math.min(computedOverlapStart, startLine) : computedOverlapStart
       const overlapText = lines
         .slice(overlapStart - 1, currentLine - 1)
         .join('\n')
@@ -354,7 +367,13 @@ function splitRangeIntoChunks(
     currentLine++
   }
 
-  // Flush final chunk.
+  // Flush final chunk. A below-floor trailing fragment is merged into the last emitted chunk
+  // (rather than dropped) when one exists, for the same reason as the mid-loop fix above -- the
+  // alternative silently drops the file's own final lines from the semantic index. When no chunk
+  // was emitted yet, there is nothing to merge into; dropping an entire too-small range is
+  // existing, intended behavior (chunkFile's own boundary/gap folding already guarantees a
+  // boundary-derived range clears MIN_CHUNK_CHARS before calling here -- this remaining case is
+  // only reachable for the whole-file window path with no boundaries at all).
   if (currentChunk.length >= MIN_CHUNK_CHARS) {
     chunks.push({
       filePath,
@@ -363,6 +382,10 @@ function splitRangeIntoChunks(
       text: currentChunk.trim(),
       kind,
     })
+  } else if (currentChunk.length > 0 && chunks.length > 0) {
+    const last = chunks[chunks.length - 1]!
+    last.endLine = rangeEnd
+    last.text = lines.slice(last.startLine - 1, rangeEnd).join('\n').trim()
   }
 
   return chunks
