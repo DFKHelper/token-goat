@@ -483,6 +483,32 @@ describe('embeddings module', () => {
       expect(result.length).toBe(2)
     })
 
+    it('merges when the gap between hits sits exactly at the proximity boundary (mutation-testing gap: the check must be <=, not <)', () => {
+      const hits: SearchHit[] = [
+        {
+          filePath: 'test.ts',
+          startLine: 1,
+          endLine: 10,
+          kind: 'function',
+          distance: 0.5,
+          text: 'test1',
+        },
+        {
+          // gap = startLine - endLine - 1 = 16 - 10 - 1 = 5, exactly equal to proximity below.
+          filePath: 'test.ts',
+          startLine: 16,
+          endLine: 20,
+          kind: 'function',
+          distance: 0.6,
+          text: 'test2',
+        },
+      ]
+      const result = embeddings.mergeNearbyHits(hits, 5)
+      expect(result.length).toBe(1)
+      expect(result[0]?.startLine).toBe(1)
+      expect(result[0]?.endLine).toBe(20)
+    })
+
     it('should sort results by distance after merging', () => {
       const hits: SearchHit[] = [
         {
