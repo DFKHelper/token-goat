@@ -737,6 +737,15 @@ describe('findContainingSection', () => {
     expect(result?.heading).toBe('Inner')
   })
 
+  it('treats a symbol starting on its own header line as contained by that header, not just an ancestor (regression: the header-start bound used a strict `<`, so a symbol span beginning exactly at a header line - the common case when the header IS the symbol declaration - failed that header\'s own containment check and fell back to a shallower ancestor)', () => {
+    const md = ['# Outer', 'outer body', '', '## Inner', 'inner body line'].join('\n')
+    const file = tmpFile('self-containing.md', md)
+    // "## Inner" is line 4 (1-based); a symbol spanning exactly that line must resolve to "Inner", not "Outer".
+    const result = findContainingSection(file, 4, 4)
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Inner')
+  })
+
   it('returns null when the file has no heading structure enclosing the symbol', () => {
     const text = ['line one', 'line two', 'line three'].join('\n')
     const file = tmpFile('plain.txt', text)
