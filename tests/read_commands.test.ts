@@ -79,6 +79,7 @@ import {
   runRefs,
   runBrief,
   extractImports,
+  importsExtensionFor,
   extractExportNames,
   extractTranscriptText,
   parseDiffHunks,
@@ -2806,6 +2807,40 @@ describe('read_commands', () => {
 
     it('matches PowerShell Import-Module case-insensitively (regression: generic fallback is lowercase-only and never matched capitalized "Import-Module")', () => {
       expect(extractImports('IMPORT-MODULE Az.Storage', '.psm1')).toEqual(['Az.Storage'])
+    })
+
+    it('extracts Makefile include/-include/sinclude directives (regression: generic fallback requires a literal "#include" and never matched bare "include")', () => {
+      const src = [
+        'include config.mk',
+        '-include optional.mk',
+        'sinclude legacy.mk',
+        'include foo.mk bar.mk',
+        '',
+        'all:',
+        '\tinclude this is a recipe line, not a directive',
+        '# include commented.mk',
+      ].join('\n')
+      expect(extractImports(src, '.mk')).toEqual([
+        'config.mk',
+        'optional.mk',
+        'legacy.mk',
+        'foo.mk',
+        'bar.mk',
+      ])
+    })
+  })
+
+  describe('importsExtensionFor', () => {
+    it('maps a bare Makefile/GNUmakefile/BSDmakefile basename to the synthetic .mk key (regression: path.extname() alone yields "" for these, routing to the generic fallback that never matches bare "include")', () => {
+      expect(importsExtensionFor('Makefile')).toBe('.mk')
+      expect(importsExtensionFor('/repo/GNUmakefile')).toBe('.mk')
+      expect(importsExtensionFor('/repo/BSDmakefile')).toBe('.mk')
+      expect(importsExtensionFor('makefile')).toBe('.mk')
+    })
+
+    it('falls back to the real extension for everything else', () => {
+      expect(importsExtensionFor('src/foo.ts')).toBe('.ts')
+      expect(importsExtensionFor('build.mk')).toBe('.mk')
     })
   })
 
