@@ -243,6 +243,16 @@ describe('parseTurnRange', () => {
   it('rejects a non-numeric spec', () => {
     expect(() => parseTurnRange('abc')).toThrow(/invalid --range spec/)
   })
+
+  // Regression (mutation-testing gap): turns are 1-based (see streamTurns' doc comment), so a
+  // spec of "0" must be rejected the same way an inverted range is -- silently accepting it
+  // would functionally coincide with start=1 (since no turn is ever 0), masking a user's typo
+  // as if it had been interpreted correctly. A mutation dropping the `start < 1` half of the
+  // guard (keeping only `end < start`) still passed the full suite.
+  it('rejects a spec starting at turn 0', () => {
+    expect(() => parseTurnRange('0')).toThrow(/invalid --range spec/)
+    expect(() => parseTurnRange('0-5')).toThrow(/invalid --range spec/)
+  })
 })
 
 describe('formatSessionOutline / formatSessionSlice', () => {
