@@ -305,6 +305,35 @@ describe('project', () => {
       }
     });
 
+    // Mutation-testing gap: the only existing symlink test above points a `.git` symlink AT a
+    // target INSIDE tmpDir and asserts it's accepted -- nothing ever creates a marker symlink
+    // that escapes the root and asserts it's rejected, so markerExists's `!rel.startsWith('..')`
+    // escape guard (the entire reason the function's doc-comment mentions "not a symlink escaping
+    // the root") had no coverage of its actual security property. Uses fs spies rather than a
+    // real symlink (unlike the "should handle symlinks" test above, which is gated off win32
+    // because Windows symlink creation needs elevated privileges) so this test runs unconditionally
+    // on every platform, including this project's own win32 CI job.
+    it('does not treat a marker symlink pointing outside the root as a valid project marker', () => {
+      const outsideTarget = path.join(path.dirname(tmpDir), 'outside-marker-target');
+      // Matches on basename rather than an exact path.join(tmpDir, '.git') string: findProject
+      // canonicalizes tmpDir before calling markerExists (lowercasing the drive letter, expanding
+      // any 8.3 short-name segment, etc.), so `current` inside markerExists is not guaranteed to
+      // be byte-identical to the raw tmpDir this test constructed.
+      const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => path.basename(p.toString()) === '.git')
+      const lstatSpy = vi
+        .spyOn(fs, 'lstatSync')
+        .mockReturnValue({ isSymbolicLink: () => true } as unknown as NodeFs.Stats);
+      const realpathSpy = vi.spyOn(fs, 'realpathSync').mockReturnValue(outsideTarget);
+      try {
+        const project = findProject(tmpDir);
+        expect(project).toBeNull();
+      } finally {
+        existsSpy.mockRestore();
+        lstatSpy.mockRestore();
+        realpathSpy.mockRestore();
+      }
+    });
+
     it('should prefer earliest marker in walk', () => {
       const parentMarker = path.join(tmpDir, '.git');
       fs.mkdirSync(parentMarker);
