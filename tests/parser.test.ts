@@ -574,7 +574,7 @@ describe('parseFile', () => {
     )
     const result = await parseFile(file)
     const variables = result.symbols.filter((s) => s.kind === 'variable')
-    expect(variables.length).toBeGreaterThanOrEqual(1)
+    expect(variables.length).toBe(3)
     variables.forEach((v) => {
       expect(v.lineStart).toBe(1)
       expect(v.lineEnd).toBe(1)
@@ -620,7 +620,7 @@ describe('parseFile', () => {
     )
     const result = await parseFile(file)
     const directives = result.symbols.filter((s) => s.kind === 'directive')
-    expect(directives.length).toBeGreaterThanOrEqual(1)
+    expect(directives.length).toBe(5)
   })
 
   it('extracts individual bindings from destructuring declarations (not a junk pattern-named symbol)', async () => {

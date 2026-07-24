@@ -115,14 +115,10 @@ describe('embeddings module', () => {
         .map((_, i) => `line ${i + 1}`)
         .join('\n')
       const chunks = embeddings.chunkFile('test.ts', content, 500)
-      if (chunks.length > 0) {
-        // startLine should be at least 1
-        expect(chunks[0].startLine).toBeGreaterThanOrEqual(1)
-        // endLine should be >= startLine
-        for (const chunk of chunks) {
-          expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine)
-        }
-      }
+      // A 50-line file with chunkSize 500 fits in a single window chunk.
+      expect(chunks.length).toBe(1)
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[0].endLine).toBe(50)
     })
 
     it('should handle Windows CRLF line endings correctly (regression: \\r?\\n split)', () => {
@@ -142,13 +138,11 @@ describe('embeddings module', () => {
       expect(chunksCRLF.length).toBe(4)
       expect(chunksLF.length).toBe(4)
 
-      if (chunksCRLF.length > 0 && chunksLF.length > 0) {
-        const crlfText = chunksCRLF[0].text
-        const lfText = chunksLF[0].text
+      const crlfText = chunksCRLF[0].text
+      const lfText = chunksLF[0].text
 
-        expect(crlfText).not.toContain('\r')
-        expect(lfText).not.toContain('\r')
-      }
+      expect(crlfText).not.toContain('\r')
+      expect(lfText).not.toContain('\r')
     })
 
     it('does not count a trailing newline as an extra line in endLine', () => {
@@ -421,12 +415,10 @@ describe('embeddings module', () => {
         },
       ]
       const result = embeddings.mergeNearbyHits(hits, 20)
-      expect(result.length).toBeLessThanOrEqual(hits.length)
-      // After merge, should have combined range
-      if (result.length > 0) {
-        expect(result[0].startLine).toBeLessThanOrEqual(1)
-        expect(result[0].endLine).toBeGreaterThanOrEqual(15)
-      }
+      // Overlapping ranges [1,10] and [5,15] merge into exactly one hit covering [1,15].
+      expect(result.length).toBe(1)
+      expect(result[0].startLine).toBe(1)
+      expect(result[0].endLine).toBe(15)
     })
 
     it('should keep hits from different files separate', () => {
@@ -522,10 +514,10 @@ describe('embeddings module', () => {
         },
       ]
       const result = embeddings.mergeNearbyHits(hits, 20)
-      if (result.length > 0) {
-        // Merged result should have the best (lowest) distance
-        expect(result[0].distance).toBe(0.5)
-      }
+      // Overlapping ranges [1,10] and [8,15] merge into exactly one hit.
+      expect(result.length).toBe(1)
+      // Merged result should have the best (lowest) distance
+      expect(result[0].distance).toBe(0.5)
     })
   })
 
