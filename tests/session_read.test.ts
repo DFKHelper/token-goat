@@ -307,4 +307,24 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     const text = formatSessionOutline(await buildSessionOutline(file))
     expect(text).not.toContain('[tools:')
   })
+
+  // Regression (mutation-testing gap): previewForBlocks' `toolUse.name ?? 'tool'` fallback exists
+  // for the same malformed-input case above -- a nameless tool_use block, when it is the only
+  // block present (so it drives the preview, not just the tool-calls tag), must render the
+  // generic label 'tool(...)' rather than the literal string 'undefined(...)'. A mutation
+  // dropping the `?? 'tool'` fallback still passed the full suite.
+  it('previews a nameless tool_use block as "tool(...)" rather than "undefined(...)"', async () => {
+    const file = writeFixture([
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', input: { x: 1 } }],
+        },
+      },
+    ])
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).toContain('tool({"x":1})')
+    expect(text).not.toContain('undefined(')
+  })
 })
