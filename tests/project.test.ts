@@ -339,6 +339,24 @@ describe('project', () => {
       expect(project).toBeNull();
     });
 
+    // Mutation-testing gap: every existing repo-container test uses exactly 3 nested repos (the
+    // threshold), so a mutation that lowers REPO_CONTAINER_THRESHOLD itself (e.g. 3 -> 2) survived
+    // them all -- none exercises a count BELOW the threshold that must still resolve as a normal
+    // project root, not a container.
+    it('does not classify a root with only 2 nested repos (below threshold) as a repo container', () => {
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      for (const name of ['repo1', 'repo2']) {
+        fs.mkdirSync(path.join(tmpDir, name, '.git'), { recursive: true });
+      }
+      const subdir = path.join(tmpDir, 'src');
+      fs.mkdirSync(subdir);
+
+      const project = findProject(subdir);
+      expect(project).not.toBeNull();
+      expect(project?.root).toBe(canonicalize(tmpDir));
+      expect(project?.marker).toBe('.git');
+    });
+
     it('does not misclassify a submodule-based monorepo as a repo container (3+ .git FILES, not directories)', () => {
       // A git submodule root has a `.git` FILE (a one-line `gitdir: ...` pointer into the
       // superproject's .git/modules), not a `.git` directory. Before the fix, isRepoContainer
