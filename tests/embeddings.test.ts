@@ -310,6 +310,23 @@ describe('embeddings module', () => {
       expect(chunks.every((c) => c.kind === 'const')).toBe(true)
     })
 
+    it('does not silently drop short lines that precede a single line long enough alone to trip the size-based flush (regression: splitRangeIntoChunks discarded a below-MIN_CHUNK_CHARS flushed chunk and recomputed its overlap window purely from currentLine, which can land after that dropped chunk\'s own start when the dropped chunk spans more lines than the overlap window covers -- those lines then appeared in NO emitted chunk, silently absent from the semantic index)', () => {
+      const shortLines = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+      const hugeLine = 'y'.repeat(embeddings.MAX_CHUNK_CHARS + 500)
+      const content = [...shortLines, hugeLine].join('\n')
+
+      const chunks = embeddings.chunkFile('huge-tail.ts', content, embeddings.MAX_CHUNK_CHARS, 200, [])
+
+      const covered = new Set<number>()
+      for (const c of chunks) {
+        for (let line = c.startLine; line <= c.endLine; line++) covered.add(line)
+      }
+      const totalLines = content.split('\n').length
+      for (let line = 1; line <= totalLines; line++) {
+        expect(covered.has(line)).toBe(true)
+      }
+    })
+
     it('clips a partially-overlapping boundary to start after the previously-accepted boundary instead of dropping it', () => {
       const contentLines = Array(30)
         .fill(0)
