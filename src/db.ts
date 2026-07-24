@@ -180,6 +180,22 @@ CREATE TABLE IF NOT EXISTS hint_suppression_probes (
   streak INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (category, harness)
 );
+
+-- Baseline for skill_version_drift.ts's one-shot nudge: the token-goat CLI version (and its
+-- flat command-name set, JSON-encoded) active the moment the token-goat skill's body was
+-- last (re)loaded into this session -- see hooks_skill.ts's postSkillHandler. A session that
+-- keeps running after the CLI is upgraded has no other way to learn that new surgical-read
+-- commands now exist (the skill only re-announces itself on an explicit reload), so
+-- checkSkillVersionDrift compares this snapshot against the live command set on each user turn
+-- and fires the nudge exactly once (notified_at) per (re)load. session_id is the primary key
+-- because only one skill (token-goat) is ever tracked here.
+CREATE TABLE IF NOT EXISTS skill_version_snapshots (
+  session_id TEXT PRIMARY KEY,
+  skill_name TEXT NOT NULL,
+  loaded_version TEXT NOT NULL,
+  loaded_commands_json TEXT NOT NULL,
+  notified_at REAL
+);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
@@ -233,8 +249,8 @@ CREATE TRIGGER IF NOT EXISTS cache_recall_au AFTER UPDATE ON cache_recall BEGIN
 END;
 `
 
-// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above).
-export const SCHEMA_VERSION = 6 as const
+// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above).
+export const SCHEMA_VERSION = 7 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 

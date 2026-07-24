@@ -4,6 +4,7 @@ import type { HookOutput } from './types.js';
 import { passOutput, contextOutput, getCwd } from './hooks_common.js';
 import { runGit } from './util.js';
 import { loadConfig } from './config.js';
+import { checkSkillVersionDrift } from './skill_version_drift.js';
 
 function userPromptSubmitHandler(event: HookEvent): HookOutput {
   try {
@@ -34,12 +35,23 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
       }
     }
 
-    if (parts.length === 0) {
+    // One-shot "token-goat was upgraded since you loaded this skill" nudge -- see
+    // skill_version_drift.ts. Deliberately not folded into `parts`/the bracketed summary above:
+    // it is a standalone, occasional line, not another terse `key: value` fragment.
+    const driftNudge = checkSkillVersionDrift(event.sessionId);
+
+    if (parts.length === 0 && !driftNudge) {
       return passOutput();
     }
 
-    const summary = '[' + parts.join(' | ') + ']';
-    return contextOutput(summary);
+    const lines: string[] = [];
+    if (parts.length > 0) {
+      lines.push('[' + parts.join(' | ') + ']');
+    }
+    if (driftNudge) {
+      lines.push(driftNudge);
+    }
+    return contextOutput(lines.join('\n'));
   } catch {
     return passOutput();
   }

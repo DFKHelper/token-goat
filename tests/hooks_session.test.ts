@@ -21,6 +21,23 @@ const _testConfigPath = join(tmpdir(), `tg-hooks-session-config-test-${process.p
 
 import { subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
+import { getDb } from '../src/db.js';
+import { globalDbPath } from '../src/constants.js';
+import { VERSION } from '../src/version.js';
+
+function nonce(): string {
+  return `hsvd${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function seedOldSkillVersionSnapshot(sessionId: string): void {
+  const db = getDb(globalDbPath());
+  db.prepare(
+    `INSERT INTO skill_version_snapshots (session_id, skill_name, loaded_version, loaded_commands_json, notified_at)
+     VALUES (@sessionId, 'token-goat', '0.0.0-test-old', '[]', NULL)
+     ON CONFLICT(session_id) DO UPDATE SET
+       skill_name = 'token-goat', loaded_version = '0.0.0-test-old', loaded_commands_json = '[]', notified_at = NULL`,
+  ).run({ sessionId });
+}
 
 describe('hooks_session', () => {
   beforeEach(() => {
@@ -360,6 +377,82 @@ describe('hooks_session', () => {
       subagentStopHandler(event);
 
       expect(util.runGit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('skill_version_drift wiring (token-goat upgraded since the skill was loaded)', () => {
+    it('surfaces the drift nudge alongside the branch line when both apply', () => {
+      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', exitCode: 0 });
+      const sessionId = nonce();
+      seedOldSkillVersionSnapshot(sessionId);
+
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId,
+        raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
+      };
+
+      const result = userPromptSubmitHandler(event);
+      expect(result.hookType).toBe('context');
+      const context = (result as { context: string }).context;
+      expect(context).toContain('branch: main');
+      expect(context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
+      expect(context).toContain('token-goat commands');
+    });
+
+    it('surfaces the drift nudge on its own when there is no branch to report', () => {
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      const sessionId = nonce();
+      seedOldSkillVersionSnapshot(sessionId);
+
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId,
+        raw: { prompt: 'this is a long enough prompt to pass the length check' },
+      };
+
+      const result = userPromptSubmitHandler(event);
+      expect(result.hookType).toBe('context');
+      expect((result as { context: string }).context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
+    });
+
+    it('does not repeat the nudge on a second turn in the same session', () => {
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      const sessionId = nonce();
+      seedOldSkillVersionSnapshot(sessionId);
+
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId,
+        raw: { prompt: 'this is a long enough prompt to pass the length check' },
+      };
+
+      const first = userPromptSubmitHandler(event);
+      expect(first.hookType).toBe('context');
+
+      const second = userPromptSubmitHandler(event);
+      // No branch (empty stdout) and no drift left to report (already notified) -> nothing to say.
+      expect(second.hookType).toBe('pass');
+    });
+
+    it('does not nudge a session that never loaded the token-goat skill', () => {
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: nonce(),
+        raw: { prompt: 'this is a long enough prompt to pass the length check' },
+      };
+
+      const result = userPromptSubmitHandler(event);
+      expect(result.hookType).toBe('pass');
     });
   });
 });
