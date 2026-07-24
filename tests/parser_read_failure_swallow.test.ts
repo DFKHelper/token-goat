@@ -242,7 +242,8 @@ describe('cmdIndex per-file failure handling (regression)', () => {
     process.exitCode = undefined
     try {
       await cmdIndex(TMP, { walk: true, dbPath })
-      expect(process.exitCode).toBeTruthy()
+      // cmdIndex sets a fixed literal 1, not a failure count.
+      expect(process.exitCode).toBe(1)
     } finally {
       process.exitCode = previousExitCode
       stderrSpy.mockRestore()
