@@ -302,6 +302,19 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('internal reasoning')
   })
 
+  // Regression (mutation-testing gap): toTurnBlocks' `role` falls back to the line's `type`
+  // (user/assistant) when `message.role` is missing or non-string, so a malformed line still
+  // gets a sane role instead of `undefined`. A mutation dropping that fallback (using
+  // `m['role']` directly) still passed the full suite, since no fixture omits `role`.
+  it('falls back to the line type as role when message.role is missing', async () => {
+    const file = writeFixture([
+      { type: 'user', message: { content: 'no role field here' } },
+    ])
+    const text = formatSessionSlice(await sliceSessionTurns(file, 1, 1))
+    expect(text).toContain('Turn 1 [user]')
+    expect(text).not.toContain('undefined')
+  })
+
   it('reports no turns found / no turns in range for empty inputs', () => {
     expect(formatSessionOutline([])).toBe('(no turns found)')
     expect(formatSessionSlice([])).toBe('(no turns in range)')
