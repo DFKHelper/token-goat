@@ -258,6 +258,24 @@ describe('normalizeDarwinSystemAlias', () => {
     expect(normalizeDarwinSystemAlias('/private/var/folders/example')).toBe('/private/var/folders/example')
     expect(normalizeDarwinSystemAlias('/variant/example')).toBe('/variant/example')
   })
+
+  // Mutation-testing gap: the existing exact-match assertion above only exercises lowercase
+  // '/var'; the second branch's uppercase coverage ('/VAR/FOLDERS/example') only exercises the
+  // slice(0,5)-with-trailing-slash branch, never the bare exact-match branch with uppercase input
+  // -- so a case-sensitive regression on just the first branch (p === '/var' instead of
+  // p.toLowerCase() === '/var') would go unnoticed. Forces platform to 'darwin' (rather than
+  // branching the expectation on the host's real platform like the test above) because this
+  // suite runs on ubuntu-latest and windows-latest in CI, never on a real macOS host, so a
+  // platform-conditional expectation here would never actually exercise the mutated line at all.
+  it('normalizes a bare uppercase /VAR (no trailing content) case-insensitively on macOS', () => {
+    const realPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    try {
+      expect(normalizeDarwinSystemAlias('/VAR')).toBe('/private/VAR')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+    }
+  })
 })
 
 describe('resolveIndexPath', () => {
