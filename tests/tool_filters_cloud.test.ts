@@ -604,8 +604,8 @@ describe('AnsibleFilter', () => {
     const yamlViolLines = text
       .split('\n')
       .filter((ln) => ln.includes('yaml-indent') && !ln.includes('elided') && !ln.includes('token-goat'))
-    expect(yamlViolLines.length).toBeGreaterThanOrEqual(1)
-    expect(yamlViolLines.length).toBeLessThanOrEqual(3)
+    // 4 yaml-indent violations, capped to the first 3.
+    expect(yamlViolLines.length).toBe(3)
     expect(text).toContain('elided')
     expect(text).toContain('more occurrence')
   })
@@ -621,8 +621,8 @@ describe('AnsibleFilter', () => {
     const violLines = text
       .split('\n')
       .filter((ln) => ln.includes('yaml[line-length]') && !ln.includes('elided') && !ln.includes('token-goat'))
-    expect(violLines.length).toBeGreaterThanOrEqual(1)
-    expect(violLines.length).toBeLessThanOrEqual(3)
+    // 6 violations for one rule, capped to the first 3.
+    expect(violLines.length).toBe(3)
     expect(text).toMatch(/elided|more occurrence/)
   })
 
