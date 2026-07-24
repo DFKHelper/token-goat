@@ -689,6 +689,58 @@ describe('probe recovery (hints.backoff_thresholds)', () => {
     }
     expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
   })
+
+  // Regression (mutation-testing gap): applyHintTracking's not-suppressed branch calls
+  // resetSuppressionStreak so a fresh suppression episode's backoff schedule restarts from
+  // occasion 1, rather than continuing the streak accumulated by a PRIOR suppression episode
+  // that has since lifted. Dropping that reset call still passed the full suite, since every
+  // other probe-recovery test only ever exercises one continuous suppression episode -- none
+  // lift suppression, let it re-trigger, and then check whether the backoff schedule restarted.
+  it('restarts the backoff streak from occasion 1 when a fresh suppression episode begins after a prior one lifted', () => {
+    const cfg = defaultConfig()
+    cfg.hint_stats.min_sample_size = 1
+    cfg.hint_stats.suppress_threshold_pct = 50
+    // [1, 5], not just [1]: with a sole threshold of 1, isProbeOccasion's "every multiple of the
+    // largest threshold" fallback makes every occasion >= 1 probe regardless of the streak's
+    // actual value, which would make this test pass even without the streak reset. A leftover
+    // (unreset) streak of 1 bumped to 2 for episode 2's first call must NOT match [1, 5] (2 is
+    // in neither the list nor a multiple of 5), so only a genuinely-reset streak of 1 probes.
+    cfg.hints.backoff_thresholds = [1, 5]
+    saveConfig(cfg)
+
+    // Episode 1: seed a 0%-acted-on emission -> suppressed. Occasion 1 matches threshold [1] and
+    // probes through.
+    const seedSession = nonce()
+    logHintEmission('bash_redirect', seedSession, null)
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true)
+
+    const probeSession = nonce()
+    const probeEvent = bashEvent(probeSession, 'cat C:/repo/probe.ts')
+    const probeContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/probe.ts::Foo"` instead.' }
+    expect(applyHintTracking(probeEvent, probeContext, classify)).toEqual(probeContext) // probed through
+
+    // Act on the probe's own pointer: emitted=2, actedOn=1 -> 50%, not below a 50% threshold ->
+    // suppression genuinely lifts (a fresh episode, not just a probe).
+    resolvePendingHintsForEvent(bashEvent(probeSession, 'token-goat read "C:/repo/probe.ts::Foo"'))
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(false)
+
+    // This not-suppressed call must reset the streak, AND its own never-acted-on emission tips
+    // the cumulative percentage back below threshold (emitted=3, actedOn=1 -> 33.3%), so the
+    // category is suppressed again for the NEXT call -- episode 2 begins here.
+    const liftedSession = nonce()
+    const liftedEvent = bashEvent(liftedSession, 'cat C:/repo/lifted.ts')
+    const liftedContext = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/lifted.ts::Foo"` instead.' }
+    expect(applyHintTracking(liftedEvent, liftedContext, classify)).toEqual(liftedContext) // shown: not suppressed yet
+    expect(shouldSuppress('bash_redirect', nonce())).toBe(true) // suppressed again starting now
+
+    // Episode 2, occasion 1: if the streak was properly reset to 0, this is occasion 1 again,
+    // which matches threshold [1] and must probe through -- not stay silently suppressed as it
+    // would if the streak had kept counting up from episode 1's leftover value.
+    const episode2Session = nonce()
+    const episode2Event = bashEvent(episode2Session, 'cat C:/repo/episode2.ts')
+    const episode2Context = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/episode2.ts::Foo"` instead.' }
+    expect(applyHintTracking(episode2Event, episode2Context, classify)).toEqual(episode2Context)
+  })
 })
 
 describe('manual marks', () => {
