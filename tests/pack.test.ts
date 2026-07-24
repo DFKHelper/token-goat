@@ -218,6 +218,33 @@ describe('formatMarkdown', () => {
     expect(md).toContain('## `test.js`')
     expect(md).toContain('```javascript')
   })
+
+  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than
+  // 3 files were skipped (only the first 3 are listed by name), so a skip count of exactly 3
+  // must render every name with no trailing ellipsis. A mutation appending '...' unconditionally
+  // still passed the full suite, since no fixture exercises the skipped-file note at all.
+  it('omits the ellipsis on the skipped-files note when exactly 3 files were skipped', () => {
+    const result = {
+      files: [],
+      skipped: ['a.ts (too large)', 'b.ts (too large)', 'c.ts (too large)'],
+      total_lines: 0,
+      total_tokens: 0,
+    }
+    const md = formatMarkdown(result)
+    expect(md).toContain('Skipped 3 file(s): a.ts (too large), b.ts (too large), c.ts (too large)*')
+    expect(md).not.toContain('...')
+  })
+
+  it('appends an ellipsis on the skipped-files note when more than 3 files were skipped', () => {
+    const result = {
+      files: [],
+      skipped: ['a.ts', 'b.ts', 'c.ts', 'd.ts'],
+      total_lines: 0,
+      total_tokens: 0,
+    }
+    const md = formatMarkdown(result)
+    expect(md).toContain('Skipped 4 file(s): a.ts, b.ts, c.ts...')
+  })
 })
 
 describe('formatXml', () => {
