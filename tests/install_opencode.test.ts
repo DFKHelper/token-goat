@@ -204,7 +204,8 @@ describe("installOpencode entry-path sidecar (PATH-hardening for the plugin's in
 describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...OPENCODE_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
-    expect(calls.length).toBeGreaterThan(0)
+    // 3 real call sites in the plugin script: pre_tool_use, post_tool_use, pre_compact.
+    expect(calls.length).toBe(3)
     for (const eventName of calls) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
