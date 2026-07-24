@@ -435,4 +435,31 @@ describe('formatBudgetText', () => {
     const result = { entries, skipped: [], total_lines: entries.length * 10, total_tokens: entries.length * 20 }
     expect(() => formatBudgetText(result)).not.toThrow()
   })
+
+  // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than
+  // 5 files were skipped (only the first 5 are listed by name), so a skip count of exactly 5
+  // must list every name with no trailing ellipsis. A mutation appending '...' unconditionally
+  // still passed the full suite, since no fixture exercises the skipped-file note at all.
+  it('omits the ellipsis on the skipped note when exactly 5 files were skipped', () => {
+    const result = {
+      entries: [],
+      skipped: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'],
+      total_lines: 0,
+      total_tokens: 0,
+    }
+    const output = formatBudgetText(result)
+    expect(output).toContain('Skipped: a.ts, b.ts, c.ts, d.ts, e.ts')
+    expect(output).not.toContain('...')
+  })
+
+  it('appends an ellipsis on the skipped note when more than 5 files were skipped', () => {
+    const result = {
+      entries: [],
+      skipped: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'],
+      total_lines: 0,
+      total_tokens: 0,
+    }
+    const output = formatBudgetText(result)
+    expect(output).toContain('Skipped: a.ts, b.ts, c.ts, d.ts, e.ts...')
+  })
 })
