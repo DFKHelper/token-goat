@@ -25,7 +25,7 @@ import type { IndexingConfig } from './config.js'
 import { deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import type { ChunkBoundary } from './embeddings.js'
 import { isEmbeddableDocument, extractEmbeddableDocumentText } from './doc_embed_extract.js'
-import { fingerprintContent, fingerprintFile } from './fingerprint.js'
+import { fingerprintContent } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
@@ -1953,14 +1953,14 @@ export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): bool
  */
 function writeParseResult(
   filePath: string,
-  content: Buffer | null,
+  content: Buffer,
   result: ParseResult,
   dbPath: string,
 ): void {
   const db = getDb(dbPath)
 
-  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file changes between the parse read and this write, a re-read here would record a SHA that does not match the symbols/refs actually written below, and the worker's SHA-gated incremental drain would skip reindexing a file whose stored SHA happens to match a later version, leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded string used for parsing) so this SHA is computed over the same bytes worker.ts's gate hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8 content would otherwise produce a different digest than hashing the raw bytes directly, permanently defeating the gate for any such file. content is null only when the file could not be read at all, in which case there is nothing to fingerprint from memory.
-  const sha = content === null ? safeSha(filePath) : fingerprintContent(content)
+  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file changes between the parse read and this write, a re-read here would record a SHA that does not match the symbols/refs actually written below, and the worker's SHA-gated incremental drain would skip reindexing a file whose stored SHA happens to match a later version, leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded string used for parsing) so this SHA is computed over the same bytes worker.ts's gate hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8 content would otherwise produce a different digest than hashing the raw bytes directly, permanently defeating the gate for any such file. writeParseResult's only caller (indexFileSync) always has a successfully-read Buffer in hand by the time it calls this -- a read failure returns or throws before reaching this call -- so there is never a "content is unreadable" case to fall back to a disk re-read for.
+  const sha = fingerprintContent(content)
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
 
@@ -2249,14 +2249,6 @@ function stampEmbedSha(
     foldPath(filePath),
     sha,
   )
-}
-
-function safeSha(filePath: string): string {
-  try {
-    return fingerprintFile(filePath) ?? ''
-  } catch {
-    return ''
-  }
 }
 
 function safeMtime(filePath: string): number {
