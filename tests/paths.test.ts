@@ -284,4 +284,20 @@ describe('resolveIndexPath', () => {
     const cwd = 'C:/Projects/repo-a'
     expect(resolveIndexPath('C:/Projects/repo-a/src/foo.ts', cwd)).toBe(resolveIndexPath('c:/Projects/repo-a/src/foo.ts', cwd))
   })
+
+  // Mutation-testing gap: a colon at index 1 with no following slash/backslash (e.g. "C:foo.ts")
+  // is a Windows drive-RELATIVE path, not absolute -- it means "foo.ts relative to whatever the
+  // current directory on drive C: happens to be", which this codebase can never determine, not
+  // "foo.ts at the root of drive C:". isWindowsAbsolute's regex requires a separator right after
+  // the colon specifically to exclude this case and fall through to the ambient (non-win32)
+  // resolver instead of silently mis-resolving it as if it were absolute.
+  it('does not treat a drive-relative path (colon with no following separator) as Windows-absolute', () => {
+    const win32Spy = vi.spyOn(path.win32, 'resolve')
+    try {
+      resolveIndexPath('C:foo.ts', '/home/user/repo')
+      expect(win32Spy).not.toHaveBeenCalled()
+    } finally {
+      win32Spy.mockRestore()
+    }
+  })
 })
