@@ -11,7 +11,8 @@ describe('overflow_guard', () => {
     })
 
     it('returns at least 1 token for empty string', () => {
-      expect(estimateTokens('')).toBeGreaterThanOrEqual(1)
+      // Math.max(1, Math.floor(0/3)+1) is exactly 1, not just "at least" 1.
+      expect(estimateTokens('')).toBe(1)
     })
 
     it('strips ANSI codes before counting', () => {
@@ -190,11 +191,11 @@ describe('overflow_guard', () => {
     const result = trimToBudget(text, 200)
     const resultLines = result.split('\n')
     const firstLine = resultLines[0]!
-    if (firstLine.length > 0) {
-      const lastCodeUnit = firstLine.charCodeAt(firstLine.length - 1)
-      const isHighSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
-      expect(isHighSurrogate).toBe(false)
-    }
+    // Budget 200 keeps the whole first line (107 chars, well under budget), so it's never empty.
+    expect(firstLine.length).toBe(107)
+    const lastCodeUnit = firstLine.charCodeAt(firstLine.length - 1)
+    const isHighSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
+    expect(isHighSurrogate).toBe(false)
   })
 
 })

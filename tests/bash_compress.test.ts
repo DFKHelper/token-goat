@@ -181,11 +181,11 @@ describe('compressOutput', () => {
     const line = 'x'.repeat(5) + emoji + 'y'.repeat(10)
     const out = compressOutput(line, { maxLineLength: 12 })
     const truncatedPart = out.substring(0, out.indexOf('…') > 0 ? out.indexOf('…') : out.length)
-    if (truncatedPart.length > 0) {
-      const lastCodeUnit = truncatedPart.charCodeAt(truncatedPart.length - 1)
-      const isHighSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
-      expect(isHighSurrogate).toBe(false)
-    }
+    // maxLineLength: 12 truncates the 17-unit line to exactly 12 units, so truncatedPart is never empty here.
+    expect(truncatedPart.length).toBe(12)
+    const lastCodeUnit = truncatedPart.charCodeAt(truncatedPart.length - 1)
+    const isHighSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
+    expect(isHighSurrogate).toBe(false)
   })
 
 })
