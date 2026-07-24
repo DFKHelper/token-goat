@@ -3088,6 +3088,25 @@ export function extractImports(text: string, ext: string): string[] {
       const dotSource = /^\s*\.\s+['"]?([^\s'";]+\.psm?1)['"]?\s*$/i.exec(line)
       if (dotSource) push(dotSource[1])
     }
+  } else if (e === '.mk') {
+    // GNU/BSD Make's `include`/`-include`/`sinclude` directives are this language's exact
+    // analogue of an import statement, but "include" (no leading `#`) doesn't match the generic
+    // `import|require|use|#include` fallback's `#include` alternative -- the same
+    // substring-mismatch gap already fixed for .cs's `using` and .ps1's `Import-Module`. Without
+    // this branch every Makefile silently reported zero imports/deps despite `include` being
+    // idiomatic for splitting a build into multiple .mk files. `runImports`/`runDeps` map a bare
+    // `Makefile`/`GNUmakefile`/`BSDmakefile` basename (no real extension) to this synthetic
+    // `.mk` key via {@link importsExtensionFor} so those files reach this branch too.
+    // Directive lines are ` *`-indented (spaces only, never a leading tab -- a tab-indented line
+    // is always a recipe handed to the shell, never a make directive, mirroring
+    // makefile_idx.ts's DEFINE_LINE_RE guard), and may list multiple targets on one line
+    // (`include foo.mk bar.mk`).
+    for (const line of lines) {
+      const m = /^ *(?:-include|sinclude|include)\s+(.+)$/.exec(line)
+      if (m) {
+        for (const target of (m[1] ?? '').split(/\s+/)) push(target)
+      }
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
@@ -3097,6 +3116,21 @@ export function extractImports(text: string, ext: string): string[] {
   return found
 }
 
+/**
+ * {@link extractImports}'s dispatch key, derived from `filePath` rather than a bare
+ * `path.extname()` call: a `Makefile`/`GNUmakefile`/`BSDmakefile` (mirrors parser_types.ts's
+ * FILENAME_LANGUAGE basename map) has no real file extension, so `path.extname()` alone always
+ * yields `''` for it -- routing to extractImports' generic fallback, which requires a literal
+ * `#include` and never matches Make's own `include`/`-include`/`sinclude` directives. Maps such
+ * a basename to the synthetic `.mk` key extractImports' Makefile branch dispatches on; every
+ * other path falls through to its real `path.extname()`.
+ */
+export function importsExtensionFor(filePath: string): string {
+  const base = path.basename(filePath).toLowerCase()
+  if (base === 'makefile' || base === 'gnumakefile' || base === 'bsdmakefile') return '.mk'
+  return path.extname(filePath)
+}
+
 /** Handle ``token-goat imports file``. */
 export function runImports(opts: ImportsExportsOptions): number {
   const text = readFileText(opts.file)
@@ -3104,7 +3138,7 @@ export function runImports(opts: ImportsExportsOptions): number {
     emitErr(`Could not read: ${opts.file}`)
     return 1
   }
-  const imports = extractImports(text, path.extname(opts.file))
+  const imports = extractImports(text, importsExtensionFor(opts.file))
 
   if (imports.length === 0) {
     emit(`No imports found in '${opts.file}'`)

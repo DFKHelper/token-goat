@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
-import { extractImports } from './read_commands.js'
+import { extractImports, importsExtensionFor } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage } from './util.js'
@@ -526,7 +526,7 @@ export function runDeps(opts: DepsOptions): number {
     return 1
   }
 
-  const ext = path.extname(opts.file)
+  const ext = importsExtensionFor(opts.file)
   const raw = extractImports(text, ext)
   const dir = path.dirname(opts.file)
 
@@ -1121,7 +1121,7 @@ export function runArch(opts: ArchOptions): number {
   for (const file of files) {
     let text: string
     try { text = fs.readFileSync(file, 'utf8') } catch { continue }
-    const ext = path.extname(file)
+    const ext = importsExtensionFor(file)
     const rawImports = extractImports(text, ext)
     const internal: string[] = []
     for (const spec of rawImports) {
