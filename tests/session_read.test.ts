@@ -276,4 +276,16 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(formatSessionOutline([])).toBe('(no turns found)')
     expect(formatSessionSlice([])).toBe('(no turns in range)')
   })
+
+  // Regression (mutation-testing gap): formatBlock's default branch (any block `type` other than
+  // text/thinking/tool_use/tool_result -- e.g. a future/unrecognized content-block type) renders
+  // `[<type>]` so the slice still shows *something* identifying the block rather than silently
+  // dropping it. A mutation returning '' from that branch instead still passed the full suite,
+  // since no existing fixture exercises a block type outside the four named cases.
+  it('renders an unrecognized block type as a labeled placeholder, not silently dropped', () => {
+    const text = formatSessionSlice([
+      { turn: 1, lineNumber: 1, role: 'assistant', blocks: [{ type: 'image' }] },
+    ])
+    expect(text).toContain('[image]')
+  })
 })
