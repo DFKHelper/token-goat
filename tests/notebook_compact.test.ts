@@ -101,7 +101,7 @@ describe('stripNotebook', () => {
       ],
     }
     const stripped = stripNotebook(nb as never)
-    expect(stripped.cells?.[0]).toHaveProperty('metadata')
+    expect(stripped.cells?.[0]).toHaveProperty('metadata', { collapsed: true })
     expect(stripped.cells?.[0]).toHaveProperty('custom_field', 'preserved')
   })
 
@@ -126,7 +126,7 @@ describe('stripNotebook', () => {
     }
     const stripped = stripNotebook(nb as never)
     expect(stripped).toHaveProperty('nbformat', 4)
-    expect(stripped).toHaveProperty('metadata')
+    expect(stripped).toHaveProperty('metadata', { kernelspec: { name: 'python3' } })
     expect(stripped).toHaveProperty('cells')
   })
 })
