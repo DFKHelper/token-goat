@@ -281,6 +281,27 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).toContain('export const X = 1')
   })
 
+  // Regression (mutation-testing gap): toSessionBlock prefers a block's `text` field over its
+  // `thinking` field when (unusually) both are present as strings on the same raw block -- the
+  // `thinking` assignment is guarded by `block.text === undefined` specifically so it never
+  // clobbers a `text` value already set. A mutation dropping that guard (unconditionally
+  // overwriting from `thinking` whenever present) still passed the full suite, since no fixture
+  // exercises a block carrying both fields at once.
+  it('prefers a block\'s text field over thinking when a raw block improbably carries both', async () => {
+    const file = writeFixture([
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'real answer', thinking: 'internal reasoning' }],
+        },
+      },
+    ])
+    const text = formatSessionSlice(await sliceSessionTurns(file, 1, 1))
+    expect(text).toContain('real answer')
+    expect(text).not.toContain('internal reasoning')
+  })
+
   it('reports no turns found / no turns in range for empty inputs', () => {
     expect(formatSessionOutline([])).toBe('(no turns found)')
     expect(formatSessionSlice([])).toBe('(no turns in range)')
