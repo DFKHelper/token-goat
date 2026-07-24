@@ -63,6 +63,15 @@ describe('normalizePath', () => {
     expect(normalizePath('/mnt/c/foo\\bar')).toBe('c:/foo/bar')
   })
 
+  // Mutation-testing gap: WSL_PATH_RE's `.*` after the drive segment must match a literal
+  // newline byte (via the regex's `s` flag), or a path containing one -- unusual, but not
+  // impossible for a filename built from arbitrary bytes -- fails to match at all and falls
+  // through unrewritten, silently skipping the WSL->Windows-drive-form rewrite instead of
+  // completing it.
+  it('converts a WSL /mnt path whose remainder contains a literal newline byte', () => {
+    expect(normalizePath('/mnt/c/foo\nbar/baz')).toBe('c:/foo\nbar/baz')
+  })
+
   // Regression: UNC paths (\\host\share\...) have a case-insensitive host and share segment,
   // analogous to a drive letter, but were never folded -- two differently-cased references to
   // the same network share normalized to two different strings and silently missed each other
