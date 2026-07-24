@@ -403,6 +403,19 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined')
   })
 
+  // Regression (mutation-testing gap): previewForBlocks falls back to the literal string
+  // '(empty)' when a turn's blocks match none of the tool_result/text/thinking/tool_use cases
+  // it looks for, so the outline still shows *something* for that turn instead of a blank
+  // preview. A mutation returning '' from that fallback still passed the full suite, since no
+  // fixture exercises a turn whose only block is an unrecognized/contentless type.
+  it('previews a turn with no recognized content as "(empty)", not a blank preview', async () => {
+    const file = writeFixture([
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'image' }] } },
+    ])
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).toContain('(empty)')
+  })
+
   // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
   // not appear in the outline's tool-calls list at all. A mutation removing the
   // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
