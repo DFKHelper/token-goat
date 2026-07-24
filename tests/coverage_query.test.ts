@@ -193,6 +193,16 @@ describe('detectCoverageFormat', () => {
   it('throws on valid JSON that matches neither Istanbul shape', () => {
     expect(() => detectCoverageFormat(JSON.stringify({ hello: 'world' }))).toThrow(/not a recognized coverage report/)
   })
+
+  // Regression (mutation-testing gap): the root-shape guard explicitly rejects a JSON array
+  // (typeof [] === 'object', so the array check needs its own Array.isArray branch, not just
+  // the typeof/null checks). Dropping that branch still passed the full suite, since an empty
+  // array's filtered Object.entries() is also empty and fell through to the "empty object ->
+  // empty istanbul-final report" fallback instead of throwing -- silently misdetecting a JSON
+  // array root as a valid, contentless coverage report.
+  it('throws on a JSON array root instead of misdetecting it as an empty coverage report', () => {
+    expect(() => detectCoverageFormat('[]')).toThrow(/not a recognized coverage report/)
+  })
 })
 
 describe('parseLcov', () => {
