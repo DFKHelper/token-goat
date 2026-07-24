@@ -45,7 +45,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, isWithinQuietHours, normalizePathForwardSlash, packageNameDistance, runGit, sleepSync, noWindowCreationFlags, safeSlice, stripOwnHooksFromMap, withFileLock } from '../src/util.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
 
@@ -620,6 +620,26 @@ describe('escapeRegExp', () => {
     // the literal three characters "abc$".
     expect(new RegExp(escapeRegExp('abc$')).test('abc$xyz')).toBe(true)
     expect(new RegExp(escapeRegExp('abc$')).test('abcxyz')).toBe(false)
+  })
+})
+
+// Mutation-testing gap: normalizePathForwardSlash had no direct unit test, only indirect
+// coverage through compact.ts's manifest builders -- and every path fixture those tests use is
+// already all-lowercase (alpha.ts, beta.ts, readonly.ts, edited.ts), so none of them could ever
+// catch a regression that unconditionally lowercases the result regardless of the toLowerCase
+// flag. compact.ts's "Edited files"/"Files read" manifest sections rely on the flag defaulting
+// to false (case preserved) so a displayed path like "MyComponent.tsx" isn't silently mangled.
+describe('normalizePathForwardSlash', () => {
+  it('preserves original casing when toLowerCase is omitted', () => {
+    expect(normalizePathForwardSlash('C:/Proj/MyComponent.tsx')).toBe('c:/Proj/MyComponent.tsx')
+  })
+
+  it('preserves original casing when toLowerCase is explicitly false', () => {
+    expect(normalizePathForwardSlash('C:/Proj/MyComponent.tsx', false)).toBe('c:/Proj/MyComponent.tsx')
+  })
+
+  it('lowercases the whole path when toLowerCase is true', () => {
+    expect(normalizePathForwardSlash('C:/Proj/MyComponent.tsx', true)).toBe('c:/proj/mycomponent.tsx')
   })
 })
 
