@@ -225,6 +225,11 @@ describe('scanSecrets', () => {
     ]
     const hits = scanSecrets(files)
     expect(hits.length).toBe(1)
+    // Not just "one hit" -- specifically the first pattern in SECRET_PATTERNS order (AWS access
+    // key), proving the `break` stopped scanning after the first match rather than, say,
+    // scanning stopped for an unrelated reason (e.g. a dedup step) while still checking every
+    // pattern and keeping the last one.
+    expect(hits[0]!.kind).toBe('AWS access key')
   })
 })
 
@@ -304,8 +309,9 @@ describe('formatMarkdown', () => {
       total_tokens: 0,
     }
     const md = formatMarkdown(result)
+    // The closing '*' immediately after the last name already pins that nothing (an ellipsis or
+    // otherwise) was inserted between the last name and the end of the note.
     expect(md).toContain('Skipped 3 file(s): a.ts (too large), b.ts (too large), c.ts (too large)*')
-    expect(md).not.toContain('...')
   })
 
   it('appends an ellipsis on the skipped-files note when more than 3 files were skipped', () => {
@@ -573,8 +579,10 @@ describe('formatBudgetText', () => {
       total_tokens: 0,
     }
     const output = formatBudgetText(result)
-    expect(output).toContain('Skipped: a.ts, b.ts, c.ts, d.ts, e.ts')
-    expect(output).not.toContain('...')
+    // Anchored to end-of-string (the skip note is always the last line) rather than a blanket
+    // not.toContain('...') over the whole output, which could false-fail on unrelated ellipsis
+    // text elsewhere in the report.
+    expect(output).toMatch(/\n {2}Skipped: a\.ts, b\.ts, c\.ts, d\.ts, e\.ts$/)
   })
 
   it('appends an ellipsis on the skipped note when more than 5 files were skipped', () => {
