@@ -1066,6 +1066,34 @@ describe('drainOnce', () => {
       expect(remaining).toContain(B)
     })
 
+    // Regression (mutation-testing gap): the post-claim re-read forwards only the *new suffix*
+    // of the claimed file (recheck.slice(claimedContent.length)), not the whole re-read content,
+    // to the live queue. This matters specifically for a write landing on the SAME renamed
+    // claim-target file mid-batch (the FILE_SHARE_DELETE/rename-race window the doc comment
+    // above describes) rather than a fresh dirty.txt recreated after the claim (the prior test).
+    // Without the startsWith-slice, an already-processed path in the claimed content would be
+    // re-forwarded into the live queue alongside the genuinely-new one, redundantly reprocessing
+    // it on the next cycle instead of forwarding only what the race actually added.
+    it('forwards only the new suffix of the claimed file to the live queue, not the whole re-read content, when a write lands on the claim target itself mid-batch', () => {
+      const A = path.join(DIR, 'a2.ts')
+      const G = path.join(DIR, 'g2.ts')
+      fs.writeFileSync(A, 'export const a2 = 1\n')
+      fs.writeFileSync(G, 'export const g2 = 1\n')
+      writeQueue(DIR, [A])
+
+      const claimTarget = path.join(DIR, 'queue', 'dirty.txt.draining')
+      drainOnce(DIR, (p) => {
+        if (p === A) {
+          // Simulate a concurrent writer landing on the SAME claimed file (not a fresh dirty.txt).
+          fs.appendFileSync(claimTarget, `${G}\n`)
+        }
+      })
+
+      // Only G (the genuinely new suffix) is forwarded to the live queue -- A must not be
+      // redundantly re-added just because the whole claimed file was re-read.
+      expect(getDirtyPathsFor(DIR)).toEqual([G])
+    })
+
     it('recovers from abandoned .draining file', () => {
       // Regression: if a previous drain process crashed, its .draining file would be abandoned. drainOnce must recover by reading and indexing it, so those paths are not lost.
       const C = path.join(DIR, 'c.ts')
