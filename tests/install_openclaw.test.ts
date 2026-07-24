@@ -125,7 +125,9 @@ describe('installOpenclaw', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('openclaw.json.bak.'))
-    expect(backups.length).toBeGreaterThanOrEqual(1)
+    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
+    // one call above actually produces a backup file.
+    expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe(JSON.stringify({ gateway: { port: 4141 } }))
   })
@@ -268,7 +270,9 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     const p = openclawConfigPath()
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('openclaw.json.bak.'))
-    expect(backups.length).toBeGreaterThanOrEqual(1)
+    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
+    // one call above actually produces a backup file.
+    expect(backups.length).toBe(1)
   })
 })
 
