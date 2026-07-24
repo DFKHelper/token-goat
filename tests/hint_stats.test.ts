@@ -277,6 +277,24 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.resolved).toBe(1)
   })
 
+  // Regression (mutation-testing gap): isActedOn requires a bash_recall's later command to
+  // contain the literal substring 'bash-output', not merely mention the exact correlator id
+  // somewhere in a token-goat invocation -- an id could coincidentally reappear as an argument
+  // to a completely different subcommand. Dropping that requirement still passed the full
+  // suite, since no existing fixture exercises a token-goat command that mentions the correlator
+  // without also being a bash-output call.
+  it('does not credit acted_on for bash_recall when the correlator id appears in an unrelated token-goat subcommand, not a bash-output call', () => {
+    const n = nonce()
+    logHintEmission('bash_recall', n, 'ab12cd34')
+    // The id reappears verbatim as, say, a grep pattern argument to an unrelated subcommand --
+    // never actually recalling the cached output the hint pointed at.
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat grep ab12cd34'))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.acted_on).toBe(0)
+  })
+
   it('does not credit acted_on when a later command touches a different file that merely shares the correlator as a prefix (e.g. foo.ts vs foo.tsx)', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, 'C:/repo/foo.ts')
