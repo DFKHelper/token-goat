@@ -373,6 +373,8 @@ describe('isQwenInstalled / uninstallQwen', () => {
     const p = qwenSettingsPath()
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    expect(backups.length).toBeGreaterThanOrEqual(1)
+    // writeJsonSettings's backupFile call no-ops when the target doesn't exist yet, so exactly
+    // one call above actually produces a backup file.
+    expect(backups.length).toBe(1)
   })
 })

@@ -261,7 +261,9 @@ describe('isInstalled / uninstallHooks', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    expect(backups.length).toBeGreaterThanOrEqual(1)
+    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually
+    // produces a backup file.
+    expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(JSON.parse(backupContent)).toEqual({ theme: 'dark' })
   })
@@ -275,7 +277,9 @@ describe('isInstalled / uninstallHooks', () => {
 
     const dir = fs.readdirSync(path.dirname(p))
     const backups = dir.filter((f) => f.startsWith('settings.json.bak.'))
-    expect(backups.length).toBeGreaterThanOrEqual(1)
+    // backupFile no-ops when the target doesn't exist yet, so exactly one call above actually
+    // produces a backup file.
+    expect(backups.length).toBe(1)
     const backupContent = fs.readFileSync(path.join(path.dirname(p), backups[0] as string), 'utf8')
     expect(backupContent).toBe(before)
   })
