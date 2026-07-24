@@ -352,6 +352,16 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
     expect(isBashEntryStale(entry, 'echo hi', null)).toBe(false)
   })
 
+  // Regression (mutation-testing gap): computeBashFingerprints must return undefined,
+  // not an empty object, when no fingerprint kind matched. `{}` is truthy in JS, so
+  // storeBashOutput's `...(fingerprints ? { fingerprints } : {})` spread would still
+  // attach an empty `fingerprints: {}` to every entry -- a shape change no prior test
+  // caught because isBashEntryStale behaves identically for `{}` and `undefined`.
+  it('returns undefined (not an empty object) for a command that matches no fingerprint kind', () => {
+    expect(computeBashFingerprints('echo hi', null)).toBeUndefined()
+    expect(computeBashFingerprints('echo hi', '/some/cwd')).toBeUndefined()
+  })
+
   it('detects a stale dir-listing entry once the target directory changes', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-dir-'))
     const subDir = path.join(tmpDir, 'sub')
