@@ -270,6 +270,22 @@ describe('depLockfileFingerprint', () => {
     const result = await depLockfileFingerprint('npm ls', '/nonexistent/path')
     expect(result).toBeNull()
   })
+
+  // Regression (mutation-testing gap): DEP_LOCKFILES['npm'] lists two candidate
+  // lockfiles (package-lock.json, then yarn.lock as a fallback). No test exercised
+  // the fallback itself -- a mutation that returned null on the first missing
+  // candidate instead of trying the next one still passed the full suite.
+  it('falls back to the next candidate lockfile when the first is absent', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lockfile-fallback-'))
+    try {
+      // No package-lock.json here -- only the fallback candidate.
+      fs.writeFileSync(path.join(tmpDir, 'yarn.lock'), '# yarn lockfile v1\n')
+      const result = await depLockfileFingerprint('npm ls', tmpDir)
+      expect(result).not.toBeNull()
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('reset', () => {
