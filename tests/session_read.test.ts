@@ -288,4 +288,23 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     ])
     expect(text).toContain('[image]')
   })
+
+  // Regression (mutation-testing gap): a malformed tool_use block missing its `name` field must
+  // not appear in the outline's tool-calls list at all. A mutation removing the
+  // `b.name !== undefined` half of toolCallsForBlocks' filter still passed the full suite (it
+  // surfaces as an empty `[tools: ]` tag, since Array.join renders an undefined element as ''),
+  // since no fixture exercises a nameless tool_use block.
+  it('omits a nameless tool_use block from the outline\'s tool-calls tag entirely', async () => {
+    const file = writeFixture([
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', input: {} }],
+        },
+      },
+    ])
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).not.toContain('[tools:')
+  })
 })
