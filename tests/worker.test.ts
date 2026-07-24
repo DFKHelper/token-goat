@@ -380,6 +380,30 @@ describe('processDirtyBatch', () => {
     expect(findProjectSpy).toHaveBeenCalledTimes(1)
   })
 
+  // Regression: processDirtyBatch is exported specifically for direct unit-test/caller use (see
+  // its doc comment), so it cannot assume every caller pre-filters blank entries the way
+  // parseDirtyQueueLines does for the real drain path. Without the `if (!p) continue` guard, an
+  // empty-string entry reaches fs.existsSync('') (false) and falls through to the remove callback
+  // with an empty path -- wasted work at best, and a surface a future remove() implementation
+  // could mishandle. Assert neither the index nor the remove callback is ever invoked for it.
+  it('skips a blank/empty-string entry in the batch instead of treating it as a deletion', () => {
+    const real = path.join(DIR, 'real.ts')
+    fs.writeFileSync(real, 'export const x = 1\n')
+
+    const indexed: string[] = []
+    const removed: string[] = []
+    const count = processDirtyBatch(
+      ['', real],
+      (p) => indexed.push(p),
+      (p) => removed.push(p),
+      DIR,
+    )
+
+    expect(count).toBe(1)
+    expect(indexed).toEqual([real])
+    expect(removed).toEqual([])
+  })
+
   // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call
   // returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive
   // sync, a permission error, or a race with an external writer -- used to be silently dropped:
