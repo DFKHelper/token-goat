@@ -254,7 +254,7 @@ error: another thing
 failure: yet another
 `;
       const result = extractFailures(output);
-      expect(result.summaryLines.length).toBeGreaterThanOrEqual(2);
+      expect(result.summaryLines).toEqual(['failed: something', 'error: another thing', 'failure: yet another']);
     });
   });
 
@@ -372,11 +372,7 @@ FAIL
 `);
       const json = formatFailuresJson(result);
       const parsed = JSON.parse(json);
-      expect(Array.isArray(parsed.failures)).toBe(true);
-      if (parsed.failures.length > 0) {
-        expect(parsed.failures[0]).toHaveProperty('name');
-        expect(parsed.failures[0]).toHaveProperty('body');
-      }
+      expect(parsed.failures).toEqual([{ name: 'TestExample', body: '--- FAIL: TestExample' }]);
     });
 
     it('should have proper indentation', () => {
