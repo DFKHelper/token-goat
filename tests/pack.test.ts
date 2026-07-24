@@ -219,6 +219,24 @@ describe('formatMarkdown', () => {
     expect(md).toContain('```javascript')
   })
 
+  // Regression (mutation-testing gap): getLang falls back to '' (a bare fence, no language tag)
+  // for an extension not in LANG_MAP, so a code renderer never sees a bogus/guessed language
+  // for a file type it doesn't recognize. A mutation falling back to a non-empty placeholder
+  // like 'text' still passed the full suite, since no fixture packs a file with an unknown
+  // extension.
+  it('uses a bare code fence (no language tag) for an unrecognized file extension', () => {
+    const result = {
+      files: [
+        { path: 'notes.xyz', rel_path: 'notes.xyz', content: 'some notes', lines: 1, tokens: 3 },
+      ],
+      skipped: [],
+      total_lines: 1,
+      total_tokens: 3,
+    }
+    const md = formatMarkdown(result)
+    expect(md).toContain('## `notes.xyz`\n\n```\n')
+  })
+
   // Regression (mutation-testing gap): the skipped-files note only appends '...' when more than
   // 3 files were skipped (only the first 3 are listed by name), so a skip count of exactly 3
   // must render every name with no trailing ellipsis. A mutation appending '...' unconditionally
