@@ -644,6 +644,18 @@ describe('embeddings module', () => {
       expect(out[0].filePath).toBe('src/a.ts')
     })
 
+    it('boosts a hit for a 3-character query token, the minimum counted token length (mutation-testing gap: the length check must be >=, not >)', () => {
+      const hits = [
+        mk('src/a.ts', 0.53, 'the log rotates nightly'),
+        mk('src/b.ts', 0.5, 'totally unrelated content'),
+      ]
+      // 'log' is exactly _MIN_TOKEN_LEN (3) chars; with the boost applied, a.ts's adjusted
+      // distance (0.53 - 0.05 = 0.48) beats b.ts's raw 0.5. Without it, b.ts (lower raw
+      // distance, no boost either way) would win instead.
+      const out = embeddings.rerankHits(hits, 'log', 8)
+      expect(out[0].filePath).toBe('src/a.ts')
+    })
+
     it('truncates to topK after re-ranking', () => {
       const hits = [mk('src/a.ts', 0.3, 'x'), mk('src/b.ts', 0.4, 'y'), mk('src/c.ts', 0.5, 'z')]
       const out = embeddings.rerankHits(hits, 'irrelevant', 2)
