@@ -385,8 +385,8 @@ FAIL
       const result = extractFailures('=== FAILURES ===\ntest\n=== 1 failed ===');
       const json = formatFailuresJson(result);
       const parsed = JSON.parse(json);
-      expect(parsed).toHaveProperty('runner');
-      expect(parsed).toHaveProperty('stats');
+      expect(parsed).toHaveProperty('runner', 'pytest');
+      expect(parsed).toHaveProperty('stats', '=== 1 failed ===');
     });
   });
 
