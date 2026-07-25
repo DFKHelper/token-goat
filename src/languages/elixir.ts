@@ -1,9 +1,9 @@
 /**
  * Elixir symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: modules (defmodule), functions (def/defp), macros (defmacro),
- * and structs (defstruct). Private functions (defp) are extracted with
- * a 'function' kind (no separate private variant).
+ * Extracts: modules (defmodule), protocols (defprotocol), functions (def/defp),
+ * macros (defmacro), and structs (defstruct). Private functions (defp) are
+ * extracted with a 'function' kind (no separate private variant).
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -34,6 +34,14 @@ function nearestDefName(stack: readonly ModuleFrame[]): string | undefined {
 
 // `defmodule Foo` or `defmodule Foo.Bar` (qualified module names are common)
 const MODULE_RE = /^defmodule\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
+
+// `defprotocol Sizeable do` / `defprotocol My.Nested.Proto do` -- a protocol is a named,
+// module-like container (a `do ... end` body of `def` signatures). It was absent here, so the
+// protocol name was dropped AND its body pushed only an anonymous *block* frame: every `def`
+// inside it was orphaned to the top level (parent lost) instead of attributed to the protocol.
+// `defprotocol` never false-matches FUNC_RE/PRIVATE_FUNC_RE (`def(?:macro)?`/`defp` both
+// require whitespace immediately after the keyword, which the `protocol`/`rotocol` tail denies).
+const PROTOCOL_RE = /^defprotocol\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
 
 // `def name(...)`, `def name do`, `defmacro name(...)`, operator functions like `def +(...)`
 // (Elixir allows operator overloads). This also matches `defmacro` -- there is no separate
@@ -81,6 +89,16 @@ export function extractElixir(
       const modName = modM[1] ?? ''
       symbols.push(makeLineSymbol(filePath, modName, 'class', lineNum, stripped.slice(0, 200)))
       moduleStack.push({ name: modName, endKeywordNeeded: true, isBlock: false })
+      continue
+    }
+
+    // defprotocol Sizeable -- index as a named 'protocol' type and push a real (non-block)
+    // frame so the `def` signatures in its body are parented to it, mirroring defmodule.
+    const protoM = PROTOCOL_RE.exec(stripped)
+    if (protoM) {
+      const protoName = protoM[1] ?? ''
+      symbols.push(makeLineSymbol(filePath, protoName, 'protocol', lineNum, stripped.slice(0, 200)))
+      moduleStack.push({ name: protoName, endKeywordNeeded: true, isBlock: false })
       continue
     }
 
