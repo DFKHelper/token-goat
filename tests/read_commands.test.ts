@@ -2839,6 +2839,22 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts CSS/Sass/Less @import (bare and url() forms) and Sass @use/@forward (regression: the generic fallback mangled the url() form into the literal text "url(...)")', () => {
+      const src = [
+        '@import "bare.css";',
+        "@import 'bare-single.css';",
+        '@import url("quoted.css");',
+        '@import url(bare-url.css);',
+        "@use 'module';",
+        "@forward 'shared';",
+      ].join('\n')
+      expect(extractImports(src, '.css')).toEqual([
+        'bare.css', 'bare-single.css', 'quoted.css', 'bare-url.css', 'module', 'shared',
+      ])
+      expect(extractImports('@import url(plain.less);', '.less')).toEqual(['plain.less'])
+      expect(extractImports("@use 'sass:math';", '.scss')).toEqual(['sass:math'])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
