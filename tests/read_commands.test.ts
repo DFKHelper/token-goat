@@ -2807,6 +2807,16 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts Lua require() calls in both paren and paren-less quoted forms (regression: the generic fallback only matched the paren-less `require "mod"`, so the dominant `require("mod")` form reported zero imports)', () => {
+      const src = [
+        'local m = require("foo")',
+        "require('bar')",
+        'require "baz"',
+        'local x = require("a.b.c")',
+      ].join('\n')
+      expect(extractImports(src, '.lua')).toEqual(['foo', 'bar', 'baz', 'a.b.c'])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
