@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import type * as cp from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -727,13 +727,17 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
     expect(readFileSync(filePath, 'utf8')).toBe(original)
   })
 
-  it('stripDelimitedBlock returns false when either marker is missing', () => {
-    writeFileSync(filePath, '# No markers here\n', 'utf8')
+  it('stripDelimitedBlock returns false and leaves the file untouched when either marker is missing', () => {
+    const original = '# No markers here\n'
+    writeFileSync(filePath, original, 'utf8')
     expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(false)
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
   })
 
-  it('stripDelimitedBlock returns false for a missing file', () => {
-    expect(stripDelimitedBlock(path.join(dir, 'nonexistent.md'), BEGIN, END)).toBe(false)
+  it('stripDelimitedBlock returns false for a missing file and does not create one (mutation-testing gap: false alone doesn\'t rule out a buggy write happening before the return)', () => {
+    const missing = path.join(dir, 'nonexistent.md')
+    expect(stripDelimitedBlock(missing, BEGIN, END)).toBe(false)
+    expect(existsSync(missing)).toBe(false)
   })
 
   it('upsertDelimitedBlock inserts the block into an empty/missing file', () => {
@@ -756,8 +760,16 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
   it('upsertDelimitedBlock returns false without writing when the block is already exactly current (mutation-testing gap: a no-op re-run must not touch the file or its mtime)', () => {
     const content = `# Intro\n${BEGIN}\nsame\n${END}\n# Outro\n`
     writeFileSync(filePath, content, 'utf8')
+    // Back-date mtime so a redundant rewrite that happens to preserve the same bytes is still
+    // caught: a real write always bumps mtime, a genuine no-op leaves this untouched.
+    const pastMtime = new Date(Date.now() - 60_000)
+    utimesSync(filePath, pastMtime, pastMtime)
+    const mtimeBefore = statSync(filePath).mtimeMs
+
     expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nsame\n${END}`)).toBe(false)
+
     expect(readFileSync(filePath, 'utf8')).toBe(content)
+    expect(statSync(filePath).mtimeMs).toBe(mtimeBefore)
   })
 })
 
