@@ -2353,6 +2353,31 @@ end
     expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
   })
 
+  it('extracts a defprotocol and parents its def signatures to the protocol', () => {
+    // Regression: `defprotocol` (a named, module-like container) was absent from the extractor,
+    // so the protocol name was dropped entirely and its body pushed only an anonymous block
+    // frame -- leaving every `def` signature inside orphaned to the top level instead of
+    // attributed to the protocol. A trailing module confirms frame balance stays intact.
+    const content = `defprotocol My.Sizeable do
+  def size(data)
+  def empty?(data)
+end
+
+defmodule Box do
+  def area(b), do: b
+end
+`
+    const { symbols } = extractElixir(content, 'sizeable.ex')
+    const proto = symbols.find((s) => s.name === 'My.Sizeable')
+    expect(proto?.kind).toBe('protocol')
+    // The protocol's def signatures are parented to it, not orphaned to the top level.
+    expect(symbols.find((s) => s.name === 'size')?.docstring).toBe('My.Sizeable')
+    expect(symbols.find((s) => s.name === 'empty?')?.docstring).toBe('My.Sizeable')
+    // Frame balance survives: the module after the protocol and its function still resolve.
+    expect(symbols.find((s) => s.name === 'Box')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'area')?.docstring).toBe('Box')
+  })
+
   it('attributes every function in a module to that module, not just the first', () => {
     // Regression test: only `defmodule` pushed a scope frame, so the FIRST function's own
     // `end` incorrectly popped the module frame, leaving every function declared after it
