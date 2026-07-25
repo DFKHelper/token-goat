@@ -2977,6 +2977,56 @@ export function runExports(opts: ImportsExportsOptions): number {
 }
 
 /**
+ * Split `s` on top-level commas only, ignoring commas nested inside `{...}` groups. Used to
+ * enumerate a Rust `use` brace group's selectors without splitting inside a nested group
+ * (`io::{self, Read}` inside `std::{fs, io::{self, Read}}` must stay one selector).
+ */
+function splitTopLevelCommas(s: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of s) {
+    if (ch === '{') depth++
+    if (ch === '}') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(cur)
+      cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  if (cur.trim() !== '') parts.push(cur)
+  return parts
+}
+
+/**
+ * Expand a Rust `use base::{selector, selector, ...}` brace group into one fully-qualified
+ * target per selector, recursing into nested groups (`std::{fs, io::{self, Read}}` ->
+ * `std::fs`, `std::io`, `std::io::Read`). `self` resolves to `base` itself (the group's own
+ * module), and a rename (`Read as R`) resolves to the original name, matching what call sites
+ * actually reference.
+ */
+function expandRustUseGroup(base: string, inner: string): string[] {
+  const results: string[] = []
+  for (const part of splitTopLevelCommas(inner)) {
+    const trimmed = part.trim()
+    if (trimmed === '' || trimmed === 'self') {
+      if (trimmed === 'self') results.push(base)
+      continue
+    }
+    const nested = /^([\w:]+)::\{([\s\S]*)\}$/.exec(trimmed)
+    if (nested) {
+      results.push(...expandRustUseGroup(`${base}::${nested[1] ?? ''}`, nested[2] ?? ''))
+      continue
+    }
+    const name = (trimmed.split(/\s+as\s+/)[0] ?? '').trim()
+    if (name === '' || name === 'self') { results.push(base); continue }
+    results.push(`${base}::${name}`)
+  }
+  return results
+}
+
+/**
  * Extract import/include module specifiers from source text, covering the
  * bundled tree-sitter languages plus a few common extras. Returns one entry per
  * import in source order, de-duplicated. This is deliberately index-independent:
@@ -3048,6 +3098,16 @@ export function extractImports(text: string, ext: string): string[] {
     // parenthetical, so `use` never sat at the anchored position and every restricted-visibility
     // re-export silently reported zero imports/deps.
     for (const line of lines) {
+      // `use std::{fs, io};` -- Rust's idiomatic multi-selector grouped import, at least as
+      // common as the plain form -- previously fell through to the bare-use branch below, whose
+      // `[^;{]+` character class stops at `{` and so captured only the truncated,
+      // non-actionable prefix `std::` while silently dropping every selector actually imported
+      // (the same brace-truncation gap already fixed for Scala's `import foo.{A, B}`).
+      const groupM = /^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([\w:]+)::\{([\s\S]*)\}/.exec(line)
+      if (groupM) {
+        for (const t of expandRustUseGroup(groupM[1] ?? '', groupM[2] ?? '')) push(t)
+        continue
+      }
       const m = /^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;{]+)/.exec(line)
       if (m) push(m[1])
     }
