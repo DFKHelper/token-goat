@@ -294,12 +294,12 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }
 
-  // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle wrote to under the redirected data dir.
+  // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle
+  // wrote to under the redirected data dir. darwin now also honors an XDG_DATA_HOME override
+  // (already set to `base` by relEnv() above) before falling back to the Library/Application
+  // Support path -- matching defaultDataDir()'s darwin branch fix.
   function globalDbFor(base: string): string {
     if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat', 'global.db')
-    if (process.platform === 'darwin') {
-      return path.join(base, 'Library', 'Application Support', 'token-goat', 'global.db')
-    }
     return path.join(base, 'token-goat', 'global.db')
   }
 

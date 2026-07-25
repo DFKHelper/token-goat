@@ -63,11 +63,14 @@ function tgEnv(base: string): NodeJS.ProcessEnv {
  * the same queue/dirty.txt and global.db the daemon uses without importing constants.ts --
  * that module caches its DATA_DIR once at first import from whatever LOCALAPPDATA/XDG_DATA_HOME
  * the test worker process happened to start with, not the per-test temp base this file passes
- * to the spawned bundle.
+ * to the spawned bundle. darwin now also honors an XDG_DATA_HOME override (same env this
+ * helper's caller already sets) before falling back to the Library/Application Support path --
+ * matching defaultDataDir()'s darwin branch fix (was previously HOME-only, always ignoring the
+ * override this file already passed).
  */
 function effectiveDataDir(base: string): string {
   if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat')
-  if (process.platform === 'darwin') return path.join(base, 'Library', 'Application Support', 'token-goat')
+  if (process.platform === 'darwin') return path.join(base, 'token-goat')
   return path.join(base, 'token-goat')
 }
 
