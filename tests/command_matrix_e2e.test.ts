@@ -1229,7 +1229,20 @@ const cases: Record<string, () => void | Promise<void>> = {
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`)
       })
-      expect(toolNames.sort()).toEqual(['outline', 'read', 'section', 'semantic', 'skeleton', 'symbol'])
+      expect(toolNames.sort()).toEqual([
+        'changed',
+        'exports',
+        'grep',
+        'imports',
+        'map',
+        'outline',
+        'read',
+        'refs',
+        'section',
+        'semantic',
+        'skeleton',
+        'symbol',
+      ])
     } finally {
       child.kill()
     }
