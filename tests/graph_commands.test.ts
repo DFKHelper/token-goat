@@ -2408,6 +2408,33 @@ describe('runArch', () => {
     }
   })
 
+  it('resolves a barrel-style directory import ("./utils" backed by "./utils/index.cts") to the real file (regression: the index-probe extension list only tried .ts/.js/.tsx/.jsx, omitting .mts/.cts even though direct-file resolution above already handles both)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-cts-index-'))
+    try {
+      const utilsDir = join(repo, 'utils')
+      mkdirSync(utilsDir)
+      writeFileSync(join(utilsDir, 'index.cts'), 'export const helper = 1\n')
+      writeFileSync(join(repo, 'main.ts'), "import { helper } from './utils'\nconsole.log(helper)\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 10, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as { hubs: Array<{ file: string; importedBy: number }> }
+      expect(parsed.hubs.some((h) => h.file.replace(/\\/g, '/').endsWith('utils/index.cts'))).toBe(true)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('resolves an import spec that differs only in case from the tracked file on a case-insensitive filesystem (regression: 7th case-fold instance)', () => {
     const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fold-'))
     const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS

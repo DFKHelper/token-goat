@@ -1118,7 +1118,7 @@ export function runArch(opts: ArchOptions): number {
       if (match !== undefined) return match
     }
     const idx = path.join(base, 'index')
-    for (const ext of ['.ts', '.js', '.tsx', '.jsx']) {
+    for (const ext of ['.ts', '.js', '.tsx', '.jsx', '.mts', '.cts']) {
       const candidate = idx + ext
       const match = filesByFoldedPath.get(foldPath(candidate))
       if (match !== undefined) return match
