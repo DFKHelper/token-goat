@@ -2029,9 +2029,16 @@ object Main {
     const { symbols, imports } = extractScala(content, 'Main.scala')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Point')
-    // Main object not extracted due to algorithm scope
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('class')
-    // (see test above)
+    // A second top-level type (object Main) and Point's nested method must both still be
+    // found -- regression test for a bug where an early `continue` after a class/object/trait
+    // match skipped brace-counting on that same line, so `bodyEntered` never flipped true,
+    // the frame never popped, and every subsequent top-level declaration in the file silently
+    // stopped being detected.
+    expect(symbols.find((s) => s.name === 'Main')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'distance')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'distance')?.docstring).toBe('Point')
+    expect(symbols.find((s) => s.name === 'main')?.docstring).toBe('Main')
     expect(imports.some((i) => i.target === 'scala.util.Random')).toBe(true)
   })
 
@@ -2109,6 +2116,25 @@ end
     expect(symbols.find((s) => s.name === 'func')).toBeDefined()
   })
 
+  it('does not let an if/for/while block desync nested-function parent attribution', () => {
+    // Regression test: `if ... then`, `for ... do`, and `while ... do` blocks also close
+    // with `end`. Without a placeholder frame for them, that `end` popped the enclosing
+    // function's own frame early, so a function declared later in the same body lost its
+    // correct parent.
+    const content = `function outer()
+  if true then
+    print("hi")
+  end
+  local function inner()
+    return 1
+  end
+  return inner()
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'inner')?.docstring).toBe('outer')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractLua('', 'empty.lua')
     expect(symbols).toHaveLength(0)
@@ -2157,6 +2183,46 @@ end
     const { symbols } = extractElixir(content, 'helpers.ex')
     expect(symbols.find((s) => s.name === 'debug')?.kind).toBe('function')
     expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
+  })
+
+  it('attributes every function in a module to that module, not just the first', () => {
+    // Regression test: only `defmodule` pushed a scope frame, so the FIRST function's own
+    // `end` incorrectly popped the module frame, leaving every function declared after it
+    // with no parent at all.
+    const content = `defmodule MyApp.Greeter do
+  def hello(name) do
+    "Hello, " <> name
+  end
+
+  def goodbye(name) do
+    "Bye, " <> name
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'greeter.ex')
+    expect(symbols.find((s) => s.name === 'hello')?.docstring).toBe('MyApp.Greeter')
+    expect(symbols.find((s) => s.name === 'goodbye')?.docstring).toBe('MyApp.Greeter')
+  })
+
+  it('does not let a nested do-block construct (quote/case/etc) desync scope tracking', () => {
+    // Regression test: a `quote do ... end` (or case/cond/try/receive/if) inside a function
+    // body closes with `end` too. Without a placeholder frame for it, that `end` popped the
+    // enclosing function's own frame early, corrupting attribution for whatever came after.
+    const content = `defmodule Helpers do
+  defmacro debug(expr) do
+    quote do
+      IO.inspect(unquote(expr))
+    end
+  end
+
+  def after_macro(x) do
+    x + 1
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'helpers.ex')
+    expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'after_macro')?.docstring).toBe('Helpers')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2212,6 +2278,30 @@ extension StringHelpers on String {
     expect(symbols.find((s) => s.name === 'Drawable')?.kind).toBe('mixin')
   })
 
+  it('detects every top-level type, not just the first', () => {
+    // Regression test: an early `continue` after a class/enum/mixin/extension match skipped
+    // brace-counting on that same line, so `bodyEntered` never flipped true, the frame never
+    // popped, and every subsequent top-level declaration silently stopped being detected
+    // (same bug class as the Scala fix above).
+    const content = `class Animal {
+  void speak() {
+    print("sound");
+  }
+}
+
+class Robot {
+  void beep() {
+    print("beep");
+  }
+}
+`
+    const { symbols } = extractDart(content, 'zoo.dart')
+    expect(symbols.find((s) => s.name === 'Animal')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Robot')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'speak')?.docstring).toBe('Animal')
+    expect(symbols.find((s) => s.name === 'beep')?.docstring).toBe('Robot')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractDart('', 'empty.dart')
     expect(symbols).toHaveLength(0)
@@ -2247,6 +2337,29 @@ var counter: i32 = 0;
     expect(names).toContain('counter')
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
     expect(symbols.find((s) => s.name === 'add')?.kind).toBe('function')
+  })
+
+  it('detects every top-level struct and its methods, not just the first', () => {
+    // Regression test: an early `continue` after a struct match (and after a brace-bodied
+    // `fn` match) skipped brace-counting on that same line, so `bodyEntered` never flipped
+    // true, the frame never popped, and detection silently broke for anything declared after
+    // it in the file (same bug class as the Scala/Dart fixes above).
+    const content = `pub struct Point {
+  x: f32,
+
+  pub fn magnitude(self: Point) f32 {
+    return self.x;
+  }
+}
+
+pub struct Vector {
+  y: f32,
+}
+`
+    const { symbols } = extractZig(content, 'shapes.zig')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'Vector')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'magnitude')?.docstring).toBe('Point')
   })
 
   it('returns empty arrays for empty input', () => {

@@ -90,36 +90,46 @@ export function extractScala(
     const outerFrame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
     const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1
+    // `matched` tracks whether this line was already classified as a class/object/trait/
+    // func/val/var declaration. Unlike an early `continue`, classification must still fall
+    // through to the brace-counting block below so a same-line opening `{` (e.g. `class Foo {`
+    // or `def foo(): Unit = {`) is counted and can flip `bodyEntered` -- skipping that via
+    // `continue` was the original bug: a same-line brace was silently dropped, `bodyEntered`
+    // never flipped true, the frame never popped, and `typeDetectionGateOk` stayed false for
+    // every subsequent top-level declaration in the file (mirrors kotlin.ts's real pattern,
+    // which pushes the frame but does NOT `continue` -- it falls through to brace-counting).
+    let matched = false
+
     const cm = typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? CLASS_RE.exec(stripped) : null
     if (cm) {
       const cname = cm[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
-      continue
+      matched = true
     }
 
-    const om = typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? OBJECT_RE.exec(stripped) : null
+    const om = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? OBJECT_RE.exec(stripped) : null
     if (om) {
       const oname = om[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false })
-      continue
+      matched = true
     }
 
-    const tm = typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? TRAIT_RE.exec(stripped) : null
+    const tm = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? TRAIT_RE.exec(stripped) : null
     if (tm) {
       const tname = tm[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
-      continue
+      matched = true
     }
 
     // Methods/functions nested inside a type, or top-level functions.
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
-    if (frame !== null) {
+    if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
       // === 1, not >= 1: a local def inside a method body sits at depthInType 2+
       // (matches kotlin.ts/csharp.ts, which gate the same way).
@@ -127,21 +137,23 @@ export function extractScala(
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
           symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name))
-          continue
+          matched = true
         }
 
-        const vm = VAL_RE.exec(stripped)
+        const vm = !matched ? VAL_RE.exec(stripped) : null
         if (vm) {
           symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), frame.name))
-          continue
+          matched = true
         }
 
-        const varm = VAR_RE.exec(stripped)
-        if (varm) {
-          symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+        if (!matched) {
+          const varm = VAR_RE.exec(stripped)
+          if (varm) {
+            symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+          }
         }
       }
-    } else if (!isIndented) {
+    } else if (!matched && frame === null && !isIndented) {
       // Top-level function.
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
