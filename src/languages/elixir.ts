@@ -35,14 +35,13 @@ function nearestDefName(stack: readonly ModuleFrame[]): string | undefined {
 // `defmodule Foo` or `defmodule Foo.Bar` (qualified module names are common)
 const MODULE_RE = /^defmodule\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
 
-// `def name(...)`, `def name do`, operator functions like `def +(...)` (Elixir allows operator overloads)
+// `def name(...)`, `def name do`, `defmacro name(...)`, operator functions like `def +(...)`
+// (Elixir allows operator overloads). This also matches `defmacro` -- there is no separate
+// macro regex, since `def(?:macro)?` already covers both and both are indexed as 'function'.
 const FUNC_RE = /^def(?:macro)?\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
 
 // `defp name(...)` — private function (same pattern as def but with defp keyword)
 const PRIVATE_FUNC_RE = /^defp\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
-
-// `defmacro name(...)` — macro definition
-const MACRO_RE = /^defmacro\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
 
 // `defstruct field1: type, field2: type` — struct definition
 const STRUCT_RE = /^defstruct/
@@ -118,22 +117,6 @@ export function extractElixir(
       }
       if (opensDoBlock) {
         moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
-      }
-      continue
-    }
-
-    // defmacro name(...)
-    const macM = MACRO_RE.exec(stripped)
-    if (macM) {
-      const mname = macM[1] ?? ''
-      const parent = nearestDefName(moduleStack)
-      if (parent !== undefined) {
-        symbols.push(makeLineSymbol(filePath, mname, 'function', lineNum, stripped.slice(0, 200), parent))
-      } else {
-        symbols.push(makeLineSymbol(filePath, mname, 'function', lineNum, stripped.slice(0, 200)))
-      }
-      if (opensDoBlock) {
-        moduleStack.push({ name: mname, endKeywordNeeded: true, isBlock: false })
       }
       continue
     }
