@@ -2771,6 +2771,20 @@ describe('read_commands', () => {
       expect(extractImports(src, '.go')).toEqual(['fmt', 'os', 'strings'])
     })
 
+    it('extracts a module-info.java\'s JPMS `requires` declarations, alongside regular imports (regression: the import-only regex never matched "requires", so a module-info.java -- the authoritative dependency list for a Java 9+ module -- silently reported zero imports/deps)', () => {
+      const src = [
+        'module com.example.app {',
+        '  requires java.base;',
+        '  requires transitive com.example.core;',
+        '  requires static com.example.optional;',
+        '  exports com.example.app.api;',
+        '}',
+      ].join('\n')
+      expect(extractImports(src, '.java')).toEqual([
+        'java.base', 'com.example.core', 'com.example.optional',
+      ])
+    })
+
     it('extracts Rust use and C include', () => {
       expect(extractImports('pub use std::fmt;\nuse crate::thing;', '.rs')).toEqual([
         'std::fmt', 'crate::thing',

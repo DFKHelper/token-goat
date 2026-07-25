@@ -3114,7 +3114,14 @@ export function extractImports(text: string, ext: string): string[] {
   } else if (e === '.java') {
     for (const line of lines) {
       const m = /^\s*import\s+(?:static\s+)?([\w.*]+)\s*;/.exec(line)
-      if (m) push(m[1])
+      if (m) { push(m[1]); continue }
+      // `module foo.bar { requires baz.qux; }` -- a JPMS module-info.java's declared module
+      // dependencies -- use a keyword ("requires") this branch's `import`-only regex never
+      // matches, so a module-info.java (the authoritative dependency list for a Java 9+ module)
+      // silently reported zero imports/deps despite it being the one file where that list is
+      // actually declared.
+      const req = /^\s*requires\s+(?:transitive\s+|static\s+)*([\w.]+)\s*;/.exec(line)
+      if (req) push(req[1])
     }
   } else if (e === '.rb') {
     for (const line of lines) {
