@@ -1959,6 +1959,23 @@ final actor Counter {
     expect(symbols.find((s) => s.name === 'tick')?.docstring).toBe('Counter')
   })
 
+  it('extracts a distributed actor (SE-0336) and its members (regression: TYPE_HEADER_RE\'s modifier alternation lacked "distributed", so the whole header failed to match and the actor plus every nested member vanished from the index)', () => {
+    const content = `import Distributed
+
+public distributed actor Greeter {
+    distributed func greet() -> String {
+        return "hi"
+    }
+}
+`
+    const { symbols } = extractSwift(content, 'Greeter.swift')
+    const greeter = symbols.find((s) => s.name === 'Greeter')
+    expect(greeter?.kind).toBe('actor')
+    const greet = symbols.find((s) => s.name === 'greet')
+    expect(greet?.kind).toBe('method')
+    expect(greet?.docstring).toBe('Greeter')
+  })
+
   it('recognizes the Swift 5.9 package access modifier on a type and its members', () => {
     const content = `package struct Repository {
     package var items: [String] = []

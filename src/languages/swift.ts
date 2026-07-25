@@ -46,10 +46,13 @@ function stripLeadingAttributes(s: string): string {
 // the setter's visibility independently of the getter's, so `(?:\(set\))?` is folded into the
 // access-level alternative rather than left to desync the match entirely. `package` is Swift
 // 5.9's module-group access level, a peer of public/internal that applies to every declaration
-// kind -- omitting it dropped every `package`-scoped member from the index.
+// kind -- omitting it dropped every `package`-scoped member from the index. `distributed` is
+// SE-0336's modifier marking a distributed actor's remotely-callable methods (`distributed func
+// greet() -> String`) -- without it here, every method inside a distributed actor (which itself
+// requires the `distributed` keyword) failed to match FUNC_RE at all.
 const MODIFIER_ALT =
   '(?:(?:public|private|fileprivate|internal|open|package)(?:\\(set\\))?|static|final|class|override|' +
-  'required|convenience|mutating|nonmutating|dynamic|nonisolated|async|lazy|weak|unowned|indirect)'
+  'required|convenience|mutating|nonmutating|dynamic|nonisolated|async|lazy|weak|unowned|indirect|distributed)'
 
 // Function name is either a plain identifier or an operator-overload symbol (`func ==(...)`,
 // `func +(...)`) -- Swift's operator functions are real top-level and member declarations, not
@@ -87,10 +90,15 @@ const PROPERTY_RE = new RegExp(
 // than declaring a new one, mirroring how kotlin.ts's companion-object handling folds members
 // into their enclosing frame's name). `actor` is Swift 5.5's concurrency-safe reference type,
 // declared with a `{ }` body exactly like a class; omitting it dropped the actor AND every
-// member nested in its body from the index entirely. The name may be dotted (`extension
-// Array.Index`, `extension Foo.Bar`) for nested-type extension targets.
+// member nested in its body from the index entirely. `distributed` is SE-0336's modifier for a
+// distributed actor (location-transparent, usable across process/network boundaries) -- without
+// it in the modifier alternation, `distributed actor Foo { ... }` never matched at all (the
+// modifier list is anchored immediately before the class/struct/.../actor keyword), dropping the
+// actor and every member nested in its body from the index the same way a plain `actor` did
+// before that keyword was added. The name may be dotted (`extension Array.Index`, `extension
+// Foo.Bar`) for nested-type extension targets.
 const TYPE_HEADER_RE = new RegExp(
-  '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect)\\s+)*' +
+  '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect|distributed)\\s+)*' +
   '(class|struct|enum|protocol|extension|actor)\\s+' +
   '([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)',
 )
