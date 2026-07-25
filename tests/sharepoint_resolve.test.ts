@@ -109,4 +109,36 @@ describe('resolveLocalPath', () => {
     expect(result.resolvedPath).toBeNull()
     expect(result.triedPaths).toEqual([])
   })
+
+  it('resolves via the personal OneDrive env var (OneDrive, not OneDriveCommercial)', () => {
+    const personalRoot = path.join(root, 'personal-root')
+    fs.mkdirSync(path.join(personalRoot, 'Documents'), { recursive: true })
+    fs.writeFileSync(path.join(personalRoot, 'Documents', 'notes.docx'), '')
+    const parsed = parseShareUrl('https://contoso-my.sharepoint.com/personal/alice_contoso_com/Documents/notes.docx')
+    const result = resolveLocalPath(parsed, { OneDrive: personalRoot }, root)
+    expect(result.resolvedPath).toBe(path.join(personalRoot, 'Documents', 'notes.docx'))
+  })
+
+  it('does not scan for a site-name subfolder for a personal (non-"site") URL, even when the root itself has no direct match', () => {
+    // parsed.siteType === 'personal' here, so resolveLocalPath's site-subfolder scan (gated on
+    // `parsed.siteType === 'site'`) must never run -- confirmed by there being no subfolder
+    // resolution possible at all: only the raw root is ever tried.
+    const personalRoot = path.join(root, 'personal-no-subfolder-root')
+    fs.mkdirSync(path.join(personalRoot, 'alice_contoso_com - Documents', 'Documents'), { recursive: true })
+    fs.writeFileSync(path.join(personalRoot, 'alice_contoso_com - Documents', 'Documents', 'notes.docx'), '')
+    const parsed = parseShareUrl('https://contoso-my.sharepoint.com/personal/alice_contoso_com/Documents/notes.docx')
+    const result = resolveLocalPath(parsed, { OneDrive: personalRoot }, root)
+    expect(result.resolvedPath).toBeNull()
+  })
+
+  it('does not try the personal-OneDrive root twice when OneDrive and OneDriveCommercial point at the same directory', () => {
+    const sharedRoot = path.join(root, 'shared-commercial-personal-root')
+    fs.mkdirSync(sharedRoot, { recursive: true })
+    const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Reports/budget.xlsx')
+    const result = resolveLocalPath(parsed, { OneDriveCommercial: sharedRoot, OneDrive: sharedRoot }, root)
+    // Every attempted path is under sharedRoot exactly once per distinct segment combination --
+    // if candidateRoots failed to dedup, the same set of tried paths would appear twice.
+    const uniqueTried = new Set(result.triedPaths)
+    expect(uniqueTried.size).toBe(result.triedPaths.length)
+  })
 })
