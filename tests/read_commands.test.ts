@@ -806,14 +806,39 @@ describe('read_commands', () => {
         expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       })
 
-      it('does not enqueue the dirty queue when --force-refresh is not set', () => {
+      it('does not enqueue the dirty queue when --force-refresh is not set and the index is already current', () => {
+        const content = 'export function foo() {\n  return 1\n}'
         const f = path.join(tempDir, 'no-refresh.ts')
-        fs.writeFileSync(f, 'export function foo() {\n  return 1\n}')
+        fs.writeFileSync(f, content)
+        // The index is already present and current (sha matches the on-disk bytes), so neither the
+        // stale-sha reparse nor the never-indexed on-demand parse should fire -- and thus no
+        // gratuitous dirty-queue enqueue (which would trigger a needless re-embed). A null
+        // getFileEntry here would instead be the "never indexed" case, which now correctly parses
+        // on demand and DOES enqueue.
+        mockGetFileEntry.mockReturnValueOnce({
+          filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+        } as never)
         mockQuerySymbols.mockReturnValue([
           { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: 'export function foo() {}' } as never,
         ])
         runRead({ spec: `${f}::foo` })
         expect(mockAppendDirtyPath).not.toHaveBeenCalled()
+      })
+
+      it('parses a never-indexed on-disk file on demand and enqueues it (mocked-DB counterpart of the on-demand-index e2e)', () => {
+        const content = 'export function foo() {\n  return 1\n}'
+        const f = path.join(tempDir, 'never-indexed.ts')
+        fs.writeFileSync(f, content)
+        // getFileEntry null (default mock) == not indexed; the file exists on disk, so the read
+        // path parses it once on demand rather than returning "symbol not found" and forcing a
+        // full-file Read. That reparse enqueues the file for the worker to (re-)embed.
+        mockGetFileEntry.mockReturnValue(null)
+        mockQuerySymbols.mockReturnValue([
+          { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: 'export function foo() {}' } as never,
+        ])
+        runRead({ spec: `${f}::foo` })
+        expect(mockIndexFileSync).toHaveBeenCalled()
+        expect(mockAppendDirtyPath).toHaveBeenCalledWith(resolveIndexPath(f), { alreadyResolved: true })
       })
 
       it('prefers reading a real file named "notes@2024" over treating it as a line-range spec', () => {
