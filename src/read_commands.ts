@@ -3143,6 +3143,22 @@ export function extractImports(text: string, ext: string): string[] {
     for (const line of lines) {
       const req = /^\s*(?:require|include)(?:_once)?\s*\(?\s*['"]([^'"]+)['"]/.exec(line)
       if (req) { push(req[1]); continue }
+      // `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing
+      // several classes from one namespace -- never matched the plain `use` regex below at all:
+      // its `[\w\\]+` char class stops at `{`, leaving `{Foo, Bar}` where `(?:\s+as\s+\w+)?\s*;`
+      // is anchored, so the whole line was silently dropped (not merely truncated). Mirrors
+      // php.ts's GROUP_USE_RE, which has the same fix for the symbol index.
+      const groupUse = /^\s*use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/.exec(line)
+      if (groupUse) {
+        const base = groupUse[1] ?? ''
+        for (const part of (groupUse[2] ?? '').split(',')) {
+          const trimmed = part.trim().replace(/^(?:function|const)\s+/, '')
+          if (trimmed === '') continue
+          const name = (trimmed.split(/\s+as\s+/)[0] ?? '').trim()
+          if (name !== '') push(`${base}\\${name}`)
+        }
+        continue
+      }
       const use = /^\s*use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/.exec(line)
       if (use) push(use[1])
     }

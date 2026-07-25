@@ -2923,6 +2923,14 @@ describe('read_commands', () => {
       expect(extractImports(src, '.php')).toEqual(['e.php', 'f.php', 'g.php'])
     })
 
+    it('expands a PHP group-use declaration (use App\\{Foo, Bar};), including renames (regression: [\\w\\\\]+ stopped at "{", so the whole line was silently dropped, not merely truncated)', () => {
+      const src = 'use App\\Models\\{User, Post as BlogPost};'
+      const targets = extractImports(src, '.php')
+      expect(targets).toContain('App\\Models\\User')
+      expect(targets).toContain('App\\Models\\Post')
+      expect(targets).not.toContain('App\\Models\\BlogPost')
+    })
+
     it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
       const src = [
         'Import-Module Az.Accounts',

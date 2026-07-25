@@ -661,6 +661,18 @@ final readonly class Point2 {
     expect(symbols.find((s) => s.name === '__construct')?.docstring).toBe('Point')
   })
 
+  it('expands a group-use declaration (use App\\{Foo, Bar};), including renames (regression: [\\w\\\\]+ stopped at "{", so USE_RE never matched at all and the whole line was silently dropped, not merely truncated)', () => {
+    const content = `<?php
+use App\\Models\\{User, Post as BlogPost};
+`
+    const { imports } = extractPhp(content, 'Imports.php')
+    const targets = imports.map((i) => i.target)
+    expect(targets).toContain('App\\Models\\User')
+    // A rename (Post as BlogPost) resolves to the original class name callers reference.
+    expect(targets).toContain('App\\Models\\Post')
+    expect(targets).not.toContain('App\\Models\\BlogPost')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractPhp('', 'empty.php')
     expect(symbols).toHaveLength(0)
