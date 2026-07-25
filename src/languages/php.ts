@@ -33,7 +33,13 @@ const PROP_RE = new RegExp(
   '(?:\\??[A-Za-z_][A-Za-z0-9_|\\\\]*\\s+)?' +
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
 )
-const USE_RE = /^use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/
+// `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports for a
+// namespaced function or constant, distinct from the class-import form GROUP_USE_RE's own
+// `function\s+|const\s+` prefix already handles for the brace-group case. Without the same
+// optional prefix here, USE_RE's `([\w\\]+)` captured "function"/"const" as if it were the
+// imported name itself, then failed to match the trailing `;` (real target text follows), so
+// these single-symbol forms were silently dropped entirely rather than merely mis-captured.
+const USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/
 // `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing several
 // classes from one namespace -- never matched USE_RE at all: the char class `[\w\\]+` stops at
 // `{`, leaving `{Foo, Bar}` where USE_RE's `(?:\s+as\s+\w+)?\s*;` alternative is anchored, so the

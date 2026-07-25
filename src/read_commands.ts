@@ -3170,7 +3170,11 @@ export function extractImports(text: string, ext: string): string[] {
         }
         continue
       }
-      const use = /^\s*use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/.exec(line)
+      // `use function Foo\bar;` / `use const Foo\BAR;` -- PHP 7's single-symbol imports;
+      // without the optional prefix, `([\w\\]+)` captured "function"/"const" as the target and
+      // then failed to match the trailing `;`, silently dropping the whole line. Mirrors
+      // php.ts's USE_RE, which has the same fix for the symbol index.
+      const use = /^\s*use\s+(?:function\s+|const\s+)?([\w\\]+)(?:\s+as\s+\w+)?\s*;/.exec(line)
       if (use) push(use[1])
     }
   } else if (['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'].includes(e)) {
