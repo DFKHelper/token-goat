@@ -87,7 +87,10 @@ describe('dataDirForHome', () => {
       expect(dataDir()).not.toBe(before)
       if (process.platform === 'win32') {
         expect(dataDir()).toBe(path.join(override, 'dfk-helper', 'token-goat'))
-      } else if (process.platform !== 'darwin') {
+      } else {
+        // darwin honors XDG_DATA_HOME as its isolation-override escape hatch too (see
+        // defaultDataDir()'s darwin branch in constants.ts) even though a real Mac
+        // essentially never sets it -- same join shape as linux/BSD.
         expect(dataDir()).toBe(path.join(override, 'token-goat'))
       }
     } finally {
@@ -127,4 +130,57 @@ describe('dataDirForHome', () => {
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('refusing to resolve DATA_DIR')
   })
+
+  // Regression, provable on any host OS by mocking process.platform: same bug as the
+  // subprocess test below, but exercised in-process so it's actually red/green-provable on a
+  // non-darwin dev machine (the subprocess variant below only runs its assertion for real on
+  // an actual darwin runner). Before the fix, this threw "refusing to resolve DATA_DIR" even
+  // with XDG_DATA_HOME set, because the darwin branch never looked at it.
+  it('mocked as darwin: resolves DATA_DIR via XDG_DATA_HOME instead of throwing inside a Vitest worker', () => {
+    const originalPlatform = process.platform
+    const savedXdg = process.env['XDG_DATA_HOME']
+    const savedLocalAppData = process.env['LOCALAPPDATA']
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const override = path.join(process.env['TMPDIR'] ?? '/tmp', 'tg-darwin-xdg-mock-test')
+      process.env['XDG_DATA_HOME'] = override
+      delete process.env['LOCALAPPDATA']
+      expect(() => _resetDataDirCacheForTesting()).not.toThrow()
+      expect(dataDir()).toBe(path.join(override, 'token-goat'))
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (savedXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = savedXdg
+      if (savedLocalAppData === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = savedLocalAppData
+      _resetDataDirCacheForTesting()
+    }
+  })
+
+  // Regression: darwin's defaultDataDir() branch used to skip straight to
+  // homeFallbackOrGuard() with no env-var override check at all (unlike win32's LOCALAPPDATA
+  // check and linux's XDG_DATA_HOME check just above/below it), so it threw unconditionally
+  // inside any Vitest worker even though tests/setup/isolate-home.ts unconditionally pins
+  // XDG_DATA_HOME for every platform specifically to prevent that. This was invisible locally
+  // and on win32/linux CI (their branches never reach the darwin code) and first surfaced when
+  // a macOS CI job actually ran the suite: 179/260 test files failed with exactly this guard
+  // error. Only meaningfully exercises the fixed branch on an actual darwin runner; on
+  // win32/linux this assertion is inert (the subprocess isn't running as darwin), which is why
+  // the macOS CI job -- not this test alone -- is what closes the coverage gap.
+  it.skipIf(process.platform !== 'darwin')(
+    'resolves DATA_DIR via an XDG_DATA_HOME override on darwin instead of throwing',
+    () => {
+      const env = { ...process.env }
+      const override = path.join(process.env['TMPDIR'] ?? '/tmp', 'tg-darwin-xdg-override-test')
+      delete env['LOCALAPPDATA']
+      env['XDG_DATA_HOME'] = override
+      env['VITEST_WORKER_ID'] = '1'
+      const result = spawnSync(process.execPath, [BUNDLE, 'config', 'get', 'indexing.large_file_skip_kb'], {
+        env,
+        encoding: 'utf8',
+      })
+      expect(result.status).toBe(0)
+      expect(result.stderr).not.toContain('refusing to resolve DATA_DIR')
+    },
+  )
 })

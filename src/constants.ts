@@ -107,6 +107,20 @@ function defaultDataDir(): string {
     return homeFallbackOrGuard()
   }
   if (platform === 'darwin') {
+    // macOS has no native LOCALAPPDATA/XDG_DATA_HOME equivalent, but
+    // tests/setup/isolate-home.ts unconditionally pins XDG_DATA_HOME for every platform
+    // (defense in depth) specifically so an isolated override is available here too --
+    // without this check, darwin skipped straight to homeFallbackOrGuard(), which throws
+    // unconditionally inside any Vitest worker regardless of whether the override was set,
+    // so every test touching dataDir() failed on macOS CI (first darwin CI run, all local
+    // runs and win32/linux CI had been green because their branches check their own env var
+    // first). A real Mac essentially never sets XDG_DATA_HOME, so this mirrors the win32/
+    // linux override pattern with no observed change to real-machine behavior.
+    const raw = process.env['XDG_DATA_HOME'] ?? ''
+    const base = raw ? safeEnvDir(raw) : undefined
+    if (base !== undefined) {
+      return path.join(base, 'token-goat')
+    }
     return homeFallbackOrGuard()
   }
   // Linux / BSD / WSL — honour XDG_DATA_HOME.
