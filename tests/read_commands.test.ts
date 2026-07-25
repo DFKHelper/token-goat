@@ -933,8 +933,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([])
       const { text, code } = runSkeleton({ file: 'missing.scala' })
       expect(code).toBe(1)
-      expect(text).toContain('Scala')
-      expect(text).toContain('no symbol extractor yet')
+      // Scala now has an extractor, so empty file gets the standard message
+      expect(text).toContain('No indexed symbols found')
     })
 
     it('does not claim an unsupported language for a plain empty result on a supported extension', () => {
@@ -1079,12 +1079,12 @@ describe('read_commands', () => {
   // ---- runOutline ---------------------------------------------------------
 
   describe('runOutline', () => {
-    it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Swift/Scala/Lua/etc. are indistinguishable from an empty file)', () => {
+    it('returns 1 and reports no symbols for an empty file in a supported language', () => {
       mockQuerySymbols.mockReturnValue([])
       const { text, code } = runOutline({ file: 'empty.dart' })
       expect(code).toBe(1)
-      expect(text).toContain('Dart')
-      expect(text).toContain('no symbol extractor yet')
+      // Dart now has a symbol extractor, so it just reports "no symbols found"
+      expect(text).toContain('No indexed symbols found')
     })
 
     it('returns 1 when no symbols found', () => {

@@ -38,6 +38,12 @@ import { extractHtml } from './languages/html.js'
 import { extractLiquid } from './languages/liquid.js'
 import { extractKotlin } from './languages/kotlin.js'
 import { extractSwift } from './languages/swift.js'
+import { extractScala } from './languages/scala.js'
+import { extractLua } from './languages/lua.js'
+import { extractElixir } from './languages/elixir.js'
+import { extractDart } from './languages/dart.js'
+import { extractZig } from './languages/zig.js'
+import { extractR } from './languages/r.js'
 import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
 import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
@@ -1851,6 +1857,12 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
   },
   kotlin: (content, filePath) => extractKotlin(content, filePath).symbols,
   swift: (content, filePath) => extractSwift(content, filePath).symbols,
+  scala: (content, filePath) => extractScala(content, filePath).symbols,
+  lua: (content, filePath) => extractLua(content, filePath).symbols,
+  elixir: (content, filePath) => extractElixir(content, filePath).symbols,
+  dart: (content, filePath) => extractDart(content, filePath).symbols,
+  zig: (content, filePath) => extractZig(content, filePath).symbols,
+  r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
   ini: extractIni,

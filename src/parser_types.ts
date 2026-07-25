@@ -70,6 +70,12 @@ export type Language =
   | 'liquid'
   | 'kotlin'
   | 'swift'
+  | 'scala'
+  | 'lua'
+  | 'elixir'
+  | 'dart'
+  | 'zig'
+  | 'r'
   | 'graphql'
   | 'sql'
   | 'ini'
@@ -140,6 +146,15 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.kt', 'kotlin'],
   ['.kts', 'kotlin'],
   ['.swift', 'swift'],
+  ['.scala', 'scala'],
+  ['.sc', 'scala'],
+  ['.lua', 'lua'],
+  ['.ex', 'elixir'],
+  ['.exs', 'elixir'],
+  ['.dart', 'dart'],
+  ['.zig', 'zig'],
+  ['.r', 'r'],
+  ['.R', 'r'],
   ['.graphql', 'graphql'],
   ['.gql', 'graphql'],
   ['.sql', 'sql'],
@@ -227,16 +242,7 @@ export function detectLanguage(filePath: string): Language {
  * purely to make that distinction visible in diagnostics (index/outline/skeleton), not to
  * change indexing behavior.
  */
-export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([
-  ['.scala', 'Scala'],
-  ['.sc', 'Scala'],
-  ['.lua', 'Lua'],
-  ['.ex', 'Elixir'],
-  ['.exs', 'Elixir'],
-  ['.dart', 'Dart'],
-  ['.zig', 'Zig'],
-  ['.r', 'R'],
-])
+export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([])
 
 /**
  * Returns a human-readable language name (e.g. `'Swift'`) if `filePath` is a recognized but
