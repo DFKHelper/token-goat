@@ -9,6 +9,7 @@
 import type { SymbolEntry } from '../parser_types.js'
 import {
   stripLineComment,
+  stripStringLiterals,
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
@@ -47,6 +48,24 @@ const LOCAL_VAR_RE = /^local\s+([A-Za-z_][A-Za-z0-9_]*)/
 // anchors. `repeat ... until` closes with `until`, not `end`, so it needs no frame at all.
 const BLOCK_OPEN_RE = /^(?:if\s.*\bthen|for\s.*\bdo|while\s.*\bdo|do)\s*$/
 
+// Whether a single line already closes every block it opens (a one-liner like
+// `function foo() return 1 end` or `function foo() if x then y end end`). Counts
+// `function`/`do`/`if` as opens (one `end` each; `if` rather than `then` so a multi-branch
+// `if ... elseif ... then ... end` -- one `end` for multiple `then`s -- doesn't false-negative)
+// against `end` as closes. If a function's own opening line is already balanced, it must NOT
+// push a scope frame -- doing so unconditionally left the frame permanently unpopped (no
+// later bare `end` line exists to close it), corrupting parent attribution for every
+// subsequent top-level function in the file.
+function lineClosesItself(strippedLine: string): boolean {
+  const noStrings = stripStringLiterals(strippedLine)
+  const opens =
+    (noStrings.match(/\bfunction\b/g) ?? []).length +
+    (noStrings.match(/\bdo\b/g) ?? []).length +
+    (noStrings.match(/\bif\b/g) ?? []).length
+  const closes = (noStrings.match(/\bend\b/g) ?? []).length
+  return closes >= opens
+}
+
 export function extractLua(
   content: string,
   filePath: string,
@@ -83,7 +102,9 @@ export function extractLua(
       } else {
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200)))
       }
-      funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
+      if (!lineClosesItself(stripped)) {
+        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
+      }
       continue
     }
 
@@ -97,7 +118,9 @@ export function extractLua(
       } else {
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
       }
-      funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+      if (!lineClosesItself(stripped)) {
+        funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+      }
       continue
     }
 
