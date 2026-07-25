@@ -913,6 +913,47 @@ describe('lockdeps command', () => {
     fs.rmSync(pnpmDir, { recursive: true, force: true })
   })
 
+  it('strips NESTED pnpm v9 peer-dependency suffixes from the resolved version (regression: `[^()]*` regex could not span the inner `(`, leaving `13.4.0(react-dom@18.2.0(react@18.2.0))` fused into the version)', () => {
+    const pnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pnpm-lock-nested-'))
+    const lockPath = path.join(pnpmDir, 'pnpm-lock.yaml')
+    fs.writeFileSync(
+      lockPath,
+      [
+        "lockfileVersion: '9.0'",
+        '',
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        '      \'@testing-library/react\':',
+        '        specifier: ^13.4.0',
+        '        version: 13.4.0(react-dom@18.2.0(react@18.2.0))(react@18.2.0)',
+        '',
+        'packages:',
+        '',
+        "  '@testing-library/react@13.4.0(react-dom@18.2.0(react@18.2.0))(react@18.2.0)':",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+        "  react-dom@18.2.0(react@18.2.0):",
+        "    resolution: {integrity: sha512-fake}",
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('pnpm')
+    // Version is the clean semver, not the peer-suffixed key. Matching the (also-cleaned)
+    // importer version, it is correctly classified 'direct'.
+    expect(parsed.deps).toContainEqual({ name: '@testing-library/react', version: '13.4.0', kind: 'direct' })
+    // The nested peer (react-dom) is stripped of its own peer suffix too, and is transitive.
+    expect(parsed.deps).toContainEqual({ name: 'react-dom', version: '18.2.0', kind: 'transitive' })
+    fs.rmSync(pnpmDir, { recursive: true, force: true })
+  })
+
   it('parses a pre-workspace pnpm-lock.yaml (lockfileVersion < 9, no importers wrapper, packages keys prefixed with "/" and peer-dependency-suffixed) without mis-splitting the scoped/peer-suffixed package keys', () => {
     const pnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pnpm-lock-v6-'))
     const lockPath = path.join(pnpmDir, 'pnpm-lock.yaml')
