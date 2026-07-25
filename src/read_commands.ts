@@ -3149,6 +3149,17 @@ export function extractImports(text: string, ext: string): string[] {
       let m: RegExpExecArray | null
       while ((m = re.exec(line)) !== null) push(m[1])
     }
+  } else if (e === '.lua') {
+    // Lua's idiomatic module load is `require("mod")` -- the parenthesized, quoted form. The
+    // generic `import|require|use|#include` fallback only matches the paren-LESS `require "mod"`
+    // (its `\s+` can't precede the `(`), so the far more common `require("mod")`/`require('mod')`
+    // form reported zero imports/deps despite lua.ts already indexing the file's symbols. Accept
+    // both an optional `(` and either quote style, and scan globally (a line can require twice).
+    for (const line of lines) {
+      const re = /\brequire\s*\(?\s*["']([^"']+)["']/g
+      let m: RegExpExecArray | null
+      while ((m = re.exec(line)) !== null) push(m[1])
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
