@@ -2748,6 +2748,15 @@ describe('read_commands', () => {
       expect(extractImports(src, '.py')).toEqual(['os', 'sys', 'collections', 'json'])
     })
 
+    it('strips a trailing # comment from a Python import line (regression: `import os  # note` folded the comment into the module name)', () => {
+      const src = [
+        'import os  # the os module',
+        'import sys',
+        'import a, b  # two at once',
+      ].join('\n')
+      expect(extractImports(src, '.py')).toEqual(['os', 'sys', 'a', 'b'])
+    })
+
     it('extracts Go block and single imports', () => {
       const src = 'import (\n  "fmt"\n  "os"\n)\nimport "strings"'
       expect(extractImports(src, '.go')).toEqual(['fmt', 'os', 'strings'])
@@ -2828,6 +2837,14 @@ describe('read_commands', () => {
         'foo.mk',
         'bar.mk',
       ])
+    })
+
+    it('strips a trailing # comment from a Makefile include line (regression: the comment words and bare "#" were mis-extracted as phantom include targets)', () => {
+      const src = [
+        'include config.mk  # optional local overrides',
+        'include a.mk b.mk # two targets',
+      ].join('\n')
+      expect(extractImports(src, '.mk')).toEqual(['config.mk', 'a.mk', 'b.mk'])
     })
   })
 

@@ -3013,7 +3013,14 @@ export function extractImports(text: string, ext: string): string[] {
       const from = /^\s*from\s+([.\w]+)\s+import\b/.exec(line)
       if (from) { push(from[1]); continue }
       const imp = /^\s*import\s+(.+)$/.exec(line)
-      if (imp) for (const part of (imp[1] ?? '').split(',')) push(part.trim().split(/\s+as\s+/)[0])
+      if (imp) {
+        // Drop a trailing `#` line comment before splitting -- a module name never contains `#`,
+        // so anything from the first one is a comment (`import os  # the os module`), not part of
+        // the module. Without this the comment text is folded into the module name for the common
+        // no-alias case (the `as`-split below only incidentally strips it when an alias is present).
+        const spec = (imp[1] ?? '').split('#')[0] ?? ''
+        for (const part of spec.split(',')) push(part.trim().split(/\s+as\s+/)[0])
+      }
     }
   } else if (e === '.go') {
     let inBlock = false
@@ -3104,7 +3111,11 @@ export function extractImports(text: string, ext: string): string[] {
     for (const line of lines) {
       const m = /^ *(?:-include|sinclude|include)\s+(.+)$/.exec(line)
       if (m) {
-        for (const target of (m[1] ?? '').split(/\s+/)) push(target)
+        // Drop a trailing `#` comment before splitting targets on whitespace -- Make treats `#`
+        // as a comment start, so without this each comment word (and the bare `#`) is mis-extracted
+        // as a phantom include target (`include config.mk # optional` -> config.mk, #, optional).
+        const targets = (m[1] ?? '').split('#')[0] ?? ''
+        for (const target of targets.split(/\s+/)) push(target)
       }
     }
   } else {
