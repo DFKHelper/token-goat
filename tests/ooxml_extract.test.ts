@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { collectElements, collectTextRuns, parseOoxmlPart, readOoxmlZip } from '../src/ooxml_extract.js'
+import {
+  collectElements,
+  collectTextRuns,
+  decodeZipEntry,
+  parseOoxmlPart,
+  readOoxmlZip,
+  sortNumberedParts,
+} from '../src/ooxml_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 describe('readOoxmlZip', () => {
@@ -69,5 +76,56 @@ describe('collectElements', () => {
     expect(matches).toHaveLength(2)
     const ids = matches.map((m) => (m as Record<string, unknown>)['@_id'])
     expect(ids).toEqual(['a', 'b'])
+  })
+})
+
+// Zero direct coverage before this: only exercised transitively through pptx_extract.ts /
+// docx_extract.ts's higher-level tests, which never pinned decodeZipEntry's own null-vs-decoded
+// contract in isolation.
+describe('decodeZipEntry', () => {
+  it('decodes an existing entry as UTF-8 text', () => {
+    const entries = { 'ppt/slides/slide1.xml': new TextEncoder().encode('<hello/>') }
+    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml')).toBe('<hello/>')
+  })
+
+  it('returns null for a path not present in the entries map', () => {
+    const entries = { 'ppt/slides/slide1.xml': new TextEncoder().encode('<hello/>') }
+    expect(decodeZipEntry(entries, 'ppt/slides/slide2.xml')).toBeNull()
+  })
+
+  it('decodes multi-byte UTF-8 content correctly', () => {
+    const entries = { 'word/document.xml': new TextEncoder().encode('café 日本') }
+    expect(decodeZipEntry(entries, 'word/document.xml')).toBe('café 日本')
+  })
+
+  it('decodes an empty entry as an empty string, distinct from a missing entry', () => {
+    const entries = { 'ppt/slides/slide1.xml': new Uint8Array() }
+    expect(decodeZipEntry(entries, 'ppt/slides/slide1.xml')).toBe('')
+  })
+})
+
+// Zero direct coverage before this: pptx_extract.ts uses it to order ppt/slides/slideN.xml,
+// but none of its own tests pin the sort-key extraction or the no-match fallback in isolation.
+describe('sortNumberedParts', () => {
+  it('sorts numbered parts numerically, not lexicographically', () => {
+    const paths = ['ppt/slides/slide10.xml', 'ppt/slides/slide2.xml', 'ppt/slides/slide1.xml']
+    expect(sortNumberedParts(paths, /slide(\d+)\.xml$/)).toEqual([
+      'ppt/slides/slide1.xml',
+      'ppt/slides/slide2.xml',
+      'ppt/slides/slide10.xml',
+    ])
+  })
+
+  it('sorts a path with no pattern match to the end (falls back to MAX_SAFE_INTEGER)', () => {
+    const paths = ['ppt/slides/slide2.xml', 'ppt/slides/_rels/slide2.xml.rels', 'ppt/slides/slide1.xml']
+    expect(sortNumberedParts(paths, /slide(\d+)\.xml$/)).toEqual([
+      'ppt/slides/slide1.xml',
+      'ppt/slides/slide2.xml',
+      'ppt/slides/_rels/slide2.xml.rels',
+    ])
+  })
+
+  it('returns an empty array unchanged', () => {
+    expect(sortNumberedParts([], /slide(\d+)\.xml$/)).toEqual([])
   })
 })
