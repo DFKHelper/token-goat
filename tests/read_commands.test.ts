@@ -2783,6 +2783,16 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts Zig @import builtins (regression: the @-prefixed builtin never matched the generic import|require|use fallback, so every .zig file reported zero imports)', () => {
+      const src = [
+        'const std = @import("std");',
+        'const foo = @import("foo.zig");',
+        'pub const bar = @import("bar.zig");',
+        'const a = @import("a.zig"); const b = @import("b.zig");',
+      ].join('\n')
+      expect(extractImports(src, '.zig')).toEqual(['std', 'foo.zig', 'bar.zig', 'a.zig', 'b.zig'])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
