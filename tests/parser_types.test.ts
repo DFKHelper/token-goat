@@ -42,6 +42,15 @@ describe('detectLanguage', () => {
     expect(detectLanguage('package.json')).toBe('json')
   })
 
+  it('classifies .mk Makefile fragments as makefile', () => {
+    // Regression: `.mk` had no EXTENSION_LANGUAGE entry, so an included Makefile fragment
+    // (config.mk, rules.mk, common.mk) resolved to 'unknown' and was indexed with zero symbols,
+    // even though a bare `Makefile` (basename) and extractMakefile both handled the same content.
+    expect(detectLanguage('config.mk')).toBe('makefile')
+    expect(detectLanguage('build/rules.mk')).toBe('makefile')
+    expect(detectLanguage('COMMON.MK')).toBe('makefile')
+  })
+
   it('is case-insensitive on the extension', () => {
     expect(detectLanguage('FOO.PY')).toBe('python')
     expect(detectLanguage('Bar.TS')).toBe('typescript')
