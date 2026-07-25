@@ -3525,6 +3525,19 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
     expect(result.language).toBe('makefile')
     fs.rmSync(dir, { recursive: true, force: true })
   })
+
+  it('detects and indexes a .mk fragment via parseFile', async () => {
+    // Regression: a `.mk` fragment (config.mk, rules.mk) was classified 'unknown' and produced
+    // zero symbols despite extractMakefile handling its content -- `.mk` had no extension mapping.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mk-test-'))
+    const file = path.join(dir, 'rules.mk')
+    fs.writeFileSync(file, 'build:\n\techo building\n\nclean:\n\trm -rf out\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('makefile')
+    expect(result.symbols.find((s) => s.name === 'build')?.kind).toBe('makefile_target')
+    expect(result.symbols.find((s) => s.name === 'clean')?.kind).toBe('makefile_target')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
 })
 
 // ---------------------------------------------------------------------------

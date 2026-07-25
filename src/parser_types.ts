@@ -162,6 +162,14 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.cfg', 'ini'],
   ['.conf', 'ini'],
   ['.proto', 'proto'],
+  // `.mk` is the idiomatic extension for included Makefile fragments (config.mk, rules.mk,
+  // common.mk); their syntax is identical to a bare `Makefile`, which FILENAME_LANGUAGE already
+  // maps. Without this entry a `.mk` fragment fell through to 'unknown' and was indexed with zero
+  // symbols despite extractMakefile handling its content fine -- the same has-extractor-but-no-
+  // extension gap previously seen for other adapters. (importsExtensionFor already treats bare
+  // Makefile basenames as `.mk` for the imports command, so extractImports' `.mk` branch was
+  // reachable while symbol indexing was not.)
+  ['.mk', 'makefile'],
   ['.tf', 'terraform'],
   ['.tfvars', 'terraform'],
   ['.hcl', 'terraform'],
