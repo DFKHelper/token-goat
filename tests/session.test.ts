@@ -7,21 +7,29 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import {
+  consumedOutstandingAgentSpawnKeys,
   exportSessionState,
   getBashOutputId,
   getFileLineRanges,
+  getOutstandingAgentSpawns,
+  getSessionFileEntry,
   getSessionFiles,
   getSessionId,
   getWebFetchCacheId,
   importSessionState,
   markFileTruncated,
   markHintShown,
+  MAX_OUTSTANDING_AGENT_SPAWNS,
   MAX_RANGES_PER_FILE,
+  outstandingAgentSpawnKey,
   recordBashOutput,
   recordFileEdit,
   recordFileLineRange,
   recordFileRead,
+  recordOutstandingAgentSpawn,
+  recordSymbolRead,
   recordWebFetch,
+  removeOutstandingAgentSpawn,
   wasFileReadThisSession,
   wasHintShown,
 } from '../src/session.js'
@@ -313,5 +321,89 @@ describe('reset', () => {
     expect(getWebFetchCacheId('u')).toBeNull()
     expect(getBashOutputId('cmd')).toBeNull()
     expect(getSessionFiles().size).toBe(0)
+  })
+})
+
+describe('recordSymbolRead bounds symbols per file and dedups (mutation-testing gap)', () => {
+  it('creates a fresh entry with the symbol on first read of an unread file', () => {
+    const p = makeTmpFile()
+    recordSymbolRead(p, 'foo')
+    expect(getSessionFileEntry(p)?.symbols_read).toEqual(['foo'])
+  })
+
+  it('does not duplicate a symbol already recorded for the file', () => {
+    const p = makeTmpFile()
+    recordSymbolRead(p, 'foo')
+    recordSymbolRead(p, 'foo')
+    expect(getSessionFileEntry(p)?.symbols_read).toEqual(['foo'])
+  })
+
+  it('never exceeds 25 symbols per file, keeping the most recently read symbols', () => {
+    const p = makeTmpFile()
+    for (let i = 0; i < 35; i++) {
+      recordSymbolRead(p, `sym${i}`)
+    }
+    const symbols = getSessionFileEntry(p)?.symbols_read ?? []
+    expect(symbols.length).toBe(25)
+    expect(symbols).not.toContain('sym0')
+    expect(symbols).toContain('sym34')
+  })
+})
+
+describe('outstanding agent spawn tracking (mutation-testing gap)', () => {
+  it('records a spawn and it is retrievable', () => {
+    recordOutstandingAgentSpawn('do the thing')
+    const spawns = getOutstandingAgentSpawns()
+    expect(spawns.length).toBe(1)
+    expect(spawns[0]?.prompt).toBe('do the thing')
+  })
+
+  it('never exceeds MAX_OUTSTANDING_AGENT_SPAWNS, keeping the most recently recorded spawns', () => {
+    for (let i = 0; i < MAX_OUTSTANDING_AGENT_SPAWNS + 10; i++) {
+      recordOutstandingAgentSpawn(`prompt-${i}`)
+    }
+    const spawns = getOutstandingAgentSpawns()
+    expect(spawns.length).toBe(MAX_OUTSTANDING_AGENT_SPAWNS)
+    expect(spawns.some((s) => s.prompt === 'prompt-0')).toBe(false)
+    expect(spawns.some((s) => s.prompt === `prompt-${MAX_OUTSTANDING_AGENT_SPAWNS + 9}`)).toBe(true)
+  })
+
+  it('removeOutstandingAgentSpawn matches by prefix (finishedPrompt.startsWith recorded prompt)', () => {
+    recordOutstandingAgentSpawn('summarize the file')
+    removeOutstandingAgentSpawn('summarize the file and report back')
+    expect(getOutstandingAgentSpawns().length).toBe(0)
+  })
+
+  it('removeOutstandingAgentSpawn is a no-op when no recorded prompt is a prefix of the finished prompt', () => {
+    recordOutstandingAgentSpawn('summarize the file')
+    removeOutstandingAgentSpawn('unrelated finished prompt')
+    expect(getOutstandingAgentSpawns().length).toBe(1)
+  })
+
+  it('removeOutstandingAgentSpawn removes only the first matching entry', () => {
+    recordOutstandingAgentSpawn('task')
+    recordOutstandingAgentSpawn('task')
+    removeOutstandingAgentSpawn('task')
+    expect(getOutstandingAgentSpawns().length).toBe(1)
+  })
+
+  it('outstandingAgentSpawnKey combines prompt and timestamp', () => {
+    expect(outstandingAgentSpawnKey('p', 123)).toBe('p 123')
+  })
+
+  it('consumedOutstandingAgentSpawnKeys is empty when nothing was recorded at load', () => {
+    recordOutstandingAgentSpawn('still running')
+    expect(consumedOutstandingAgentSpawnKeys()).toEqual([])
+  })
+
+  it('consumedOutstandingAgentSpawnKeys reports a key present at load but no longer outstanding', () => {
+    recordOutstandingAgentSpawn('finished task')
+    const exported = exportSessionState()
+    clearModuleCaches()
+    importSessionState(exported)
+
+    removeOutstandingAgentSpawn('finished task')
+
+    expect(consumedOutstandingAgentSpawnKeys().length).toBe(1)
   })
 })
