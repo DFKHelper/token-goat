@@ -109,20 +109,22 @@ describe('detectLanguage', () => {
 // .swift was removed from the map once src/languages/swift.ts shipped a real extractor -- see
 // the 'returns undefined for a language token-goat already has an extractor for' case below.
 describe('unsupportedLanguageName', () => {
-  it('returns the human-readable language name for every recognized-but-unsupported extension', () => {
-    expect(unsupportedLanguageName('App.scala')).toBe('Scala')
-    expect(unsupportedLanguageName('Script.sc')).toBe('Scala')
-    expect(unsupportedLanguageName('init.lua')).toBe('Lua')
-    expect(unsupportedLanguageName('lib/module.ex')).toBe('Elixir')
-    expect(unsupportedLanguageName('test/module_test.exs')).toBe('Elixir')
-    expect(unsupportedLanguageName('lib/main.dart')).toBe('Dart')
-    expect(unsupportedLanguageName('src/main.zig')).toBe('Zig')
-    expect(unsupportedLanguageName('analysis.r')).toBe('R')
+  it('returns undefined for all recognized languages that now have extractors', () => {
+    // Scala, Lua, Elixir, Dart, Zig, and R all now have symbol extractors
+    // (previously were in UNSUPPORTED_LANGUAGE_EXTENSIONS, now removed).
+    expect(unsupportedLanguageName('App.scala')).toBeUndefined()
+    expect(unsupportedLanguageName('Script.sc')).toBeUndefined()
+    expect(unsupportedLanguageName('init.lua')).toBeUndefined()
+    expect(unsupportedLanguageName('lib/module.ex')).toBeUndefined()
+    expect(unsupportedLanguageName('test/module_test.exs')).toBeUndefined()
+    expect(unsupportedLanguageName('lib/main.dart')).toBeUndefined()
+    expect(unsupportedLanguageName('src/main.zig')).toBeUndefined()
+    expect(unsupportedLanguageName('analysis.r')).toBeUndefined()
   })
 
   it('is case-insensitive on the extension', () => {
-    expect(unsupportedLanguageName('App.SCALA')).toBe('Scala')
-    expect(unsupportedLanguageName('Analysis.R')).toBe('R')
+    // Case-insensitive check for .R extension (now supported)
+    expect(unsupportedLanguageName('Analysis.R')).toBeUndefined()
   })
 
   it('returns undefined for a language token-goat already has an extractor for', () => {

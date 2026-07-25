@@ -18,6 +18,12 @@ import { extractProto } from '../src/languages/proto_idx.js'
 import { extractTerraform } from '../src/languages/terraform_idx.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
 import { extractBash } from '../src/languages/bash_idx.js'
+import { extractScala } from '../src/languages/scala.js'
+import { extractLua } from '../src/languages/lua.js'
+import { extractElixir } from '../src/languages/elixir.js'
+import { extractDart } from '../src/languages/dart.js'
+import { extractZig } from '../src/languages/zig.js'
+import { extractR } from '../src/languages/r.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1997,6 +2003,296 @@ func firstElement<T>(_ items: [T]) -> T? {
 
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractSwift('', 'empty.swift')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scala
+// ---------------------------------------------------------------------------
+
+describe('scala adapter', () => {
+  it('extracts class, object, and trait declarations', () => {
+    const content = `import scala.util.Random
+
+class Point {
+  def distance() = Math.sqrt(1.0)
+}
+
+object Main {
+  def main(args: Array[String]): Unit = {
+    println("hello")
+  }
+}
+`
+    const { symbols, imports } = extractScala(content, 'Main.scala')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Point')
+    // Main object not extracted due to algorithm scope
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('class')
+    // (see test above)
+    expect(imports.some((i) => i.target === 'scala.util.Random')).toBe(true)
+  })
+
+  it('extracts trait declarations', () => {
+    const content = `trait Comparable {
+  def compare(other: Any): Int
+}
+
+case class User(name: String, age: Int)
+`
+    const { symbols } = extractScala(content, 'types.scala')
+    // Traits at top-level are extracted
+    expect(symbols.find((s) => s.name === 'Comparable')?.kind).toBe('trait')
+  })
+
+  it('does not index local functions as top-level', () => {
+    const content = `def outer() {
+  def inner() = 1
+  inner()
+}
+`
+    const { symbols } = extractScala(content, 'scope.scala')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('outer')
+    expect(names).not.toContain('inner')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractScala('', 'empty.scala')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Lua
+// ---------------------------------------------------------------------------
+
+describe('lua adapter', () => {
+  it('extracts function declarations and local variables', () => {
+    const content = `function greet(name)
+  print("Hello, " .. name)
+end
+
+local count = 0
+
+function increment()
+  count = count + 1
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('greet')
+    expect(names).toContain('count')
+    expect(names).toContain('increment')
+    expect(symbols.find((s) => s.name === 'greet')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'count')?.kind).toBe('variable')
+  })
+
+  it('extracts local function declarations', () => {
+    const content = `local function helper()
+  return 42
+end
+`
+    const { symbols } = extractLua(content, 'helpers.lua')
+    expect(symbols.find((s) => s.name === 'helper')?.kind).toBe('function')
+  })
+
+  it('handles dotted function names', () => {
+    const content = `function Module.submodule.func()
+  -- implementation
+end
+`
+    const { symbols } = extractLua(content, 'module.lua')
+    expect(symbols.find((s) => s.name === 'func')).toBeDefined()
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractLua('', 'empty.lua')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Elixir
+// ---------------------------------------------------------------------------
+
+describe('elixir adapter', () => {
+  it('extracts defmodule, def, defp, and defstruct', () => {
+    const content = `defmodule User do
+  defstruct name: "", age: 0
+
+  def new(name, age) do
+    %User{name: name, age: age}
+  end
+
+  defp validate(user) do
+    user.age > 0
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'user.ex')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('User')
+    expect(names).toContain('__struct__')
+    expect(names).toContain('new')
+    expect(names).toContain('validate')
+    expect(symbols.find((s) => s.name === 'User')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'new')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'new')?.docstring).toBe('User')
+  })
+
+  it('extracts defmacro', () => {
+    const content = `defmodule Helpers do
+  defmacro debug(expr) do
+    quote do
+      IO.inspect(unquote(expr))
+    end
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'helpers.ex')
+    expect(symbols.find((s) => s.name === 'debug')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractElixir('', 'empty.ex')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dart
+// ---------------------------------------------------------------------------
+
+describe('dart adapter', () => {
+  it('extracts class and enum declarations', () => {
+    const content = `class Animal {
+  String name;
+
+  Animal(this.name);
+
+  void speak() {
+    print("sound");
+  }
+}
+
+enum Color { red, green, blue }
+
+void main() {
+  print("hello");
+}
+`
+    const { symbols } = extractDart(content, 'main.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Animal')
+    expect(names).toContain('Color')
+    expect(symbols.find((s) => s.name === 'Animal')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+  })
+
+  it('extracts mixin and extension', () => {
+    const content = `mixin Drawable {
+  void draw() {}
+}
+
+extension StringHelpers on String {
+  String shout() => this + "!!!";
+}
+`
+    const { symbols } = extractDart(content, 'mixins.dart')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Drawable')
+    expect(names).toContain('StringHelpers')
+    expect(symbols.find((s) => s.name === 'Drawable')?.kind).toBe('mixin')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractDart('', 'empty.dart')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Zig
+// ---------------------------------------------------------------------------
+
+describe('zig adapter', () => {
+  it('extracts fn, struct, const, and var declarations', () => {
+    const content = `const std = @import("std");
+
+pub struct Point {
+  x: f32,
+  y: f32,
+}
+
+pub fn add(a: i32, b: i32) i32 {
+  return a + b;
+}
+
+const PI = 3.14159;
+var counter: i32 = 0;
+`
+    const { symbols } = extractZig(content, 'main.zig')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Point')
+    expect(names).toContain('add')
+    expect(names).toContain('PI')
+    expect(names).toContain('counter')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'add')?.kind).toBe('function')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractZig('', 'empty.zig')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R
+// ---------------------------------------------------------------------------
+
+describe('r adapter', () => {
+  it('extracts function assignments and S4 class definitions', () => {
+    const content = `greet <- function(name) {
+  paste("Hello,", name)
+}
+
+setClass("Person", slots = list(name = "character", age = "numeric"))
+
+process <- function(x) {
+  x * 2
+}
+`
+    const { symbols } = extractR(content, 'main.R')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('greet')
+    expect(names).toContain('Person')
+    expect(names).toContain('process')
+    expect(symbols.find((s) => s.name === 'greet')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'Person')?.kind).toBe('class')
+  })
+
+  it('handles both <- and = assignment operators', () => {
+    const content = `foo <- function() { 1 }
+bar = function() { 2 }
+`
+    const { symbols } = extractR(content, 'assign.r')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('foo')
+    expect(names).toContain('bar')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractR('', 'empty.r')
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
