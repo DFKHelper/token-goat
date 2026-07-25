@@ -3196,8 +3196,17 @@ export function extractImports(text: string, ext: string): string[] {
     for (const line of lines) {
       const urlForm = /@import\s+url\(\s*['"]?([^'")]+)['"]?\s*\)/.exec(line)
       if (urlForm) { push(urlForm[1]); continue }
-      const bareForm = /@import\s+['"]([^'"]+)['"]/.exec(line)
-      if (bareForm) { push(bareForm[1]); continue }
+      if (/^\s*@import\b/.test(line)) {
+        // Legacy CSS/Sass allows several comma-separated targets on one @import line
+        // (`@import "reset", "base", "layout";`); a single `.exec()` capturing one quoted
+        // group would silently drop every target after the first, so scan globally for every
+        // quoted segment on the line instead.
+        const re = /['"]([^'"]+)['"]/g
+        let m: RegExpExecArray | null
+        let any = false
+        while ((m = re.exec(line)) !== null) { push(m[1]); any = true }
+        if (any) continue
+      }
       const useForward = /@(?:use|forward)\s+['"]([^'"]+)['"]/.exec(line)
       if (useForward) push(useForward[1])
     }

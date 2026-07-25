@@ -2855,6 +2855,14 @@ describe('read_commands', () => {
       expect(extractImports("@use 'sass:math';", '.scss')).toEqual(['sass:math'])
     })
 
+    it('extracts every target from a comma-separated legacy @import line, not just the first', () => {
+      // Regression test: a single .exec() capturing one quoted group silently dropped every
+      // target after the first on a line like `@import "reset", "base", "layout";`.
+      expect(extractImports('@import "reset", "base", "layout";', '.css')).toEqual([
+        'reset', 'base', 'layout',
+      ])
+    })
+
     it('generic fallback (Kotlin/Swift/etc.): matches a real import but not a keyword-as-substring false positive (regression: an unanchored match let "use" inside "because"/"house" fabricate phantom imports)', () => {
       const src = [
         'because this comment mentions house rules', // "use" is a substring of both words
