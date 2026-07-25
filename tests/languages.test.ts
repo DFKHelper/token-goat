@@ -66,6 +66,16 @@ public class UserService {
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
 
+  it('extracts C# 10 file-scoped implicit usings (global using System;), including global using static (regression: USING_RE\'s anchored ^using never matched a line starting with "global")', () => {
+    const content = `global using System;
+global using static System.Math;
+`
+    const { imports } = extractCsharp(content, 'GlobalUsings.cs')
+    const targets = imports.map((i) => i.target)
+    expect(targets).toContain('System')
+    expect(targets).toContain('System.Math')
+  })
+
   it('extracts a class, method, property, and constructor that carry a same-line attribute (regression: CLASS_HEADER_RE/CONSTRUCTOR_RE/PROPERTY_RE/PROPERTY_HEADER_RE/PROPERTY_ARROW_RE/METHOD_RE are all anchored against the modifier alternation or return type directly, with no room for a leading [Attr] list, so [Obsolete] public class Foo / [Test] public Foo() / [JsonProperty("name")] public string Name { get; set; } -- all idiomatic C# -- silently dropped the whole declaration, and for a class, every member inside it)', () => {
     const content = `namespace App {
 [Obsolete] public class Foo

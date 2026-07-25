@@ -2903,6 +2903,11 @@ describe('read_commands', () => {
       expect(extractImports(src, '.cs')).toEqual(['System.Collections.Generic', 'System.Math'])
     })
 
+    it('extracts C# 10 file-scoped implicit usings (global using System;), including global using static (regression: the anchored ^using never matched a line starting with "global")', () => {
+      const src = 'global using System;\nglobal using static System.Math;'
+      expect(extractImports(src, '.cs')).toEqual(['System', 'System.Math'])
+    })
+
     it('extracts PHP require_once/include_once alongside bare require/include and use', () => {
       const src = [
         "require_once 'a.php';",
