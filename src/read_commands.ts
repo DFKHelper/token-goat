@@ -3202,8 +3202,16 @@ export function extractImports(text: string, ext: string): string[] {
       if (useForward) push(useForward[1])
     }
   } else {
+    // Covers languages with no dedicated branch above (Kotlin, Swift, Dart, Apex, HTML/Liquid,
+    // Proto, Terraform, SQL, Vue/Svelte/Astro, ...) whose import syntax happens to use one of
+    // these bare keywords. The negative lookbehind guards against the keyword appearing as a
+    // substring of an unrelated word -- without it, "use" inside "because"/"house"/"reuse" (or
+    // any prose/comment containing one) matched just as readily as a real `use Foo.Bar`
+    // directive, fabricating phantom import entries. `#include`'s leading `#` is itself already
+    // a non-word character, so the lookbehind (which only excludes a *word* char immediately
+    // before the match) doesn't block it.
     for (const line of lines) {
-      const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
+      const m = /(?<![A-Za-z0-9_])(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
       if (m) push(m[1])
     }
   }

@@ -2855,6 +2855,17 @@ describe('read_commands', () => {
       expect(extractImports("@use 'sass:math';", '.scss')).toEqual(['sass:math'])
     })
 
+    it('generic fallback (Kotlin/Swift/etc.): matches a real import but not a keyword-as-substring false positive (regression: an unanchored match let "use" inside "because"/"house" fabricate phantom imports)', () => {
+      const src = [
+        'because this comment mentions house rules', // "use" is a substring of both words
+        'import Foo.Bar', // real Kotlin/Swift-style import, should still match
+      ].join('\n')
+      expect(extractImports(src, '.kt')).toEqual(['Foo.Bar'])
+      // #include's leading "#" is itself a non-word character, so the same guard must not
+      // also break the pre-existing C/C++ #include branch's sibling keyword form.
+      expect(extractImports('#include <stdio.h>', '.unknownext')).toEqual(['stdio.h'])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
