@@ -3036,8 +3036,13 @@ export function extractImports(text: string, ext: string): string[] {
       if (single) push(single[1])
     }
   } else if (e === '.rs') {
+    // The optional visibility prefix must also cover Rust's restricted-visibility forms
+    // (`pub(crate) use`, `pub(super) use`, `pub(in crate::x) use`) -- all idiomatic for scoped
+    // re-exports -- not just bare `pub use`. A plain `pub\s+` can't consume the `(crate)`/`(super)`
+    // parenthetical, so `use` never sat at the anchored position and every restricted-visibility
+    // re-export silently reported zero imports/deps.
     for (const line of lines) {
-      const m = /^\s*(?:pub\s+)?use\s+([^;{]+)/.exec(line)
+      const m = /^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;{]+)/.exec(line)
       if (m) push(m[1])
     }
   } else if (e === '.java') {
