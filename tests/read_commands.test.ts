@@ -2793,6 +2793,20 @@ describe('read_commands', () => {
       expect(extractImports(src, '.zig')).toEqual(['std', 'foo.zig', 'bar.zig', 'a.zig', 'b.zig'])
     })
 
+    it('extracts R library/require/source loads (regression: library/source are not fallback keywords and require( puts a paren where the fallback expects whitespace, so every .r file reported zero imports)', () => {
+      const src = [
+        'library(dplyr)',
+        'require(ggplot2)',
+        'library("tidyr")',
+        'source("utils.R")',
+        'library(data.table, warn.conflicts = FALSE)',
+        'suppressMessages(library(stringr))',
+      ].join('\n')
+      expect(extractImports(src, '.r')).toEqual([
+        'dplyr', 'ggplot2', 'tidyr', 'utils.R', 'data.table', 'stringr',
+      ])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })

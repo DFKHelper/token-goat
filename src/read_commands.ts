@@ -3136,6 +3136,19 @@ export function extractImports(text: string, ext: string): string[] {
       let m: RegExpExecArray | null
       while ((m = re.exec(line)) !== null) push(m[1])
     }
+  } else if (e === '.r') {
+    // R loads packages/files via the call forms `library(pkg)`, `require(pkg)` (both accept the
+    // name bare or quoted) and `source("file.R")` -- none of which the generic
+    // `import|require|use|#include` fallback below matches: `library`/`source` aren't in its
+    // keyword set at all, and `require(` puts a `(` where the fallback's `\s+` is expected. So
+    // every .r file silently reported zero imports/deps despite r.ts already indexing its
+    // symbols. Match the call anywhere on the line (nested forms like
+    // `suppressMessages(library(x))` are idiomatic) and capture the first argument.
+    for (const line of lines) {
+      const re = /\b(?:library|require|source)\s*\(\s*["']?([A-Za-z0-9_./\\-]+)["']?/g
+      let m: RegExpExecArray | null
+      while ((m = re.exec(line)) !== null) push(m[1])
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
