@@ -154,7 +154,6 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.dart', 'dart'],
   ['.zig', 'zig'],
   ['.r', 'r'],
-  ['.R', 'r'],
   ['.graphql', 'graphql'],
   ['.gql', 'graphql'],
   ['.sql', 'sql'],
