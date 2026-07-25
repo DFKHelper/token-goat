@@ -512,8 +512,12 @@ export interface DepsOptions {
   json?: boolean
 }
 
+// `.mts`/`.cts` are real, recognized TypeScript source extensions elsewhere in this codebase
+// (parser_types.ts's EXTENSION_LANGUAGE map, ts_refs.ts's TS_EXTENSIONS) but were missing here,
+// so a relative import resolving onto a .mts/.cts file (e.g. "./config" backed by
+// "./config.cts") never matched and fell through as an unresolved specifier.
 const SOURCE_EXTENSIONS = [
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
   '.py', '.go', '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp',
 ]
 
@@ -1104,7 +1108,11 @@ export function runArch(opts: ArchOptions): number {
     // Strip .js/.mjs/.cjs output extensions so we can also probe .ts/.tsx source variants
     const strippedSpec = spec.replace(/\.(m?js|cjs)$/, '')
     const base = path.resolve(dir, strippedSpec)
-    for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.py']) {
+    // `.cjs`/`.cts` are omitted from the stripped-spec's re-probe list below (runDeps'
+    // SOURCE_EXTENSIONS already treats both as real source extensions) -- without them a
+    // relative import resolving onto a .cjs/.cts source file never matched here, even though
+    // runDeps' resolver (immediately below in this file) resolves the same case correctly.
+    for (const ext of ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.cts', '.py']) {
       const candidate = base + ext
       const match = filesByFoldedPath.get(foldPath(candidate))
       if (match !== undefined) return match

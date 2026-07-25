@@ -2726,6 +2726,15 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts imports for .mts/.cts (explicit-ESM/explicit-CJS TypeScript), not just .ts/.js', () => {
+      // Regression test: .mts/.cts were missing from the dispatch list, so these files fell
+      // through to the far weaker generic `import|require|use|#include` fallback instead of
+      // the dedicated TS/JS matcher used here.
+      const src = "import { a } from './mod'\nconst x = require('cjs-pkg')"
+      expect(extractImports(src, '.mts')).toEqual(['./mod', 'cjs-pkg'])
+      expect(extractImports(src, '.cts')).toEqual(['./mod', 'cjs-pkg'])
+    })
+
     it('extracts a multi-line Prettier-style import block (regression for #102)', () => {
       const src = [
         "import { spawnSync } from 'node:child_process'",
@@ -2967,6 +2976,11 @@ describe('read_commands', () => {
       expect(names).toContain('shown')
       expect(names).toContain('localDefault')
       expect(names).not.toContain('default')
+    })
+
+    it('extracts .mts/.cts exports (explicit-ESM/explicit-CJS TypeScript), not just .ts', () => {
+      expect(extractExportNames('export function fn() {}', '.mts')).toEqual(['fn'])
+      expect(extractExportNames('export function fn() {}', '.cts')).toEqual(['fn'])
     })
 
     it('extracts public Python defs/classes and skips dunder/private', () => {

@@ -1051,6 +1051,32 @@ describe('runDeps integration', () => {
     }
   })
 
+  it('resolves a relative import onto a .cts source file (SOURCE_EXTENSIONS previously omitted .mts/.cts)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-deps-cts-'))
+    try {
+      const depFile = join(dir, 'config.cts')
+      writeFileSync(depFile, 'export const config = 1\n')
+      const entryFile = join(dir, 'entry.ts')
+      writeFileSync(entryFile, "import { config } from './config'\n")
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runDeps({ file: entryFile, json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as { internal: string[] }
+      expect(parsed.internal).toContain(depFile)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // Regression (command-entry-point coverage gap): read_commands.test.ts unit-proves
   // extractImports(text, '.mk') and importsExtensionFor() in isolation, but nothing exercised
   // them wired together through the real `runDeps` command handler against a file literally
@@ -2352,6 +2378,31 @@ describe('runArch', () => {
         (c) => c.some((f) => f.includes('a.ts')) && c.some((f) => f.includes('b.ts')),
       )
       expect(hasAbCycle).toBe(true)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves a relative import onto a .cts source file (candidate ext list previously omitted .cjs/.cts)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-cts-'))
+    try {
+      writeFileSync(join(repo, 'config.cts'), 'export const config = 1\n')
+      writeFileSync(join(repo, 'main.ts'), "import { config } from './config'\nconsole.log(config)\n")
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 10, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      const parsed = JSON.parse(captured) as { hubs: Array<{ file: string; importedBy: number }> }
+      expect(parsed.hubs.some((h) => h.file.replace(/\\/g, '/').endsWith('config.cts'))).toBe(true)
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
