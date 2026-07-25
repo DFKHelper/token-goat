@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
@@ -6,10 +6,60 @@ import * as os from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
+import { buildProjectMap, formatProjectMap } from '../src/baseline.js'
 import { createMcpServer } from '../src/mcp_server.js'
-import { runOutline, runRead, runSection, runSkeleton } from '../src/read_commands.js'
+import { runOutline, runRead, runSection, runSkeleton, runRefs, runChanged, runGrep, runImports, runExports } from '../src/read_commands.js'
+import { runGit } from '../src/util.js'
 
-const TOOL_NAMES = ['read', 'symbol', 'section', 'outline', 'skeleton', 'semantic']
+const TOOL_NAMES = [
+  'read',
+  'symbol',
+  'section',
+  'outline',
+  'skeleton',
+  'semantic',
+  'refs',
+  'map',
+  'changed',
+  'grep',
+  'imports',
+  'exports',
+]
+
+/**
+ * Captures everything written to `process.stdout`/`process.stderr` during `fn()`, mirroring
+ * `mcp_server.ts`'s own `captureOutput` -- used to get the "expected" text out of the `run*`
+ * handlers (`runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports`) that print their own
+ * output and return only an exit code, the same way the MCP tool wrappers under test do.
+ */
+function captureStdout(fn: () => number): { code: number; text: string } {
+  const chunks: string[] = []
+  const record = (chunk: unknown): boolean => {
+    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf-8'))
+    return true
+  }
+  const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(record)
+  const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(record)
+  try {
+    const code = fn()
+    return { code, text: chunks.join('') }
+  } finally {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+  }
+}
+
+/** Mirrors tests/hooks_compact_adaptive_budget.test.ts's own local helper: a minimal real scratch git repo with one commit. */
+function initRepo(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true })
+  runGit(['init'], { cwd: dir })
+  runGit(['config', 'user.email', 'test@token-goat.local'], { cwd: dir })
+  runGit(['config', 'user.name', 'Token Goat Test'], { cwd: dir })
+  runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'hello\n')
+  runGit(['add', 'tracked.txt'], { cwd: dir })
+  runGit(['commit', '-m', 'initial commit'], { cwd: dir })
+}
 
 /**
  * Connects a real MCP Client to a real McpServer via the SDK's own in-memory transport pair —
@@ -39,7 +89,7 @@ describe('mcp_server', () => {
     if (tempDir !== undefined) fs.rmSync(tempDir, { recursive: true, force: true })
   })
 
-  it('lists all 6 surgical-read tools over the real protocol layer', async () => {
+  it('lists all 12 surgical-read tools over the real protocol layer', async () => {
     const { client, close } = await connectedClient()
     cleanup = close
     const { tools } = await client.listTools()
@@ -209,5 +259,130 @@ describe('mcp_server', () => {
     expect(block.text).toContain('(function)')
     expect(block.text).not.toContain('(const)')
     expect(block.text).not.toContain('(variable)')
+  })
+
+  // refs/changed/grep/imports/exports wrap run* handlers that print their own output and return
+  // only an exit code (unlike the { text, code }-returning handlers above) -- the MCP server must
+  // capture those writes rather than let them hit the real process.stdout an MCP stdio transport
+  // also uses for JSON-RPC framing. These tests confirm the captured text matches what the same
+  // handler prints when called directly, proving the capture-and-adapt wiring is correct end to
+  // end (a broken capture would either lose the text or, worse, still leak it to real stdout,
+  // which command_matrix_e2e.test.ts's real-process `mcp-serve` smoke test would catch as a
+  // corrupted JSON-RPC stream).
+  it('calls the refs tool against a real fixture file and matches runRefs()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-refs-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, 'function helper() {\n  return 1\n}\n\nfunction caller() {\n  return helper() + helper()\n}\n')
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying.
+    runSkeleton({ file: fixture, forceRefresh: true })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'refs', arguments: { spec: 'helper' } })
+    const expected = captureStdout(() => runRefs({ spec: 'helper' }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    // ref.context is the enclosing symbol's name, not the raw source line, so the reference
+    // line reads "fixture.ts:<n>: caller" rather than literally containing "helper".
+    expect(block.text).toContain('fixture.ts')
+    expect(block.text).toContain('caller')
+  })
+
+  it('calls the map tool against a real fixture directory and matches buildProjectMap/formatProjectMap\'s own output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-map-'))
+    fs.writeFileSync(path.join(tempDir, 'fixture.ts'), 'function mapped() {\n  return 1\n}\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'map', arguments: { projectRoot: tempDir, compact: true } })
+    const map = buildProjectMap(tempDir, { compact: true })
+    const expectedText = formatProjectMap(map, map.compact)
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expectedText)
+    expect(block.text).toContain('Files: 1')
+  })
+
+  it('calls the changed tool against a real scratch git repo and matches runChanged()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-changed-'))
+    initRepo(tempDir)
+    fs.writeFileSync(path.join(tempDir, 'new.txt'), 'new content\n')
+    runGit(['add', 'new.txt'], { cwd: tempDir })
+    runGit(['commit', '-m', 'second commit'], { cwd: tempDir })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'changed', arguments: { ref: 'HEAD~1', projectRoot: tempDir } })
+    const expected = captureStdout(() => runChanged({ ref: 'HEAD~1', projectRoot: tempDir }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('new.txt')
+  })
+
+  it('calls the grep tool against a real fixture file and matches runGrep()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-grep-'))
+    const fixture = path.join(tempDir, 'fixture.txt')
+    fs.writeFileSync(fixture, 'alpha\nneedle-line\nbeta\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'needle', path: [tempDir] } })
+    const expected = captureStdout(() => runGrep({ pattern: 'needle', path: [tempDir] }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('needle-line')
+  })
+
+  it('calls the imports tool against a real fixture file and matches runImports()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-imports-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, "import { thing } from './other.js'\n\nconsole.log(thing)\n")
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'imports', arguments: { file: fixture } })
+    const expected = captureStdout(() => runImports({ file: fixture }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('./other.js')
+  })
+
+  it('calls the exports tool against a real fixture file and matches runExports()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-exports-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, 'export function shown() {\n  return 1\n}\n')
+    // Index the fixture so the index-side heuristic in runExports has a row to match against.
+    runSkeleton({ file: fixture, forceRefresh: true })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'exports', arguments: { file: fixture } })
+    const expected = captureStdout(() => runExports({ file: fixture }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('shown')
   })
 })

@@ -8,12 +8,29 @@
  * command applies to both surfaces automatically.
  */
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 
+import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { VERSION } from './constants.js'
-import { runSymbol, runRead, runSection, runSkeleton, runOutline, runSemantic } from './read_commands.js'
+import {
+  runSymbol,
+  runRead,
+  runSection,
+  runSkeleton,
+  runOutline,
+  runSemantic,
+  runRefs,
+  runChanged,
+  runGrep,
+  runImports,
+  runExports,
+} from './read_commands.js'
+import { recordStat } from './stats.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
 // doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal
@@ -42,6 +59,7 @@ function mcpFriendlyText(text: string): string {
   })
   out = out.replace(/--json\b/g, 'the json parameter')
   out = out.replace(/--limit\b/g, 'the limit parameter')
+  out = out.replace(/--top\b/g, 'the top parameter')
   out = out.replace(/--grep PATTERN, --section HEADING, or --tail N/g, 'a narrower query')
   return out
 }
@@ -54,7 +72,51 @@ function toCallToolResult(result: { text: string; code: number }): CallToolResul
   }
 }
 
-/** Builds the MCP server and registers all 6 surgical-read tools. Does not connect a transport. */
+/**
+ * Captures everything written to `process.stdout`/`process.stderr` during `fn()`, in call order,
+ * restoring the original write functions before returning (even if `fn` throws).
+ *
+ * `runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports` -- unlike the `{ text, code }`-
+ * returning handlers `toCallToolResult` adapts above -- print their own output via
+ * `emit()`/`emitErr()` (raw `process.stdout`/`process.stderr` writes) and return only an exit
+ * code, matching what their CLI callers (`runExit` in cli.ts) expect. An MCP stdio server speaks
+ * JSON-RPC over that SAME stdout stream, so letting one of them write raw text straight to the
+ * real `process.stdout` here would corrupt every in-flight MCP message, not just this tool's
+ * response -- this capture is what stands in for that missing return value, without touching
+ * read_commands.ts's printing behavior (which the CLI still depends on byte-for-byte).
+ */
+function captureOutput(fn: () => number): { code: number; text: string } {
+  const chunks: string[] = []
+  const record = (chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown): boolean => {
+    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf-8'))
+    const callback = typeof encodingOrCb === 'function' ? encodingOrCb : typeof maybeCb === 'function' ? maybeCb : undefined
+    if (typeof callback === 'function') callback()
+    return true
+  }
+  const origStdoutWrite = process.stdout.write.bind(process.stdout)
+  const origStderrWrite = process.stderr.write.bind(process.stderr)
+  process.stdout.write = record as typeof process.stdout.write
+  process.stderr.write = record as typeof process.stderr.write
+  try {
+    const code = fn()
+    return { code, text: chunks.join('') }
+  } finally {
+    process.stdout.write = origStdoutWrite
+    process.stderr.write = origStderrWrite
+  }
+}
+
+/**
+ * Adapts a `run*` handler that prints its own output and returns only an exit code (see
+ * {@link captureOutput}) into the same `CallToolResult` shape {@link toCallToolResult} produces
+ * for the `{ text, code }`-returning handlers.
+ */
+function toCallToolResultFromExitCode(fn: () => number): CallToolResult {
+  const { code, text } = captureOutput(fn)
+  return toCallToolResult({ text, code })
+}
+
+/** Builds the MCP server and registers all 12 surgical-read tools. Does not connect a transport. */
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'token-goat', version: VERSION })
 
@@ -219,6 +281,161 @@ export function createMcpServer(): McpServer {
           ...(projectRoot !== undefined ? { projectRoot } : {}),
         }),
       )
+    },
+  )
+
+  server.registerTool(
+    'refs',
+    {
+      description:
+        'Find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view). ' +
+        'For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol ' +
+        'false positives; falls back to name-based matching when that is not possible.',
+      inputSchema: {
+        spec: z.string().describe('file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view'),
+        callers: z.boolean().optional().describe('group references by their enclosing caller symbol'),
+        limit: z.number().int().positive().optional().describe('max results'),
+        top: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
+          ),
+        json: z.boolean().optional().describe('output as JSON'),
+      },
+    },
+    (args) => {
+      const { spec, callers, limit, top, json } = args
+      return toCallToolResultFromExitCode(() =>
+        runRefs({
+          spec,
+          ...(callers === true ? { callers: true } : {}),
+          ...(json === true ? { json: true } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          ...(top !== undefined ? { top } : {}),
+        }),
+      )
+    },
+  )
+
+  server.registerTool(
+    'map',
+    {
+      description: 'Project overview: file count, languages, headline symbols, and recently modified files.',
+      inputSchema: {
+        compact: z.boolean().optional().describe('compact, low-token summary'),
+        projectRoot: makeProjectRootField('overview'),
+      },
+    },
+    (args) => {
+      const { compact, projectRoot } = args
+      const map = buildProjectMap(projectRoot ?? process.cwd(), { compact: compact === true })
+      const text = formatProjectMap(map, map.compact)
+      // buildProjectMap/formatProjectMap don't self-report the way the run*() handlers above
+      // do, so this replicates cmdMap's stat-recording wiring in cli.ts (see project_runchanged_
+      // missing_stat / map_lookup) locally rather than importing cmdMap itself, since cmdMap also
+      // owns process.exitCode/stdout side effects this tool must not perform. recentFiles are
+      // relative to map.rootDir (see buildProjectMap), not necessarily this server process's own
+      // cwd, so they are resolved against map.rootDir here rather than passed through bare the
+      // way cmdMap does -- cmdMap's own root is always process.cwd(), so the two are equivalent
+      // there, but only resolving against map.rootDir stays correct when projectRoot differs.
+      const referencedFiles = new Set<string>([...map.recentFiles.map((f) => path.resolve(map.rootDir, f)), ...map.topSymbols.map((s) => s.filePath)])
+      let fullSourceBytes = 0
+      for (const fp of referencedFiles) {
+        try {
+          fullSourceBytes += fs.statSync(fp).size
+        } catch {
+          // Stale index entry pointing at a deleted/moved file -- contributes nothing.
+        }
+      }
+      const emittedBytes = Buffer.byteLength(text, 'utf8')
+      const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
+      recordStat('map_lookup', bytesSaved, Math.round(bytesSaved / 4))
+      return toCallToolResult({ text, code: 0 })
+    },
+  )
+
+  server.registerTool(
+    'changed',
+    {
+      description: 'List files or symbols changed since a git ref.',
+      inputSchema: {
+        ref: z.string().optional().describe('git ref to compare against (default: HEAD~5)'),
+        symbolMode: z.boolean().optional().describe('list symbols instead of files'),
+        json: z.boolean().optional().describe('output as JSON'),
+        projectRoot: projectRootField,
+      },
+    },
+    (args) => {
+      const { ref, symbolMode, json, projectRoot } = args
+      return toCallToolResultFromExitCode(() =>
+        runChanged({
+          ...(ref !== undefined ? { ref } : {}),
+          ...(symbolMode === true ? { symbolMode: true } : {}),
+          ...(json === true ? { json: true } : {}),
+          ...(projectRoot !== undefined ? { projectRoot } : {}),
+        }),
+      )
+    },
+  )
+
+  server.registerTool(
+    'grep',
+    {
+      description: 'Regex search over files, caching nothing (session-aware grep).',
+      inputSchema: {
+        pattern: z.string().describe('regex pattern to search for'),
+        path: z.array(z.string()).optional().describe('files or directories to search; defaults to this server process\'s cwd'),
+        maxLines: z.number().int().positive().optional().describe('max matching lines to print'),
+        json: z.boolean().optional().describe('output as JSON'),
+        recursive: z.boolean().optional().describe('descend into subdirectories (default: true)'),
+        context: z.number().int().nonnegative().optional().describe('lines of context to show before and after each match'),
+      },
+    },
+    (args) => {
+      const { pattern, path: searchPath, maxLines, json, recursive, context } = args
+      return toCallToolResultFromExitCode(() =>
+        runGrep({
+          pattern,
+          ...(searchPath !== undefined && searchPath.length > 0 ? { path: searchPath } : {}),
+          ...(json === true ? { json: true } : {}),
+          ...(maxLines !== undefined ? { maxLines } : {}),
+          ...(recursive === false ? { recursive: false } : {}),
+          ...(context !== undefined ? { context } : {}),
+        }),
+      )
+    },
+  )
+
+  server.registerTool(
+    'imports',
+    {
+      description: 'List the modules a file imports.',
+      inputSchema: {
+        file: z.string().describe('file path'),
+        json: z.boolean().optional().describe('output as JSON'),
+      },
+    },
+    (args) => {
+      const { file, json } = args
+      return toCallToolResultFromExitCode(() => runImports({ file, ...(json === true ? { json: true } : {}) }))
+    },
+  )
+
+  server.registerTool(
+    'exports',
+    {
+      description: 'List exported (public) symbols in a file.',
+      inputSchema: {
+        file: z.string().describe('file path'),
+        json: z.boolean().optional().describe('output as JSON'),
+      },
+    },
+    (args) => {
+      const { file, json } = args
+      return toCallToolResultFromExitCode(() => runExports({ file, ...(json === true ? { json: true } : {}) }))
     },
   )
 
