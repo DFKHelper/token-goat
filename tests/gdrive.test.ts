@@ -276,6 +276,98 @@ Done.
       expect(sections[0].content).toContain('npm run build')
       expect(sections[0].content).toContain('Done.')
     })
+
+    // Mutation-testing gap: parseDocSections hand-rolls the same CommonMark fence-closing rule
+    // as markdown_lines.ts's eachUnfencedLine (char match + length >= opener + no trailing info
+    // string), per its own comment, but only had the basic "# inside a fence" test -- unlike
+    // eachUnfencedLine and doc_compact.ts's buildExtractiveCompact, which both have dedicated
+    // regression tests for each of the three conditions. A mismatched ~~~ line inside a ```
+    // fence must not close it; removing the char-match check survives the full suite otherwise.
+    it('does not let a mismatched ~~~ close an open ``` fence (a real heading-looking line inside must stay fenced content, not a phantom section)', async () => {
+      const docText = `# **Real** {#real}
+Intro.
+
+\`\`\`
+outer code
+~~~
+# Fake Heading
+still inside
+\`\`\`
+
+After text.
+`
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('mismatched-fence-id')
+      expect(sections.length).toBe(1)
+      expect(sections[0].heading).toBe('Real')
+      expect(sections[0].content).toContain('# Fake Heading')
+      expect(sections[0].content).toContain('After text.')
+    })
+
+    it('does not let a shorter same-char fence run close a longer opener (a real heading-looking line inside must stay fenced content, not a phantom section)', async () => {
+      // Opener is a 4-backtick run; a 3-backtick line inside looks like a valid closer (same
+      // char, empty remainder) but is too short to actually close it. A heading-looking line
+      // right after must stay swallowed as fenced content, not become a phantom section.
+      const docText = `# **Real** {#real}
+Intro.
+
+\`\`\`\`
+outer code
+\`\`\`
+# Fake Heading Inside
+\`\`\`\`
+
+After text.
+`
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('short-run-fence-id')
+      expect(sections.length).toBe(1)
+      expect(sections[0].heading).toBe('Real')
+      expect(sections[0].content).toContain('# Fake Heading Inside')
+      expect(sections[0].content).toContain('After text.')
+    })
+
+    it('does not let a same-char fence-looking line with a trailing info string close an open fence', async () => {
+      // The opening ``` is followed by a ```json info-string line, which must NOT close the
+      // fence (it has trailing content after the backtick run). The real closing ``` is two
+      // lines later. A heading-looking line sandwiched between them must stay fenced content --
+      // a mutation that ignores the trailing-info-string check would treat ```json as the
+      // closer, exposing "# Reopened As Fake Heading" as a real (phantom) section boundary.
+      const docText = `# **Real** {#real}
+Intro.
+
+\`\`\`
+\`\`\`json
+# Reopened As Fake Heading
+\`\`\`
+
+After text.
+`
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('info-string-fence-id')
+      expect(sections.length).toBe(1)
+      expect(sections[0].heading).toBe('Real')
+      expect(sections[0].content).toContain('# Reopened As Fake Heading')
+      expect(sections[0].content).toContain('After text.')
+    })
   })
 
   describe('formatSections', () => {
