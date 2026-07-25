@@ -2066,6 +2066,27 @@ case class User(name: String, age: Int)
     expect(names).not.toContain('inner')
   })
 
+  it('expands multi-selector brace imports into one target per selector', () => {
+    const content = `import scala.collection.{mutable, immutable}
+import foo.bar.{A => Renamed, B}
+import java.util.{_}
+`
+    const { imports } = extractScala(content, 'Imports.scala')
+    const targets = imports.map((i) => i.target)
+    // Regression test for a bug where BRACE_IMPORT_RE's absence meant IMPORT_RE's character
+    // class (which stops at `{`) captured only the truncated, non-actionable prefix
+    // ("scala.collection.") and dropped every selector actually being imported.
+    expect(targets).toContain('scala.collection.mutable')
+    expect(targets).toContain('scala.collection.immutable')
+    // A rename selector (`A => Renamed`) resolves to the original name callers reference.
+    expect(targets).toContain('foo.bar.A')
+    expect(targets).not.toContain('foo.bar.Renamed')
+    expect(targets).toContain('foo.bar.B')
+    // A bare wildcard selector keeps the `._` form rather than emitting `java.util._`
+    // literalized from a stray underscore split.
+    expect(targets).toContain('java.util._')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractScala('', 'empty.scala')
     expect(symbols).toHaveLength(0)
