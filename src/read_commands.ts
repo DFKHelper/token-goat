@@ -3123,6 +3123,19 @@ export function extractImports(text: string, ext: string): string[] {
         for (const target of targets.split(/\s+/)) push(target)
       }
     }
+  } else if (e === '.zig') {
+    // Zig's sole import mechanism is the `@import("path")` builtin, which the generic
+    // `import|require|use|#include` fallback below never matches: the `@` prefix and the `(`
+    // that immediately follows `import` (rather than the `\s+` the fallback requires) both
+    // block it, so every .zig file silently reported zero imports/deps despite zig.ts already
+    // indexing the file's symbols -- the same substring/whitespace-mismatch gap already fixed
+    // for .cs's `using`, .ps1's `Import-Module`, and .mk's `include`. Multiple `@import` calls
+    // can share a line (e.g. two `const x = @import(...)` statements), so scan globally.
+    for (const line of lines) {
+      const re = /@import\s*\(\s*"([^"]+)"\s*\)/g
+      let m: RegExpExecArray | null
+      while ((m = re.exec(line)) !== null) push(m[1])
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
