@@ -23,6 +23,11 @@ interface TypeFrame {
 // `import scala.util.matching.Regex` or `import java.util._` (wildcard imports)
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\._)?)/
 
+// `import foo.bar.{A, B, C}` -- Scala's idiomatic multi-selector import. IMPORT_RE alone can't
+// express this: its character class stops at `{`, so it captures only the truncated,
+// non-actionable prefix `foo.bar.` and silently drops every selector actually being imported.
+const BRACE_IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*)\.\{([^}]*)\}/
+
 // `class Foo`, `class Foo[T]`, `class Foo(x: Int)`, `class Foo extends Base`
 // Also matches `case class Foo`
 const CLASS_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
@@ -79,9 +84,24 @@ export function extractScala(
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
     // import
-    const importM = IMPORT_RE.exec(stripped)
-    if (importM) {
-      imports.push({ kind: 'import', target: importM[1] ?? '', line: lineNum })
+    const braceImportM = BRACE_IMPORT_RE.exec(stripped)
+    if (braceImportM) {
+      const base = braceImportM[1] ?? ''
+      // Each selector may itself be a rename (`Old => New`) or the wildcard `_` -- for a rename
+      // the imported symbol is the left-hand (original) name, matching what call sites actually
+      // reference; a bare `_` means "everything under base", so keep it as base._ rather than
+      // emitting a bogus `base._` per underscore.
+      const selectors = (braceImportM[2] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '')
+      for (const sel of selectors) {
+        const original = sel.split(/\s*=>\s*/)[0]?.trim() ?? sel
+        if (original === '') continue
+        imports.push({ kind: 'import', target: original === '_' ? `${base}._` : `${base}.${original}`, line: lineNum })
+      }
+    } else {
+      const importM = IMPORT_RE.exec(stripped)
+      if (importM) {
+        imports.push({ kind: 'import', target: importM[1] ?? '', line: lineNum })
+      }
     }
 
     // class/object/trait — recognized at column 0 (top-level), or indented while
