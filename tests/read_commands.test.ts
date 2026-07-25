@@ -2771,6 +2771,18 @@ describe('read_commands', () => {
       ])
     })
 
+    it('extracts Rust restricted-visibility re-exports (regression: bare `pub\\s+` missed `pub(crate) use`/`pub(super) use`/`pub(in ...) use`)', () => {
+      const src = [
+        'pub(crate) use foo::Bar;',
+        'pub(super) use x::Y;',
+        'pub(in crate::a) use z::W;',
+        '    pub(crate) use indented::Thing;',
+      ].join('\n')
+      expect(extractImports(src, '.rs')).toEqual([
+        'foo::Bar', 'x::Y', 'z::W', 'indented::Thing',
+      ])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
