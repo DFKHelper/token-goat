@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { createMcpServer } from '../src/mcp_server.js'
-import { runRead } from '../src/read_commands.js'
+import { runOutline, runRead, runSection, runSkeleton } from '../src/read_commands.js'
 
 const TOOL_NAMES = ['read', 'symbol', 'section', 'outline', 'skeleton', 'semantic']
 
@@ -108,5 +108,106 @@ describe('mcp_server', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const block = (result.content as any[])[0]
     expect(block.text).toContain('validation error')
+  })
+
+  // The section/skeleton/outline tools had zero successful-call coverage before this: only
+  // 'read' and 'symbol' were ever actually invoked (plus a limit:0 rejection for 'symbol' and
+  // 'semantic'). A broken handler wiring for any of these three -- a typo'd run* call, a
+  // dropped required param mapping -- would have shipped with every existing test green.
+  it('calls the section tool against a real markdown fixture and matches runSection()\'s own output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-section-'))
+    const fixture = path.join(tempDir, 'doc.md')
+    fs.writeFileSync(fixture, '# Intro\n\nHello from the section tool.\n\n# Other\n\nUnrelated.\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const spec = `${fixture}::Intro`
+    const result = await client.callTool({ name: 'section', arguments: { spec } })
+    const expected = runSection({ spec })
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('Hello from the section tool')
+    expect(block.text).not.toContain('Unrelated')
+  })
+
+  it('calls the skeleton tool against a real fixture file, with minLines passed through', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-skeleton-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(
+      fixture,
+      'function short() {\n  return 1\n}\n\nfunction longer() {\n  let x = 1\n  x += 1\n  x += 1\n  return x\n}\n',
+    )
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying --
+    // otherwise a file never touched by the worker daemon has no indexed symbols at all.
+    const result = await client.callTool({ name: 'skeleton', arguments: { file: fixture, forceRefresh: true } })
+    const expected = runSkeleton({ file: fixture })
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('short')
+    expect(block.text).toContain('longer')
+
+    // minLines must reach runSkeleton and actually filter -- confirms the param is wired, not
+    // just accepted and silently dropped. Index is already warm from the call above.
+    const filtered = await client.callTool({ name: 'skeleton', arguments: { file: fixture, minLines: 4 } })
+    const expectedFiltered = runSkeleton({ file: fixture, minLines: 4 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    block = (filtered.content as any[])[0]
+    expect(block.text).toBe(expectedFiltered.text)
+    expect(block.text).not.toContain('short')
+    expect(block.text).toContain('longer')
+  })
+
+  it('calls the outline tool against a real fixture file and matches runOutline()\'s own output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-outline-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, '/** Docs for foo */\nfunction foo() {\n  return 1\n}\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying.
+    const result = await client.callTool({ name: 'outline', arguments: { file: fixture, forceRefresh: true } })
+    const expected = runOutline({ file: fixture })
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('foo')
+  })
+
+  it('passes the symbol tool\'s kind and file params through to runSymbol (not just name)', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-symbol-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, 'const target = 1\nfunction target() {\n  return 2\n}\n')
+
+    // The symbol tool's schema has no forceRefresh param, so index the fixture via a direct
+    // runSkeleton({ forceRefresh: true }) call first -- same effect as a warm worker daemon.
+    runSkeleton({ file: fixture, forceRefresh: true })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({
+      name: 'symbol',
+      arguments: { name: 'target', file: fixture, kind: 'function' },
+    })
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    // kind: 'function' must narrow to just the function match, not the const of the same name.
+    expect(block.text).toContain('(function)')
+    expect(block.text).not.toContain('(const)')
+    expect(block.text).not.toContain('(variable)')
   })
 })
