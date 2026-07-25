@@ -3160,6 +3160,24 @@ export function extractImports(text: string, ext: string): string[] {
       let m: RegExpExecArray | null
       while ((m = re.exec(line)) !== null) push(m[1])
     }
+  } else if (['.ex', '.exs'].includes(e)) {
+    // Elixir references other modules via `alias`/`import`/`require`/`use`. The generic
+    // `import|require|use|#include` fallback catches the last three, but NOT `alias` -- the most
+    // common cross-module form in idiomatic Elixir -- so aliased dependencies were silently
+    // dropped despite elixir.ts already indexing the file's symbols. Handle all four here, and
+    // expand the grouped `alias Foo.{Bar, Baz}` form into `Foo.Bar`/`Foo.Baz` rather than
+    // capturing a truncated `Foo.` prefix.
+    for (const line of lines) {
+      const m = /^\s*(?:alias|import|require|use)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)(?:\.\{([^}]*)\})?/.exec(line)
+      if (m === null) continue
+      const base = m[1] ?? ''
+      const group = m[2]
+      if (group !== undefined && group.trim() !== '') {
+        for (const part of group.split(',')) push(`${base}.${part.trim()}`)
+      } else {
+        push(base)
+      }
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)

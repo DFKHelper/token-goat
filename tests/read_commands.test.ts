@@ -2817,6 +2817,19 @@ describe('read_commands', () => {
       expect(extractImports(src, '.lua')).toEqual(['foo', 'bar', 'baz', 'a.b.c'])
     })
 
+    it('extracts Elixir alias/import/require/use, expanding grouped aliases (regression: the generic fallback caught import/require/use but not `alias`, the dominant cross-module form)', () => {
+      const src = [
+        '  alias Foo.Bar',
+        '  alias MyApp.{Repo, User}',
+        '  import Ecto.Query',
+        '  require Logger',
+        '  use Phoenix.Controller, namespace: MyApp',
+      ].join('\n')
+      expect(extractImports(src, '.ex')).toEqual([
+        'Foo.Bar', 'MyApp.Repo', 'MyApp.User', 'Ecto.Query', 'Logger', 'Phoenix.Controller',
+      ])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
