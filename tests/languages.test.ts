@@ -2261,6 +2261,48 @@ end
     expect(symbols.find((s) => s.name === 'func')).toBeDefined()
   })
 
+  it('extracts function-value assignments (local/bare/dotted) as functions, not variables', () => {
+    // Regression: `local cb = function()` was misfiled as a plain `variable`, and the bare/
+    // dotted `M.foo = function()` idiom was dropped entirely. Both are function definitions.
+    const content = `local handler = function(a)
+  return a + 1
+end
+
+M.process = function(x)
+  return x * 2
+end
+
+local plain = 5
+`
+    const { symbols } = extractLua(content, 'mod.lua')
+    // `local x = function()` resolves as a function, not a variable.
+    expect(symbols.find((s) => s.name === 'handler')?.kind).toBe('function')
+    // The dotted `M.foo = function()` module idiom resolves under its final name.
+    expect(symbols.find((s) => s.name === 'process')?.kind).toBe('function')
+    // A genuine scalar `local x = 5` still classifies as a variable.
+    expect(symbols.find((s) => s.name === 'plain')?.kind).toBe('variable')
+  })
+
+  it('does not let a function-value assignment body desync subsequent parent attribution', () => {
+    // Regression: `local cb = function()` opens a `function ... end` body but the old code
+    // pushed no frame for it, so the body's own `end` prematurely popped the enclosing
+    // function -- corrupting the parent of anything declared after it in that body.
+    const content = `function outer()
+  local cb = function(x)
+    return x
+  end
+  local function inner()
+    return 1
+  end
+  return inner()
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    // The anonymous body's `end` must not pop `outer`; `inner` after it stays parented to outer.
+    expect(symbols.find((s) => s.name === 'inner')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'cb')?.docstring).toBe('outer')
+  })
+
   it('does not let an if/for/while block desync nested-function parent attribution', () => {
     // Regression test: `if ... then`, `for ... do`, and `while ... do` blocks also close
     // with `end`. Without a placeholder frame for them, that `end` popped the enclosing

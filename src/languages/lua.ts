@@ -2,6 +2,7 @@
  * Lua symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: `function` declarations (top-level and nested), local functions,
+ * function-value assignments (`local cb = function()`, `M.foo = function()`),
  * and `local` variable declarations. Lua's table-based class patterns are
  * not extracted (no distinct OOP syntax, just conventions).
  */
@@ -38,6 +39,15 @@ const FUNC_RE = /^function\s+([A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_]*)
 
 // `local function foo(...)` — local keyword followed by function declaration.
 const LOCAL_FUNC_RE = /^local\s+function\s+([A-Za-z_][A-Za-z0-9_]*)/
+
+// Function-value assignment: `local cb = function(...)`, `handler = function(...)`,
+// `M.foo = function(...)`, `Obj:method = function(...)`. This is a pervasive Lua idiom (module
+// tables, callbacks) that the keyword-first FUNC_RE/LOCAL_FUNC_RE never matched: the `local`
+// form was misfiled as a plain `variable` and the bare/dotted form was dropped entirely. Worse,
+// neither pushed a scope frame, so the anonymous function body's own `end` prematurely popped
+// the enclosing function -- the exact scope desync the rest of this file guards against.
+// Captures the assigned name (dotted/colon path allowed); must be tested before LOCAL_VAR_RE.
+const ASSIGN_FUNC_RE = /^(?:local\s+)?([A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_]*)?)\s*=\s*function\s*\(/
 
 // `local x`, `local x, y, z = ...` — extract only the first variable name.
 const LOCAL_VAR_RE = /^local\s+([A-Za-z_][A-Za-z0-9_]*)/
@@ -120,6 +130,28 @@ export function extractLua(
       }
       if (!lineClosesItself(stripped)) {
         funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
+      }
+      continue
+    }
+
+    // Function-value assignment (`local cb = function()`, `M.foo = function()`) -- index the
+    // assigned name as a function (not a plain variable / dropped) and push a frame for the
+    // anonymous body when it spans multiple lines, so its `end` pops the body rather than the
+    // enclosing function. Checked before LOCAL_VAR_RE so `local cb = function()` classifies as a
+    // function; a genuine `local x = 5` has no `= function(` and falls through to LOCAL_VAR_RE.
+    const afm = ASSIGN_FUNC_RE.exec(stripped)
+    if (afm) {
+      const fname = afm[1] ?? ''
+      // Extract just the final name after any dot/colon path, matching FUNC_RE's convention.
+      const baseName = fname.split(/[.:]/).pop() ?? fname
+      const parent = nearestFunctionName(funcStack)
+      if (parent !== undefined) {
+        symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200), parent))
+      } else {
+        symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200)))
+      }
+      if (!lineClosesItself(stripped)) {
+        funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
       }
       continue
     }
