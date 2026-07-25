@@ -2,7 +2,8 @@
  * R symbol extractor — regex-based (no tree-sitter grammar needed).
  *
  * Extracts: function definitions assigned to variables (`foo <- function(...)`,
- * `bar = function(...)`), and S4 class definitions via `setClass`.
+ * `bar = function(...)`, and R 4.1's `baz <- \(...)` lambda shorthand), and S4
+ * class definitions via `setClass`.
  *
  * R's symbol surface is thin compared to other languages — most "definitions"
  * are just variable assignments, so we focus on the most salient patterns:
@@ -16,9 +17,12 @@ import {
   makeLineSymbol,
 } from './common.js'
 
-// `foo <- function(...)`, `bar = function(...)` (R uses both <- and = for assignment)
+// `foo <- function(...)`, `bar = function(...)` (R uses both <- and = for assignment),
+// and R 4.1's (2021) native backslash-lambda shorthand `baz <- \(...)`. The `\` form is now
+// idiomatic; requiring the literal `function` keyword dropped every named lambda defined with
+// it. A bare `\` is only ever the lambda shorthand in R, so `<name> <- \(` is unambiguous.
 // Captures the variable name before the assignment operator.
-const FUNC_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<-|=)\s*function\s*\(/
+const FUNC_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_.]*)\s*(?:<-|=)\s*(?:function|\\)\s*\(/
 
 // `setClass("MyClass", ...)` — S4 class definition (first arg is the class name as a string)
 const SETCLASS_RE = /setClass\s*\(\s*["']([A-Za-z_][A-Za-z0-9_.]*)/

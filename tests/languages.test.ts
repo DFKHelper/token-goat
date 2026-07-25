@@ -2678,6 +2678,22 @@ bar = function() { 2 }
     expect(names).toContain('bar')
   })
 
+  it('extracts R 4.1 backslash-lambda assignments alongside the classic function form', () => {
+    // Regression: the R 4.1 (2021) `\(...)` lambda shorthand is now idiomatic, but requiring
+    // the literal `function` keyword dropped every named lambda defined with it.
+    const content = `square <- function(x) x^2
+add <- \\(a, b) a + b
+triple = \\(x) x * 3
+`
+    const { symbols } = extractR(content, 'lambda.R')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('square')
+    expect(names).toContain('add')
+    expect(names).toContain('triple')
+    expect(symbols.find((s) => s.name === 'add')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'triple')?.kind).toBe('function')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractR('', 'empty.r')
     expect(symbols).toHaveLength(0)
