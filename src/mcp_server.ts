@@ -8,14 +8,11 @@
  * command applies to both surfaces automatically.
  */
 
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 
-import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
 import { VERSION } from './constants.js'
 import {
   runSymbol,
@@ -333,25 +330,14 @@ export function createMcpServer(): McpServer {
       const { compact, projectRoot } = args
       const map = buildProjectMap(projectRoot ?? process.cwd(), { compact: compact === true })
       const text = formatProjectMap(map, map.compact)
-      // buildProjectMap/formatProjectMap don't self-report the way the run*() handlers above
-      // do, so this replicates cmdMap's stat-recording wiring in cli.ts (see project_runchanged_
-      // missing_stat / map_lookup) locally rather than importing cmdMap itself, since cmdMap also
-      // owns process.exitCode/stdout side effects this tool must not perform. recentFiles are
-      // relative to map.rootDir (see buildProjectMap), not necessarily this server process's own
-      // cwd, so they are resolved against map.rootDir here rather than passed through bare the
-      // way cmdMap does -- cmdMap's own root is always process.cwd(), so the two are equivalent
-      // there, but only resolving against map.rootDir stays correct when projectRoot differs.
-      const referencedFiles = new Set<string>([...map.recentFiles.map((f) => path.resolve(map.rootDir, f)), ...map.topSymbols.map((s) => s.filePath)])
-      let fullSourceBytes = 0
-      for (const fp of referencedFiles) {
-        try {
-          fullSourceBytes += fs.statSync(fp).size
-        } catch {
-          // Stale index entry pointing at a deleted/moved file -- contributes nothing.
-        }
-      }
-      const emittedBytes = Buffer.byteLength(text, 'utf8')
-      const bytesSaved = Math.max(1, fullSourceBytes - emittedBytes)
+      // buildProjectMap/formatProjectMap don't self-report the way the run*() handlers above do, so
+      // this replicates cmdMap's stat-recording wiring in cli.ts (see project_runchanged_missing_stat
+      // / map_lookup) locally rather than importing cmdMap itself, since cmdMap also owns
+      // process.exitCode/stdout side effects this tool must not perform. The byte accounting -- and
+      // the recentFiles-vs-topSymbols path canonicalization the dedup depends on, which stays correct
+      // even when projectRoot differs from this server process's cwd -- lives in mapLookupBytesSaved,
+      // shared with cmdMap so the two accountings cannot drift.
+      const bytesSaved = mapLookupBytesSaved(map, text)
       recordStat('map_lookup', bytesSaved, Math.round(bytesSaved / 4))
       return toCallToolResult({ text, code: 0 })
     },

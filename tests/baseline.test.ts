@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { buildProjectMap, formatProjectMap, walkProject, findMemSuggestionCandidates, formatMemSuggestions } from '../src/baseline.js'
+import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, walkProject, findMemSuggestionCandidates, formatMemSuggestions } from '../src/baseline.js'
 import { loadConfig } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
@@ -214,6 +214,56 @@ describe('buildProjectMap cross-project scoping', () => {
     } finally {
       fs.rmSync(rootA, { recursive: true, force: true })
       fs.rmSync(rootB, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('mapLookupBytesSaved', () => {
+  // Regression: the map_lookup byte accounting deduplicated its surfaced files through a Set, but
+  // fed it RELATIVE recentFiles ('a.ts') alongside ABSOLUTE, normalizePath-form topSymbols
+  // filePaths ('c:/.../a.ts'). A file present in BOTH lists (a recently-modified file that also
+  // carries a headline symbol -- extremely common) therefore landed as two distinct Set keys and
+  // had its on-disk size counted twice, inflating the stat. Seeds a headline symbol whose
+  // normalized file_path points at the same real file buildProjectMap will also surface as a recent
+  // file, then asserts the accounting counts that file exactly once.
+  it('counts a file surfaced as both a recent file and a top symbol exactly once', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-mapdup-'))
+    // Large body so fullSourceBytes dwarfs the emitted map text: with the double-count bug the
+    // returned value is ~2x the file size (well above it); deduplicated it is size - emittedText
+    // (strictly below the file size). A tiny file would clamp both to the Math.max(1, ...) floor.
+    const bigBody = Array.from({ length: 400 }, (_, i) => `  const line${i} = ${i} * 2`).join('\n')
+    const source = `export function mapDupHeadlineFn5w8() {\n${bigBody}\n  return 1\n}\n`
+    const fileBytes = Buffer.byteLength(source, 'utf8')
+    fs.writeFileSync(path.join(root, 'a.ts'), source)
+
+    const filePath = `${normalizePath(root)}/a.ts`
+    const db = getDb(globalDbPath())
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, 'mapDupHeadlineFn5w8', 'function', 1, 1, source, '')
+
+    // cmdMap always runs with cwd === map.rootDir (buildProjectMap(process.cwd())), which is the
+    // condition under which the bug actually bites: the buggy dedup fed a RELATIVE recentFile
+    // ('a.ts') into the Set, and it only resolves to the real file (and thus gets double-counted
+    // alongside the absolute topSymbol path) when cwd is the project root. Reproduce that here.
+    const savedCwd = process.cwd()
+    try {
+      process.chdir(root)
+      const map = buildProjectMap(root)
+      // Precondition: the same file really is present in both lists, or this test proves nothing.
+      expect(map.topSymbols.some((s) => s.name === 'mapDupHeadlineFn5w8')).toBe(true)
+      expect(map.recentFiles).toContain('a.ts')
+
+      const text = formatProjectMap(map, map.compact)
+      const bytesSaved = mapLookupBytesSaved(map, text)
+      // Counted once: fullSourceBytes == fileBytes, so bytesSaved == fileBytes - emittedText < fileBytes.
+      // Double-counted: fullSourceBytes == 2*fileBytes, so bytesSaved > fileBytes.
+      expect(bytesSaved).toBeGreaterThan(0)
+      expect(bytesSaved).toBeLessThan(fileBytes)
+    } finally {
+      process.chdir(savedCwd)
+      fs.rmSync(root, { recursive: true, force: true })
     }
   })
 })
