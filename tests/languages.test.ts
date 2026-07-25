@@ -2135,6 +2135,29 @@ end
     expect(symbols.find((s) => s.name === 'inner')?.docstring).toBe('outer')
   })
 
+  it('does not let a same-line one-liner function desync subsequent parent attribution', () => {
+    // Regression test: a one-liner like `function foo() return 1 end` closes its own `end`
+    // on the same line. Unconditionally pushing a scope frame for it left that frame
+    // permanently unpopped (no later bare `end` line exists to close it), so every
+    // subsequent top-level function in the file was incorrectly parented under it.
+    const content = `function foo() return 1 end
+
+function bar() return 2 end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'foo')?.docstring).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBeFalsy()
+  })
+
+  it('handles a one-liner function with an inline if/elseif/end still balanced on one line', () => {
+    const content = `function foo() if x then return 1 elseif y then return 2 else return 3 end end
+
+function bar() return 2 end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBeFalsy()
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractLua('', 'empty.lua')
     expect(symbols).toHaveLength(0)
