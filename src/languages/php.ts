@@ -34,6 +34,11 @@ const PROP_RE = new RegExp(
   '\\$([A-Za-z_][A-Za-z0-9_]*)',
 )
 const USE_RE = /^use\s+([\w\\]+)(?:\s+as\s+\w+)?\s*;/
+// `use App\{Foo, Bar};` -- PHP 7's group-use declaration, idiomatic when importing several
+// classes from one namespace -- never matched USE_RE at all: the char class `[\w\\]+` stops at
+// `{`, leaving `{Foo, Bar}` where USE_RE's `(?:\s+as\s+\w+)?\s*;` alternative is anchored, so the
+// whole regex failed to match and the entire line was silently dropped (not merely truncated).
+const GROUP_USE_RE = /^use\s+(?:function\s+|const\s+)?([\w\\]+)\\\{([^}]*)\}/
 const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/
 
 export function extractPhp(
@@ -117,6 +122,19 @@ export function extractPhp(
     // import; every other classifier below already gates on contextStack for this same
     // top-level-vs-class-body distinction.
     if (contextStack.length === 0) {
+      const groupUseM = GROUP_USE_RE.exec(stripped)
+      if (groupUseM) {
+        const base = groupUseM[1] ?? ''
+        for (const part of (groupUseM[2] ?? '').split(',')) {
+          const trimmed = part.trim().replace(/^(?:function|const)\s+/, '')
+          if (trimmed === '') continue
+          // A rename (`Foo as Bar`) resolves to the original class name callers reference.
+          const name = (trimmed.split(/\s+as\s+/)[0] ?? '').trim()
+          if (name === '') continue
+          imports.push({ kind: 'import', target: `${base}\\${name}`, line: lineNum })
+        }
+        continue
+      }
       const useM = USE_RE.exec(stripped)
       if (useM) {
         imports.push({ kind: 'import', target: useM[1] ?? '', line: lineNum })
