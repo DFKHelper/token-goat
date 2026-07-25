@@ -1,8 +1,8 @@
 /**
  * Zig symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: `fn` (functions), `struct`, `pub fn` (public functions),
- * `const` and `var` (declarations).
+ * Extracts: `fn`/`pub fn` (functions), named container types bound to a `const`
+ * (`struct`/`enum`/`union`/`opaque`), and `const`/`var` declarations.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -20,8 +20,15 @@ interface ScopeFrame {
   bodyEntered: boolean
 }
 
-// `struct Foo`, `struct`, anonymous structs are named `struct_<number>` by convention but we skip them
-const STRUCT_RE = /^pub\s+struct\s+([A-Za-z_][A-Za-z0-9_]*)|^struct\s+([A-Za-z_][A-Za-z0-9_]*)/
+// Zig has no keyword-first `struct Foo` declaration -- that C-like form does not exist in the
+// language. A named container type is bound to a `const` (or `pub const`):
+//   `const Point = struct { ... };`, `const Color = enum(u8) { ... }`,
+//   `const Tag = union(enum) { ... }`, `const Handle = opaque {}`,
+// plus `packed`/`extern` struct and union variants. The old `^pub? struct Foo` regex matched a
+// syntax no real Zig file contains, so every actual container was misfiled as a plain `const`
+// AND -- because no scope frame was pushed for it -- every `pub fn` method nested in its body
+// was dropped from the index entirely. Group 1 is the bound name, group 2 the container keyword.
+const CONTAINER_RE = /^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:extern\s+|packed\s+)?(struct|enum|union|opaque)\b/
 
 // `fn foo()`, `fn foo() type`, `pub fn bar()`, `fn name() return_type`
 // Generics in Zig are complex; we keep it simple and just match the name.
@@ -70,14 +77,18 @@ export function extractZig(
     // of the file (same bug class fixed in scala.ts/dart.ts).
     let matched = false
 
-    // struct — top-level or nested
+    // container type (struct/enum/union/opaque) bound to a const — top-level or nested.
+    // Detected before the plain const/var branch below so `const Point = struct { ... }` is
+    // classified by its container kind (and pushes a scope frame for its methods) rather than
+    // being swallowed as an ordinary const.
     if (!isIndented || scopeStack.length > 0) {
-      const sm = STRUCT_RE.exec(stripped)
+      const sm = CONTAINER_RE.exec(stripped)
       if (sm) {
-        const sname = sm[1] ?? sm[2] ?? ''
+        const sname = sm[1] ?? ''
+        const skind = sm[2] ?? 'struct'
         if (sname) {
           const parent = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]!.name : undefined
-          symbols.push(makeLineSymbol(filePath, sname, 'struct', lineNum, stripped.slice(0, 200), parent))
+          symbols.push(makeLineSymbol(filePath, sname, skind, lineNum, stripped.slice(0, 200), parent))
           scopeStack.push({ name: sname, startDepth: braceDepth, bodyEntered: false })
           matched = true
         }

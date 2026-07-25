@@ -2530,16 +2530,36 @@ class Robot {
 // ---------------------------------------------------------------------------
 
 describe('zig adapter', () => {
-  it('extracts fn, struct, const, and var declarations', () => {
+  it('extracts fn, container types, const, and var declarations with real Zig syntax', () => {
+    // Regression: Zig has no keyword-first `struct Foo` form. Named containers are bound to a
+    // `const` (`const Point = struct { ... }`). The old extractor matched a fictional
+    // `pub struct Foo` grammar, so a real container was misfiled as a plain `const` and its
+    // methods dropped. These assertions use the syntax real .zig files actually contain.
     const content = `const std = @import("std");
 
-pub struct Point {
-  x: f32,
-  y: f32,
-}
+const Point = struct {
+    x: f32,
+    y: f32,
+
+    pub fn init(x: f32) Point {
+        return Point{ .x = x, .y = 0 };
+    }
+};
+
+const Color = enum(u8) {
+    red,
+    green,
+};
+
+const Payload = union(enum) {
+    int: i32,
+    float: f32,
+};
+
+const Handle = opaque {};
 
 pub fn add(a: i32, b: i32) i32 {
-  return a + b;
+    return a + b;
 }
 
 const PI = 3.14159;
@@ -2551,26 +2571,39 @@ var counter: i32 = 0;
     expect(names).toContain('add')
     expect(names).toContain('PI')
     expect(names).toContain('counter')
+    // Container types resolve with their own kind, not swallowed as a plain `const`.
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+    expect(symbols.find((s) => s.name === 'Payload')?.kind).toBe('union')
+    expect(symbols.find((s) => s.name === 'Handle')?.kind).toBe('opaque')
+    // A method nested in a container body is extracted and parented to the container -- the
+    // core symptom of the old bug (no frame pushed => every method dropped).
+    const init = symbols.find((s) => s.name === 'init')
+    expect(init?.kind).toBe('function')
+    expect(init?.docstring).toBe('Point')
+    // A genuine non-container const (an @import, a scalar) still resolves as a plain const.
+    expect(symbols.find((s) => s.name === 'std')?.kind).toBe('const')
+    expect(symbols.find((s) => s.name === 'PI')?.kind).toBe('const')
     expect(symbols.find((s) => s.name === 'add')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'counter')?.kind).toBe('var')
   })
 
-  it('detects every top-level struct and its methods, not just the first', () => {
-    // Regression test: an early `continue` after a struct match (and after a brace-bodied
+  it('detects every top-level container and its methods, not just the first', () => {
+    // Regression test: an early `continue` after a container match (and after a brace-bodied
     // `fn` match) skipped brace-counting on that same line, so `bodyEntered` never flipped
     // true, the frame never popped, and detection silently broke for anything declared after
     // it in the file (same bug class as the Scala/Dart fixes above).
-    const content = `pub struct Point {
-  x: f32,
+    const content = `const Point = struct {
+    x: f32,
 
-  pub fn magnitude(self: Point) f32 {
-    return self.x;
-  }
-}
+    pub fn magnitude(self: Point) f32 {
+        return self.x;
+    }
+};
 
-pub struct Vector {
-  y: f32,
-}
+const Vector = struct {
+    y: f32,
+};
 `
     const { symbols } = extractZig(content, 'shapes.zig')
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
