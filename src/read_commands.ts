@@ -3126,8 +3126,12 @@ export function extractImports(text: string, ext: string): string[] {
     // fallback branch below - "using" doesn't contain "use" as a substring (u-s-i vs u-s-e), so
     // without this branch every .cs file silently reported zero imports/deps despite csharp.ts's
     // language adapter (USING_RE) already extracting these same directives for the symbol index.
+    // The optional `global\s+` prefix covers C# 10's file-scoped implicit usings (`global using
+    // System;`), idiomatically consolidated into a single GlobalUsings.cs -- without it, a
+    // global-using file (a real, common file shape in any modern .NET project) silently
+    // reported zero imports, mirroring the same fix in csharp.ts's USING_RE.
     for (const line of lines) {
-      const m = /^\s*using\s+(?:static\s+)?([\w.]+)\s*;/.exec(line)
+      const m = /^\s*(?:global\s+)?using\s+(?:static\s+)?([\w.]+)\s*;/.exec(line)
       if (m) push(m[1])
     }
   } else if (e === '.php') {

@@ -22,7 +22,11 @@ interface ClassFrame {
   bodyEntered: boolean
 }
 
-const USING_RE = /^using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*;/
+// The optional `global\s+` prefix covers C# 10's file-scoped implicit usings
+// (`global using System;`), idiomatically consolidated into a single GlobalUsings.cs across a
+// modern .NET project -- without it, USING_RE's anchored `^using` never matched a line starting
+// with "global", so every global-using file silently reported zero imports.
+const USING_RE = /^(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*;/
 const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
 
 // C# idiomatically places attributes on the same line as the declaration they decorate
