@@ -518,12 +518,18 @@ describe('project', () => {
     // shape of result. Mocks runGit directly (via the top-level vi.mock) rather than spawning a
     // real git process to hit this state.
     it('falls through to findProject when git exits 0 but stdout is empty', () => {
+      // pyproject.toml lives in tmpDir while `project` points at a nested subdir, so
+      // base (subdir) !== the expected root (tmpDir) -- a regression that skips
+      // findProject and just returns canonicalize(base) would produce canonicalize(subdir)
+      // here, not canonicalize(tmpDir), so this actually exercises the fall-through.
       const pyproject = path.join(tmpDir, 'pyproject.toml');
       fs.writeFileSync(pyproject, '[project]\n');
+      const subdir = path.join(tmpDir, 'nested');
+      fs.mkdirSync(subdir);
       const runGitMock = runGit as unknown as ReturnType<typeof vi.fn>;
       runGitMock.mockReturnValueOnce({ exitCode: 0, stdout: '   \n', stderr: '' });
 
-      const root = resolveProjectRoot({ project: tmpDir });
+      const root = resolveProjectRoot({ project: subdir });
 
       expect(root).toBe(canonicalize(tmpDir));
     });
