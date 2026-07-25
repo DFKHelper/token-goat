@@ -2396,6 +2396,54 @@ void main() {
     expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
   })
 
+  it('extracts class-modifier declarations: abstract (long-standing) and Dart 3 base/sealed/interface/final/mixin class', () => {
+    const content = `abstract class Shape {
+  double area();
+}
+
+sealed class Node {}
+
+base class Widget {}
+
+interface class Service {}
+
+final class Sealed {}
+
+mixin class Helper {}
+
+abstract base class Combined {
+  void run();
+}
+`
+    const { symbols } = extractDart(content, 'shapes.dart')
+    const byName = (n: string) => symbols.find((s) => s.name === n)
+    // Regression: a bare `^class` anchor dropped every modifier-prefixed declaration, taking the
+    // type AND its members with it. `abstract class Shape` is the ubiquitous case.
+    expect(byName('Shape')?.kind).toBe('class')
+    expect(byName('area')?.kind).toBe('function')
+    expect(byName('area')?.docstring).toBe('Shape')
+    expect(byName('Node')?.kind).toBe('class')
+    expect(byName('Widget')?.kind).toBe('class')
+    expect(byName('Service')?.kind).toBe('class')
+    expect(byName('Sealed')?.kind).toBe('class')
+    // `mixin class Helper` is a class, not a mixin.
+    expect(byName('Helper')?.kind).toBe('class')
+    // Stacked modifiers (`abstract base class`) and the member under them.
+    expect(byName('Combined')?.kind).toBe('class')
+    expect(byName('run')?.docstring).toBe('Combined')
+  })
+
+  it('extracts a base mixin (Dart 3) distinctly from a mixin class', () => {
+    const content = `base mixin Loggable {
+  void log() {}
+}
+`
+    const { symbols } = extractDart(content, 'log.dart')
+    const loggable = symbols.find((s) => s.name === 'Loggable')
+    expect(loggable?.kind).toBe('mixin')
+    expect(symbols.find((s) => s.name === 'log')?.docstring).toBe('Loggable')
+  })
+
   it('extracts mixin and extension', () => {
     const content = `mixin Drawable {
   void draw() {}

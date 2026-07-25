@@ -20,14 +20,22 @@ interface TypeFrame {
   bodyEntered: boolean
 }
 
-// `class Foo`, `class Foo<T>`, `class Foo extends Base`, `class Foo implements Interface`
-const CLASS_RE = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/
+// `class Foo`, `class Foo<T>`, `class Foo extends Base`, `class Foo implements Interface`.
+// A class declaration can carry leading modifiers: the long-standing `abstract`, and Dart 3's
+// `base`/`interface`/`final`/`sealed` class modifiers, plus `mixin class` (a class usable as a
+// mixin), in any legal combination (`abstract base class`, `abstract interface class`, ...).
+// Anchoring on a bare `^class` dropped every one of these -- most importantly the ubiquitous
+// `abstract class Foo` -- from the index entirely (the type AND every member nested in it),
+// the same modifier-alternation gap already fixed for the C# and PHP extractors. `mixin` is
+// included here so `mixin class Foo` resolves as a class; a plain `mixin Foo` has no `class`
+// keyword after it, so it falls through to MIXIN_RE below instead.
+const CLASS_RE = /^(?:(?:abstract|base|interface|final|sealed|mixin)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `enum Color { red, green, blue }`
+// `enum Color { red, green, blue }` (Dart enums take no class modifiers, so no prefix here).
 const ENUM_RE = /^enum\s+([A-Za-z_][A-Za-z0-9_]*)/
 
-// `mixin MyMixin`, `mixin MyMixin on BaseClass`
-const MIXIN_RE = /^mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
+// `mixin MyMixin`, `mixin MyMixin on BaseClass`, and Dart 3's `base mixin MyMixin`.
+const MIXIN_RE = /^(?:base\s+)?mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 // `extension MyExtension on Type`, `extension on Type` (unnamed extensions)
 const EXTENSION_RE = /^extension\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?on\s+/
