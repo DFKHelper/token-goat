@@ -37,6 +37,7 @@ import { extractPhp } from './languages/php.js'
 import { extractHtml } from './languages/html.js'
 import { extractLiquid } from './languages/liquid.js'
 import { extractKotlin } from './languages/kotlin.js'
+import { extractSwift } from './languages/swift.js'
 import { extractGraphql } from './languages/graphql_idx.js'
 import { extractSql } from './languages/sql_idx.js'
 import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
@@ -1849,6 +1850,7 @@ const NO_TREE_SITTER_EXTRACTORS: Partial<Record<Language, SymbolExtractor>> = {
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
   kotlin: (content, filePath) => extractKotlin(content, filePath).symbols,
+  swift: (content, filePath) => extractSwift(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,
   sql: extractSql,
   ini: extractIni,

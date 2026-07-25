@@ -8,6 +8,7 @@ import { extractPhp } from '../src/languages/php.js'
 import { extractHtml } from '../src/languages/html.js'
 import { extractLiquid } from '../src/languages/liquid.js'
 import { extractKotlin } from '../src/languages/kotlin.js'
+import { extractSwift } from '../src/languages/swift.js'
 import { extractGraphql } from '../src/languages/graphql_idx.js'
 import { stripHashComments } from '../src/languages/common.js'
 import { extractSql } from '../src/languages/sql_idx.js'
@@ -1828,6 +1829,176 @@ class Utils {
     expect(names).not.toContain('Flow')
     expect(names).not.toContain('MutableList')
     expect(symbols.find((s) => s.name === 'swap')?.docstring).toBe('Utils')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Swift
+// ---------------------------------------------------------------------------
+
+describe('swift adapter', () => {
+  it('extracts a top-level function, a class with a method, and an import', () => {
+    const content = `import Foundation
+
+class UserService {
+    func getUser(id: Int) -> String {
+        return ""
+    }
+}
+
+func topLevel() {}
+`
+    const { symbols, imports } = extractSwift(content, 'UserService.swift')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('UserService')
+    expect(names).toContain('getUser')
+    expect(names).toContain('topLevel')
+    expect(symbols.find((s) => s.name === 'UserService')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'getUser')?.kind).toBe('method')
+    expect(symbols.find((s) => s.name === 'topLevel')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'getUser')?.docstring).toBe('UserService')
+    expect(imports.some((i) => i.target === 'Foundation')).toBe(true)
+  })
+
+  it('extracts struct, enum, and protocol declarations with distinct kinds', () => {
+    const content = `struct Point {
+    var x: Int
+    var y: Int
+}
+
+enum Direction {
+    case north
+    case south
+}
+
+protocol Greetable {
+    func greet() -> String
+}
+`
+    const { symbols } = extractSwift(content, 'Shapes.swift')
+    expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
+    expect(symbols.find((s) => s.name === 'Direction')?.kind).toBe('enum')
+    expect(symbols.find((s) => s.name === 'Greetable')?.kind).toBe('protocol')
+    // Point's stored properties are indexed as members ('var' kind), parented to Point.
+    const x = symbols.find((s) => s.name === 'x')
+    expect(x?.kind).toBe('var')
+    expect(x?.docstring).toBe('Point')
+    // A protocol requirement (no body) is still indexed as a method of the protocol.
+    const greet = symbols.find((s) => s.name === 'greet')
+    expect(greet?.kind).toBe('method')
+    expect(greet?.docstring).toBe('Greetable')
+  })
+
+  it('extracts an extension adding a method to an existing type, and a computed property', () => {
+    const content = `struct Circle {
+    var radius: Double
+
+    var area: Double {
+        return radius * radius * 3.14159
+    }
+}
+
+extension Circle {
+    func describe() -> String {
+        return "circle"
+    }
+}
+`
+    const { symbols } = extractSwift(content, 'Circle.swift')
+    expect(symbols.find((s) => s.name === 'Circle' && s.kind === 'struct')).toBeDefined()
+    expect(symbols.find((s) => s.name === 'Circle' && s.kind === 'extension')).toBeDefined()
+    const area = symbols.find((s) => s.name === 'area')
+    expect(area?.kind).toBe('var')
+    expect(area?.docstring).toBe('Circle')
+    const describe = symbols.find((s) => s.name === 'describe')
+    expect(describe?.kind).toBe('method')
+    expect(describe?.docstring).toBe('Circle')
+  })
+
+  it('extracts init/deinit and a generic function (edge case: generics come after the function name in Swift, unlike Kotlin)', () => {
+    const content = `class Cache {
+    init() {
+    }
+
+    deinit {
+    }
+}
+
+func firstElement<T>(_ items: [T]) -> T? {
+    return items.first
+}
+`
+    const { symbols } = extractSwift(content, 'Cache.swift')
+    const init = symbols.find((s) => s.name === 'init')
+    expect(init?.kind).toBe('method')
+    expect(init?.docstring).toBe('Cache')
+    const deinitSym = symbols.find((s) => s.name === 'deinit')
+    expect(deinitSym?.kind).toBe('method')
+    expect(deinitSym?.docstring).toBe('Cache')
+    const generic = symbols.find((s) => s.name === 'firstElement')
+    expect(generic?.kind).toBe('function')
+  })
+
+  it('extracts a class, method, and top-level function that carry a same-line attribute (regression pattern shared with kotlin.ts/csharp.ts: attributes like @objc/@available sit directly before the declaration keyword with no room in the modifier alternation for them)', () => {
+    const content = `@available(iOS 13, *) public class Widget {
+    @objc func render() {
+    }
+}
+
+@discardableResult func compute() -> Int {
+    return 1
+}
+`
+    const { symbols } = extractSwift(content, 'Widget.swift')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Widget')
+    expect(names).toContain('render')
+    expect(names).toContain('compute')
+    expect(symbols.find((s) => s.name === 'render')?.docstring).toBe('Widget')
+  })
+
+  it('does not index a function-local type as a member of the enclosing type', () => {
+    const content = `class Outer {
+    func makeThing() -> Int {
+        struct LocalHelper {
+            func help() -> Int { return 1 }
+        }
+        return 1
+    }
+}
+`
+    const { symbols } = extractSwift(content, 'Outer.swift')
+    expect(symbols.find((s) => s.name === 'LocalHelper')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'help')).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'makeThing')).toBeDefined()
+  })
+
+  it('does not desync brace depth across a multi-line triple-quoted string containing braces', () => {
+    // Regression class shared with kotlin.ts's raw-string handling: an unmasked """..."""
+    // span containing a literal `{`/`}` would desync braceDepth and mis-parent (or drop) every
+    // symbol declared after it.
+    const content = `class Formatter {
+    func template() -> String {
+        return """
+        {
+          "key": "value"
+        }
+        """
+    }
+    func after() {
+    }
+}
+`
+    const { symbols } = extractSwift(content, 'Formatter.swift')
+    const names = symbols.map((s) => s.name)
+    expect(names).toEqual(['Formatter', 'template', 'after'])
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractSwift('', 'empty.swift')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
   })
 })
 

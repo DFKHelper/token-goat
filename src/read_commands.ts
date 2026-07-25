@@ -1041,8 +1041,8 @@ export interface SkeletonOptions {
 
 /**
  * "No indexed symbols" is ambiguous on its own: a genuinely empty file, an unrecognized
- * extension, and a recognized-but-unsupported language (Swift, Scala, Lua, Elixir, Dart,
- * Zig, R -- see {@link unsupportedLanguageName}) all currently produce zero symbol rows and
+ * extension, and a recognized-but-unsupported language (Scala, Lua, Elixir, Dart, Zig, R --
+ * see {@link unsupportedLanguageName}) all currently produce zero symbol rows and
  * look identical from the CLI's perspective. Callers get a clearer diagnostic distinguishing
  * "token-goat can't parse this language at all yet" from a plain empty-index result.
  */
