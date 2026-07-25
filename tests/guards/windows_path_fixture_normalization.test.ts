@@ -8,9 +8,14 @@
  * normalizePath expands that to its long form while a hand-rolled version does not. The
  * fixture then never matches what the app's own normalizePath-routed code produces at
  * runtime, so the test fails on CI while passing on a dev machine whose %TEMP% happens not
- * to be short-form. This exact anti-pattern has already caused two separate incidents
- * (commit 442f42d3, and the cmdHot --project regression test) -- this guard makes a third
- * one fail loudly and locally instead of silently only on CI.
+ * to be short-form. This exact anti-pattern has already caused three separate incidents
+ * (commit 442f42d3, the cmdHot --project regression test, and cli_waste.test.ts's
+ * no-transcript-found --json test in commit f592ea05) -- the third one slipped past this
+ * guard's original detection, which additionally required a dedicated `[A-Za-z]`
+ * drive-letter capture-group regex to be present; a blanket whole-string `.toLowerCase()`
+ * folds the drive letter too without needing one, so that variant went undetected. The
+ * drive-letter-regex requirement is dropped below so this guard makes a fourth one fail
+ * loudly and locally instead of silently only on CI.
  */
 
 import * as fs from 'node:fs'
@@ -37,16 +42,13 @@ function walkTestFiles(dir: string, out: string[] = []): string[] {
 
 // The literal regex-literal token a hand-rolled backslash-to-forward-slash conversion uses.
 const BACKSLASH_TO_SLASH_TOKEN = '/\\\\/g'
-// A hand-rolled drive-letter lowercase fold always names a single-letter capture group this way.
-const DRIVE_LETTER_CAPTURE_TOKEN = '[A-Za-z]'
 
 describe('no hand-rolled Windows path normalization in test fixtures', () => {
-  it('every test file that flips backslashes to slashes for a path fixture and also hand-folds a drive letter imports normalizePath from src/paths.ts instead of reimplementing it', () => {
+  it('every test file that flips backslashes to slashes for a path fixture and also lowercases it imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
     for (const file of walkTestFiles(TESTS_DIR)) {
       const src = fs.readFileSync(file, 'utf8')
       if (!src.includes(BACKSLASH_TO_SLASH_TOKEN)) continue
-      if (!src.includes(DRIVE_LETTER_CAPTURE_TOKEN)) continue
       if (!src.toLowerCase().includes('tolowercase()')) continue
       const importsNormalizePath = /from\s+['"](\.\.\/)+src\/paths\.js['"]/.test(src) && src.includes('normalizePath')
       if (importsNormalizePath) continue
