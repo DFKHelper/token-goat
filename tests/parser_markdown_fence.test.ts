@@ -85,4 +85,23 @@ describe('markdown symbol extraction ignores fenced code blocks', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('does not let a same-char fence-looking line with a trailing info string close an open fence', async () => {
+    // Regression coverage for the third CommonMark condition (the other two are covered by the
+    // two tests above): a closing run must have no trailing info string. A ```json line inside
+    // an already-open ``` fence must stay fenced content, not be read as the real closer.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-md-fence-'))
+    const file = path.join(dir, 'doc.md')
+    const md = ['# Real', '', '```', '```json', '# not a heading', '```', '', '## Tail'].join('\n')
+    fs.writeFileSync(file, md)
+    try {
+      const result = await parseFile(file)
+      const headings = result.symbols.filter((s) => s.kind === 'heading').map((s) => s.name)
+      expect(headings).toContain('Real')
+      expect(headings).toContain('Tail')
+      expect(headings).not.toContain('not a heading')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
