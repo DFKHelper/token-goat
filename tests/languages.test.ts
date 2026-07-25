@@ -2144,6 +2144,40 @@ case class User(name: String, age: Int)
     expect(symbols.find((s) => s.name === 'Comparable')?.kind).toBe('trait')
   })
 
+  it('extracts a Scala 3 enum type and its nested methods', () => {
+    // Regression: `enum` is a Scala 3 (2021) type keyword absent from CLASS_RE/OBJECT_RE/
+    // TRAIT_RE, so the whole `enum Color { ... }` block AND its `def isRed` were dropped
+    // from the index -- the missing-type-keyword gap class already closed for Swift `actor`
+    // and Dart `mixin class`.
+    const content = `enum Color {
+  case Red, Green, Blue
+  def isRed: Boolean = this == Red
+}
+
+enum Option[+T](val tag: Int) {
+  case Some(x: T) extends Option[T](1)
+  case None extends Option[Nothing](0)
+}
+
+class Sibling {
+  def hi(): Unit = {}
+}
+`
+    const { symbols } = extractScala(content, 'colors.scala')
+    // The enum types themselves resolve with kind 'enum'.
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+    // A parameterized, generic enum header (`enum Option[+T](val tag: Int)`) still resolves.
+    expect(symbols.find((s) => s.name === 'Option')?.kind).toBe('enum')
+    // A method nested one brace level inside the enum body is extracted and parented to it.
+    const isRed = symbols.find((s) => s.name === 'isRed')
+    expect(isRed?.kind).toBe('function')
+    expect(isRed?.docstring).toBe('Color')
+    // Frame bookkeeping stays intact: a sibling declaration after the enum bodies close is
+    // still recognized as top-level (a dropped closing brace would corrupt the gate).
+    expect(symbols.find((s) => s.name === 'Sibling')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'hi')?.docstring).toBe('Sibling')
+  })
+
   it('does not index local functions as top-level', () => {
     const content = `def outer() {
   def inner() = 1

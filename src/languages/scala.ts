@@ -1,7 +1,7 @@
 /**
  * Scala symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: classes, objects, traits, case classes, functions (def),
+ * Extracts: classes, objects, traits, case classes, Scala 3 enums, functions (def),
  * fields (val/var), and `import` directives.
  */
 
@@ -37,6 +37,14 @@ const OBJECT_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|
 
 // `trait Viewable`, `trait Comparable[T]`
 const TRAIT_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|:|$)/
+
+// Scala 3 (2021) `enum` type declaration: `enum Color`, `enum Option[+T]`,
+// `enum Color(val rgb: Int)`. A brand-new type keyword absent from CLASS_RE/OBJECT_RE/
+// TRAIT_RE (none of which contains the literal `enum`), so an `enum Color { ... }` block AND
+// every `def` nested in its body were dropped from the index entirely -- the same
+// missing-type-keyword gap class already closed for Swift `actor` and Dart `mixin class`.
+// The only legal leading modifiers on an enum are access modifiers (`private`/`protected`).
+const ENUM_RE = /^\s*(?:private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
 
 // Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form),
 // can also be infix operators like `def +(other: Int)`. Generics come between name and params.
@@ -144,6 +152,15 @@ export function extractScala(
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
+      matched = true
+    }
+
+    const enm = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? ENUM_RE.exec(stripped) : null
+    if (enm) {
+      const enname = enm[1] ?? ''
+      const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
+      symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent))
+      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false })
       matched = true
     }
 
