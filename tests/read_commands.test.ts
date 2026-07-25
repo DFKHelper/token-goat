@@ -2780,6 +2780,26 @@ describe('read_commands', () => {
       ])
     })
 
+    it('expands a Rust grouped `use base::{a, b}` into one target per selector, including nested groups, `self`, and renames (regression: `[^;{]+` stopped at `{`, capturing only the truncated prefix)', () => {
+      const src = [
+        'use std::{fs, io};',
+        'use std::io::{self, Read, Write as W};',
+        'use std::{fs::File, io::{self, Read}};',
+      ].join('\n')
+      const targets = extractImports(src, '.rs')
+      expect(targets).toContain('std::fs')
+      expect(targets).toContain('std::io')
+      // `self` inside `io::{self, Read}` resolves to the group's own module (std::io), not a
+      // literal "std::io::self".
+      expect(targets).not.toContain('std::io::self')
+      expect(targets).toContain('std::io::Read')
+      // A rename (`Write as W`) resolves to the original name callers reference.
+      expect(targets).toContain('std::io::Write')
+      expect(targets).not.toContain('std::io::W')
+      // Nested group: std::{fs::File, io::{self, Read}}
+      expect(targets).toContain('std::fs::File')
+    })
+
     it('extracts Rust restricted-visibility re-exports (regression: bare `pub\\s+` missed `pub(crate) use`/`pub(super) use`/`pub(in ...) use`)', () => {
       const src = [
         'pub(crate) use foo::Bar;',
