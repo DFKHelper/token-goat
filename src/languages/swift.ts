@@ -42,11 +42,13 @@ function stripLeadingAttributes(s: string): string {
 }
 
 // Shared modifier alternation for func/init/subscript/property declarations. `(?:set)`-suffixed
-// access modifiers (`private(set) var x`) are real Swift syntax restricting the setter's
-// visibility independently of the getter's, so `(?:\(set\))?` is folded into the access-level
-// alternative rather than left to desync the match entirely.
+// access modifiers (`private(set) var x`, `package(set) var x`) are real Swift syntax restricting
+// the setter's visibility independently of the getter's, so `(?:\(set\))?` is folded into the
+// access-level alternative rather than left to desync the match entirely. `package` is Swift
+// 5.9's module-group access level, a peer of public/internal that applies to every declaration
+// kind -- omitting it dropped every `package`-scoped member from the index.
 const MODIFIER_ALT =
-  '(?:(?:public|private|fileprivate|internal|open)(?:\\(set\\))?|static|final|class|override|' +
+  '(?:(?:public|private|fileprivate|internal|open|package)(?:\\(set\\))?|static|final|class|override|' +
   'required|convenience|mutating|nonmutating|dynamic|nonisolated|async|lazy|weak|unowned|indirect)'
 
 // Function name is either a plain identifier or an operator-overload symbol (`func ==(...)`,
@@ -88,7 +90,7 @@ const PROPERTY_RE = new RegExp(
 // member nested in its body from the index entirely. The name may be dotted (`extension
 // Array.Index`, `extension Foo.Bar`) for nested-type extension targets.
 const TYPE_HEADER_RE = new RegExp(
-  '^(?:(?:public|private|fileprivate|internal|open|final|indirect)\\s+)*' +
+  '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect)\\s+)*' +
   '(class|struct|enum|protocol|extension|actor)\\s+' +
   '([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)',
 )
