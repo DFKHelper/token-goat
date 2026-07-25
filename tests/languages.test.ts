@@ -1928,6 +1928,37 @@ protocol Greetable {
     expect(greet?.docstring).toBe('Greetable')
   })
 
+  it('extracts an actor (Swift 5.5 concurrency reference type) and its members', () => {
+    const content = `import Foundation
+
+public actor BankAccount {
+    var balance: Int = 0
+
+    func deposit(amount: Int) {
+        balance += amount
+    }
+}
+
+final actor Counter {
+    func tick() {}
+}
+`
+    const { symbols } = extractSwift(content, 'BankAccount.swift')
+    const account = symbols.find((s) => s.name === 'BankAccount')
+    expect(account?.kind).toBe('actor')
+    // The actor's members must be parented to it, not dropped (regression: a missing 'actor'
+    // keyword in TYPE_HEADER_RE dropped the actor's frame, so every member vanished too).
+    const balance = symbols.find((s) => s.name === 'balance')
+    expect(balance?.kind).toBe('var')
+    expect(balance?.docstring).toBe('BankAccount')
+    const deposit = symbols.find((s) => s.name === 'deposit')
+    expect(deposit?.kind).toBe('method')
+    expect(deposit?.docstring).toBe('BankAccount')
+    // A modifier-prefixed actor (`final actor`) is recognized too.
+    expect(symbols.find((s) => s.name === 'Counter')?.kind).toBe('actor')
+    expect(symbols.find((s) => s.name === 'tick')?.docstring).toBe('Counter')
+  })
+
   it('extracts an extension adding a method to an existing type, and a computed property', () => {
     const content = `struct Circle {
     var radius: Double

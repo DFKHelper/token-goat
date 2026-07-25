@@ -1,7 +1,7 @@
 /**
  * Swift symbol extractor — regex-based (no tree-sitter grammar needed).
  *
- * Extracts: classes, structs, enums, protocols, extensions, top-level
+ * Extracts: classes, structs, enums, protocols, extensions, actors, top-level
  * functions, methods (including init/deinit/subscript), properties, and
  * `import` directives.
  */
@@ -80,14 +80,16 @@ const PROPERTY_RE = new RegExp(
 )
 
 // The keyword itself is captured (group 1) so the caller can map it to the right symbol kind --
-// class/struct/enum/protocol/extension all share this one header shape, differing only in
+// class/struct/enum/protocol/extension/actor all share this one header shape, differing only in
 // keyword and in what an "extension" conceptually is (adds members to an existing type rather
 // than declaring a new one, mirroring how kotlin.ts's companion-object handling folds members
-// into their enclosing frame's name). The name may be dotted (`extension Array.Index`,
-// `extension Foo.Bar`) for nested-type extension targets.
+// into their enclosing frame's name). `actor` is Swift 5.5's concurrency-safe reference type,
+// declared with a `{ }` body exactly like a class; omitting it dropped the actor AND every
+// member nested in its body from the index entirely. The name may be dotted (`extension
+// Array.Index`, `extension Foo.Bar`) for nested-type extension targets.
 const TYPE_HEADER_RE = new RegExp(
   '^(?:(?:public|private|fileprivate|internal|open|final|indirect)\\s+)*' +
-  '(class|struct|enum|protocol|extension)\\s+' +
+  '(class|struct|enum|protocol|extension|actor)\\s+' +
   '([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)',
 )
 
@@ -160,6 +162,7 @@ export function extractSwift(
         : keyword === 'enum' ? 'enum'
         : keyword === 'protocol' ? 'protocol'
         : keyword === 'extension' ? 'extension'
+        : keyword === 'actor' ? 'actor'
         : 'class'
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, kind, lineNum, stripped.slice(0, 200), parent))
