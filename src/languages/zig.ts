@@ -63,6 +63,13 @@ export function extractZig(
 
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
+    // `matched` tracks classification without an early `continue`, so a same-line opening
+    // `{` (e.g. `struct Foo {`, `fn foo() {`) still falls through to the brace-counting block
+    // below and can flip `bodyEntered` -- an early `continue` here would silently drop that
+    // brace, leave `bodyEntered` false forever, and corrupt scope-frame popping for the rest
+    // of the file (same bug class fixed in scala.ts/dart.ts).
+    let matched = false
+
     // struct — top-level or nested
     if (!isIndented || scopeStack.length > 0) {
       const sm = STRUCT_RE.exec(stripped)
@@ -72,42 +79,43 @@ export function extractZig(
           const parent = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]!.name : undefined
           symbols.push(makeLineSymbol(filePath, sname, 'struct', lineNum, stripped.slice(0, 200), parent))
           scopeStack.push({ name: sname, startDepth: braceDepth, bodyEntered: false })
-          continue
+          matched = true
         }
       }
     }
 
     // fn / pub fn — functions
-    if (!isIndented) {
+    if (!matched && !isIndented) {
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         const fname = fm[2] ?? ''
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
-        continue
+        matched = true
       }
-    } else if (scopeStack.length > 0) {
+    } else if (!matched && scopeStack.length > 0) {
       // Method-like functions inside a struct
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         const fname = fm[2] ?? ''
         const parent = scopeStack[scopeStack.length - 1]!.name
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent))
-        continue
+        matched = true
       }
     }
 
     // const/var declarations — top-level only
-    if (!isIndented) {
+    if (!matched && !isIndented) {
       const cm = CONST_RE.exec(stripped)
       if (cm) {
         symbols.push(makeLineSymbol(filePath, cm[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
-        continue
+        matched = true
       }
 
-      const vm = VAR_RE.exec(stripped)
-      if (vm) {
-        symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'var', lineNum, stripped.slice(0, 200)))
-        continue
+      if (!matched) {
+        const vm = VAR_RE.exec(stripped)
+        if (vm) {
+          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'var', lineNum, stripped.slice(0, 200)))
+        }
       }
     }
 

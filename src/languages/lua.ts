@@ -16,6 +16,19 @@ import {
 interface FunctionFrame {
   name: string
   endKeywordNeeded: boolean
+  // true for a non-function control-flow frame (if/for/while/do) pushed only to keep the
+  // stack balanced against its own `end` -- it must never be reported as a parent, so
+  // parent lookup walks past these to the nearest real function frame.
+  isBlock: boolean
+}
+
+/** Nearest enclosing real function name, skipping past control-flow block frames. */
+function nearestFunctionName(stack: readonly FunctionFrame[]): string | undefined {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const frame = stack[i]!
+    if (!frame.isBlock) return frame.name
+  }
+  return undefined
 }
 
 // `function foo(...)`, `function M.foo(...)`, `function M.N:foo(...)`
@@ -27,6 +40,12 @@ const LOCAL_FUNC_RE = /^local\s+function\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 // `local x`, `local x, y, z = ...` — extract only the first variable name.
 const LOCAL_VAR_RE = /^local\s+([A-Za-z_][A-Za-z0-9_]*)/
+
+// Non-function control-flow blocks that also close with `end` (`if ... then`, `for ... do`,
+// `while ... do`, bare `do ... end`). elseif/else don't open their own block (they share the
+// enclosing if's `end`) and so are deliberately excluded by the leading `^if\s`/`^for\s`/etc
+// anchors. `repeat ... until` closes with `until`, not `end`, so it needs no frame at all.
+const BLOCK_OPEN_RE = /^(?:if\s.*\bthen|for\s.*\bdo|while\s.*\bdo|do)\s*$/
 
 export function extractLua(
   content: string,
@@ -58,15 +77,13 @@ export function extractLua(
       const fname = fm[1] ?? ''
       // Extract just the final name (after any dots) for symbol indexing.
       const baseName = fname.split('.').pop() ?? fname
-      if (funcStack.length > 0) {
-        // Nested function (inside another function).
-        const parent = funcStack[funcStack.length - 1]!.name
+      const parent = nearestFunctionName(funcStack)
+      if (parent !== undefined) {
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200), parent))
       } else {
-        // Top-level function.
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200)))
       }
-      funcStack.push({ name: baseName, endKeywordNeeded: true })
+      funcStack.push({ name: baseName, endKeywordNeeded: true, isBlock: false })
       continue
     }
 
@@ -74,15 +91,13 @@ export function extractLua(
     const lfm = LOCAL_FUNC_RE.exec(stripped)
     if (lfm) {
       const fname = lfm[1] ?? ''
-      if (funcStack.length > 0) {
-        // Local function inside another function — treat as nested.
-        const parent = funcStack[funcStack.length - 1]!.name
+      const parent = nearestFunctionName(funcStack)
+      if (parent !== undefined) {
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent))
       } else {
-        // Top-level local function.
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
       }
-      funcStack.push({ name: fname, endKeywordNeeded: true })
+      funcStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
       continue
     }
 
@@ -94,7 +109,17 @@ export function extractLua(
       }
     }
 
-    // Pop finished function frames when we see `end` keyword.
+    // Non-function block openers (`if ... then`, `for ... do`, `while ... do`, bare `do`)
+    // also close with `end` -- push a placeholder frame so that `end` pops the block instead
+    // of prematurely popping the enclosing function's frame (which would corrupt parent
+    // attribution for any function declared after the block, or any function genuinely
+    // nested inside it).
+    if (BLOCK_OPEN_RE.test(stripped)) {
+      funcStack.push({ name: '', endKeywordNeeded: true, isBlock: true })
+      continue
+    }
+
+    // Pop finished function/block frames when we see `end` keyword.
     if (stripped === 'end' || /^end\s/.test(stripped) || /^end$/.test(stripped)) {
       if (funcStack.length > 0) {
         funcStack.pop()

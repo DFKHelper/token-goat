@@ -78,6 +78,13 @@ export function extractDart(
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
     const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1
 
+    // `matched` tracks classification without an early `continue`, so a same-line opening
+    // `{` (e.g. `class Foo {`) still falls through to the brace-counting block below and can
+    // flip `bodyEntered` -- an early `continue` here would silently drop that brace, leave
+    // `bodyEntered` false forever, and corrupt `typeDetectionGateOk` for every subsequent
+    // top-level declaration in the file (same bug class fixed in scala.ts).
+    let matched = false
+
     if (typeDetectionGateOk && (!isIndented || typeStack.length > 0)) {
       const cm = CLASS_RE.exec(stripped)
       if (cm) {
@@ -85,40 +92,40 @@ export function extractDart(
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
         typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
-        continue
+        matched = true
       }
 
-      const em = ENUM_RE.exec(stripped)
+      const em = !matched ? ENUM_RE.exec(stripped) : null
       if (em) {
         const ename = em[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, ename, 'enum', lineNum, stripped.slice(0, 200), parent))
         typeStack.push({ name: ename, startDepth: braceDepth, bodyEntered: false })
-        continue
+        matched = true
       }
 
-      const mm = MIXIN_RE.exec(stripped)
+      const mm = !matched ? MIXIN_RE.exec(stripped) : null
       if (mm) {
         const mname = mm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, mname, 'mixin', lineNum, stripped.slice(0, 200), parent))
         typeStack.push({ name: mname, startDepth: braceDepth, bodyEntered: false })
-        continue
+        matched = true
       }
 
-      const extm = EXTENSION_RE.exec(stripped)
+      const extm = !matched ? EXTENSION_RE.exec(stripped) : null
       if (extm) {
         const extname = extm[1] ?? 'extension'
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, extname, 'extension', lineNum, stripped.slice(0, 200), parent))
         typeStack.push({ name: extname, startDepth: braceDepth, bodyEntered: false })
-        continue
+        matched = true
       }
     }
 
     // Methods/functions nested inside a type, or top-level functions
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
-    if (frame !== null) {
+    if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
       if (depthInType === 1) {
         const fm = FUNC_RE.exec(stripped)
@@ -127,14 +134,13 @@ export function extractDart(
           // Normalize `operator +` to `+`
           fname = fname.replace(/^operator\s+/, '')
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name))
-          continue
         }
 
         // Properties/fields in a class (var/final/etc)
         // For now, we skip property extraction to keep it simple
         // (properties would need complex parsing of multiple declarations per line)
       }
-    } else if (!isIndented) {
+    } else if (!matched && frame === null && !isIndented) {
       // Top-level function
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
