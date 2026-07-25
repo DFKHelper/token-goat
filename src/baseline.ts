@@ -22,6 +22,7 @@ import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
+import { normalizePath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
@@ -258,6 +259,37 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
 
 
   return lines.join(String.fromCharCode(10))
+}
+
+/**
+ * Approximate the bytes a `map` call saves versus reading its surfaced files individually, for the
+ * `map_lookup` stat. "Full source" is the on-disk size of every file the map surfaces (recentFiles
+ * + topSymbols' files), deduplicated, minus the map text actually emitted.
+ *
+ * The dedup is why both path lists must be canonicalized through {@link normalizePath} first:
+ * recentFiles are RELATIVE to `map.rootDir` (see {@link buildProjectMap}) while topSymbols'
+ * filePaths are ABSOLUTE and stored via normalizePath (forward-slash, 8.3-expanded, lower-cased
+ * drive on Windows). Without canonicalizing, a file present in BOTH lists lands as two distinct
+ * Set keys -- e.g. `'src/cli.ts'` and `'c:/proj/src/cli.ts'`, or (on Windows) a native
+ * back-slash resolve vs the forward-slash normalized form -- that never dedup, so its size is
+ * counted twice and the stat is inflated. Shared by cmdMap (cli.ts) and the MCP `map` tool
+ * (mcp_server.ts) so the two accountings cannot drift.
+ */
+export function mapLookupBytesSaved(map: ProjectMap, emittedText: string): number {
+  const referencedFiles = new Set<string>([
+    ...map.recentFiles.map((f) => normalizePath(path.resolve(map.rootDir, f))),
+    ...map.topSymbols.map((s) => normalizePath(s.filePath)),
+  ])
+  let fullSourceBytes = 0
+  for (const fp of referencedFiles) {
+    try {
+      fullSourceBytes += fs.statSync(fp).size
+    } catch {
+      // Stale index entry pointing at a deleted/moved file -- contributes nothing.
+    }
+  }
+  const emittedBytes = Buffer.byteLength(emittedText, 'utf8')
+  return Math.max(1, fullSourceBytes - emittedBytes)
 }
 
 /** A bullet line that isn't itself a heading, list continuation, or blank -- a lightweight, single-line markdown bullet. */
