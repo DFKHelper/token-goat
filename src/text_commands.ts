@@ -960,7 +960,12 @@ function parseRequirementsTxt(content: string): DepEntry[] {
     }
     const line = raw.split('#')[0]?.trim() ?? ''
     if (!line || line.startsWith('-')) continue
-    const m = /^([A-Za-z0-9_.-]+)\s*(?:[>=!<]+\s*([^\s,;]+))?/.exec(line)
+    // The optional `[extras]` (e.g. `requests[security]`, `celery[redis]`, `uvicorn[standard]`)
+    // sits between the name and the version operator, so it must be consumed explicitly or the
+    // version-capture group never reaches the `==`/`>=` that follows -- dropping the version for
+    // every extras-qualified requirement. The operator class must also include `~` for PEP 440's
+    // `~=` compatible-release operator, another idiomatic form whose version was silently lost.
+    const m = /^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?\s*(?:[>=!~<]+\s*([^\s,;]+))?/.exec(line)
     if (m !== null) {
       deps.push({ name: m[1] ?? '', version: m[2] ?? '', kind: 'unknown' })
     }

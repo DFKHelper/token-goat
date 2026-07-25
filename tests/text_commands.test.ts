@@ -705,6 +705,22 @@ describe('lockdeps command', () => {
     expect(r.stdout).toContain('numpy')
   })
 
+  it('captures the version for extras-qualified and ~= requirements (regression: `[extras]` sat between the name and the version operator, and `~` was absent from the operator class, so both `requests[security]==2.28.0` and `foo~=1.4.2` reported an empty version)', () => {
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(
+      req,
+      'requests[security]==2.28.0\ncelery[redis]>=5.0\nfoo~=1.4.2\nuvicorn[standard]~=0.20\n',
+      'utf8',
+    )
+    const r = run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string; version: string }> }
+    expect(parsed.deps).toContainEqual({ name: 'requests', version: '2.28.0', kind: 'unknown' })
+    expect(parsed.deps).toContainEqual({ name: 'celery', version: '5.0', kind: 'unknown' })
+    expect(parsed.deps).toContainEqual({ name: 'foo', version: '1.4.2', kind: 'unknown' })
+    expect(parsed.deps).toContainEqual({ name: 'uvicorn', version: '0.20', kind: 'unknown' })
+  })
+
   it('recovers the package name from a VCS #egg= fragment in requirements.txt instead of treating it as a comment (regression: stripping at the first "#" truncated "git+https://...#egg=name" URLs, silently dropping the real dependency and emitting a bogus "git" entry)', () => {
     const req = path.join(tmpDir, 'requirements.txt')
     fs.writeFileSync(
