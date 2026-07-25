@@ -428,6 +428,22 @@ function parseLineRange(spec: string): { file: string; start: number; end: numbe
   return { file: m[1]!, start, end }
 }
 
+// A `file::symbol` read whose "symbol" is actually a bare numeric line spec -- `120`, `120-140`,
+// `120:140`, or `120,140` -- is almost certainly an agent reaching for a line-range read with the
+// `::` symbol separator instead of the documented `@` form (`file@120-140`). Rather than fail with
+// "Symbol 'X' not found" and force a fall back to `sed`/full Read (extra round-trips, wasted
+// tokens), recognize the numeric shape and serve those lines. This is only ever consulted AFTER
+// symbol resolution has already found no matching symbol, so it can never shadow a real definition
+// (and no valid identifier is all-digits anyway). Returns null for anything that is not a pure
+// numeric range.
+function parseColonLineRange(symbol: string): { start: number; end: number } | null {
+  const m = /^(\d+)(?:[-:,](\d+))?$/.exec(symbol)
+  if (m === null) return null
+  const start = parseInt(m[1]!, 10)
+  const end = m[2] !== undefined ? parseInt(m[2], 10) : start
+  return { start, end }
+}
+
 // Read an inclusive, 1-indexed line range straight from disk. Index-independent (raw fs read), so it works for files in any project and for paths outside every indexed project root.
 function runLineRange(
   range: { file: string; start: number; end: number },
@@ -690,6 +706,14 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   if (resolution.kind === 'none') {
+    // Ergonomic fallback: `read "file::120-140"` (or `::120:140` / `::120,140` / `::120`) is an
+    // agent using the `::` symbol separator for a line range. Serve the lines instead of failing
+    // to a sed/full-Read round-trip. Only reached once no symbol matched, so a real definition is
+    // never shadowed.
+    const lineSpec = parseColonLineRange(symbol)
+    if (lineSpec !== null) {
+      return runLineRange({ file, start: lineSpec.start, end: lineSpec.end }, opts)
+    }
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
     const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)

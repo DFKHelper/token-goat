@@ -858,6 +858,62 @@ describe('read_commands', () => {
         expect(stderr).toContain('nonexistent.txt')
       })
     })
+
+    // ---- `::` numeric line-range fallback ----------------------------------
+    // Agents naturally type `read "file::120-140"` (the `::` symbol separator) instead of the
+    // documented `file@120-140`. Before this fallback that failed with "Symbol not found" and the
+    // agent burned a sed/full-Read round-trip. When the `::` token is a pure numeric range and no
+    // symbol matched, serve those lines instead.
+    describe('read "file::N-M" numeric line-range fallback', () => {
+      function rangeFile(): string {
+        const f = path.join(tempDir, 'colon-range.txt')
+        fs.writeFileSync(f, 'one\ntwo\nthree\nfour\nfive\n')
+        return f
+      }
+
+      it('serves an inclusive range for file::N-M when no symbol matches', () => {
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${rangeFile()}::2-4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('two\nthree\nfour')
+        expect(stdout).not.toContain('one')
+        expect(stdout).not.toContain('five')
+      })
+
+      it('accepts the colon separator form file::N:M', () => {
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${rangeFile()}::2:4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('two\nthree\nfour')
+      })
+
+      it('accepts the comma separator form file::N,M', () => {
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${rangeFile()}::2,4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('two\nthree\nfour')
+      })
+
+      it('serves a single line for file::N', () => {
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${rangeFile()}::3` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('three')
+        expect(stdout).not.toContain('two')
+      })
+
+      it('does NOT hijack a real symbol whose lookup succeeds (fallback only fires on a miss)', () => {
+        // A genuine symbol match must win; the numeric fallback is a last resort. (No all-digit
+        // identifier is valid anyway, but prove a matched symbol is served, not a line range.)
+        const f = rangeFile()
+        mockQuerySymbols.mockReturnValue([
+          { name: 'realSym', filePath: f, lineStart: 1, lineEnd: 2, body: 'real symbol body' } as never,
+        ])
+        const { text: stdout, code } = runRead({ spec: `${f}::realSym` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('real symbol body')
+      })
+    })
   })
 
   // ---- runSection ---------------------------------------------------------
