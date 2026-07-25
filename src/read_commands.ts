@@ -1055,6 +1055,20 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 }
 
 /**
+ * Upper bound on the number of symbols fetched for a single file's `skeleton`/`outline`. The old
+ * hard `limit: 500` silently dropped every symbol past the 500th on large files -- a 5000-line
+ * demonolith indexes to thousands of symbols -- and still reported `truncated: false` with an
+ * honest-looking header, because the token-budget overflow guard (guardJsonRows/guardText) only
+ * ever saw the pre-capped 500 rows and computed its `truncated`/`totalCount` from that truncated
+ * slice. This cap is set high enough that the overflow guard, not this SQL LIMIT, is the real
+ * limiter for realistic files, so those counts stay honest; a file whose symbol count genuinely
+ * exceeds it is flagged via the fetch-one-past-the-cap detection below rather than trimmed in
+ * silence. (Same "SQL LIMIT applied before the count is taken" truncation-lie shape already fixed
+ * for symbol/refs/refs --top/grep --json.)
+ */
+const SKELETON_SYMBOL_CAP = 5000
+
+/**
  * Shared prologue for `skeleton`/`outline`: resolve the file, optionally reparse it, fetch its
  * indexed symbols, and (on a non-empty result) apply the `--min-lines` filter and optional
  * `--stats` ref-count lookup. Both commands share this exact sequence verbatim; only their JSON
@@ -1063,7 +1077,7 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number } {
+): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -1073,7 +1087,12 @@ function prepareSymbolListing(
     // instead of the caller having to fall back to a stale-index warning.
     healStaleIndex(resolved)
   }
-  const symbols = querySymbols({ filePath: resolved, limit: 500 })
+  // Fetch one past the cap so a file that genuinely has more than SKELETON_SYMBOL_CAP symbols can
+  // be flagged as truncated honestly, instead of the old `limit: 500` that dropped the overflow
+  // silently and still reported truncated:false.
+  const fetched = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP + 1 })
+  const symbolsTruncated = fetched.length > SKELETON_SYMBOL_CAP
+  const symbols = symbolsTruncated ? fetched.slice(0, SKELETON_SYMBOL_CAP) : fetched
 
   if (symbols.length === 0) {
     return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
@@ -1091,7 +1110,7 @@ function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes }
+  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated }
 }
 
 /** Handle ``token-goat skeleton file``. */
@@ -1100,7 +1119,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes } = prep
+  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated } = prep
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -1113,7 +1132,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : {}),
     }))
     const capped = guardJsonRows(rows)
-    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
+    const payload = { items: capped.items, truncated: capped.truncated || symbolsTruncated, totalCount: capped.totalCount }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
@@ -1157,7 +1176,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes } = prep
+  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated } = prep
 
   if (opts.json === true) {
     const rows =
@@ -1169,7 +1188,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
           }))
         : filtered
     const capped = guardJsonRows(rows)
-    const payload = { items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }
+    const payload = { items: capped.items, truncated: capped.truncated || symbolsTruncated, totalCount: capped.totalCount }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('outline', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
