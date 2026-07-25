@@ -3264,6 +3264,16 @@ export function extractImports(text: string, ext: string): string[] {
         push(base)
       }
     }
+  } else if (['.tf', '.tfvars', '.hcl'].includes(e)) {
+    // Terraform's dependency mechanism is module composition (`module "foo" { source =
+    // "./modules/foo" }`), not an import/require/use keyword -- the generic
+    // `import|require|use|#include` fallback below has no keyword that matches "source" at all,
+    // so every .tf/.tfvars/.hcl file reported zero imports/deps despite this being the one
+    // idiomatic cross-file dependency Terraform actually has.
+    for (const line of lines) {
+      const m = /^\s*source\s*=\s*"([^"]+)"/.exec(line)
+      if (m) push(m[1])
+    }
   } else if (['.css', '.scss', '.sass', '.less'].includes(e)) {
     // CSS/Sass/Less `@import` accepts a bare-quoted form (`@import "x.css";`) the generic
     // fallback below happens to match correctly (its "import" substring-match lines up with the

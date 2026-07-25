@@ -2875,6 +2875,21 @@ describe('read_commands', () => {
       expect(extractImports("@use 'sass:math';", '.scss')).toEqual(['sass:math'])
     })
 
+    it('extracts Terraform module source dependencies (regression: "source" matches no generic-fallback keyword at all, so every .tf file reported zero imports/deps despite module composition being the language\'s one real cross-file dependency)', () => {
+      const src = [
+        'module "network" {',
+        '  source = "./modules/network"',
+        '}',
+        '',
+        'module "app" {',
+        '  source = "git::https://example.com/modules/app.git"',
+        '}',
+      ].join('\n')
+      expect(extractImports(src, '.tf')).toEqual([
+        './modules/network', 'git::https://example.com/modules/app.git',
+      ])
+    })
+
     it('extracts every target from a comma-separated legacy @import line, not just the first', () => {
       // Regression test: a single .exec() capturing one quoted group silently dropped every
       // target after the first on a line like `@import "reset", "base", "layout";`.
