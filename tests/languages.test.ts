@@ -683,6 +683,17 @@ use App\\Models\\{User, Post as BlogPost};
     expect(targets).not.toContain('App\\Models\\BlogPost')
   })
 
+  it('extracts single-symbol use function/use const imports (regression: USE_RE\'s [\\w\\\\]+ captured "function"/"const" as the target itself, then failed to match the trailing ";", silently dropping the whole line)', () => {
+    const content = `<?php
+use function App\\Helpers\\format_date;
+use const App\\Config\\MAX_RETRIES;
+`
+    const { imports } = extractPhp(content, 'Imports.php')
+    const targets = imports.map((i) => i.target)
+    expect(targets).toContain('App\\Helpers\\format_date')
+    expect(targets).toContain('App\\Config\\MAX_RETRIES')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractPhp('', 'empty.php')
     expect(symbols).toHaveLength(0)

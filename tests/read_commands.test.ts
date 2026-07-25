@@ -2965,6 +2965,16 @@ describe('read_commands', () => {
       expect(targets).not.toContain('App\\Models\\BlogPost')
     })
 
+    it('extracts single-symbol PHP use function/use const imports (regression: the target regex\'s [\\w\\\\]+ captured "function"/"const" as the target itself, then failed to match the trailing ";", silently dropping the whole line)', () => {
+      const src = [
+        'use function App\\Helpers\\format_date;',
+        'use const App\\Config\\MAX_RETRIES;',
+      ].join('\n')
+      const targets = extractImports(src, '.php')
+      expect(targets).toContain('App\\Helpers\\format_date')
+      expect(targets).toContain('App\\Config\\MAX_RETRIES')
+    })
+
     it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
       const src = [
         'Import-Module Az.Accounts',
