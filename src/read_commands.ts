@@ -1098,16 +1098,18 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 }
 
 /**
- * Upper bound on the number of symbols fetched for a single file's `skeleton`/`outline`. The old
- * hard `limit: 500` silently dropped every symbol past the 500th on large files -- a 5000-line
- * demonolith indexes to thousands of symbols -- and still reported `truncated: false` with an
- * honest-looking header, because the token-budget overflow guard (guardJsonRows/guardText) only
- * ever saw the pre-capped 500 rows and computed its `truncated`/`totalCount` from that truncated
- * slice. This cap is set high enough that the overflow guard, not this SQL LIMIT, is the real
- * limiter for realistic files, so those counts stay honest; a file whose symbol count genuinely
- * exceeds it is flagged via the fetch-one-past-the-cap detection below rather than trimmed in
- * silence. (Same "SQL LIMIT applied before the count is taken" truncation-lie shape already fixed
- * for symbol/refs/refs --top/grep --json.)
+ * Upper bound on the number of symbols fetched in one SQL query for a single file's
+ * `skeleton`/`outline`. The old hard `limit: 500` silently dropped every symbol past the 500th
+ * on large files -- a 5000-line demonolith indexes to thousands of symbols -- and still reported
+ * `truncated: false` with an honest-looking header, because the token-budget overflow guard
+ * (guardJsonRows/guardText) only ever saw the pre-capped 500 rows and computed its
+ * `truncated`/`totalCount` from that truncated slice. This cap is set high enough that the
+ * overflow guard, not this SQL LIMIT, is the real limiter for realistic files. A file whose
+ * symbol count genuinely exceeds THIS cap too is flagged via the fetch-one-past-the-cap
+ * detection below, which also re-queries with countSymbols (no LIMIT) so `totalCount` stays
+ * honest even past this cap, rather than just moving the same silent-lie cliff higher. (Same
+ * "SQL LIMIT applied before the count is taken" truncation-lie shape already fixed for
+ * symbol/refs/refs --top/grep --json.)
  */
 const SKELETON_SYMBOL_CAP = 5000
 
@@ -1120,7 +1122,7 @@ const SKELETON_SYMBOL_CAP = 5000
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean } {
+): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -1136,6 +1138,12 @@ function prepareSymbolListing(
   const fetched = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP + 1 })
   const symbolsTruncated = fetched.length > SKELETON_SYMBOL_CAP
   const symbols = symbolsTruncated ? fetched.slice(0, SKELETON_SYMBOL_CAP) : fetched
+  // When the cap is actually hit, `symbols.length` (and anything downstream computed from it) is
+  // no longer the true count -- it's just SKELETON_SYMBOL_CAP. Re-query with no LIMIT (same
+  // "SQL LIMIT applied before the count is taken" fix already applied to runSymbol/countSymbols)
+  // so the JSON payload's totalCount stays honest instead of silently re-lying at the new,
+  // higher cap the way the old hard `limit: 500` used to.
+  const trueSymbolCount = symbolsTruncated ? countSymbols({ filePath: resolved }) : undefined
 
   if (symbols.length === 0) {
     return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
@@ -1153,7 +1161,7 @@ function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated }
+  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
 }
 
 /** Handle ``token-goat skeleton file``. */
@@ -1162,7 +1170,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated } = prep
+  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -1175,7 +1183,11 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
         : {}),
     }))
     const capped = guardJsonRows(rows)
-    const payload = { items: capped.items, truncated: capped.truncated || symbolsTruncated, totalCount: capped.totalCount }
+    const payload = {
+      items: capped.items,
+      truncated: capped.truncated || symbolsTruncated,
+      totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
+    }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
@@ -1219,7 +1231,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated } = prep
+  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
     const rows =
@@ -1231,7 +1243,11 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
           }))
         : filtered
     const capped = guardJsonRows(rows)
-    const payload = { items: capped.items, truncated: capped.truncated || symbolsTruncated, totalCount: capped.totalCount }
+    const payload = {
+      items: capped.items,
+      truncated: capped.truncated || symbolsTruncated,
+      totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
+    }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('outline', fullSourceBytes, text, opts.file)
     return { text, code: 0 }

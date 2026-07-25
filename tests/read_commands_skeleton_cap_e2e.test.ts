@@ -100,4 +100,31 @@ describe('skeleton/outline symbol-cap honesty (real pipeline, no injected callba
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // Regression: the 500-symbol fix above moved the fetch cap to SKELETON_SYMBOL_CAP (5000), but
+  // prepareSymbolListing still sliced the fetched rows down to that cap before the overflow guard
+  // ever computed totalCount from them -- the exact same "SQL LIMIT applied before the count is
+  // taken" lie shape, just at a higher threshold. A file with more than 5000 symbols would report
+  // totalCount capped at (at most) 5000 instead of its true count. Needs a real file whose symbol
+  // count exceeds the cap itself, not just the token-budget guard's own item cap.
+  it('runSkeleton --json reports an honest totalCount for a file with more than SKELETON_SYMBOL_CAP (5000) symbols', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-skelcap-overflow-'))
+    try {
+      const file = join(root, 'huge.js')
+      const n = 5200
+      writeFileSync(file, makeManyFunctionsSource(n))
+      indexFileSync(normalizePath(file))
+
+      const { text, code } = runSkeleton({ file, json: true })
+      expect(code).toBe(0)
+      const parsed = JSON.parse(text) as { items: Array<{ name: string }>; truncated: boolean; totalCount: number }
+
+      // Pre-fix: totalCount would have been capped at (at most) 5000, silently lying about the
+      // true 5200. Post-fix, a countSymbols() re-query with no LIMIT reports the true total.
+      expect(parsed.totalCount).toBe(n)
+      expect(parsed.truncated).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
