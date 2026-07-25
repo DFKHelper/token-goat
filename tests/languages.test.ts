@@ -1959,6 +1959,32 @@ final actor Counter {
     expect(symbols.find((s) => s.name === 'tick')?.docstring).toBe('Counter')
   })
 
+  it('recognizes the Swift 5.9 package access modifier on a type and its members', () => {
+    const content = `package struct Repository {
+    package var items: [String] = []
+
+    package func add(item: String) {
+        items.append(item)
+    }
+
+    package(set) var count: Int = 0
+}
+
+package func topLevelHelper() {}
+`
+    const { symbols } = extractSwift(content, 'Repository.swift')
+    // Without 'package' in the modifier lists, the whole type (and thus its members) was dropped.
+    expect(symbols.find((s) => s.name === 'Repository')?.kind).toBe('struct')
+    const items = symbols.find((s) => s.name === 'items')
+    expect(items?.kind).toBe('var')
+    expect(items?.docstring).toBe('Repository')
+    expect(symbols.find((s) => s.name === 'add')?.kind).toBe('method')
+    // `package(set) var` — the `(set)` setter-visibility suffix must fold onto package too.
+    expect(symbols.find((s) => s.name === 'count')?.kind).toBe('var')
+    // A top-level `package func` is a plain function, not a member.
+    expect(symbols.find((s) => s.name === 'topLevelHelper')?.kind).toBe('function')
+  })
+
   it('extracts an extension adding a method to an existing type, and a computed property', () => {
     const content = `struct Circle {
     var radius: Double
