@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { runWasteCommand } from '../src/cli_waste.js'
+import { normalizePath } from '../src/paths.js'
 
 function captureStdout(): { text: () => string; restore: () => void } {
   const chunks: string[] = []
@@ -163,7 +164,7 @@ describe('runWasteCommand', () => {
 
     const parsed = JSON.parse(cap.text()) as { error: string; project: string }
     expect(parsed.error).toBe('no session transcript found')
-    expect(parsed.project.toLowerCase().replace(/\\/g, '/')).toBe(tempDir.toLowerCase().replace(/\\/g, '/'))
+    expect(normalizePath(parsed.project)).toBe(normalizePath(tempDir))
     expect(process.exitCode).toBe(1)
   })
 })
