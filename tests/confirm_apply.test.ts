@@ -79,4 +79,44 @@ describe('confirmAndApply', () => {
     const result = await confirmAndApply([], { yes: true, write: () => {} })
     expect(result).toEqual({ applied: [], skipped: [], dryRun: false })
   })
+
+  it('yes bypasses the confirm prompt entirely even on a TTY (mutation-testing gap: yes must short-circuit before the TTY branch, not only apply when non-interactive)', async () => {
+    const change = mkChange('d.md', 'one\ntwo\n', 'one\n')
+    let confirmCalled = false
+
+    const result = await confirmAndApply([change], {
+      yes: true,
+      isTTY: true,
+      write: () => {},
+      confirm: async () => {
+        confirmCalled = true
+        return false
+      },
+    })
+
+    expect(confirmCalled).toBe(false)
+    expect(result.applied).toEqual([change])
+    expect(fs.readFileSync(change.path, 'utf-8')).toBe('one\n')
+  })
+
+  it('uses the custom label in the diff preview and confirm prompt instead of the raw path (mutation-testing gap: label was never exercised by any existing test)', async () => {
+    const p = path.join(tempDir, 'e.md')
+    fs.writeFileSync(p, 'x\ny\n', 'utf-8')
+    const change: FileChange = { path: p, before: 'x\ny\n', after: 'x\n', label: 'Pretty Name' }
+    const written: string[] = []
+    let promptedQuestion = ''
+
+    await confirmAndApply([change], {
+      isTTY: true,
+      write: (t) => written.push(t),
+      confirm: async (question) => {
+        promptedQuestion = question
+        return true
+      },
+    })
+
+    expect(written.join('')).toContain('Pretty Name')
+    expect(written.join('')).not.toContain(p)
+    expect(promptedQuestion).toContain('Pretty Name')
+  })
 })
