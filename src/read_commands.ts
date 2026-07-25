@@ -172,7 +172,26 @@ function staleWarning(resolvedPath: string): string {
  */
 function healStaleIndex(resolvedPath: string): void {
   const entry = getFileEntry(resolvedPath)
-  if (entry === null || entry.sha === '') return
+  if (entry === null) {
+    // Never indexed. If the file is actually present on disk, parse it once on demand so
+    // symbol/read/skeleton/outline can serve a surgical slice instead of returning "no symbols"
+    // and forcing the caller to fall back to a full-file Read/grep -- the exact token cost this
+    // tool exists to avoid. This is the common case for a project whose background worker never
+    // ran (or hasn't caught up) and for a freshly-created/renamed file: real sessions repeatedly
+    // hit "not found -> full Read" here. fingerprintFile doubles as the on-disk probe -- it
+    // returns null for a missing/unreadable path, so an absent file (or a bare name that resolves
+    // to nothing, as in unit tests) is skipped cleanly with no parse and no dirty-queue enqueue.
+    if (fingerprintFile(resolvedPath) === null) return
+    try {
+      indexFileSync(resolvedPath, globalDbPath())
+      enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })
+    } catch {
+      // Best-effort: leave it unindexed; the caller emits its normal "no symbols" message rather
+      // than crashing a surgical-read command on a parse failure.
+    }
+    return
+  }
+  if (entry.sha === '') return
   const diskSha = fingerprintFile(resolvedPath)
   if (diskSha === null || diskSha === entry.sha) return
   try {
