@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectLanguage } from '../src/parser_types.js'
+import { detectLanguage, unsupportedLanguageName } from '../src/parser_types.js'
 
 describe('detectLanguage', () => {
   it('returns typescript for .ts files', () => {
@@ -99,5 +99,38 @@ describe('detectLanguage', () => {
         'salesforce_markup',
       )
     }
+  })
+})
+
+// unsupportedLanguageName had zero direct coverage: only 2 of its 9 mapped extensions
+// (.swift, .dart) were exercised indirectly through read_commands.test.ts's skeleton/outline
+// diagnostics, and that exercised the whole read_commands pipeline, not this function's own
+// boundary (case-insensitivity, the remaining 7 extensions, and the two `undefined` branches).
+describe('unsupportedLanguageName', () => {
+  it('returns the human-readable language name for every recognized-but-unsupported extension', () => {
+    expect(unsupportedLanguageName('Main.swift')).toBe('Swift')
+    expect(unsupportedLanguageName('App.scala')).toBe('Scala')
+    expect(unsupportedLanguageName('Script.sc')).toBe('Scala')
+    expect(unsupportedLanguageName('init.lua')).toBe('Lua')
+    expect(unsupportedLanguageName('lib/module.ex')).toBe('Elixir')
+    expect(unsupportedLanguageName('test/module_test.exs')).toBe('Elixir')
+    expect(unsupportedLanguageName('lib/main.dart')).toBe('Dart')
+    expect(unsupportedLanguageName('src/main.zig')).toBe('Zig')
+    expect(unsupportedLanguageName('analysis.r')).toBe('R')
+  })
+
+  it('is case-insensitive on the extension', () => {
+    expect(unsupportedLanguageName('Main.SWIFT')).toBe('Swift')
+    expect(unsupportedLanguageName('Analysis.R')).toBe('R')
+  })
+
+  it('returns undefined for a language token-goat already has an extractor for', () => {
+    expect(unsupportedLanguageName('src/app.ts')).toBeUndefined()
+    expect(unsupportedLanguageName('module.py')).toBeUndefined()
+  })
+
+  it('returns undefined for a genuinely unrecognized extension', () => {
+    expect(unsupportedLanguageName('data.xyz')).toBeUndefined()
+    expect(unsupportedLanguageName('noextension')).toBeUndefined()
   })
 })
