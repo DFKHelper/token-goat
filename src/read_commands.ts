@@ -2903,7 +2903,7 @@ export function extractExportNames(text: string, ext: string): string[] {
   const e = ext.toLowerCase()
   const lines = text.split(/\r?\n/)
 
-  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(e)) {
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].includes(e)) {
     const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([A-Za-z_$][\w$]*)/g
     const defaultRe = /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*(?:;|$)/g
     const namedRe = /\bexport\s+(?:type\s+)?\{([^}]*)\}/g
@@ -2992,7 +2992,13 @@ export function extractImports(text: string, ext: string): string[] {
   const e = ext.toLowerCase()
   const lines = text.split(/\r?\n/)
 
-  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(e)) {
+  // `.mts`/`.cts` (explicit-ESM/explicit-CJS TypeScript sources) are real, recognized source
+  // extensions elsewhere in this codebase -- parser_types.ts's EXTENSION_LANGUAGE map and
+  // ts_refs.ts's TS_EXTENSIONS both already treat them as TypeScript -- but this list omitted
+  // them, so a .mts/.cts file's imports fell through to the far weaker generic
+  // `import|require|use|#include` fallback below instead of the dedicated multi-form TS/JS
+  // matcher (fromRe/bareRe/reqRe/dynRe).
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].includes(e)) {
     // Match against the whole file text (not per-line) so multi-line/Prettier-style
     // import statements (import spanning several lines before `from '...'`) are still
     // found -- mirrors extractExportNames's whole-text approach below.
