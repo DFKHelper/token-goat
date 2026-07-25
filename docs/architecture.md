@@ -2,7 +2,7 @@
 
 > **This file is a historical record, not current documentation.** It describes token-goat's original Python implementation (`compact.py`, `hooks_read.py`, `session.py`, `uv tool install`, etc.), which was fully rewritten to TypeScript. None of the module names, file paths, or mechanisms below reflect the current codebase. For the actual current architecture, see [CLAUDE.arch.md](../CLAUDE.arch.md) at the repo root, which is the maintained architecture reference. The design rationale and historical iteration notes below are preserved for context on *why* things are shaped the way they are, not *how they currently work*.
 
-This file holds design notes and high-level patterns that drove token-goat's original implementation. Detailed technical architecture (Python era) lived in `docs/plans/`.
+This file holds design notes and high-level patterns that drove token-goat's original implementation. Detailed technical architecture (Python era) lived in `docs/plans/archive/`.
 
 For installation and usage, see the [README](../README.md).
 
@@ -44,7 +44,7 @@ The latest iteration (v0.9.0-unreleased) added 20 context-savings refinements:
 - **Semantic output.** Compact mode (one line per result) for map, compact-hint, and list-like outputs.
 - **Benchmarking.** Token-savings regression suite locks in measured wins.
 
-See `docs/plans/2026-05-23-context-savings-design.md` for the design rationale behind each feature.
+See `docs/plans/archive/2026-05-23-context-savings-design.md` for the design rationale behind each feature.
 
 #### 68-iter additions (May 2026)
 
@@ -120,10 +120,10 @@ The compaction hook subprocess is the most latency-sensitive path in token-goat 
 
 Internal design rationale for each pillar:
 
-- **Context savings** — `docs/plans/2026-05-23-context-savings-design.md` (40 KB). Covers hint system, compaction manifest, output caching, dedup filtering, and benchmarking.
-- **DRY refactoring** — `docs/plans/2026-05-23-dry-design.md` (23 KB). Documents shared patterns across install, languages, bridges, and hooks.
-- **Reliability** — `docs/plans/2026-05-23-reliability-design.md` (23 KB). Covers fail-soft patterns, corruption recovery, and WAL management.
-- **Speed** — `docs/plans/2026-05-23-speed-design.md` (17 KB). Latency budgets, adaptive backoff, and read-only fast paths.
+- **Context savings** — `docs/plans/archive/2026-05-23-context-savings-design.md` (40 KB). Covers hint system, compaction manifest, output caching, dedup filtering, and benchmarking.
+- **DRY refactoring** — `docs/plans/archive/2026-05-23-dry-design.md` (23 KB). Documents shared patterns across install, languages, bridges, and hooks.
+- **Reliability** — `docs/plans/archive/2026-05-23-reliability-design.md` (23 KB). Covers fail-soft patterns, corruption recovery, and WAL management.
+- **Speed** — `docs/plans/archive/2026-05-23-speed-design.md` (17 KB). Latency budgets, adaptive backoff, and read-only fast paths.
 
 ### 55-iter loop (May 2026)
 

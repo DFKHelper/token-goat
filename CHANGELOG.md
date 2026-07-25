@@ -2146,7 +2146,7 @@ _From the 55-iteration baseline:_
 
 ## Improve loop summary — 2026-05-24
 
-- **Scope.** 55 iterations across four design areas: context savings (20+ items), reliability (7 items), DRY refactoring (11 items), and compaction/test-suite speed (9 items). Design docs: `docs/plans/2026-05-23-{context-savings,reliability,dry,speed}-design.md`.
+- **Scope.** 55 iterations across four design areas: context savings (20+ items), reliability (7 items), DRY refactoring (11 items), and compaction/test-suite speed (9 items). Design docs: `docs/plans/archive/2026-05-23-{context-savings,reliability,dry,speed}-design.md`.
 - **Commits landed.** ~30 commits from `c2db365` to `3ddf1ab`, covering fixes, refactors, perf improvements, and test infrastructure.
 - **Token-savings claims.** Per design-doc estimates: hook cold-start 190 ms → 110 ms (−42%); pre-compact skipped entirely on fresh sessions (<1 ms); git ops skipped in non-repo dirs (60–100 ms saved); bash/grep/web dedup hints 40% shorter via terse-mode; hint budget caps prevent spam (5/3/2/4 per kind); structured-file hints ~70% smaller than full-file suggestion.
 - **Reliability wins.** `fail_soft` now catches `BaseException`; session CAS prevents edit-count loss under concurrent hooks; OS file lock guards dirty-queue appends; worker claim auto-recovers from crash; cross-process contention dedup moved to disk.
