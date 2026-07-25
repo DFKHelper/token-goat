@@ -3184,6 +3184,23 @@ export function extractImports(text: string, ext: string): string[] {
         push(base)
       }
     }
+  } else if (['.css', '.scss', '.sass', '.less'].includes(e)) {
+    // CSS/Sass/Less `@import` accepts a bare-quoted form (`@import "x.css";`) the generic
+    // fallback below happens to match correctly (its "import" substring-match lines up with the
+    // quote), but also the `url(...)` function form (`@import url("x.css");` / bare
+    // `@import url(x.css);`) that the fallback mangles: its capture class excludes quotes/`>`/`;`
+    // but not `(`/`)`, so it captures the literal text `url(` or `url(x.css)` instead of the path
+    // inside. Sass's `@use`/`@forward` module directives (a distinct keyword the fallback's
+    // `import|require|use|#include` set doesn't cover as its own alternative, though "use" as a
+    // substring of "@use" happens to still match) are also handled explicitly here for clarity.
+    for (const line of lines) {
+      const urlForm = /@import\s+url\(\s*['"]?([^'")]+)['"]?\s*\)/.exec(line)
+      if (urlForm) { push(urlForm[1]); continue }
+      const bareForm = /@import\s+['"]([^'"]+)['"]/.exec(line)
+      if (bareForm) { push(bareForm[1]); continue }
+      const useForward = /@(?:use|forward)\s+['"]([^'"]+)['"]/.exec(line)
+      if (useForward) push(useForward[1])
+    }
   } else {
     for (const line of lines) {
       const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
