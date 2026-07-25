@@ -1840,7 +1840,7 @@ Some content that makes the file large enough`
     }
   })
 
-  it('does not recognize .swift as a source extension for the count-based re-read deny (regression: .swift was hardcoded into SOURCE_EXT_RE despite parser_types.ts having no adapter for it, so a 3rd read produced the skeleton/outline-pointing deny message even though those commands would return nothing for a .swift file)', () => {
+  it('recognizes .swift as a source extension for the count-based re-read deny (src/languages/swift.ts now provides a real adapter, so .swift belongs back in SOURCE_EXT_RE/DIFFABLE_SOURCE_RE alongside the other real adapters)', () => {
     pinProtectRecentReadsToZero()
     const p = path.join(
       os.tmpdir(),
@@ -1854,12 +1854,10 @@ Some content that makes the file large enough`
     const r2 = preReadHandler(readEvent(p))
     expect(r2.hookType).toBe('context')
 
-    // Falls through to the generic re-read-dedup deny instead of the source-ext-specific one.
     const r3 = preReadHandler(readEvent(p))
     expect(r3.hookType).toBe('deny')
     if (r3.hookType === 'deny') {
-      expect(r3.message).not.toContain('token-goat skeleton')
-      expect(r3.message).toContain('already read this session')
+      expect(r3.message).toContain('token-goat skeleton')
     }
   })
 

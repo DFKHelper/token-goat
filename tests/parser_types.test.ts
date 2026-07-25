@@ -102,13 +102,14 @@ describe('detectLanguage', () => {
   })
 })
 
-// unsupportedLanguageName had zero direct coverage: only 2 of its 9 mapped extensions
+// unsupportedLanguageName had zero direct coverage: only 2 of its (then 9) mapped extensions
 // (.swift, .dart) were exercised indirectly through read_commands.test.ts's skeleton/outline
 // diagnostics, and that exercised the whole read_commands pipeline, not this function's own
-// boundary (case-insensitivity, the remaining 7 extensions, and the two `undefined` branches).
+// boundary (case-insensitivity, the remaining extensions, and the two `undefined` branches).
+// .swift was removed from the map once src/languages/swift.ts shipped a real extractor -- see
+// the 'returns undefined for a language token-goat already has an extractor for' case below.
 describe('unsupportedLanguageName', () => {
   it('returns the human-readable language name for every recognized-but-unsupported extension', () => {
-    expect(unsupportedLanguageName('Main.swift')).toBe('Swift')
     expect(unsupportedLanguageName('App.scala')).toBe('Scala')
     expect(unsupportedLanguageName('Script.sc')).toBe('Scala')
     expect(unsupportedLanguageName('init.lua')).toBe('Lua')
@@ -120,13 +121,14 @@ describe('unsupportedLanguageName', () => {
   })
 
   it('is case-insensitive on the extension', () => {
-    expect(unsupportedLanguageName('Main.SWIFT')).toBe('Swift')
+    expect(unsupportedLanguageName('App.SCALA')).toBe('Scala')
     expect(unsupportedLanguageName('Analysis.R')).toBe('R')
   })
 
   it('returns undefined for a language token-goat already has an extractor for', () => {
     expect(unsupportedLanguageName('src/app.ts')).toBeUndefined()
     expect(unsupportedLanguageName('module.py')).toBeUndefined()
+    expect(unsupportedLanguageName('Main.swift')).toBeUndefined()
   })
 
   it('returns undefined for a genuinely unrecognized extension', () => {

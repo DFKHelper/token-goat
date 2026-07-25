@@ -69,6 +69,7 @@ export type Language =
   | 'html'
   | 'liquid'
   | 'kotlin'
+  | 'swift'
   | 'graphql'
   | 'sql'
   | 'ini'
@@ -138,6 +139,7 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.liquid', 'liquid'],
   ['.kt', 'kotlin'],
   ['.kts', 'kotlin'],
+  ['.swift', 'swift'],
   ['.graphql', 'graphql'],
   ['.gql', 'graphql'],
   ['.sql', 'sql'],
@@ -226,7 +228,6 @@ export function detectLanguage(filePath: string): Language {
  * change indexing behavior.
  */
 export const UNSUPPORTED_LANGUAGE_EXTENSIONS: ReadonlyMap<string, string> = new Map([
-  ['.swift', 'Swift'],
   ['.scala', 'Scala'],
   ['.sc', 'Scala'],
   ['.lua', 'Lua'],

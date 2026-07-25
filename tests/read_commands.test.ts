@@ -929,11 +929,11 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
-    it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Swift/Scala/Lua/etc. are indistinguishable from an empty file)', () => {
+    it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Scala/Lua/etc. are indistinguishable from an empty file)', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { text, code } = runSkeleton({ file: 'missing.swift' })
+      const { text, code } = runSkeleton({ file: 'missing.scala' })
       expect(code).toBe(1)
-      expect(text).toContain('Swift')
+      expect(text).toContain('Scala')
       expect(text).toContain('no symbol extractor yet')
     })
 

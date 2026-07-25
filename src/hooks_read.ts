@@ -263,7 +263,7 @@ function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
 
 /** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
 const DIFFABLE_SOURCE_RE =
-  /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml|ps1|psm1|cls|trigger)$/i
+  /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml|ps1|psm1|cls|trigger|swift)$/i
 
 /**
  * Extensions with a tree-sitter language adapter AND where `token-goat skeleton`/`outline`
@@ -271,11 +271,12 @@ const DIFFABLE_SOURCE_RE =
  * their own dedicated read path -- e.g. `token-goat section` -- so they're deliberately
  * excluded here even though EXTENSION_LANGUAGE recognizes them). Previously omitted several
  * real language extensions (.cs, .mjs/.cjs/.mts/.cts, .cc/.cxx/.hpp/.hxx, .kts, .pyi) and
- * wrongly included `.swift`, which has no adapter at all. Also previously omitted
+ * wrongly included `.swift`, which at the time had no adapter at all (it now does -- see
+ * `src/languages/swift.ts` -- so it belongs here again). Also previously omitted
  * .ps1/.psm1 (powershell) and .cls/.trigger (apex), both of which have real adapters.
  */
 const SOURCE_EXT_RE =
-  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb|php|kt|kts|cpp|cc|cxx|hpp|hxx|c|h|cs|ps1|psm1|cls|trigger)$/i
+  /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb|php|kt|kts|cpp|cc|cxx|hpp|hxx|c|h|cs|ps1|psm1|cls|trigger|swift)$/i
 
 function isSourceExtension(basename: string): boolean {
   if (SOURCE_EXT_RE.test(basename)) return true

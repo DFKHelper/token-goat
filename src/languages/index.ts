@@ -3,7 +3,7 @@
  *
  * Adapters for TypeScript/JS, Python, Go, Rust, Ruby, Java, C++, Markdown,
  * JSON, YAML, TOML, CSS, and Dockerfile remain inlined in `parser.ts`.
- * This barrel exports the newer adapters: C#, PHP, HTML, Liquid, Kotlin,
+ * This barrel exports the newer adapters: C#, PHP, HTML, Liquid, Kotlin, Swift,
  * GraphQL, SQL, INI, Makefile, Proto, .env, Apex, and Salesforce metadata.
  */
 
@@ -13,6 +13,7 @@ export * from './php.js'
 export * from './html.js'
 export * from './liquid.js'
 export * from './kotlin.js'
+export * from './swift.js'
 export * from './graphql_idx.js'
 export * from './sql_idx.js'
 export * from './ini_idx.js'

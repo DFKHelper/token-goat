@@ -618,7 +618,7 @@ export interface MultilineStringState {
 }
 
 /** Language tag selecting which multi-line string openers `stripMultilineStringSpan` looks for. */
-export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell'
+export type MultilineStringLang = 'csharp' | 'php' | 'kotlin' | 'powershell' | 'swift'
 
 /** Result of a closer search: how far into the line the closer (and any preceding string content) extends. */
 interface CloserMatch {
@@ -734,6 +734,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
   kotlin: ['//'],
   csharp: ['//'],
   powershell: ['#'],
+  swift: ['//'],
 }
 
 // Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
@@ -741,7 +742,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
 // literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so
 // the line-comment guard above incidentally already treats everything from `<#` onward as
 // commented -- an equivalent check here would be redundant.
-const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp'])
+const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift'])
 
 /**
  * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
@@ -807,6 +808,18 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const idx = line.indexOf('"""', from)
     // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
     // already-open single-line string literal is not a real raw-string opener.
+    if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
+    const closeIdx = line.indexOf('"""', idx + 3)
+    if (closeIdx !== -1) {
+      return { openStart: idx, closesSameLine: closeIdx + 3, state: { kind: 'tripleQuote', identifier: '3' } }
+    }
+    return { openStart: idx, closesSameLine: null, state: { kind: 'tripleQuote', identifier: '3' } }
+  }
+
+  if (lang === 'swift') {
+    // Swift multi-line string literals use a fixed `"""` delimiter (unlike C#'s variable-length
+    // `"{3,}` run) -- identical shape to Kotlin's raw string, so this branch mirrors that one.
+    const idx = line.indexOf('"""', from)
     if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const closeIdx = line.indexOf('"""', idx + 3)
     if (closeIdx !== -1) {
