@@ -975,8 +975,31 @@ function parseRequirementsTxt(content: string): DepEntry[] {
 // must be stripped before splitting on the version-separating `@`, and a scoped name's own
 // leading `@` must be skipped over when searching for that separator or `@scope/name@1.0.0`
 // mis-splits at the scope's `@` instead of the real one.
+//
+// lockfileVersion 9 NESTS peer suffixes when a peer itself has peers, e.g.
+// `@testing-library/react@13.4.0(react-dom@18.2.0(react@18.2.0))(react@18.2.0)`. A single
+// `/(\([^()]*\))+$/` regex can't strip that -- `[^()]*` cannot span the inner `(`, so it removed
+// only the last group and left `(react-dom@18.2.0(react@18.2.0))` fused into the version. Walk
+// the trailing balanced parenthetical groups from the end instead: a semver version never
+// contains parens, so every back-to-back balanced `(...)` group at the tail is peer metadata.
 function stripPnpmPeerSuffix(value: string): string {
-  return value.replace(/(\([^()]*\))+$/, '')
+  let end = value.length
+  while (end > 0 && value[end - 1] === ')') {
+    let depth = 0
+    let i = end - 1
+    for (; i >= 0; i--) {
+      const ch = value[i]
+      if (ch === ')') depth++
+      else if (ch === '(') {
+        depth--
+        if (depth === 0) break
+      }
+    }
+    // Unbalanced (stray ')') -- leave the string untouched rather than truncate real content.
+    if (depth !== 0 || i < 0) break
+    end = i
+  }
+  return value.slice(0, end)
 }
 
 // Legacy pnpm (`lockfileVersion` < 6) suffixes a resolved version with `_<peerSpec>` instead of
