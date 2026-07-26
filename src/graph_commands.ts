@@ -646,6 +646,14 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'mixin',
   'extension',
   'actor',
+  // Protocol Buffers (languages/proto_idx.ts's KIND_MAP) uses its own kind strings rather
+  // than the generic 'enum'/'interface' -- a proto message is a struct-shaped type, a proto
+  // enum is exactly what its name says, and a proto service's RPC method set is analogous to
+  // an interface. Without these, every .proto declaration was indexed but silently excluded
+  // from `token-goat types`, the same class of gap already fixed for Rust/Swift/Zig/Dart kinds.
+  'proto_message',
+  'proto_enum',
+  'proto_service',
 ]
 
 export interface TypesOptions {
