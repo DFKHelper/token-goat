@@ -234,6 +234,17 @@ describe('cmdBashHistory', () => {
   it('rejects a negative --limit instead of silently clamping to 1', () => {
     expect(() => cmdBashHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
   })
+
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
+  // .slice(0, 0) would print "No bash output entries cached." even though entries genuinely
+  // exist (the blob stored below), a false-clean claim about the cache's contents. Matches
+  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
+  // validation for the same failure mode.
+  it('rejects --limit 0 instead of silently reporting an empty cache', () => {
+    const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
+    storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
+    expect(() => cmdBashHistory({ limit: '0' })).toThrow(/invalid --limit: 0/)
+  })
 })
 
 // ── web-history ───────────────────────────────────────────────────────────────
@@ -288,6 +299,16 @@ describe('cmdWebHistory', () => {
   it('rejects exponential notation in --limit instead of silently truncating', () => {
     expect(() => cmdWebHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
   })
+
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
+  // .slice(0, 0) would print "No web output entries cached." even though entries genuinely
+  // exist (the blob stored below), a false-clean claim about the cache's contents. Matches
+  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
+  // validation for the same failure mode.
+  it('rejects --limit 0 instead of silently reporting an empty cache', () => {
+    storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
+    expect(() => cmdWebHistory({ limit: '0' })).toThrow(/invalid --limit: 0/)
+  })
 })
 
 // ── mcp-history ───────────────────────────────────────────────────────────────
@@ -334,14 +355,16 @@ describe('cmdMcpHistory', () => {
     expect(() => cmdMcpHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
   })
 
-  // Regression: the old Math.max(1, n) also meant --limit 0 returned 1 row instead of 0,
-  // unlike cmdBashHistory/cmdWebHistory's --limit 0 (both .slice(0, 0) -> empty).
-  it('--limit 0 returns zero entries, matching cmdBashHistory/cmdWebHistory', () => {
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
+  // .slice(0, 0) would print "No mcp output entries cached." even though entries genuinely
+  // exist (the blob stored above), a false-clean claim about the cache's contents. Matches
+  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
+  // validation for the same failure mode -- and now matches cmdBashHistory/cmdWebHistory,
+  // which share this same rejection via parseLimitOpt.
+  it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
-    cmdMcpHistory({ limit: '0', json: true })
-    const parsed = JSON.parse(capturedOutput()) as unknown[]
-    expect(parsed).toHaveLength(0)
+    expect(() => cmdMcpHistory({ limit: '0', json: true })).toThrow(/invalid --limit: 0/)
   })
 })
 
