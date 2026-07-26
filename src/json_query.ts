@@ -81,7 +81,7 @@ export function outlineJson(data: unknown, opts: { sampleSize?: number } = {}): 
       // the first element -- a key that's absent on the first element but present on a later
       // one (a heterogeneous sample) would otherwise be misreported as type 'undefined'.
       result.sampleKeys = allKeys.map((k) => {
-        const owner = objects.find((el) => k in el)
+        const owner = objects.find((el) => Object.prototype.hasOwnProperty.call(el, k))
         return fieldSummary(k, owner?.[k])
       })
       const firstKeySet = keySets[0] ?? []
