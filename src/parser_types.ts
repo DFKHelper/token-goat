@@ -217,6 +217,17 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   // already fixed for bare `Makefile` / `.mk` fragments above.
   ['gemfile', 'ruby'],
   ['rakefile', 'ruby'],
+  // Vagrantfile, Guardfile, Podfile, Capfile, Fastfile: same idiomatic extensionless-Ruby-DSL
+  // pattern as Gemfile/Rakefile above -- `Vagrant.configure(...) do ... end`, Guard's `guard
+  // 'rspec' do ... end`, CocoaPods' `Pod::Spec.new do |s| ... end`, Capistrano's `set :application`,
+  // and fastlane's `lane :build do ... end` are all plain Ruby, parsed identically by the ruby
+  // tree-sitter grammar. Without these entries each fell through to 'unknown' and indexed zero
+  // symbols despite the grammar handling their content exactly like any other .rb file.
+  ['vagrantfile', 'ruby'],
+  ['guardfile', 'ruby'],
+  ['podfile', 'ruby'],
+  ['capfile', 'ruby'],
+  ['fastfile', 'ruby'],
 ])
 
 // Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,

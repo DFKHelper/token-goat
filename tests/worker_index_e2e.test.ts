@@ -196,6 +196,15 @@ beforeAll(() => {
     path.join(repo, 'Gemfile'),
     ['def bundle_gemfile_symbol', '  1', 'end', ''].join('\n'),
   )
+  // A bare `Vagrantfile` (no extension, plain Ruby syntax -- `Vagrant.configure(...) do ... end`
+  // is ordinary Ruby) -- same has-extractor-but-no-dispatch-entry gap as Gemfile/Rakefile above.
+  // Without a FILENAME_LANGUAGE 'vagrantfile' -> 'ruby' entry it fell through to 'unknown' and
+  // indexed zero symbols despite the ruby tree-sitter grammar handling its content exactly like
+  // any other .rb file.
+  fs.writeFileSync(
+    path.join(repo, 'Vagrantfile'),
+    ['def bundle_vagrantfile_symbol', '  1', 'end', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -357,6 +366,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_gemfile_symbol')
     expect(sym.stdout).toContain('Gemfile')
+  }, 60000)
+
+  it('index then symbol resolves a bare Vagrantfile method definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sym = runBundle(['symbol', 'bundle_vagrantfile_symbol'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('bundle_vagrantfile_symbol')
+    expect(sym.stdout).toContain('Vagrantfile')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
