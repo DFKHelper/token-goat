@@ -327,8 +327,14 @@ export function extractRgSymbolSearch(cmd: string): { filePath: string; identifi
   if (!filePath) return null
   if (isTempPath(filePath)) return null
 
-  // Exclude recursive flags — those search directories, not a single file
-  if (/-[a-zA-Z]*r[a-zA-Z]*\b/.test(cmd) || /--recursive\b/.test(cmd)) return null
+  // Exclude recursive flags — those search directories, not a single file. The flag's leading
+  // `-` must be a real token boundary (preceded by whitespace/start-of-string, followed by
+  // whitespace/end-of-string): without that anchor, `-[a-zA-Z]*r[a-zA-Z]*\b` also matched deep
+  // inside any unrelated long flag that merely contains the letter 'r' anywhere after its OWN
+  // second dash (`--color=never`, `--sort=path`, ...), since the regex engine could anchor its
+  // leading `-` off that second dash instead of requiring a genuine single-dash flag token —
+  // silently suppressing this hint for some of the most common rg/grep flags in real commands.
+  if (/(?:^|\s)-[a-zA-Z]*[rR][a-zA-Z]*(?=\s|$)/.test(cmd) || /(?:^|\s)--recursive(?=\s|$)/.test(cmd)) return null
 
   return { filePath, identifier: pattern }
 }
