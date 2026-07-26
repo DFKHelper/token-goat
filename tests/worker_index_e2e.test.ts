@@ -134,6 +134,12 @@ beforeAll(() => {
     path.join(repo, 'typedef_fixture.c'),
     ['typedef struct {', '  int x;', '  int y;', '} BundleCTypedefSymbol;', ''].join('\n'),
   )
+  // A C++ `namespace` — same tree-shaking concern: the namespace_definition -> 'namespace' entry
+  // added to CPP_KIND_BY_TYPE must resolve from the shipped binary too.
+  fs.writeFileSync(
+    path.join(repo, 'namespace_fixture.cpp'),
+    ['namespace BundleNamespaceSymbol {', '  void inner() {}', '}', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -210,6 +216,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(td.status).toBe(0)
     expect(td.stdout).toContain('BundleCTypedefSymbol')
     expect(td.stdout).toContain('typedef_fixture.c')
+  }, 60000)
+
+  it('index then symbol resolves a C++ namespace definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const ns = runBundle(['symbol', 'BundleNamespaceSymbol'])
+    expect(ns.status).toBe(0)
+    expect(ns.stdout).toContain('BundleNamespaceSymbol')
+    expect(ns.stdout).toContain('namespace_fixture.cpp')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
