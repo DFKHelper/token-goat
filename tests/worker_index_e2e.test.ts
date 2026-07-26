@@ -126,6 +126,14 @@ beforeAll(() => {
     path.join(repo, 'union_fixture.c'),
     ['union BundleCUnionSymbol {', '  int i;', '  float f;', '};', ''].join('\n'),
   )
+  // An anonymous-tag C `typedef` — same tree-shaking concern: the type_definition -> 'type' entry
+  // added to CPP_KIND_BY_TYPE plus its declarator-chain name helper must resolve from the shipped
+  // binary. The alias lives only on the declarator (the struct itself is anonymous), so a bundling
+  // gap would leave it invisible just as a missing map entry would.
+  fs.writeFileSync(
+    path.join(repo, 'typedef_fixture.c'),
+    ['typedef struct {', '  int x;', '  int y;', '} BundleCTypedefSymbol;', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -192,6 +200,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(uni.status).toBe(0)
     expect(uni.stdout).toContain('BundleCUnionSymbol')
     expect(uni.stdout).toContain('union_fixture.c')
+  }, 60000)
+
+  it('index then symbol resolves an anonymous-tag C typedef alias from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const td = runBundle(['symbol', 'BundleCTypedefSymbol'])
+    expect(td.status).toBe(0)
+    expect(td.stdout).toContain('BundleCTypedefSymbol')
+    expect(td.stdout).toContain('typedef_fixture.c')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.

@@ -309,6 +309,35 @@ describe('parseFile', () => {
     expect(cppUnion?.kind).toBe('union') // union_specifier — dropped pre-fix
   })
 
+  it('indexes C and C++ typedef aliases including the anonymous struct/enum/union form (kind type)', async () => {
+    // The dominant real-world typedef idiom uses an anonymous tag, so the alias name lives only on
+    // the type_definition's declarator chain — every one of these was invisible pre-fix.
+    const cFile = write(
+      'td.c',
+      [
+        'typedef struct { int x; int y; } Point;',
+        'typedef enum { RED, GREEN } Color;',
+        'typedef union { int i; float f; } Value;',
+        'typedef int (*Callback)(int, int);', // function-pointer declarator chain
+        'typedef int MyInt;',
+        'struct Bare { int z; };',
+      ].join('\n') + '\n',
+    )
+    const cResult = await parseFile(cFile)
+    expect(cResult.language).toBe('c')
+    for (const alias of ['Point', 'Color', 'Value', 'Callback', 'MyInt']) {
+      // All typedef aliases index as kind 'type' — every one dropped pre-fix (no type_definition entry).
+      expect(cResult.symbols.some((s) => s.name === alias && s.kind === 'type')).toBe(true)
+    }
+    // The sibling non-typedef struct still resolves as 'struct', confirming the addition didn't disturb it.
+    expect(cResult.symbols.some((s) => s.name === 'Bare' && s.kind === 'struct')).toBe(true)
+
+    const cppFile = write('td.cpp', 'typedef struct { double re; double im; } Complex;\n')
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    expect(cppResult.symbols.some((s) => s.name === 'Complex' && s.kind === 'type')).toBe(true)
+  })
+
   it('indexes C++ out-of-line method definitions (qualified_identifier declarator)', async () => {
     const cppFile = write(
       'methods.cpp',
