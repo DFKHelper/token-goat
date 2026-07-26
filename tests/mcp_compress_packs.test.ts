@@ -489,6 +489,38 @@ describe('compressGWorkspaceMcpResult', () => {
       expect(resultBody).not.toContain('filler quoted text')
     }
   })
+
+  it('trims a CRLF-formatted quoted-reply chain opened by an "On ... wrote:" header', () => {
+    const quotedHistory =
+      '\r\nOn Mon, Jul 6, 2026 at 9:00 AM, Bob <bob@example.com> wrote:\r\n> Thanks, sounds good.'.padEnd(
+        4000,
+        ' filler quoted text from a long thread history ',
+      )
+    const body = `Sure, sounds good to me.${quotedHistory}`
+    const text = JSON.stringify({ messages: [{ id: '1', body }] })
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const resultBody = (JSON.parse(compressed) as { messages: { id: string; body: string }[] }).messages[0].body
+      expect(resultBody).toContain('Sure, sounds good to me.')
+      expect(resultBody).not.toContain('wrote:')
+      expect(resultBody).not.toContain('filler quoted text')
+    }
+  })
+
+  it('trims a CRLF-formatted quoted-reply chain opened by an Outlook "-----Original Message-----" separator', () => {
+    const quotedHistory = '\r\n-----Original Message-----\r\nFrom: Bob'.padEnd(4000, ' filler quoted text from a long thread history ')
+    const body = `Sure, sounds good to me.${quotedHistory}`
+    const text = JSON.stringify({ messages: [{ id: '1', body }] })
+    const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const resultBody = (JSON.parse(compressed) as { messages: { id: string; body: string }[] }).messages[0].body
+      expect(resultBody).toContain('Sure, sounds good to me.')
+      expect(resultBody).not.toContain('Original Message')
+      expect(resultBody).not.toContain('filler quoted text')
+    }
+  })
 })
 
 // --- compressMcpResultWithPacks (dispatch) -----------------------------------
