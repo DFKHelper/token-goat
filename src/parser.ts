@@ -479,6 +479,12 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['trait_item', 'trait'],
   ['type_item', 'type'],
   ['const_item', 'const'],
+  // `mod foo { ... }` / `mod foo;` — Rust modules are ubiquitous (submodule trees, `#[cfg(test)]
+  // mod tests`) and parse as `mod_item`, which was absent here, so every module declaration was
+  // silently dropped from the index. Reuses the 'module' kind already used by the Ruby extractor.
+  // Not added to RUST_LOCAL_KINDS below: like a nested struct/fn, a mod declared inside a function
+  // body stays indexed (only value bindings — `const` — are treated as function-local noise).
+  ['mod_item', 'module'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
