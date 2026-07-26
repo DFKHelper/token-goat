@@ -630,9 +630,17 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
 }
 
 async function cmdDoctor(opts: { context?: boolean }): Promise<void> {
-  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean } = {}
+  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string } = {}
   if (opts.context === true) {
     doctorOpts.context = true
+  }
+  // Scope the Symbols check to the invoking project so an unrelated project sharing the same
+  // global.db can't mask this project's own parser being broken (see checkSymbolCount's doc
+  // comment). No project root found (bare directory, no git/package.json) falls back to the
+  // prior unscoped whole-database behavior.
+  const project = findProject(process.cwd())
+  if (project !== null) {
+    doctorOpts.rootDir = project.root
   }
   const code = await runDoctorAndExit(doctorOpts)
   if (code !== 0) {

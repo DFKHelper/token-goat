@@ -11,6 +11,7 @@ import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor } from './worker.js'
 import { getDb } from './db.js'
+import { projectScopeClause } from './sql_path.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
@@ -91,15 +92,33 @@ export function checkDbExists(dataDir: string): DoctorResult {
  * `dbPath` `checkDbExists` validated; if the database doesn't exist yet (or
  * isn't openable), this check quietly no-ops rather than duplicating that
  * failure.
+ *
+ * `rootDir`, when given, scopes both counts to files under that project root via {@link
+ * projectScopeClause} -- the same helper map/semantic/find/dead already use (see commit
+ * 6a5ac228). Without it, `global.db`'s machine-wide sharing across every project ever indexed
+ * means an unrelated project's symbols can mask this exact project's own parser being broken:
+ * fileCount/symbolCount would count every project's rows, so a project with 0 of its own
+ * symbols still reads as healthy as long as some other indexed project has symbols. Omitting
+ * `rootDir` falls back to the prior unscoped (whole-database) behavior for callers that
+ * genuinely want a global figure.
  */
-export function checkSymbolCount(dbPath: string): DoctorResult {
+export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult {
   if (!fs.existsSync(dbPath)) {
     return { name: 'Symbols', status: 'ok', message: 'no database yet' }
   }
   try {
     const db = getDb(dbPath)
-    const fileCount = (db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }).c
-    const symbolCount = (db.prepare('SELECT COUNT(*) as c FROM symbols').get() as { c: number }).c
+    const countScoped = (table: string, column: string): number => {
+      if (rootDir === undefined) {
+        return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
+      }
+      const scope = projectScopeClause(column)
+      return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(scope.param(rootDir)) as {
+        c: number
+      }).c
+    }
+    const fileCount = countScoped('files', 'path')
+    const symbolCount = countScoped('symbols', 'file_path')
     if (fileCount > 0 && symbolCount === 0) {
       return {
         name: 'Symbols',
@@ -411,7 +430,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
 /**
  * Run all doctor checks and return results.
  */
-export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[] {
+export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
 
@@ -422,7 +441,7 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
 
   // File checks
   results.push(checkDbExists(actualDataDir))
-  results.push(checkSymbolCount(path.join(actualDataDir, 'global.db')))
+  results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
 
   const actualConfigPath = configPath || defaultConfigPath()
@@ -466,8 +485,13 @@ export function printDoctorResults(results: DoctorResult[]): void {
 /**
  * Run doctor and return exit code (0 for success, 1 for failures).
  */
-export async function runDoctorAndExit(opts?: { dataDir?: string; configPath?: string; context?: boolean }): Promise<number> {
-  const results = runDoctor(opts?.dataDir, opts?.configPath)
+export async function runDoctorAndExit(opts?: {
+  dataDir?: string
+  configPath?: string
+  context?: boolean
+  rootDir?: string
+}): Promise<number> {
+  const results = runDoctor(opts?.dataDir, opts?.configPath, opts?.rootDir)
   printDoctorResults(results)
 
   if (opts?.context === true) {

@@ -153,6 +153,46 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
     })
+
+    // Regression: global.db is a single machine-wide index shared across every project ever
+    // indexed (see the projectScopeClause fix, commit 6a5ac228, which scoped map/semantic/
+    // find/dead but never touched checkSymbolCount even though it was added in that same
+    // commit). Without a rootDir scope, a project whose OWN parser is broken (0 symbols for
+    // its own files) gets masked by an unrelated project's symbols sharing the same global.db
+    // -- the exact stub-callback failure mode this check exists to catch goes silently
+    // unreported as long as some other project happens to have symbols indexed too.
+    it('scopes counts to rootDir, catching a broken project masked by another project sharing global.db', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const brokenRoot = path.join(tempDir, 'proj-broken')
+      const healthyRoot = path.join(tempDir, 'proj-healthy')
+
+      // Broken project: file indexed, but the parser never ran -- zero of ITS symbols.
+      db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
+        path.join(brokenRoot, 'src', 'main.ts').replace(/\\/g, '/'),
+        'sha',
+        1,
+        'typescript',
+        1,
+      )
+
+      // Unrelated healthy project sharing the same global.db, with real symbols.
+      const healthyFile = path.join(healthyRoot, 'src', 'main.ts').replace(/\\/g, '/')
+      db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
+        healthyFile,
+        'sha',
+        1,
+        'typescript',
+        1,
+      )
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(healthyFile, 'main', 'function', 1, 2, '', '')
+
+      const result = checkSymbolCount(dbPath, brokenRoot)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('0 symbols extracted')
+    })
   })
 
   describe('checkDirtyQueueHealth', () => {
