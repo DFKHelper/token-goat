@@ -609,7 +609,7 @@ export function runDeps(opts: DepsOptions): number {
 
 // ---- types ------------------------------------------------------------------
 
-const TYPE_KINDS: ReadonlyArray<string> = ['type', 'interface', 'enum', 'struct', 'trait']
+const TYPE_KINDS: ReadonlyArray<string> = ['type', 'interface', 'enum', 'struct', 'trait', 'union']
 
 export interface TypesOptions {
   file?: string

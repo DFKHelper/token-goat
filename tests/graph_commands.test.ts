@@ -499,6 +499,40 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS (line ~612) omitted 'union', so a Rust `union` -- a type
+  // declaration exactly like `struct`/`enum`/`trait`, all of which ARE in TYPE_KINDS -- was
+  // indexed (parser.ts's RUST_KIND_BY_TYPE maps union_item -> 'union') but never surfaced by
+  // `token-goat types`. Caught by Codex review of the commit that added Rust union indexing.
+  it('surfaces a Rust union via TYPE_KINDS, matching struct/enum/trait', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-rustunion-'))
+    try {
+      const file = join(dir, 'packed.rs')
+      writeFileSync(
+        file,
+        ['union TypesRustUnionFixture {', '    a: u32,', '    b: f32,', '}', ''].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesRustUnionFixture')
+      expect(parsed.find((r) => r.name === 'TypesRustUnionFixture')?.kind).toBe('union')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
