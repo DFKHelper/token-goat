@@ -1887,10 +1887,22 @@ export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): numbe
 
   const scoped = opts.fileFilter !== undefined ? filterCoverageGapsByFile(report, opts.fileFilter) : report
 
+  // coverage-report-gaps reads a full LCOV/Istanbul coverage report and emits only the narrower
+  // uncovered-lines slice -- the same "read replacement" shape as csv-query -- but never called
+  // recordStat, so the coverage_report_gaps bucket in `token-goat stats --full` stayed
+  // permanently zero regardless of real usage (same class of gap fixed for
+  // csv_query/map_lookup/changed_lookup; see project_runchanged_missing_stat memory).
+  // "Full source" is the on-disk size of the coverage report actually read, mirroring
+  // recordReadStat's fullSourceBytes convention elsewhere in this file.
+  const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    emit(JSON.stringify(scoped))
+    const jsonText = JSON.stringify(scoped)
+    emit(jsonText)
+    recordReadStat('coverage_report_gaps', fullSourceBytes, jsonText, opts.file)
   } else {
-    emitGuarded(formatCoverageGaps(scoped), 'coverage-report-gaps')
+    const text = formatCoverageGaps(scoped)
+    emitGuarded(text, 'coverage-report-gaps')
+    recordReadStat('coverage_report_gaps', fullSourceBytes, text, opts.file)
   }
   return 0
 }
