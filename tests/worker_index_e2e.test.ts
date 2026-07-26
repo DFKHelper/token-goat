@@ -214,6 +214,15 @@ beforeAll(() => {
     path.join(repo, 'Brewfile'),
     ['def bundle_brewfile_symbol', '  1', 'end', ''].join('\n'),
   )
+  // A `.rake` file (Rake task definitions, e.g. lib/tasks/foo.rake) — plain Ruby syntax
+  // (`task :foo do ... end` / `def ...`), the same has-extractor-but-no-extension gap
+  // previously fixed for `.mk` fragments: the ruby tree-sitter grammar handles `.rake`
+  // content identically to any other `.rb` file, but without an EXTENSION_LANGUAGE
+  // '.rake' -> 'ruby' entry it fell through to 'unknown' and indexed zero symbols.
+  fs.writeFileSync(
+    path.join(repo, 'bundle_rake_fixture.rake'),
+    ['def bundle_rake_symbol', '  1', 'end', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -395,6 +404,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_brewfile_symbol')
     expect(sym.stdout).toContain('Brewfile')
+  }, 60000)
+
+  it('index then symbol resolves a .rake method definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sym = runBundle(['symbol', 'bundle_rake_symbol'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('bundle_rake_symbol')
+    expect(sym.stdout).toContain('bundle_rake_fixture.rake')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.

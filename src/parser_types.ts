@@ -121,6 +121,12 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.hxx', 'cpp'],
   ['.rb', 'ruby'],
   ['.ruby', 'ruby'],
+  // Rake task files (lib/tasks/foo.rake) are plain Ruby syntax (`task :foo do ... end`),
+  // parsed identically by the ruby tree-sitter grammar. Without this entry a `.rake` file
+  // fell through to 'unknown' and indexed zero symbols despite the grammar handling its
+  // content exactly like any other .rb file -- the same has-extractor-but-no-extension gap
+  // previously fixed for `.mk` (Makefile fragments).
+  ['.rake', 'ruby'],
   ['.java', 'java'],
   ['.sh', 'bash'],
   ['.bash', 'bash'],
