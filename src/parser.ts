@@ -660,6 +660,21 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // specifier has no `name`, and the alias itself was never reached. Kind 'type' matches how the
   // TS/Go/Rust type aliases are indexed and is in `types`' TYPE_KINDS.
   ['type_definition', 'type'],
+  // `namespace Foo { ... }` (including the C++17 nested `namespace A::B { ... }` shorthand) parses
+  // as `namespace_definition`, which had no entry here, so the namespace itself was silently
+  // dropped from the index -- `symbol`/`outline`/`skeleton` never showed the declaration line,
+  // even though everything nested inside it still indexed (extractSimpleSymbols always recurses
+  // into children regardless of the parent's kind-map membership). The default `nodeName` lookup
+  // (childForFieldName('name')) resolves both the simple `namespace_identifier` case and the
+  // nested `nested_namespace_specifier` case (whose `.text` is the full `A::B` path) without any
+  // special-casing. An anonymous `namespace { ... }` has no `name` field, so `nodeName` returns
+  // null and it is correctly skipped -- matching how an anonymous struct/enum/union tag is only
+  // ever indexed via its typedef alias, never as a bare symbol of its own. Kind 'namespace', not
+  // 'module' (already used for Rust `mod`/Ruby `module`), since C++ namespaces are reopenable and
+  // additive rather than a single owning declaration -- and NOT added to graph_commands.ts's
+  // TYPE_KINDS, since a namespace is a container, not a type declaration (mirrors 'module' being
+  // absent from TYPE_KINDS for the same reason).
+  ['namespace_definition', 'namespace'],
 ])
 
 function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {

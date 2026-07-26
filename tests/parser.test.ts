@@ -338,6 +338,34 @@ describe('parseFile', () => {
     expect(cppResult.symbols.some((s) => s.name === 'Complex' && s.kind === 'type')).toBe(true)
   })
 
+  it('indexes C++ namespace definitions (kind namespace), including nested `A::B` form', async () => {
+    // `namespace Foo { ... }` parses as namespace_definition, which had no CPP_KIND_BY_TYPE entry —
+    // the namespace itself was invisible to symbol/outline/skeleton even though its nested
+    // functions/classes still indexed (extractSimpleSymbols always recurses into children
+    // regardless of the parent's kind-map membership).
+    const cppFile = write(
+      'ns.cpp',
+      ['namespace Foo {', '  void bar() {}', '  struct Baz {};', '}', 'namespace A::B {', '  int x;', '}', ''].join(
+        '\n',
+      ),
+    )
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    const foo = cppResult.symbols.find((s) => s.name === 'Foo')
+    expect(foo?.kind).toBe('namespace') // namespace_definition — dropped pre-fix (no kind map entry)
+    // Nested `namespace A::B { ... }` — name lives on a nested_namespace_specifier, not a plain identifier.
+    expect(cppResult.symbols.some((s) => s.name === 'A::B' && s.kind === 'namespace')).toBe(true)
+    // Children inside the namespace still resolve, confirming the addition didn't disturb them.
+    expect(cppResult.symbols.some((s) => s.name === 'bar' && s.kind === 'function')).toBe(true)
+    expect(cppResult.symbols.some((s) => s.name === 'Baz' && s.kind === 'struct')).toBe(true)
+
+    // An anonymous `namespace { ... }` has no name field — must not crash and must not emit a
+    // symbol with an empty/null name.
+    const anonFile = write('ns_anon.cpp', 'namespace {\n  int hidden;\n}\n')
+    const anonResult = await parseFile(anonFile)
+    expect(anonResult.symbols.some((s) => s.kind === 'namespace' && !s.name)).toBe(false)
+  })
+
   it('indexes C++ out-of-line method definitions (qualified_identifier declarator)', async () => {
     const cppFile = write(
       'methods.cpp',
