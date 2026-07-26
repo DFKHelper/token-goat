@@ -101,6 +101,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   imports: SOURCE_READ,
   dep_docs: SOURCE_READ,
   csv_query: SOURCE_READ,
+  brief_view: SOURCE_READ,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
@@ -131,6 +132,7 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   changed: new Set(['changed_lookup']),
   'dep-docs': new Set(['dep_docs']),
   'csv-query': new Set(['csv_query']),
+  brief: new Set(['brief_view']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',

@@ -2042,6 +2042,14 @@ export function runBrief(opts: BriefOptions): number {
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
   const truncated = totalCallers > shown.length
+  // brief carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry (brief_view),
+  // but nothing here ever called recordStat -- the brief bucket in `token-goat stats --full`
+  // stayed permanently zero regardless of real usage, the same class of registry/producer
+  // desync previously fixed for map_lookup/changed_lookup/csv_query (see
+  // project_runchanged_missing_stat memory). "Full source" is the on-disk size of the file the
+  // resolved symbol lives in, mirroring recordReadStat's fullSourceBytes convention elsewhere in
+  // this file -- brief folds a symbol read + callers lookup + section lookup into that one file.
+  const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
     const result: BriefResult = {
@@ -2051,7 +2059,9 @@ export function runBrief(opts: BriefOptions): number {
       truncated,
       section,
     }
-    emit(JSON.stringify(result, null, 2))
+    const jsonText = JSON.stringify(result, null, 2)
+    emit(jsonText)
+    recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
     return 0
   }
 
@@ -2077,7 +2087,9 @@ export function runBrief(opts: BriefOptions): number {
     lines.push(`Section: ${section.heading} (lines ${section.lineStart}-${section.lineEnd})`)
   }
 
-  emitGuarded(trimBlankLines(lines).join('\n'), 'symbol')
+  const text = guardText(trimBlankLines(lines).join('\n'), 'symbol')
+  emit(text)
+  recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return 0
 }
 
