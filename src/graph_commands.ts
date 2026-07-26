@@ -626,7 +626,19 @@ export function runDeps(opts: DepsOptions): number {
 // 'protocol' (Swift) is a type declaration exactly analogous to 'interface' -- already fixed
 // once for Rust's 'union' (which is analogous to struct/enum/trait); the same gap existed for
 // Swift protocols, indexed by languages/swift.ts but never surfaced by `token-goat types`.
-const TYPE_KINDS: ReadonlyArray<string> = ['type', 'interface', 'enum', 'struct', 'trait', 'union', 'protocol']
+// 'opaque' (Zig) is the same gap again: languages/zig.ts's CONTAINER_RE matches
+// struct/enum/union/opaque with one shared code path, but only struct/enum/union were ever
+// added here -- opaque types were indexed and silently excluded from `token-goat types`.
+const TYPE_KINDS: ReadonlyArray<string> = [
+  'type',
+  'interface',
+  'enum',
+  'struct',
+  'trait',
+  'union',
+  'protocol',
+  'opaque',
+]
 
 export interface TypesOptions {
   file?: string
