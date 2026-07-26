@@ -10,28 +10,32 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
   try {
     const rawPrompt = (event.raw['prompt'] as string) || '';
 
-    if (rawPrompt.trim().length < 8) {
-      return passOutput();
-    }
-
     if (!event.sessionId) {
       return passOutput();
     }
 
     const parts: string[] = [];
-    const cwd = getCwd(event);
 
-    if (cwd) {
-      try {
-        const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
-        if (result.exitCode === 0 && result.stdout) {
-          const branch = result.stdout.trim();
-          if (branch) {
-            parts.push(`branch: ${branch}`);
+    // The branch-hint git subprocess is only worth its cost for a substantive prompt -- skip it
+    // (and the getCwd/runGit call it implies) for a trivial one like "ok"/"yes"/"continue". This
+    // gate must NOT also skip checkSkillVersionDrift below: that check is cheap (no subprocess)
+    // and its own "on each user turn" contract must hold even on a short turn -- a session whose
+    // next few prompts happen to be short ("continue", "next") previously never learned about a
+    // mid-session upgrade at all, since the drift check sat after this same early return.
+    if (rawPrompt.trim().length >= 8) {
+      const cwd = getCwd(event);
+      if (cwd) {
+        try {
+          const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
+          if (result.exitCode === 0 && result.stdout) {
+            const branch = result.stdout.trim();
+            if (branch) {
+              parts.push(`branch: ${branch}`);
+            }
           }
+        } catch {
+          // Swallow errors
         }
-      } catch {
-        // Swallow errors
       }
     }
 
