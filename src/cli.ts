@@ -667,11 +667,27 @@ async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { pr
     )
   }
   const turns = await buildSessionOutline(transcriptPath)
-  if (opts.json === true) {
-    out(JSON.stringify({ transcriptPath, turns }))
-    return
+  const text = opts.json === true ? JSON.stringify({ transcriptPath, turns }) : `Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`
+  out(text)
+  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry carries a `session_outline`/`session-outline`
+  // entry, but nothing ever called recordStat for it -- the dashboard bucket was permanently zero
+  // regardless of real usage, the same class of gap already fixed for map_lookup/changed_lookup/
+  // csv_query/brief_view (see project_runchanged_missing_stat memory). This command's own
+  // description advertises itself as "instead of a raw Read", so the full transcript's on-disk
+  // size is the "full source" side of the bytes-saved calculation, mirroring recordReadStat's
+  // convention in read_commands.ts.
+  const fullSourceBytes = sessionTranscriptSize(transcriptPath)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('session_outline', bytesSaved, Math.round(bytesSaved / 4))
+}
+
+/** Best-effort on-disk size of a session transcript file; 0 if it can't be stat'd (never blocks stat recording). */
+function sessionTranscriptSize(transcriptPath: string): number {
+  try {
+    return fs.statSync(transcriptPath).size
+  } catch {
+    return 0
   }
-  out(`Transcript: ${transcriptPath}\n${formatSessionOutline(turns)}`)
 }
 
 async function cmdSessionSlice(
@@ -688,11 +704,12 @@ async function cmdSessionSlice(
   }
   const { start, end } = parseTurnRange(opts.range)
   const turns = await sliceSessionTurns(transcriptPath, start, end)
-  if (opts.json === true) {
-    out(JSON.stringify({ transcriptPath, turns }))
-    return
-  }
-  out(formatSessionSlice(turns))
+  const text = opts.json === true ? JSON.stringify({ transcriptPath, turns }) : formatSessionSlice(turns)
+  out(text)
+  // Same registry/producer desync as cmdSessionOutline above -- see the comment there.
+  const fullSourceBytes = sessionTranscriptSize(transcriptPath)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('session_slice', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<void> {
