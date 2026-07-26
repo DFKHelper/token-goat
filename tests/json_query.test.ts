@@ -46,6 +46,19 @@ describe('outlineJson', () => {
     expect(outline.sampleKeys?.map((f) => f.name).sort()).toEqual(['a', 'b', 'c']);
   });
 
+  it('does not leak Object.prototype members when locating a sampled key\'s owner', () => {
+    // The first element genuinely owns a key named `toString` (a real, if unusual, JSON key).
+    // The second element has no own `toString` key at all. Locating the "owner" of `toString`
+    // via `k in el` walks the prototype chain, so the second element (which merely inherits
+    // Object.prototype.toString) would be misreported as owning it -- summarizing the built-in
+    // function instead of `undefined`.
+    const outline = outlineJson([{ other: 1 }, { toString: 'real-value' }]);
+    expect(outline.kind).toBe('array');
+    if (outline.kind !== 'array') throw new Error('unreachable');
+    const toStringField = outline.sampleKeys?.find((f) => f.name === 'toString');
+    expect(toStringField).toEqual({ name: 'toString', type: 'string' });
+  });
+
   it('reports an array of scalars with elementType set and no sampleKeys', () => {
     const outline = outlineJson([1, 2, 3]);
     expect(outline.kind).toBe('array');
