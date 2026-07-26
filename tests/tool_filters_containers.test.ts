@@ -448,6 +448,42 @@ describe('KubectlLogsFilter', () => {
     expect(result).not.toContain('Handler.call')
   })
 
+  it('collapses Python-style 2-line traceback frames beyond 5, keeping each File line paired with its source line', () => {
+    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python). Pad with unique log lines before the traceback to exceed the threshold.
+    const preamble = Array.from({ length: 50 }, (_, i) => `2024-01-01T00:00:00Z INFO log msg ${i}`)
+    const traceLines = [
+      'Traceback (most recent call last):',
+      '  File "app.py", line 1, in foo1',
+      '    bar()',
+      '  File "app.py", line 2, in foo2',
+      '    bar()',
+      '  File "app.py", line 3, in foo3',
+      '    bar()',
+      '  File "app.py", line 4, in foo4',
+      '    bar()',
+      '  File "app.py", line 5, in foo5',
+      '    bar()',
+      '  File "app.py", line 6, in foo6',
+      '    bar()',
+      '  File "app.py", line 7, in foo7',
+      '    bar()',
+      'ValueError: boom',
+    ]
+    const lines = [...preamble, ...traceLines]
+    // 7 logical frames (2 physical lines each) → keep 5 frames, collapse 2.
+    const result = apply(f, lines.join('\n'), '', 0, ['kubectl', 'logs', 'my-pod'])
+    expect(result).toContain('more frames')
+    expect(result).toContain('2 more frames')
+    // First 5 frames kept, each File line paired with its own source line.
+    expect(result).toContain('foo1')
+    expect(result).toContain('foo5')
+    // 6th and 7th frames collapsed entirely (both File line and its source line).
+    expect(result).not.toContain('foo6')
+    expect(result).not.toContain('foo7')
+    // The final exception summary line must never be swallowed as a "source line".
+    expect(result).toContain('ValueError: boom')
+  })
+
   it('deduplicates repetitive log lines, keeps first 3 (with >50 total to pass the early-exit)', () => {
     // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python). 45 unique lines + 10 repetitions = 55 lines total.
     const unique = Array.from({ length: 45 }, (_, i) => `2024-01-01T00:00:00Z INFO unique event ${i}`)
