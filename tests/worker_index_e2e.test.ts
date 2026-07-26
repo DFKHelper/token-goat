@@ -103,6 +103,14 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
+  // A `macro_rules!` definition, so a Rust extractor addition that only ever gets exercised
+  // against source (never the tree-shaken bundle) is caught here (regression: the same class
+  // of bug that dropped mod_item/foreign_mod_item/macro_definition from RUST_KIND_BY_TYPE could
+  // just as easily be a bundling gap instead of a missing map entry).
+  fs.writeFileSync(
+    path.join(repo, 'macro_fixture.rs'),
+    ['#[macro_export]', 'macro_rules! bundleMacroSymbol {', '    () => {};', '}', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -134,6 +142,16 @@ describe('built bundle end-to-end indexing', () => {
     const sym = runBundle(['symbol', 'knownBundleSymbol'])
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('knownBundleSymbol')
+  }, 60000)
+
+  it('index then symbol resolves a Rust macro_rules! definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sym = runBundle(['symbol', 'bundleMacroSymbol'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('bundleMacroSymbol')
+    expect(sym.stdout).toContain('macro_fixture.rs')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
