@@ -120,6 +120,12 @@ beforeAll(() => {
       '\n',
     ),
   )
+  // A C `union` — same tree-shaking concern: the union_specifier -> 'union' entry added to
+  // CPP_KIND_BY_TYPE (shared by the c and cpp grammars) must resolve from the shipped binary too.
+  fs.writeFileSync(
+    path.join(repo, 'union_fixture.c'),
+    ['union BundleCUnionSymbol {', '  int i;', '  float f;', '};', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -176,6 +182,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(uni.status).toBe(0)
     expect(uni.stdout).toContain('BundleUnionSymbol')
     expect(uni.stdout).toContain('static_union_fixture.rs')
+  }, 60000)
+
+  it('index then symbol resolves a C union definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const uni = runBundle(['symbol', 'BundleCUnionSymbol'])
+    expect(uni.status).toBe(0)
+    expect(uni.stdout).toContain('BundleCUnionSymbol')
+    expect(uni.stdout).toContain('union_fixture.c')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
