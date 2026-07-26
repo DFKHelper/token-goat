@@ -3436,6 +3436,23 @@ export function extractImports(text: string, ext: string): string[] {
       const m = re.exec(line.trim())
       if (m) push(m[1])
     }
+  } else if (e === '.hs') {
+    // Haskell's `import` line commonly carries leading modifiers before the real module target --
+    // `qualified` (by far the most idiomatic form for a name-colliding import) and Safe Haskell's
+    // `safe`, in either order (`import qualified Data.Map as Map`, `import safe qualified
+    // Data.Set as Set`), or GHC 9's postfix `import Data.Map qualified as Map`. The generic
+    // `import|require|use|#include` fallback below has no stop condition for any of this: its
+    // greedy `[^'">;]+` capture class swallows the whole rest of the line verbatim ("qualified
+    // Data.Map as Map") as a single, non-actionable import target instead of the real "Data.Map"
+    // dependency -- the same keyword-swallowing gap already fixed for Kotlin's `as`-alias and
+    // Swift's submodule-import forms above. `hiding`/`(selectors)` clauses are dropped the same
+    // way those two branches drop their own trailing modifiers -- the capture class stops at the
+    // first non-identifier character after the module path.
+    const re = /^import\s+(?:safe\s+)?(?:qualified\s+)?([A-Za-z_][A-Za-z0-9_.']*)/
+    for (const line of lines) {
+      const m = re.exec(line.trim())
+      if (m) push(m[1])
+    }
   } else if (['.tf', '.tfvars', '.hcl'].includes(e)) {
     // Terraform's dependency mechanism is module composition (`module "foo" { source =
     // "./modules/foo" }`), not an import/require/use keyword -- the generic

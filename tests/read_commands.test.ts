@@ -3021,6 +3021,16 @@ describe('read_commands', () => {
       expect(extractImports(src, '.swift')).toEqual(['UIKit.UIView', 'MyApp'])
     })
 
+    it('extracts Haskell imports, stripping qualified/safe modifiers and hiding/selector clauses (regression: the generic fallback\'s greedy capture swallowed "qualified Data.Map as Map" verbatim)', () => {
+      const src = [
+        'import qualified Data.Map as Map', // idiomatic qualified import
+        'import Data.List (sort, nub)', // explicit selector list
+        'import safe qualified Data.Set as Set', // Safe Haskell, modifier order
+        'import Data.Text hiding (map)', // hiding clause
+      ].join('\n')
+      expect(extractImports(src, '.hs')).toEqual(['Data.Map', 'Data.List', 'Data.Set', 'Data.Text'])
+    })
+
     it('de-duplicates repeated specifiers', () => {
       expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
     })
