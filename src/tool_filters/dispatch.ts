@@ -126,6 +126,13 @@ function detectSingleSegment(segment: string): { filter: ToolFilter; argv: strin
   if (!seg || seg.length > 65536) return null
   if (['||', '$(', '`'].some((op) => seg.includes(op))) return null
   if (seg.includes('|') || seg.includes(';')) return null
+  // Same guard as detectFromCommand: a bare `&` backgrounds this segment (e.g. `cd /app && npm
+  // run dev &`, a common "set up then start a dev server" compound), and wrapping it would
+  // reproduce the exact hang detectFromCommand's own check exists to prevent -- spawnSync's
+  // piped stdio blocks on the backgrounded grandchild's inherited stdout until it exits or the
+  // wrapper's timeout kills the process tree the user wanted kept running. This path lacked the
+  // check entirely, not just a narrower version of it.
+  if (hasBareBackgroundOrNewline(seg)) return null
   let argv: string[]
   try {
     argv = shlexSplit(seg)
