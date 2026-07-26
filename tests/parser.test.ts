@@ -486,6 +486,33 @@ describe('parseFile', () => {
     expect(names).toContain('Read')
     expect(names).toContain('Close')
   })
+
+  it('indexes TypeScript interface method/property signatures and abstract class method signatures (method_signature/property_signature/abstract_method_signature, distinct node types from method_definition -- no TSJS_KIND_BY_TYPE entry meant every interface member and abstract method was invisible to the index)', async () => {
+    const file = write(
+      'iface.ts',
+      [
+        'interface Reader {',
+        '  read(len: number): string;',
+        '  size: number;',
+        '}',
+        'abstract class Base {',
+        '  abstract run(): void;',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('typescript')
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Reader')
+    expect(names).toContain('Base')
+    // Interface method signature (method_signature) -- dropped pre-fix.
+    expect(names).toContain('read')
+    // Interface property signature (property_signature) -- dropped pre-fix.
+    expect(names).toContain('size')
+    // Abstract class method signature (abstract_method_signature) -- dropped pre-fix.
+    expect(names).toContain('run')
+  })
     it('excludes function-local var/const/type declarations from the Go index', async () => {
     const goFile = write(
       'locals.go',
