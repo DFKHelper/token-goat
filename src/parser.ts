@@ -503,6 +503,16 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // Kept as its own entry (not folded into the child fn's body) to match how every other container
   // in this extractor works: the parent supplies context, the child stays standalone.
   ['foreign_mod_item', 'extern'],
+  // `macro_rules! foo { ... }` declarative macros parse as `macro_definition`, which was absent
+  // here, so every `macro_rules!` definition was silently dropped from the index. Macros are
+  // uniquely painful to lose: an invocation site (`foo!(...)`) carries no path back to the
+  // definition, so without a name index there is no cheap way to jump from a call to the
+  // `macro_rules!` block. The name lives on the standard `name` field (an `identifier`), so
+  // `nodeName` resolves it like any other item. Like `mod`/`fn`/`trait` — a definition, not a
+  // value binding — so it is NOT added to RUST_LOCAL_KINDS: a macro nested in a function stays
+  // indexed, matching how nested fns/structs are kept and only `const`/`static` value bindings
+  // are treated as function-local noise.
+  ['macro_definition', 'macro'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
