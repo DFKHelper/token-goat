@@ -580,6 +580,38 @@ describe('parseFile', () => {
     expect(result.symbols.some((s) => s.name === 'abort' && s.kind === 'function')).toBe(true)
   })
 
+  it('indexes Rust macro_rules! declarative macros, including attributed and nested-in-fn ones', async () => {
+    const rustFile = write(
+      'macros.rs',
+      [
+        '#[macro_export]',
+        'macro_rules! log_it {',
+        '    ($msg:expr) => {',
+        '        println!("{}", $msg);',
+        '    };',
+        '}',
+        '',
+        'fn helper() {',
+        '    macro_rules! inner {', // a macro defined inside a fn body stays indexed (a definition, not a value binding)
+        '        () => {};',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const macros = result.symbols.filter((s) => s.kind === 'macro').map((s) => s.name)
+    expect(macros).toContain('log_it')
+    // A macro nested in a function body is still indexed, mirroring nested fns/structs.
+    expect(macros).toContain('inner')
+    // The `#[macro_export]` attribute folds into the macro's range (starts at the attribute line).
+    const logIt = result.symbols.find((s) => s.name === 'log_it' && s.kind === 'macro')!
+    expect(logIt.lineStart).toBe(1)
+    expect(logIt.body).toContain('#[macro_export]')
+    expect(logIt.body).toContain('macro_rules! log_it')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
