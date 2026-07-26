@@ -3107,6 +3107,22 @@ describe('read_commands', () => {
       const src = ["require 'json'", "require_relative 'lib/foo'"].join('\n')
       expect(extractImports(src, '.rake')).toEqual(['json', 'lib/foo'])
     })
+
+    it('expands a Scala grouped import (import foo.bar.{A, B, C}) into its individual selectors (regression: .scala/.sc had no dedicated branch, so this fell through to the generic fallback, whose capture class does not stop at "{" and so returned the single truncated, non-actionable blob "foo.bar.{A, B, C}" instead of three real import targets -- mirrors the same brace-group fix already applied to scala.ts\'s symbol-index extractor)', () => {
+      const src = 'import foo.bar.{A, B, C}'
+      expect(extractImports(src, '.scala')).toEqual(['foo.bar.A', 'foo.bar.B', 'foo.bar.C'])
+      expect(extractImports(src, '.sc')).toEqual(['foo.bar.A', 'foo.bar.B', 'foo.bar.C'])
+    })
+
+    it('resolves a Scala grouped-import rename (A => B) to the original (left-hand) symbol, and a wildcard selector (_) to base._, matching scala.ts', () => {
+      const src = 'import foo.bar.{Old => New, _}'
+      expect(extractImports(src, '.scala')).toEqual(['foo.bar.Old', 'foo.bar._'])
+    })
+
+    it('still extracts a plain (non-grouped) Scala import, including a wildcard import', () => {
+      const src = ['import scala.util.matching.Regex', 'import java.util._'].join('\n')
+      expect(extractImports(src, '.scala')).toEqual(['scala.util.matching.Regex', 'java.util._'])
+    })
   })
 
   describe('importsExtensionFor', () => {

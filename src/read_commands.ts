@@ -3364,6 +3364,31 @@ export function extractImports(text: string, ext: string): string[] {
       let m: RegExpExecArray | null
       while ((m = re.exec(line)) !== null) push(m[1])
     }
+  } else if (['.scala', '.sc'].includes(e)) {
+    // Scala's idiomatic multi-selector import (`import foo.bar.{A, B, C}`) isn't handled by the
+    // generic `import|require|use|#include` fallback below: its capture class `[^'">;]+` doesn't
+    // stop at `{`, so the whole grouped form is captured verbatim as one non-actionable blob
+    // (`foo.bar.{A, B, C}`) instead of the three real import targets actually being imported --
+    // the same brace-truncation gap already fixed for scala.ts's symbol-index extractor and for
+    // Rust's `use foo::{A, B}` here above. Mirrors scala.ts's BRACE_IMPORT_RE/IMPORT_RE handling:
+    // a selector may be a rename (`Old => New`, resolved to the left-hand original, matching what
+    // call sites actually reference) or the wildcard `_` (kept as `base._` rather than a bogus
+    // per-underscore entry).
+    for (const line of lines) {
+      const stripped = line.trim()
+      const braceM = /^import\s+([A-Za-z_][A-Za-z0-9_.]*)\.\{([^}]*)\}/.exec(stripped)
+      if (braceM) {
+        const base = braceM[1] ?? ''
+        for (const sel of (braceM[2] ?? '').split(',')) {
+          const original = sel.trim().split(/\s*=>\s*/)[0]?.trim() ?? ''
+          if (original === '') continue
+          push(original === '_' ? `${base}._` : `${base}.${original}`)
+        }
+        continue
+      }
+      const m = /^import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\._)?)/.exec(stripped)
+      if (m) push(m[1])
+    }
   } else if (['.ex', '.exs'].includes(e)) {
     // Elixir references other modules via `alias`/`import`/`require`/`use`. The generic
     // `import|require|use|#include` fallback catches the last three, but NOT `alias` -- the most
