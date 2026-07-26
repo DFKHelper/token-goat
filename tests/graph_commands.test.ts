@@ -712,6 +712,59 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS never included 'proto_message'/'proto_enum'/'proto_service' --
+  // the .proto extractor (languages/proto_idx.ts's KIND_MAP) emits those kinds for `message`,
+  // `enum`, and `service` declarations, the exact type/interface-shaped constructs TYPE_KINDS
+  // exists to surface (a proto message is analogous to struct, a proto enum to enum, a proto
+  // service's RPC method set to interface), yet every one was silently excluded from
+  // `token-goat types` -- the same class of gap already fixed for Rust union, Swift
+  // protocol/actor, Zig opaque, and Dart mixin/extension.
+  it('surfaces proto message/enum/service via TYPE_KINDS, matching struct/enum/interface', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-proto-'))
+    try {
+      const file = join(dir, 'fixture.proto')
+      writeFileSync(
+        file,
+        [
+          'syntax = "proto3";',
+          'message TypesProtoMessageFixture {',
+          '  string name = 1;',
+          '}',
+          'enum TypesProtoEnumFixture {',
+          '  UNKNOWN = 0;',
+          '}',
+          'service TypesProtoServiceFixture {',
+          '  rpc DoThing(TypesProtoMessageFixture) returns (TypesProtoMessageFixture);',
+          '}',
+          '',
+        ].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesProtoMessageFixture')
+      expect(parsed.find((r) => r.name === 'TypesProtoMessageFixture')?.kind).toBe('proto_message')
+      expect(parsed.map((r) => r.name)).toContain('TypesProtoEnumFixture')
+      expect(parsed.find((r) => r.name === 'TypesProtoEnumFixture')?.kind).toBe('proto_enum')
+      expect(parsed.map((r) => r.name)).toContain('TypesProtoServiceFixture')
+      expect(parsed.find((r) => r.name === 'TypesProtoServiceFixture')?.kind).toBe('proto_service')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
