@@ -76,6 +76,17 @@ global using static System.Math;
     expect(targets).toContain('System.Math')
   })
 
+  it('extracts a C# using alias directive (using Project = PC.MyCompany.Project;), resolving to the aliased target rather than dropping the line entirely (regression: USING_RE\'s capture group required "\\s*;" immediately after the name, but an alias directive has " = <target>;" there instead, so the whole line silently failed to match)', () => {
+    const content = `using Project = PC.MyCompany.Project;
+using System;
+`
+    const { imports } = extractCsharp(content, 'Aliases.cs')
+    const targets = imports.map((i) => i.target)
+    expect(targets).toContain('PC.MyCompany.Project')
+    expect(targets).toContain('System')
+    expect(targets).not.toContain('Project')
+  })
+
   it('extracts a class, method, property, and constructor that carry a same-line attribute (regression: CLASS_HEADER_RE/CONSTRUCTOR_RE/PROPERTY_RE/PROPERTY_HEADER_RE/PROPERTY_ARROW_RE/METHOD_RE are all anchored against the modifier alternation or return type directly, with no room for a leading [Attr] list, so [Obsolete] public class Foo / [Test] public Foo() / [JsonProperty("name")] public string Name { get; set; } -- all idiomatic C# -- silently dropped the whole declaration, and for a class, every member inside it)', () => {
     const content = `namespace App {
 [Obsolete] public class Foo

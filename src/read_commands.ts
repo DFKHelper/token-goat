@@ -3244,9 +3244,18 @@ export function extractImports(text: string, ext: string): string[] {
     // System;`), idiomatically consolidated into a single GlobalUsings.cs -- without it, a
     // global-using file (a real, common file shape in any modern .NET project) silently
     // reported zero imports, mirroring the same fix in csharp.ts's USING_RE.
+    // The optional trailing `(?:=\s*(...))?` covers a `using` *alias* directive (`using Project
+    // = PC.MyCompany.Project;` / `using MyList = System.Collections.Generic.List<int>;`), a
+    // common form for disambiguating or shortening a long/colliding namespace or type. Without
+    // it, the plain capture group's `\s*;` had to sit immediately after the alias name, but a
+    // real alias line has ` = <target>;` there instead -- the whole regex failed to match at
+    // all (not just truncated), so an aliased using directive silently reported zero
+    // imports/deps. When an alias target is present, push it (the real dependency) rather than
+    // the local alias name, mirroring how other alias-bearing branches above (Kotlin's `as`,
+    // Rust's `as`) resolve to the referenced target, not the local binding.
     for (const line of lines) {
-      const m = /^\s*(?:global\s+)?using\s+(?:static\s+)?([\w.]+)\s*;/.exec(line)
-      if (m) push(m[1])
+      const m = /^\s*(?:global\s+)?using\s+(?:static\s+)?([\w.]+)\s*(?:=\s*([\w.<>,\s]+))?\s*;/.exec(line)
+      if (m) push(m[2] ?? m[1])
     }
   } else if (e === '.php') {
     // PHP's require_once/include_once are the idiomatic form (avoids double-inclusion) -- far
