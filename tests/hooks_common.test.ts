@@ -5,6 +5,7 @@ import {
   contextOutput,
   countNonEmptyLines,
   denyOutput,
+  estimateResultCount,
   extractToolResponseField,
   getCwd,
   getFilePath,
@@ -130,6 +131,39 @@ describe('hooks_common', () => {
 
     it('treats a whitespace-only line as non-empty (only a truly zero-length line is dropped)', () => {
       expect(countNonEmptyLines('a\n   \nb')).toBe(3)
+    })
+  })
+
+  describe('estimateResultCount', () => {
+    // Real Claude Code Grep `files_with_matches` wire format (confirmed against real transcript
+    // logs), which prefixes the file list with a "Found N file(s)" summary line that is not
+    // itself a match -- countNonEmptyLines would overcount these by exactly one.
+    it('reads the count from a "Found N files" summary line rather than counting it as a match', () => {
+      expect(estimateResultCount('Found 4 files\na.ts\nb.ts\nc.ts\nd.ts')).toBe(4)
+    })
+
+    it('handles the singular "Found 1 file" form', () => {
+      expect(estimateResultCount('Found 1 file\na.ts')).toBe(1)
+    })
+
+    it('treats "No files found" as zero matches, not one', () => {
+      expect(estimateResultCount('No files found')).toBe(0)
+    })
+
+    it('treats "No matches found" (content/count mode empty result) as zero matches', () => {
+      expect(estimateResultCount('No matches found')).toBe(0)
+    })
+
+    it('reads a "Found N matches" summary line the same way', () => {
+      expect(estimateResultCount('Found 3 matches\nfoo\nbar\nbaz')).toBe(3)
+    })
+
+    it('falls back to a raw non-empty-line count when there is no summary line (Grep content mode, Glob path list)', () => {
+      expect(estimateResultCount('a.ts\nb.ts\nc.ts')).toBe(3)
+    })
+
+    it('returns 0 for an empty string', () => {
+      expect(estimateResultCount('')).toBe(0)
     })
   })
 

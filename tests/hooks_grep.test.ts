@@ -106,6 +106,36 @@ describe('preGrepDedupHandler', () => {
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'grep_dedup_hint')).toBeUndefined()
   })
 
+  // Regression: Claude Code's real files_with_matches wire format prefixes the file list with a
+  // "Found N file(s)" summary line (confirmed against real transcript logs), which every other
+  // test in this file elides in favor of a bare synthetic file list. Recording that header line
+  // as an extra match inflated the recall count by exactly one and made a genuinely empty
+  // "No files found" result register as "1 match".
+  it('reads the real "Found N files" wire format without off-by-one inflation from the header line', () => {
+    postGrepHandler(grepPostEvent('useEffect', 'Found 6 files\na.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts'))
+
+    const result = preGrepDedupHandler(grepEvent('useEffect'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('6 matches')
+    }
+  })
+
+  it('does not treat a real "No files found" empty result as a 1-match hit', () => {
+    postGrepHandler(grepPostEvent('rareTerm', 'No files found'))
+
+    const cfg = defaultConfig()
+    cfg.hints.grep_dedup_min_matches = 0
+    saveConfig(cfg)
+    invalidateConfigCache()
+
+    const result = preGrepDedupHandler(grepEvent('rareTerm'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('0 matches')
+    }
+  })
+
   it('does not fire for a different pattern at the same path (distinct signature)', () => {
     postGrepHandler(grepPostEvent('useEffect', 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n'))
 
