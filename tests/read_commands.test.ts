@@ -3102,6 +3102,11 @@ describe('read_commands', () => {
       ].join('\n')
       expect(extractImports(src, '.mk')).toEqual(['config.mk', 'a.mk', 'b.mk'])
     })
+
+    it('extracts require/require_relative from a .rake file (regression: .rake fell through to the generic fallback, which never matches require_relative)', () => {
+      const src = ["require 'json'", "require_relative 'lib/foo'"].join('\n')
+      expect(extractImports(src, '.rake')).toEqual(['json', 'lib/foo'])
+    })
   })
 
   describe('importsExtensionFor', () => {

@@ -3225,7 +3225,12 @@ export function extractImports(text: string, ext: string): string[] {
       const req = /^\s*requires\s+(?:transitive\s+|static\s+)*([\w.]+)\s*;/.exec(line)
       if (req) push(req[1])
     }
-  } else if (e === '.rb') {
+  } else if (e === '.rb' || e === '.rake') {
+    // `.rake` (Rake task files) is plain Ruby, sharing this file's `require_relative` form --
+    // without `.rake` here, extractImports fell through to the generic `import|require|use`
+    // fallback below, which matches bare `require 'x'` but not `require_relative 'x'` (the
+    // `_relative` suffix breaks the fallback's `require\s+` anchor), silently dropping the
+    // idiomatic `require_relative 'lib/foo'` pattern from every `.rake` file's import list.
     for (const line of lines) {
       const m = /^\s*require(?:_relative)?\s+['"]([^'"]+)['"]/.exec(line)
       if (m) push(m[1])
