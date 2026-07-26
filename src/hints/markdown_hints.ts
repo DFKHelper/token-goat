@@ -136,22 +136,34 @@ export function getWellKnownSections(basename: string): string[] {
  * Extract the most recent versioned heading from CHANGELOG.md content.
  * Returns a section command string for the most recent version after Unreleased,
  * or empty string if none found.
+ *
+ * A changelog is not guaranteed to carry the Keep-a-Changelog "## [Unreleased]" placeholder --
+ * many projects omit it once there's nothing pending, or never adopted the convention at all.
+ * Requiring it as a precondition meant a changelog with real version headings but no Unreleased
+ * section always returned '', silently disabling this hint. If no Unreleased header is ever
+ * seen, fall back to the first version heading found -- the intent is "point at the most recent
+ * real version", not "require the Unreleased placeholder to exist".
  */
 export function extractChangelogVersionHint(content: string, filePath: string): string {
   const lines = content.split('\n')
   let foundUnreleased = false
+  let firstVersion: string | null = null
 
   for (const line of lines) {
     const m = /^##\s+(\[?[\d]+\.[\d]+\.[\d]+\]?)/.exec(line)
     if (m) {
-      if (foundUnreleased && !line.toLowerCase().includes('unreleased')) {
+      if (foundUnreleased) {
         const ver = m[1]
         return ` | token-goat section "${filePath}::${ver}"`
       }
+      if (firstVersion === null) firstVersion = m[1] as string
     }
     if (/^##\s+\[?unreleased\]?/i.test(line)) {
       foundUnreleased = true
     }
+  }
+  if (!foundUnreleased && firstVersion !== null) {
+    return ` | token-goat section "${filePath}::${firstVersion}"`
   }
   return ''
 }
