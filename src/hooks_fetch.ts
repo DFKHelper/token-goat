@@ -14,9 +14,11 @@ function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
 
-/** Shared prologue for {@link preFetchHandler}/{@link postFetchHandler}: only a WebFetch call
- * with a valid url and a session id is in scope; everything else passes through untouched. */
-function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
+/** Identity check shared by every WebFetch handler below: only a WebFetch call with a valid url
+ * is in scope. Deliberately does NOT require a session id -- see {@link resolveWebFetchContext}
+ * for the session-scoped variant used by the caching/dedup paths, and postFetchHandler's own
+ * comment for why the injection scan must run even without one. */
+function resolveWebFetchUrl(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
   const toolName = getToolName(event);
   if (toolName !== 'WebFetch') {
     return null;
@@ -28,11 +30,18 @@ function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, u
     return null;
   }
 
+  return { toolInput, url };
+}
+
+/** Shared prologue for the session-scoped caching/dedup paths (preFetchHandler's recall check,
+ * postFetchHandler's storeWebOutput): only a WebFetch call with a valid url AND a session id is
+ * in scope -- caching is inherently session-keyed, so a call with no session id has nothing to
+ * cache against. Everything else passes through untouched. */
+function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
   if (!event.sessionId) {
     return null;
   }
-
-  return { toolInput, url };
+  return resolveWebFetchUrl(event);
 }
 
 export function preFetchHandler(event: HookEvent): HookOutput {
@@ -68,21 +77,36 @@ export function preFetchHandler(event: HookEvent): HookOutput {
 
 export function postFetchHandler(event: HookEvent): HookOutput {
   try {
-    const ctx = resolveWebFetchContext(event);
-    if (ctx === null) {
+    // Deliberately resolved WITHOUT requiring a session id (unlike the caching path below): the
+    // injection scan's contract per README ("every fetched page is scanned for attack patterns")
+    // is unconditional, but relay.ts's sessionId derivation falls back to '' for any harness that
+    // doesn't send session_id/sessionId on the wire (see its own comment) -- a call from such a
+    // harness must still get scanned, even though it has nothing to cache against.
+    const urlCtx = resolveWebFetchUrl(event);
+    if (urlCtx === null) {
       return passOutput();
     }
-    const { toolInput, url } = ctx;
+    const { toolInput, url } = urlCtx;
 
     recordStat('web_fetch');
 
     const body = extractToolResponse(event.raw);
 
-    // Prompt-injection scan: README's documented contract ("every fetched page is scanned for attack patterns") is unconditional, so this runs ahead of the caching-size gate below rather than being folded into it. A match anywhere in the response wraps the whole response in an untrusted-content fence before it reaches the model; the matched pattern names are written to the stats ledger's `detail` column. `injection.enabled` is the documented one-line opt-out.
+    // Prompt-injection scan: README's documented contract ("every fetched page is scanned for attack patterns") is unconditional, so this runs ahead of both the session gate and the caching-size gate below rather than being folded into either. A match anywhere in the response wraps the whole response in an untrusted-content fence before it reaches the model; the matched pattern names are written to the stats ledger's `detail` column. `injection.enabled` is the documented one-line opt-out.
     const injCfg = loadConfig().injection;
     const injectionMatches = injCfg.enabled && body ? scanForInjectionPatterns(body) : [];
     if (injectionMatches.length > 0) {
       recordStat('injection_detected', 0, 0, undefined, injectionMatches.join(','));
+    }
+
+    // Everything below this point (dedup cache lookup key reuse aside, the actual store) is
+    // inherently session-scoped -- a missing session id has nothing to cache against, but the
+    // fence above must still apply to whatever was scanned.
+    if (!event.sessionId) {
+      if (injectionMatches.length > 0) {
+        return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(body, injectionMatches) };
+      }
+      return passOutput();
     }
 
     if (!body || body.length < 1024) {
