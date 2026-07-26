@@ -661,6 +661,16 @@ const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['constructor_declaration', 'method'],
   ['record_declaration', 'class'],
   ['annotation_type_declaration', 'interface'],
+  // An annotation type's members (`String value() default "";`, `int count();` inside an
+  // `@interface` body) parse as `annotation_type_element_declaration` -- a distinct node type
+  // from `method_declaration`, even though it is the exact same "signature-shaped declaration"
+  // as an interface method. It exposes its own `name` field (an `identifier`), same shape as
+  // `method_declaration`, but had no map entry here: every annotation member was silently
+  // invisible to `symbol`/`outline`/`skeleton`/`read`, even though the annotation type itself
+  // indexed fine via `annotation_type_declaration` above. Mapped to 'method' to match how a
+  // Go interface's `method_elem` and a Rust trait's `function_signature_item` are folded into
+  // the same kind as their bodied counterparts.
+  ['annotation_type_element_declaration', 'method'],
 ])
 
 function extractJavaSymbols(root: TsNode, filePath: string): SymbolEntry[] {

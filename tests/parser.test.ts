@@ -858,6 +858,30 @@ describe('parseFile', () => {
     expect(symNames.filter((n) => n === 'Foo').length).toBeGreaterThanOrEqual(2)
   })
 
+  it('indexes Java annotation type elements (the members of an @interface)', async () => {
+    // An annotation type's members (`String value() default "";`) parse as a distinct
+    // `annotation_type_element_declaration` node -- NOT `method_declaration`, even though it
+    // is a signature-shaped declaration like an interface method. Absent from
+    // JAVA_KIND_BY_TYPE, every annotation member was silently invisible to the index even
+    // though the annotation type itself (`annotation_type_declaration`) indexed fine.
+    const javaFile = write(
+      'MyAnno.java',
+      [
+        '@interface MyAnno {',
+        '  String value() default "";',
+        '  int count();',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(javaFile)
+    expect(result.language).toBe('java')
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('MyAnno') // annotation_type_declaration
+    expect(symNames).toContain('value') // annotation_type_element_declaration — dropped pre-fix
+    expect(symNames).toContain('count') // annotation_type_element_declaration — dropped pre-fix
+  })
+
   it('keeps base HTML heading/id symbols alongside lwc:ref/c-* extraction for an LWC template', async () => {
     const lwcDir = path.join(TMP, 'force-app', 'main', 'default', 'lwc', 'checkoutPanel')
     fs.mkdirSync(lwcDir, { recursive: true })
