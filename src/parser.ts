@@ -675,6 +675,18 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // TYPE_KINDS, since a namespace is a container, not a type declaration (mirrors 'module' being
   // absent from TYPE_KINDS for the same reason).
   ['namespace_definition', 'namespace'],
+  // A bodiless function prototype (`int add(int a, int b);`) parses as a plain `declaration`, NOT
+  // `function_definition` (which requires a `{ ... }` body) -- the dominant content of any C/C++
+  // header file, which is almost entirely prototypes forward-declaring functions defined
+  // elsewhere. Pre-fix, every one of these was silently dropped: `symbol`/`read`/`outline` on a
+  // header returned nothing for its declared API surface. `declaration` is also the node type for
+  // every plain variable/extern declaration (`int x;`, `extern int y;`) and for a function-pointer
+  // *variable* (`int (*fp)(int);`, whose declarator, confusingly, ALSO nests a `function_declarator`
+  // around a `parenthesized_declarator`), so this can't be a blanket kind-map entry the way
+  // struct/enum/union are -- `cFunctionPrototypeName` below does the real filtering by inspecting
+  // the declarator shape, and returns null (silently skipped, matching how an unnamed struct/enum
+  // tag is skipped) for anything that isn't a genuine function prototype.
+  ['declaration', 'function'],
 ])
 
 function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
@@ -684,8 +696,41 @@ function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       ? cFunctionName(node)
       : node.type === 'type_definition'
         ? cTypedefAliasName(node)
-        : nodeName(node),
+        : node.type === 'declaration'
+          ? cFunctionPrototypeName(node)
+          : nodeName(node),
   )
+}
+
+/**
+ * Resolve a bodiless C/C++ `declaration` node to a function name IFF its declarator chain is
+ * shaped like a genuine function prototype, not a plain variable or a function-pointer variable.
+ * Descends through any wrapping `pointer_declarator`/`reference_declarator` (covers a
+ * pointer/reference *return type*, e.g. `int *foo(int x);`) to the first `function_declarator`.
+ * That node's own `declarator` field is the discriminator: a real prototype's is a bare
+ * identifier (the function's name); a function-pointer *variable*'s is a `parenthesized_declarator`
+ * wrapping the pointer (`int (*fp)(int);` -- the parens group "pointer to function", not a call).
+ * Anything else (no `function_declarator` reached at all, e.g. `int x;`) isn't a function and
+ * returns null so the declaration is skipped, same as an anonymous struct/enum/union tag.
+ */
+function cFunctionPrototypeName(node: TsNode): string | null {
+  let cur: TsNode | null = node.childForFieldName('declarator')
+  // Bound the walk so a malformed/unexpected tree can never loop forever.
+  for (let i = 0; cur !== null && i < 16; i++) {
+    if (cur.type === 'function_declarator') {
+      const inner = cur.childForFieldName('declarator')
+      if (inner === null) return null
+      if (inner.type === 'identifier' || inner.type === 'field_identifier') return inner.text
+      if (inner.type === 'qualified_identifier') return lastSegment(inner.text)
+      return null // e.g. parenthesized_declarator -- a function-pointer *variable*, not a prototype
+    }
+    if (cur.type === 'pointer_declarator' || cur.type === 'reference_declarator') {
+      cur = cur.childForFieldName('declarator')
+      continue
+    }
+    return null // not a function-shaped declarator (plain variable, extern, etc.)
+  }
+  return null
 }
 
 /** Descend a C/C++ `type_definition`'s `declarator` chain to the aliased `type_identifier`. */

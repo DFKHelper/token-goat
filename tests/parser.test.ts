@@ -399,7 +399,40 @@ describe('parseFile', () => {
     const hFile = write('plain.h', 'int add(int a, int b);\n#define MAX 100\n')
     const result = await parseFile(hFile)
     expect(result.language).toBe('c')
-    expect(result.symbols).toEqual([])
+    // The prototype itself indexes as a function (see the dedicated prototype test below);
+    // #define is preprocessor text, not a tree-sitter declaration, and stays unindexed.
+    expect(result.symbols.map((s) => s.name)).toEqual(['add'])
+  })
+
+  it('indexes bodiless C/C++ function prototypes (kind function) without false-positiving on variables or function-pointer variables', async () => {
+    // Header files are almost entirely prototypes -- a `declaration` node, not `function_definition`
+    // (which requires a body). Every one of these was silently dropped pre-fix.
+    const cFile = write(
+      'proto.h',
+      [
+        'int add(int a, int b);', // plain prototype
+        'int *make_widget(void);', // pointer return type -- wraps in pointer_declarator
+        'extern void run(void);', // storage-class specifier prefix
+        'int global_var;', // plain variable -- must NOT be indexed as a function
+        'extern int gv2;', // extern variable -- must NOT be indexed as a function
+        'int (*fp)(int);', // function-pointer VARIABLE -- must NOT be indexed as a function
+        '',
+      ].join('\n'),
+    )
+    const cResult = await parseFile(cFile)
+    expect(cResult.language).toBe('c')
+    const cNames = cResult.symbols.map((s) => s.name)
+    for (const fn of ['add', 'make_widget', 'run']) {
+      expect(cResult.symbols.some((s) => s.name === fn && s.kind === 'function')).toBe(true)
+    }
+    expect(cNames).not.toContain('global_var')
+    expect(cNames).not.toContain('gv2')
+    expect(cNames).not.toContain('fp')
+
+    const cppFile = write('proto.hpp', 'void greet(const char *name);\n')
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    expect(cppResult.symbols.some((s) => s.name === 'greet' && s.kind === 'function')).toBe(true)
   })
 
   it('indexes Go type, const, var, and method symbols (names live on *_spec nodes)', async () => {
