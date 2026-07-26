@@ -228,6 +228,14 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['podfile', 'ruby'],
   ['capfile', 'ruby'],
   ['fastfile', 'ruby'],
+  // Brewfile: Homebrew Bundle's dependency manifest (`brew "wget"`, `cask "..."`, `tap "..."`)
+  // is ordinary Ruby method-call syntax, evaluated by Homebrew's own Ruby DSL -- the extensionless
+  // macOS-dev-environment analogue of Gemfile/package.json, and near-universal in dotfiles repos
+  // that use `brew bundle dump`/`brew bundle install`. Same has-extractor-but-no-dispatch-entry
+  // gap as the other extensionless Ruby DSL files above: without this entry it fell through to
+  // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling its content
+  // exactly like any other .rb file.
+  ['brewfile', 'ruby'],
 ])
 
 // Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,
