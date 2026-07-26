@@ -321,11 +321,24 @@ function findQuotedReplyOffset(text: string): number {
   let offset = 0
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
-    if (QUOTED_REPLY_LINE_RE.test(line)) return offset
-    if (FORWARD_HEADER_FROM_RE.test(line)) {
+    // A CRLF-formatted body (routine for real email, and untouched by this pack anywhere else)
+    // leaves a trailing '\r' on every line after split('\n'). JS regex '$' without the 'm' flag
+    // matches only the true end of the string -- it has no special exception for a trailing
+    // character the way some other regex engines treat a trailing '\n' -- so the "On ... wrote:"
+    // and "-----Original Message-----" branches of QUOTED_REPLY_LINE_RE, and every '$'-anchored
+    // sibling-header line in FORWARD_HEADER_CLUSTER_RE, silently never matched a CRLF body: the
+    // whole quoted-reply/forwarded-history trim this function exists for was a no-op for any
+    // thread using CRLF line endings. Stripping the trailing '\r' before each regex test (offset
+    // math below still uses the untouched `line`, so reconstructed offsets stay correct) fixes
+    // this without weakening the '>' branch, which has no '$' anchor and was never affected.
+    const lineForMatch = line.endsWith('\r') ? line.slice(0, -1) : line
+    if (QUOTED_REPLY_LINE_RE.test(lineForMatch)) return offset
+    if (FORWARD_HEADER_FROM_RE.test(lineForMatch)) {
       let siblingMatches = 0
       for (let j = i + 1; j < lines.length && j <= i + FORWARD_HEADER_CLUSTER_LOOKAHEAD; j++) {
-        if (FORWARD_HEADER_CLUSTER_RE.test(lines[j] ?? '')) siblingMatches++
+        const sibling = lines[j] ?? ''
+        const siblingForMatch = sibling.endsWith('\r') ? sibling.slice(0, -1) : sibling
+        if (FORWARD_HEADER_CLUSTER_RE.test(siblingForMatch)) siblingMatches++
       }
       if (siblingMatches >= FORWARD_HEADER_CLUSTER_MIN_MATCHES) return offset
     }
