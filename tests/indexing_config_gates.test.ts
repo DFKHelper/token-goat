@@ -79,9 +79,11 @@ let TMP: string
 let dbPath: string
 let tmpHome: string
 let prevHome: string | undefined
+let prevEmbeddingsEnv: string | undefined
 
 beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
+  prevEmbeddingsEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-indexing-config-gates-home-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
   invalidateConfigCache()
@@ -97,6 +99,11 @@ beforeEach(() => {
 afterEach(() => {
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
+  // Several tests below set TOKEN_GOAT_EMBEDDINGS_ENABLED='true' to exercise the embedding
+  // path; loadConfig() reads it process-wide, so leaving it set would leak into whichever test
+  // runs next in this worker and silently change its embeddings-enabled behavior.
+  if (prevEmbeddingsEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
+  else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbeddingsEnv
   invalidateConfigCache()
   closeAllDbs()
   try {
