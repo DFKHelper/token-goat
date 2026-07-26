@@ -491,6 +491,40 @@ describe('parseFile', () => {
     expect(check!.body).toContain('#[test]')
   })
 
+  it('indexes Rust module declarations (mod_item), including nested and body-less mods', async () => {
+    const rustFile = write(
+      'mods.rs',
+      [
+        'mod config {',
+        '    pub fn load() {}',
+        '    mod nested {',
+        '        pub fn deep() {}',
+        '    }',
+        '}',
+        '',
+        '#[cfg(test)]',
+        'mod tests {',
+        '    fn check() {}',
+        '}',
+        '',
+        'mod bare;',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const modules = result.symbols.filter((s) => s.kind === 'module').map((s) => s.name)
+    // A top-level mod, a nested mod, a body-less `mod bare;`, and an attributed mod all index.
+    expect(modules).toContain('config')
+    expect(modules).toContain('nested')
+    expect(modules).toContain('tests')
+    expect(modules).toContain('bare')
+    // The `#[cfg(test)]` attribute folds into the mod's range (starts at the attribute line).
+    const testsMod = result.symbols.find((s) => s.name === 'tests' && s.kind === 'module')
+    expect(testsMod!.lineStart).toBe(8)
+    expect(testsMod!.body).toContain('#[cfg(test)]')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
