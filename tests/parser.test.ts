@@ -463,6 +463,29 @@ describe('parseFile', () => {
     expect(names).toContain('helper')
     expect(names).toContain('Method')
   })
+
+  it('indexes Go interface method signatures (method_elem, not a *_declaration node)', async () => {
+    const goFile = write(
+      'iface.go',
+      [
+        'package main',
+        '',
+        'type Reader interface {',
+        '\tRead(p []byte) (n int, err error)',
+        '\tClose() error',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(goFile)
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Reader')
+    // Interface method signatures parse as `method_elem`, a distinct node type from
+    // `method_declaration` (a concrete method with a receiver and body) -- without its own
+    // kind-map entry, every declared method of an interface was invisible to the index.
+    expect(names).toContain('Read')
+    expect(names).toContain('Close')
+  })
     it('excludes function-local var/const/type declarations from the Go index', async () => {
     const goFile = write(
       'locals.go',
@@ -477,6 +500,7 @@ describe('parseFile', () => {
         '\tvar localVar int',
         '\tconst localConst = 2',
         '\ttype localType struct{ b int }',
+        '\ttype localIface interface{ LocalMethod() }',
         '\t_ = localVar',
         '\t_ = localConst',
         '}',
@@ -501,6 +525,10 @@ describe('parseFile', () => {
     expect(names).not.toContain('localConst')
     expect(names).not.toContain('localType')
     expect(names).not.toContain('closureVar')
+    // A function-local interface's methods must not leak into the index either, matching the
+    // exclusion of the interface type itself.
+    expect(names).not.toContain('localIface')
+    expect(names).not.toContain('LocalMethod')
   })
 
 
