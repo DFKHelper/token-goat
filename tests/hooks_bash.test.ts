@@ -2370,6 +2370,22 @@ describe('extractRgSymbolSearch', () => {
     const result = extractRgSymbolSearch('rg -n "Section" docs/guide.md')
     expect(result).toBeNull()
   })
+
+  it('still fires with a --color long flag that merely contains the letter r (not an actual recursive flag)', () => {
+    // Regression: the recursive-flag guard used to match any long flag containing 'r' anywhere
+    // (--color, --sort, ...) because its leading `-` could anchor off the SECOND dash of a
+    // double-dash flag. That silently suppressed the symbol-search hint for one of the most
+    // common rg/grep flags in real commands.
+    const result = extractRgSymbolSearch('rg -n --color=never "MyType" src/types.ts')
+    expect(result).not.toBeNull()
+    expect(result?.identifier).toBe('MyType')
+    expect(result?.filePath).toBe('src/types.ts')
+  })
+
+  it('does not fire for --recursive long flag', () => {
+    const result = extractRgSymbolSearch('grep -n --recursive "MyType" src/types.ts')
+    expect(result).toBeNull()
+  })
 })
 
 describe('preBashHandler — rg symbol search hint', () => {
