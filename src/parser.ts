@@ -572,6 +572,17 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // and gets no RUST_LOCAL_KINDS entry (mirroring how nested structs/enums stay indexed). Its name
   // lives on the standard `name` field.
   ['union_item', 'union'],
+  // `type Item;` (unbodied) / `type Item = Foo;` (with a default) declared inside a `trait { ... }`
+  // block — an associated type, the mechanism behind `Iterator::Item`, `Deref::Target`, and every
+  // other trait with a type member — parses as its OWN node type, `associated_type`, which is
+  // distinct from the free-standing `type_item` already mapped above (`type Alias = Foo;` at module
+  // scope). `associated_type` was absent here, so every trait associated-type declaration was
+  // silently dropped from the index, same failure shape as the `function_signature_item` gap fixed
+  // above for unbodied trait methods. Its name lives on the standard `name` field, so `nodeName`
+  // resolves it. Mapped to 'type', matching free-standing `type_item`, so both forms of "this is a
+  // type declaration" land under one kind. Not a value binding, so no RUST_LOCAL_KINDS entry —
+  // though in practice `associated_type` only ever appears inside a `trait`/`impl` body, never a fn.
+  ['associated_type', 'type'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
