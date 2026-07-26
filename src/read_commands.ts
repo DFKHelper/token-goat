@@ -1396,8 +1396,10 @@ export interface JsonOutlineCliOptions {
 
 /** Shared body for ``json-outline``/``yaml-outline``: read file, parse via the given
  * format-specific parser, then delegate to outlineJson/formatJsonOutline. Parameterized by
- * `parse` (the format's parse function) and `formatLabel` (used in the parse-error message). */
-function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string): number {
+ * `parse` (the format's parse function), `formatLabel` (used in the parse-error message), and
+ * `kind` (the recordReadStat kind, matching stats.ts's KIND_TO_SOURCE/COMMAND_KINDS entry for
+ * this command -- same "read replacement" shape as runCsvQuery/runCoverageReportGaps). */
+function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string, kind: string): number {
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
@@ -1413,10 +1415,15 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
   }
 
   const outline = outlineJson(data)
+  const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    emit(JSON.stringify(outline))
+    const jsonText = JSON.stringify(outline)
+    emit(jsonText)
+    recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
   } else {
-    emit(formatJsonOutline(outline))
+    const text2 = formatJsonOutline(outline)
+    emit(text2)
+    recordReadStat(kind, fullSourceBytes, text2, opts.file)
   }
   return 0
 }
@@ -1425,7 +1432,7 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
  * dumping it -- element count + key/type shape for an array, top-level key types/sizes for
  * an object. */
 export function runJsonOutline(opts: JsonOutlineCliOptions): number {
-  return runOutlineCommand(opts, JSON.parse, 'JSON')
+  return runOutlineCommand(opts, JSON.parse, 'JSON', 'json_outline')
 }
 
 export interface JsonQueryCliOptions {
@@ -1437,13 +1444,16 @@ export interface JsonQueryCliOptions {
 
 /** Shared body for ``json-query``/``yaml-query``: read file, parse via the given
  * format-specific parser, then delegate to queryJson. Parameterized by `parse` (the format's
- * parse function), `formatLabel` (used in the parse-error message), and `guardTag` (passed to
- * emitGuarded so plain-text output is capped/labeled per-command). */
+ * parse function), `formatLabel` (used in the parse-error message), `guardTag` (passed to
+ * emitGuarded so plain-text output is capped/labeled per-command), and `kind` (the
+ * recordReadStat kind, matching stats.ts's KIND_TO_SOURCE/COMMAND_KINDS entry for this
+ * command -- same "read replacement" shape as runCsvQuery/runCoverageReportGaps). */
 function runQueryCommand(
   opts: JsonQueryCliOptions,
   parse: (text: string) => unknown,
   formatLabel: string,
   guardTag: string,
+  kind: string,
 ): number {
   const text = readFileText(opts.file)
   if (text === null) {
@@ -1469,10 +1479,13 @@ function runQueryCommand(
 
   try {
     const result = queryJson(data, opts.path)
+    const fullSourceBytes = sumFileSizes([opts.file])
 
     if (!result.fanned) {
       const value = result.items[0]
-      emit(opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2))
+      const valueText = opts.json === true ? JSON.stringify(value) : JSON.stringify(value, null, 2)
+      emit(valueText)
+      recordReadStat(kind, fullSourceBytes, valueText, opts.file)
       return 0
     }
 
@@ -1482,13 +1495,17 @@ function runQueryCommand(
 
     if (opts.json === true) {
       const capped = guardJsonRows(limited)
-      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }))
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
+      emit(jsonText)
+      recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
     } else {
       const lines = limited.map((item) => JSON.stringify(item))
       if (headTruncated) {
         lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
       }
-      emitGuarded(lines.join('\n'), guardTag)
+      const plainText = lines.join('\n')
+      emitGuarded(plainText, guardTag)
+      recordReadStat(kind, fullSourceBytes, plainText, opts.file)
     }
     return 0
   } catch (e) {
@@ -1501,7 +1518,7 @@ function runQueryCommand(
  * subset from a JSON document by dot-path spec (`[n]` index, `[*]` wildcard,
  * `[field=value]` filter), instead of a raw Read. */
 export function runJsonQuery(opts: JsonQueryCliOptions): number {
-  return runQueryCommand(opts, JSON.parse, 'JSON', 'json-query')
+  return runQueryCommand(opts, JSON.parse, 'JSON', 'json-query', 'json_query')
 }
 
 /** Parses YAML text, handling multi-document streams (`---`-separated) via js-yaml's loadAll -- a single-document file (the overwhelming majority) unwraps to its one value so path queries work directly against it, while a genuine multi-doc stream (k8s manifests, etc.) stays an array so the existing [n]/[*] json_query.ts grammar indexes into documents for free. */
@@ -1512,12 +1529,12 @@ function parseYamlDocument(text: string): unknown {
 
 /** Handle ``token-goat yaml-outline file``: structural summary of a YAML document, reusing json_query.ts's outlineJson (a parsed YAML document is the same array/object/scalar shape as parsed JSON). */
 export function runYamlOutline(opts: JsonOutlineCliOptions): number {
-  return runOutlineCommand(opts, parseYamlDocument, 'YAML')
+  return runOutlineCommand(opts, parseYamlDocument, 'YAML', 'yaml_outline')
 }
 
 /** Handle ``token-goat yaml-query file path``: extract one value or a projected/filtered subset from a YAML document by dot-path, reusing json_query.ts's queryJson (same grammar as json-query). */
 export function runYamlQuery(opts: JsonQueryCliOptions): number {
-  return runQueryCommand(opts, parseYamlDocument, 'YAML', 'yaml-query')
+  return runQueryCommand(opts, parseYamlDocument, 'YAML', 'yaml-query', 'yaml_query')
 }
 
 export interface OpenApiOutlineCliOptions {
@@ -1553,10 +1570,15 @@ function loadOpenApiOperations(file: string): ReturnType<typeof extractOperation
 export function runOpenApiOutline(opts: OpenApiOutlineCliOptions): number {
   const operations = loadOpenApiOperations(opts.file)
   if (operations === null) return 1
+  const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    emit(JSON.stringify(operations))
+    const jsonText = JSON.stringify(operations)
+    emit(jsonText)
+    recordReadStat('openapi_outline', fullSourceBytes, jsonText, opts.file)
   } else {
-    emitGuarded(formatOpenApiOutline(operations), 'openapi-outline')
+    const text = formatOpenApiOutline(operations)
+    emitGuarded(text, 'openapi-outline')
+    recordReadStat('openapi_outline', fullSourceBytes, text, opts.file)
   }
   return 0
 }
@@ -1584,10 +1606,15 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
     return 1
   }
 
+  const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    emit(JSON.stringify(match))
+    const jsonText = JSON.stringify(match)
+    emit(jsonText)
+    recordReadStat('openapi_op', fullSourceBytes, jsonText, opts.operation)
   } else {
-    emitGuarded(formatOperationDetail(match), 'openapi-op')
+    const text = formatOperationDetail(match)
+    emitGuarded(text, 'openapi-op')
+    recordReadStat('openapi_op', fullSourceBytes, text, opts.operation)
   }
   return 0
 }
@@ -1616,10 +1643,15 @@ export function runZipList(opts: ZipListCliOptions): number {
     return 1
   }
 
+  const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    emit(JSON.stringify(entries))
+    const jsonText = JSON.stringify(entries)
+    emit(jsonText)
+    recordReadStat('zip_list', fullSourceBytes, jsonText, opts.file)
   } else {
-    emitGuarded(formatZipList(entries), 'zip-list')
+    const text = formatZipList(entries)
+    emitGuarded(text, 'zip-list')
+    recordReadStat('zip_list', fullSourceBytes, text, opts.file)
   }
   return 0
 }
@@ -1672,11 +1704,15 @@ export function runZipRead(opts: ZipReadCliOptions): number {
 
   const buf = Buffer.from(content)
   const text = isValidUtf8(buf) ? buf.toString('utf-8') : '[binary content elided by token-goat]'
+  const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    emit(JSON.stringify({ path: opts.entry, text }))
+    const jsonText = JSON.stringify({ path: opts.entry, text })
+    emit(jsonText)
+    recordReadStat('zip_read', fullSourceBytes, jsonText, opts.entry)
   } else {
     emitGuarded(text, 'zip-read')
+    recordReadStat('zip_read', fullSourceBytes, text, opts.entry)
   }
   return 0
 }
@@ -1793,10 +1829,15 @@ export interface SqliteSchemaCliOptions {
 export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
   try {
     const schema = getSqliteSchema(opts.file)
+    const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      emit(JSON.stringify(schema))
+      const jsonText = JSON.stringify(schema)
+      emit(jsonText)
+      recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
-      emit(formatSqliteSchema(schema))
+      const text = formatSqliteSchema(schema)
+      emit(text)
+      recordReadStat('sqlite_schema', fullSourceBytes, text, opts.file)
     }
     return 0
   } catch (e) {
@@ -1833,22 +1874,25 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     const headTruncated = head !== undefined && result.rows.length > head
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
+    const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
       // totalCount must come from `result.rows.length` (captured above, before --head slices
       // `rows`) -- capped.totalCount would report the already-head-limited row count instead of
       // the true result size, same lie as runCsvQuery's --head/--json bug.
       const capped = guardJsonRows(rows)
-      emit(
-        JSON.stringify({
-          columns: result.columns,
-          items: capped.items,
-          truncated: capped.truncated || headTruncated || result.rowCapped,
-          totalCount,
-          rowCapped: result.rowCapped,
-        }),
-      )
+      const jsonText = JSON.stringify({
+        columns: result.columns,
+        items: capped.items,
+        truncated: capped.truncated || headTruncated || result.rowCapped,
+        totalCount,
+        rowCapped: result.rowCapped,
+      })
+      emit(jsonText)
+      recordReadStat('sqlite_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      emit(formatSqliteQueryTable({ ...result, rows }, { headTruncated }))
+      const text = formatSqliteQueryTable({ ...result, rows }, { headTruncated })
+      emit(text)
+      recordReadStat('sqlite_query', fullSourceBytes, text, opts.file)
     }
     return 0
   } catch (e) {
@@ -1945,12 +1989,20 @@ export function runConflicts(opts: ConflictsCliOptions): number {
     if (parsed.regions.length > 0 || parsed.warnings.length > 0) results.push(parsed)
   }
 
+  const fullSourceBytes = sumFileSizes(files)
+  const detail = opts.path ?? '.'
   if (opts.json === true) {
-    emit(JSON.stringify(opts.summary === true ? results.map(summarizeFileConflicts) : results))
+    const jsonText = JSON.stringify(opts.summary === true ? results.map(summarizeFileConflicts) : results)
+    emit(jsonText)
+    recordReadStat('conflicts', fullSourceBytes, jsonText, detail)
   } else if (opts.summary === true) {
-    emitGuarded(formatConflictSummaries(results.map(summarizeFileConflicts)), 'conflicts')
+    const text = formatConflictSummaries(results.map(summarizeFileConflicts))
+    emitGuarded(text, 'conflicts')
+    recordReadStat('conflicts', fullSourceBytes, text, detail)
   } else {
-    emitGuarded(formatConflicts(results), 'conflicts')
+    const text = formatConflicts(results)
+    emitGuarded(text, 'conflicts')
+    recordReadStat('conflicts', fullSourceBytes, text, detail)
   }
   return 0
 }
