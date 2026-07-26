@@ -340,6 +340,13 @@ export function compareHopEntries(a: readonly [string, number], b: readonly [str
 }
 
 export function runImpact(opts: ImpactOptions): number {
+  // A --top of 0 (or negative) would slice the sorted hop list down to zero entries and report
+  // "No callers found" even when callers genuinely exist -- reject explicitly instead of
+  // silently rendering an empty result, matching runRefs' own --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
   // global.db is a single machine-wide index shared across every project ever indexed
@@ -458,6 +465,13 @@ export interface DeadOptions {
 }
 
 export function runDead(opts: DeadOptions): number {
+  // A --top of 0 (or negative) would slice the results list down to zero entries and report "No
+  // dead symbols found." even when dead symbols genuinely exist -- reject explicitly instead of
+  // silently rendering a false-clean result, matching runRefs' own --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const kind = opts.kind ?? 'function'
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts) -- both the symbol scan and the per-symbol ref-count lookup must be scoped
@@ -889,6 +903,13 @@ export interface SimilarOptions {
 }
 
 export function runSimilar(opts: SimilarOptions): number {
+  // A --top of 0 (or negative) would ask searchSymbolsFts for zero-or-negative results and
+  // reject explicitly instead of silently rendering an empty result, matching runRefs' own
+  // --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const sepIdx = opts.spec.lastIndexOf('::')
   if (sepIdx < 0) {
     emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
@@ -931,6 +952,13 @@ export interface ContextForOptions {
 }
 
 export function runContextFor(opts: ContextForOptions): number {
+  // A --top of 0 (or negative) would ask searchSymbolsFts for zero-or-negative results and
+  // reject explicitly instead of silently rendering an empty result, matching runRefs' own
+  // --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const top = opts.top ?? 12
   const budget = opts.budget
 
@@ -1043,6 +1071,13 @@ export interface CoverageGapsOptions {
 }
 
 export function runCoverageGaps(opts: CoverageGapsOptions): number {
+  // A --top of 0 (or negative) would slice the gaps list down to zero entries and report "No
+  // coverage gaps found." even when gaps genuinely exist -- reject explicitly instead of
+  // silently rendering a false-clean result, matching runRefs' own --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const top = opts.top ?? 50
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope the kind-scan and each ref lookup to the current project root so a
@@ -1086,6 +1121,13 @@ export interface ArchOptions {
 }
 
 export function runArch(opts: ArchOptions): number {
+  // A --top of 0 (or negative) would slice the hubs/entry-points lists down to zero entries --
+  // reject explicitly instead of silently rendering an empty result, matching runRefs' own
+  // --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const cwd = opts.cwd ?? process.cwd()
   const top = opts.top ?? 10
   const files = getTrackedFiles(cwd)
@@ -1229,6 +1271,13 @@ export interface AskOptions {
 
 // NOTE: cross-session answer cache is intentionally omitted to keep scope bounded. Add a file-based cache keyed on (question+context hash) if response latency becomes an issue.
 export function runAsk(opts: AskOptions): number {
+  // A --top of 0 (or negative) would ask searchSymbolsFts for zero-or-negative results --
+  // reject explicitly instead of silently degrading with an empty context set, matching
+  // runRefs' own --top validation.
+  if (opts.top !== undefined && opts.top <= 0) {
+    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    return 1
+  }
   const top = opts.top ?? 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const hits = searchSymbolsFts(opts.question, top, undefined, rootDir)
