@@ -56,6 +56,19 @@ describe('detectLanguage', () => {
     expect(detectLanguage('Bar.TS')).toBe('typescript')
   })
 
+  it('classifies bare Gemfile/Rakefile as ruby by basename', () => {
+    // Regression: Gemfile and Rakefile are plain Ruby syntax (no extension) -- the dominant,
+    // idiomatic dependency-manifest and task-runner files in virtually every real Ruby project,
+    // same class of has-extractor-but-no-dispatch-entry gap already fixed for bare `Makefile` /
+    // `.mk` fragments. FILENAME_LANGUAGE had no entry for either, so both fell through to
+    // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling their
+    // content fine.
+    expect(detectLanguage('Gemfile')).toBe('ruby')
+    expect(detectLanguage('repo/Gemfile')).toBe('ruby')
+    expect(detectLanguage('Rakefile')).toBe('ruby')
+    expect(detectLanguage('lib/tasks/RAKEFILE')).toBe('ruby')
+  })
+
   it('classifies any ".env.<suffix>" variant as env_file, not just an enumerated list', () => {
     // FILENAME_LANGUAGE used to enumerate a fixed list of dotenv variants (.env.local,
     // .env.example, .env.sample, .env.test, .env.production) -- any suffix a project actually
