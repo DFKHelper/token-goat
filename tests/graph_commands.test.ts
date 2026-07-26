@@ -584,6 +584,39 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS (line ~629) never included 'opaque' -- Zig's extractor
+  // (languages/zig.ts's CONTAINER_RE) emits kind 'opaque' for `const X = opaque { ... }`
+  // declarations, a type declaration exactly analogous to `struct`/`enum`/`union` (all of which
+  // ARE in TYPE_KINDS, and are matched by the very same regex/code path in zig.ts). Every Zig
+  // opaque type was indexed but silently excluded from `token-goat types`, the same class of gap
+  // already fixed twice (Rust 'union', Swift 'protocol').
+  it('surfaces a Zig opaque type via TYPE_KINDS, matching struct/enum/union', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-zigopaque-'))
+    try {
+      const file = join(dir, 'fixture.zig')
+      writeFileSync(file, ['const TypesZigOpaqueFixture = opaque {};', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesZigOpaqueFixture')
+      expect(parsed.find((r) => r.name === 'TypesZigOpaqueFixture')?.kind).toBe('opaque')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
