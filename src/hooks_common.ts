@@ -123,6 +123,34 @@ export function countNonEmptyLines(text: string): number {
 }
 
 /**
+ * Estimate the number of results (files/matches) in a Grep/Glob tool_response body, for the
+ * session dedup-hint recall count (see {@link makeDedupHintHandlers}).
+ *
+ * Claude Code's Grep tool prefixes `files_with_matches`-mode output with a `Found N file(s)` /
+ * `No files found` summary line -- confirmed against real transcript logs, e.g. `"Found 4
+ * files\nsrc\\a.ts\nsrc\\b.ts\n..."` and `"No files found"`/`"Found 1 file\nsrc\\a.ts"`. That
+ * summary line is not itself a match: counting it via {@link countNonEmptyLines} silently
+ * inflated every non-empty `files_with_matches` result by exactly one, and misreported a
+ * genuinely empty result ("No files found", one line) as "1 match" -- the tests backing this
+ * dedup hint only ever fed it a synthetic bare file list with no header line, so the mismatch
+ * with Claude Code's real wire format went uncaught (the same injected-seam trap CLAUDE.md's
+ * "Critical path" section warns about). When present, the summary line's own count is
+ * authoritative and used directly, immune to any other line Claude Code adds after it;
+ * everything else (Grep's `content`/`count`-mode output, Glob's plain path list -- neither has
+ * this header) falls back to {@link countNonEmptyLines} unchanged.
+ */
+export function estimateResultCount(text: string): number {
+  const firstLine = text.split(/\r\n|\r|\n/).find((line) => line.trim().length > 0)
+  if (firstLine !== undefined) {
+    const trimmed = firstLine.trim()
+    if (/^No (?:files|matches) found\.?$/i.test(trimmed)) return 0
+    const found = /^Found (\d+) (?:files?|matches?)\.?$/i.exec(trimmed)
+    if (found) return Number.parseInt(found[1]!, 10)
+  }
+  return countNonEmptyLines(text)
+}
+
+/**
  * Build the `post_tool_use` / `pre_tool_use` handler pair backing a tool's session-scoped
  * "you already ran this exact query, here's the recall count" advisory hint.
  *
@@ -146,7 +174,7 @@ export function makeDedupHintHandlers(opts: {
       const signature = opts.buildSignature(getToolInput(event))
       if (signature === null) return passOutput()
       const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-      opts.recordQuery(signature, countNonEmptyLines(text))
+      opts.recordQuery(signature, estimateResultCount(text))
       return passOutput()
     } catch {
       return passOutput()
