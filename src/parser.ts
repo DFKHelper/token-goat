@@ -494,6 +494,15 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // a default body. Not a value binding, so it never appears as a function-local — no RUST_LOCAL_KINDS
   // entry needed.
   ['function_signature_item', 'function'],
+  // `extern "C" { ... }` / `extern "system" { ... }` foreign-module blocks -- unlike `trait_item`
+  // (which IS indexed, so a trait method rendered standalone still has its enclosing `trait Foo`
+  // symbol nearby for context), `foreign_mod_item` was entirely absent here, so an FFI declaration's
+  // `function_signature_item` was the ONLY trace of the block in the index -- its ABI string
+  // (`"C"` vs `"system"`, real calling-convention information) and any `#[link(name = "...")]`
+  // attribute naming the linked library were both invisible with no other symbol to find them on.
+  // Kept as its own entry (not folded into the child fn's body) to match how every other container
+  // in this extractor works: the parent supplies context, the child stays standalone.
+  ['foreign_mod_item', 'extern'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
@@ -526,9 +535,13 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = RUST_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined && !(insideFunction && RUST_LOCAL_KINDS.has(node.type))) {
-      // An `impl` block has no `name` field; the implemented type lives in a `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve it there. All other Rust items expose their name on the `name` field.
+      // An `impl` block has no `name` field; the implemented type lives in a `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve it there. A `foreign_mod_item` (`extern "C" { ... }`) has no name field either -- there is no type/trait to name it after, so its own `extern_modifier` child's text ("extern \"C\"") stands in as the symbol name, giving the ABI string a place to be visible. All other Rust items expose their name on the `name` field.
       const name =
-        node.type === 'impl_item' ? (node.childForFieldName('type')?.text ?? null) : nodeName(node)
+        node.type === 'impl_item'
+          ? (node.childForFieldName('type')?.text ?? null)
+          : node.type === 'foreign_mod_item'
+            ? (node.namedChildren.find((c) => c.type === 'extern_modifier')?.text ?? 'extern')
+            : nodeName(node)
       if (name !== null && name !== '') {
         const attrs = leadingRustAttributes(node)
         if (attrs.length === 0) {

@@ -555,6 +555,31 @@ describe('parseFile', () => {
     expect(find.body).toContain('fn find(&self, id: u32) -> u32;')
   })
 
+  it('indexes a Rust extern "C" foreign-module block with its ABI and #[link] attribute (regression: foreign_mod_item was absent, so the extern block itself never indexed and its FFI declaration lost its only source of ABI/link context when rendered standalone)', async () => {
+    const rustFile = write(
+      'ffi.rs',
+      [
+        '#[link(name = "c")]',
+        'extern "C" {',
+        '    fn abort() -> !;',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const extern = result.symbols.find((s) => s.kind === 'extern')
+    expect(extern).toBeDefined()
+    expect(extern!.name).toBe('extern "C"')
+    // Starts at the #[link(...)] attribute line (matches the leadingRustAttributes convention
+    // already used for every other Rust item kind), not just the `extern "C"` keyword line.
+    expect(extern!.lineStart).toBe(1)
+    expect(extern!.body).toContain('#[link(name = "c")]')
+    expect(extern!.body).toContain('extern "C"')
+    // The FFI declaration inside still indexes as its own standalone 'function' symbol too.
+    expect(result.symbols.some((s) => s.name === 'abort' && s.kind === 'function')).toBe(true)
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
