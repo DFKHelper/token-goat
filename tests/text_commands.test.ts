@@ -1582,6 +1582,41 @@ describe('ignores command', () => {
     expect(text).toContain('token-goat index')
     expect(text).toContain('map/todo/conflicts')
   })
+
+  // Regression: worker.blocked_roots is only ever consulted by cli.ts's cmdIndex (`token-goat
+  // index`/`index --walk`) and worker.ts's drain loop, both via isUnderBlockedRoot -- neither
+  // baseline.ts's walkProject nor any of its callers (map/todo/conflicts/hot --project) ever
+  // check it. The old report printed "Blocked roots (config): <paths>" as an unscoped, bare
+  // fact directly beneath the map/todo/conflicts exclusion explanation, misleadingly implying
+  // those commands honor it too. Prove the claim is false first (a blocked root's file still
+  // surfaces via `todo`), then require the report to name which commands actually enforce it.
+  it('scopes the "Blocked roots" claim to the commands that actually enforce it (todo still sees a blocked-root file)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ignores-blocked-'))
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ignores-blocked-proj-'))
+    try {
+      const env = isolatedEnv(home)
+      const src = path.join(proj, 'marker.ts')
+      fs.writeFileSync(src, 'const x = 1 // TODO: should this be blocked?\n', 'utf8')
+
+      const exclude = run(['project', 'exclude', proj], { cwd: proj, env })
+      expect(exclude.status, exclude.stderr).toBe(0)
+
+      // The blocked root is real (config.toml now has it), but `todo` (a walkProject-based
+      // command) never consults blocked_roots, so the marker still surfaces.
+      const todoResult = run(['todo', src], { cwd: proj, env })
+      expect(todoResult.status, todoResult.stderr).toBe(0)
+      expect(todoResult.stdout).toContain('TODO')
+
+      const text = run(['ignores'], { cwd: proj, env }).stdout
+      expect(text).toContain(proj)
+      // The claim must name the commands that genuinely enforce blocked_roots (index / worker),
+      // not read as a bare, unscoped guarantee sitting right below the map/todo/conflicts line.
+      expect(text).toMatch(/Blocked roots.*(index|worker)/i)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+      fs.rmSync(proj, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('isProjectFrame path boundary check', () => {
