@@ -525,6 +525,36 @@ describe('parseFile', () => {
     expect(testsMod!.body).toContain('#[cfg(test)]')
   })
 
+  it('indexes Rust unbodied fn signatures (trait required methods and extern FFI declarations)', async () => {
+    const rustFile = write(
+      'sigs.rs',
+      [
+        'trait Repo {',
+        '    fn find(&self, id: u32) -> u32;', // required method, no default body
+        '    fn save(&mut self) {}', // default-bodied method (function_item) still indexes
+        '}',
+        '',
+        'extern "C" {',
+        '    fn abort() -> !;', // foreign-function declaration
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const fns = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
+    // Both the unbodied trait signature and the extern FFI declaration index as 'function'...
+    expect(fns).toContain('find')
+    expect(fns).toContain('abort')
+    // ...alongside the default-bodied trait method, so a trait interface is fully discoverable.
+    expect(fns).toContain('save')
+    // The trait itself still indexes as before.
+    expect(result.symbols.some((s) => s.name === 'Repo' && s.kind === 'trait')).toBe(true)
+    // The signature's range covers its single declaration line.
+    const find = result.symbols.find((s) => s.name === 'find')!
+    expect(find.body).toContain('fn find(&self, id: u32) -> u32;')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
