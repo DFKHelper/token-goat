@@ -1492,6 +1492,11 @@ describe('preBashHandler — directory listing map hint', () => {
     }
   })
 
+  it('does NOT fire for a plain ls of a file whose name merely contains "-R" (no -R flag)', () => {
+    const result = preBashHandler(makeBashEvent('ls docs/API-Reference.md'))
+    expect(result.hookType).not.toBe('context')
+  })
+
   it('fires for ls DIR | grep pattern', () => {
     const result = preBashHandler(makeBashEvent('ls src/ | grep .ts'))
     expect(result.hookType).toBe('context')

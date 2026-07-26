@@ -671,7 +671,7 @@ function extractDirectoryListing(cmd: string): boolean {
     /^eza\s+.*--long\s+\S+/.test(cmd) ||
     /^eza\s+.*--tree/.test(cmd) ||
     /^tree(\s|$)/.test(cmd) ||
-    /^ls\s+.*-[a-zA-Z]*R/.test(cmd) ||
+    /^ls\s+(?:\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*(?:\s|$)/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*grep/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*wc/.test(cmd)
