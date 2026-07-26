@@ -26,7 +26,15 @@ interface ClassFrame {
 // (`global using System;`), idiomatically consolidated into a single GlobalUsings.cs across a
 // modern .NET project -- without it, USING_RE's anchored `^using` never matched a line starting
 // with "global", so every global-using file silently reported zero imports.
-const USING_RE = /^(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*;/
+// The optional trailing `(?:=\s*(...))?` covers a `using` *alias* directive (`using Project =
+// PC.MyCompany.Project;`), used to disambiguate or shorten a long/colliding namespace or type.
+// Without it, the capture group's `\s*;` had to sit immediately after the alias name, but a
+// real alias line has ` = <target>;` there instead, so the whole regex failed to match at all --
+// an aliased using directive silently dropped both the type/namespace dependency it declares and
+// the import itself. When present, the second group (the aliased target) is what actually gets
+// pushed below -- the real dependency, not the local alias name.
+const USING_RE =
+  /^(?:global\s+)?using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*(?:=\s*([A-Za-z_][A-Za-z0-9_.<>,\s]*))?\s*;/
 const NAMESPACE_RE = /^(?:namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)/
 
 // C# idiomatically places attributes on the same line as the declaration they decorate
@@ -143,7 +151,7 @@ export function extractCsharp(
     // using import
     const usingM = USING_RE.exec(stripped)
     if (usingM) {
-      imports.push({ kind: 'import', target: usingM[1] ?? '', line: lineNum })
+      imports.push({ kind: 'import', target: usingM[2] ?? usingM[1] ?? '', line: lineNum })
     }
 
     // namespace

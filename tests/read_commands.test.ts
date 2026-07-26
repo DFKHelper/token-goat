@@ -3045,6 +3045,11 @@ describe('read_commands', () => {
       expect(extractImports(src, '.cs')).toEqual(['System', 'System.Math'])
     })
 
+    it('extracts C# using alias directives (using X = Y.Z;), resolving to the aliased target rather than dropping the line entirely (regression: the trailing "= Y.Z" left no "\\s*;" immediately after the alias name, so the whole directive silently matched nothing)', () => {
+      const src = 'using Project = PC.MyCompany.Project;\nusing System;'
+      expect(extractImports(src, '.cs')).toEqual(['PC.MyCompany.Project', 'System'])
+    })
+
     it('extracts PHP require_once/include_once alongside bare require/include and use', () => {
       const src = [
         "require_once 'a.php';",
