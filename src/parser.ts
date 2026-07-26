@@ -651,6 +651,9 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['class_specifier', 'class'],
   ['struct_specifier', 'struct'],
   ['enum_specifier', 'enum'],
+  // `union_specifier` exposes the same `name` field (a `type_identifier`) as struct/enum in both
+  // the C and C++ grammars, so a named union indexes as kind 'union' and is visible to `types`.
+  ['union_specifier', 'union'],
 ])
 
 function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {

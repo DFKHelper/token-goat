@@ -293,6 +293,22 @@ describe('parseFile', () => {
     expect(cppResult.symbols.map((s) => s.name)).toContain('Widget')
   })
 
+  it('indexes C and C++ named union definitions (kind union)', async () => {
+    const cFile = write('u.c', 'union Value {\n  int i;\n  float f;\n};\nstruct Point { int x; };\n')
+    const cResult = await parseFile(cFile)
+    expect(cResult.language).toBe('c')
+    const cUnion = cResult.symbols.find((s) => s.name === 'Value')
+    expect(cUnion?.kind).toBe('union') // union_specifier — dropped pre-fix (no kind map entry)
+    // The sibling struct still resolves, confirming the union addition didn't disturb it.
+    expect(cResult.symbols.some((s) => s.name === 'Point' && s.kind === 'struct')).toBe(true)
+
+    const cppFile = write('u.cpp', 'union Packet {\n  int i;\n  double d;\n};\n')
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    const cppUnion = cppResult.symbols.find((s) => s.name === 'Packet')
+    expect(cppUnion?.kind).toBe('union') // union_specifier — dropped pre-fix
+  })
+
   it('indexes C++ out-of-line method definitions (qualified_identifier declarator)', async () => {
     const cppFile = write(
       'methods.cpp',
