@@ -435,6 +435,13 @@ const _KUBE_ACCESS_LOG_RE =
 // Stack-trace frame patterns (Java, Python, Go, Node)
 const _KUBE_STACKFRAME_RE = /^\s+(?:at\s+[\w.$<>]+\(|File "[^"]+", line \d+|goroutine \d+ \[|\s+\.\.\.)/
 
+// A Python traceback frame is TWO physical lines: a `File "...", line N, in func` header,
+// immediately followed by an indented source-snippet line (e.g. `    bar()`) that does NOT
+// itself match _KUBE_STACKFRAME_RE. Used by _collapseStackTraces to pair the two together so
+// MAX_FRAMES always lands on a frame boundary, never splitting a kept File line from its own
+// source line (or vice versa), and so "N more frames" counts real frames, not physical lines.
+const _PY_FILE_LINE_RE = /^\s+File "[^"]+", line \d+/
+
 // Pod/container prefix for --prefix and sidecar-style output
 const _KUBECTL_POD_PREFIX_RE =
   /^\[[^\]]+\]\s+|^[a-z0-9][a-z0-9\-.]*\s+\|\s+/
@@ -468,10 +475,31 @@ function _collapseStackTraces(lines: string[]): string[] {
   let i = 0
   while (i < lines.length) {
     if (_KUBE_STACKFRAME_RE.test(lines[i]!)) {
+      // Group contiguous stack-frame lines into logical frames rather than physical lines. A
+      // Python `File "...", line N` header absorbs its immediately-following indented
+      // source-snippet line into the same frame (see _PY_FILE_LINE_RE); `at ...` (Java) and
+      // `goroutine N [...]:` headers are standalone single-line frames. Without this pairing,
+      // the un-indented exception-summary line that always follows the last Python frame must
+      // NOT be absorbed, so absorption additionally requires the next line to be indented.
+      const frames: string[][] = []
       let j = i
-      while (j < lines.length && _KUBE_STACKFRAME_RE.test(lines[j]!)) j++
-      const frames = lines.slice(i, j)
-      out.push(...frames.slice(0, MAX_FRAMES))
+      while (j < lines.length && _KUBE_STACKFRAME_RE.test(lines[j]!)) {
+        const line = lines[j]!
+        const next = lines[j + 1]
+        const pairsWithSource =
+          _PY_FILE_LINE_RE.test(line) &&
+          next !== undefined &&
+          /^\s/.test(next) &&
+          !_KUBE_STACKFRAME_RE.test(next)
+        if (pairsWithSource) {
+          frames.push([line, next!])
+          j += 2
+        } else {
+          frames.push([line])
+          j += 1
+        }
+      }
+      out.push(...frames.slice(0, MAX_FRAMES).flat())
       if (frames.length > MAX_FRAMES) {
         out.push(`    ... ${frames.length - MAX_FRAMES} more frames`)
       }
