@@ -1501,6 +1501,9 @@ interface IgnoresReport {
   // hot --project), in git mode and non-git mode alike -- baseline.ts's SKIP_DIRS plus hidden
   // (dot-prefixed) directories, neither of which is gitignore- or git-status-aware.
   skipDirs: string[]
+  // Enforced only by `token-goat index`/`index --walk` (cli.ts's cmdIndex) and the worker's
+  // drain loop (worker.ts), both via isUnderBlockedRoot -- never consulted by walkProject, so
+  // map/todo/conflicts/hot --project ignore it entirely.
   blockedRoots: string[]
   excludeTests: boolean
 }
@@ -1555,10 +1558,15 @@ export function cmdIgnores(opts: { json?: boolean }): void {
     `map/todo/conflicts (and hot --project) ignore neither .gitignore nor ${walkIndexBuiltinExclusions.join(', ')} in either mode -- ` +
       `they only skip: ${report.skipDirs.join(', ')} (and hidden directories).\n`,
   )
+  // worker.blocked_roots is only ever consulted by `token-goat index`/`index --walk` (cli.ts's
+  // cmdIndex) and the worker's drain loop (worker.ts), both via isUnderBlockedRoot -- baseline.ts's
+  // walkProject (and so map/todo/conflicts/hot --project) never checks it. Name the enforcing
+  // commands explicitly so this line can't be misread as applying to the walk-based commands
+  // described immediately above it.
   if (cfg.worker.blocked_roots.length > 0) {
-    process.stdout.write(`Blocked roots (config): ${cfg.worker.blocked_roots.join(', ')}\n`)
+    process.stdout.write(`Blocked roots (config, enforced by token-goat index / index --walk / worker only): ${cfg.worker.blocked_roots.join(', ')}\n`)
   } else {
-    process.stdout.write('Blocked roots (config): none\n')
+    process.stdout.write('Blocked roots (config, enforced by token-goat index / index --walk / worker only): none\n')
   }
   process.stdout.write(`Exclude tests from repomap: ${cfg.repomap.exclude_tests}\n`)
 }
