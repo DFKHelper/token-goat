@@ -208,6 +208,14 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['interface_declaration', 'interface'],
   ['type_alias_declaration', 'type'],
   ['enum_declaration', 'enum'],
+  // Interface members (`method_signature`, `property_signature`) and an abstract class member
+  // (`abstract_method_signature`) are distinct tree-sitter node types from `method_definition` (a
+  // concrete method with a body) -- without their own entries here, every interface method,
+  // interface property, and abstract method signature was invisible to the index, even though
+  // `visit` already descends into `interface_body`/class bodies to find them.
+  ['method_signature', 'method'],
+  ['property_signature', 'var'],
+  ['abstract_method_signature', 'method'],
 ])
 
 // TS/JS class-member decorators (`@Override`, `@Input()`, ...) are wrapped as a `decorator` field
