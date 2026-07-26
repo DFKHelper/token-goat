@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { dataDir, globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
+import { shortFingerprint } from './fingerprint.js'
 import { deleteFileRows } from './parser.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { foldPath } from './util.js'
@@ -233,27 +234,41 @@ export function sweepKnownRoots(
   return { prunedRows, prunedRoots, flaggedRoots }
 }
 
-/** Minimum time between {@link recordKnownRootThrottled} writes, so a burst of edit-hook calls (e.g. a multi-file refactor) doesn't hit the DB on every single one -- roots don't change often enough to need per-edit tracking. */
+/** Minimum time between {@link recordKnownRootThrottled} writes for the SAME parent directory, so a burst of edit-hook calls (e.g. a multi-file refactor within one folder) doesn't hit the DB on every single one -- roots don't change often enough to need per-edit tracking. */
 const KNOWN_ROOT_RECORD_MIN_INTERVAL_MS = 60 * 60 * 1000
 
-function knownRootRecordMarkerPath(dir: string): string {
-  return path.join(dir, 'known-root-record.marker')
+// Keyed by a fingerprint of filePath's parent directory, NOT globally: a single shared marker
+// (the pre-fix shape of this function) meant the FIRST project edited in any rolling hour window
+// consumed the only throttle slot, and every OTHER project touched during that same window never
+// got its recordKnownRoot() call at all -- not merely delayed, silently dropped forever, since
+// the marker check short-circuits before filePath's project root is even resolved. A dev machine
+// routinely has edits land in more than one project inside an hour, so that shape starved every
+// project but the first from ever entering known_roots, defeating sweepKnownRoots' auto-prune for
+// them permanently (recordKnownRoot is the only writer of that table). Scoping the marker per
+// parent directory keeps the same "one findProject()+DB-write per burst" throttle for repeated
+// edits to one folder while ensuring a different folder (a different project, or even a different
+// subdirectory of the same one) gets its own throttle window instead of silently reusing someone
+// else's.
+function knownRootRecordMarkerPath(dir: string, filePath: string): string {
+  return path.join(dir, `known-root-record-${shortFingerprint(path.dirname(filePath))}.marker`)
 }
 
 /**
  * Rate-limited wrapper around {@link recordKnownRoot} for the edit-hook hot path.
  *
- * Same marker-file-mtime throttle pattern as ensureWorkerAlive (worker.ts): a fresh marker
- * short-circuits before even resolving `filePath`'s project root, so a burst of edits touches
- * the DB and does the {@link findProject} directory walk at most once per {@link
- * KNOWN_ROOT_RECORD_MIN_INTERVAL_MS}, not on every single edit.
+ * Same marker-file-mtime throttle pattern as ensureWorkerAlive (worker.ts), but keyed per parent
+ * directory (see {@link knownRootRecordMarkerPath}) rather than one global marker: a fresh marker
+ * for THIS file's directory short-circuits before even resolving `filePath`'s project root, so a
+ * burst of edits to one directory touches the DB and does the {@link findProject} directory walk
+ * at most once per {@link KNOWN_ROOT_RECORD_MIN_INTERVAL_MS}, without starving a different
+ * directory's (or project's) own throttle window.
  */
 export function recordKnownRootThrottled(
   filePath: string,
   dir: string = dataDir(),
   dbPath: string = globalDbPath(),
 ): void {
-  const markerPath = knownRootRecordMarkerPath(dir)
+  const markerPath = knownRootRecordMarkerPath(dir, filePath)
   try {
     const stat = fs.statSync(markerPath)
     if (Date.now() - stat.mtimeMs < KNOWN_ROOT_RECORD_MIN_INTERVAL_MS) return
