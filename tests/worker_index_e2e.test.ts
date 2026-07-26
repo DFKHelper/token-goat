@@ -153,6 +153,19 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
+  // A TS `interface` with a method/property signature — same tree-shaking concern: the
+  // method_signature/property_signature -> 'method'/'var' entries added to TSJS_KIND_BY_TYPE must
+  // resolve from the shipped binary too, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'iface_fixture.ts'),
+    [
+      'interface BundleTsInterface {',
+      '  bundleTsInterfaceMethod(): void',
+      '  bundleTsInterfaceProp: number',
+      '}',
+      '',
+    ].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -254,6 +267,21 @@ describe('built bundle end-to-end indexing', () => {
     expect(meth.status).toBe(0)
     expect(meth.stdout).toContain('BundleGoInterfaceMethod')
     expect(meth.stdout).toContain('iface_fixture.go')
+  }, 60000)
+
+  it('index then symbol resolves TS interface method/property signatures from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const meth = runBundle(['symbol', 'bundleTsInterfaceMethod'])
+    expect(meth.status).toBe(0)
+    expect(meth.stdout).toContain('bundleTsInterfaceMethod')
+    expect(meth.stdout).toContain('iface_fixture.ts')
+
+    const prop = runBundle(['symbol', 'bundleTsInterfaceProp'])
+    expect(prop.status).toBe(0)
+    expect(prop.stdout).toContain('bundleTsInterfaceProp')
+    expect(prop.stdout).toContain('iface_fixture.ts')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
