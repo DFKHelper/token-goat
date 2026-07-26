@@ -166,6 +166,13 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
+  // A Java `@interface` with an annotation type element — same tree-shaking concern: the
+  // annotation_type_element_declaration -> 'method' entry added to JAVA_KIND_BY_TYPE must
+  // resolve from the shipped binary too, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'anno_fixture.java'),
+    ['@interface BundleJavaAnno {', '  String bundleJavaAnnoElement() default "";', '}', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -282,6 +289,21 @@ describe('built bundle end-to-end indexing', () => {
     expect(prop.status).toBe(0)
     expect(prop.stdout).toContain('bundleTsInterfaceProp')
     expect(prop.stdout).toContain('iface_fixture.ts')
+  }, 60000)
+
+  it('index then symbol resolves a Java annotation type element from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const anno = runBundle(['symbol', 'BundleJavaAnno'])
+    expect(anno.status).toBe(0)
+    expect(anno.stdout).toContain('BundleJavaAnno')
+    expect(anno.stdout).toContain('anno_fixture.java')
+
+    const elem = runBundle(['symbol', 'bundleJavaAnnoElement'])
+    expect(elem.status).toBe(0)
+    expect(elem.stdout).toContain('bundleJavaAnnoElement')
+    expect(elem.stdout).toContain('anno_fixture.java')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
