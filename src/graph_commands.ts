@@ -629,6 +629,11 @@ export function runDeps(opts: DepsOptions): number {
 // 'opaque' (Zig) is the same gap again: languages/zig.ts's CONTAINER_RE matches
 // struct/enum/union/opaque with one shared code path, but only struct/enum/union were ever
 // added here -- opaque types were indexed and silently excluded from `token-goat types`.
+// 'mixin' (Dart) and 'extension' (Dart, Swift) are the same gap a fourth time: languages/dart.ts's
+// MIXIN_RE/EXTENSION_RE and languages/swift.ts's TYPE_HEADER_RE all emit these kinds via the same
+// code path that emits 'class'/'struct'/'protocol' (already in this list), but neither was ever
+// added here. 'actor' (Swift) is the same gap again -- TYPE_HEADER_RE emits it alongside
+// 'class'/'struct'/'protocol'/'extension' from the identical match, but it alone was omitted.
 const TYPE_KINDS: ReadonlyArray<string> = [
   'type',
   'interface',
@@ -638,6 +643,9 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'union',
   'protocol',
   'opaque',
+  'mixin',
+  'extension',
+  'actor',
 ]
 
 export interface TypesOptions {
