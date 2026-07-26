@@ -263,6 +263,24 @@ describe('parseFile', () => {
     expect(method?.kind).toBe('method')
   })
 
+  it('extracts a PEP 695 (Python 3.12) type alias, including a generic one, as a type symbol', async () => {
+    const file = write(
+      'aliases.py',
+      'type IntList = list[int]\n' + 'type ListOrSet[T] = list[T] | set[T]\n' + 'def foo() -> IntList:\n' + '    return []\n',
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('python')
+    // Regression: type_alias_statement had no PY_KIND_BY_TYPE entry, and its name lives under a
+    // `left` field wrapping a `type` node (not the `name` field nodeName() reads everywhere
+    // else), so every PEP 695 `type X = ...` statement was silently invisible to the index.
+    const simple = result.symbols.find((s) => s.name === 'IntList')
+    expect(simple?.kind).toBe('type')
+    const generic = result.symbols.find((s) => s.name === 'ListOrSet')
+    expect(generic?.kind).toBe('type')
+    const foo = result.symbols.find((s) => s.name === 'foo')
+    expect(foo?.kind).toBe('function')
+  })
+
   it('returns empty symbols for an unknown extension', async () => {
     const file = write('notes.unknownext', 'just some text\nnot code at all\n')
     const result = await parseFile(file)
