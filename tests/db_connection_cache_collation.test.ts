@@ -9,6 +9,17 @@
  * Uses the TOKEN_GOAT_CASE_INSENSITIVE_FS env override (the same real seam isCaseInsensitiveFs()
  * reads, per session.test.ts's "case-insensitive filesystem path matching" pattern) so the fold
  * branch is exercised deterministically on every platform, including case-sensitive Linux CI.
+ *
+ * Only the filename component is case-varied, never the directory portion: getDb() does a real
+ * `fs.mkdirSync(dirname(dbPath), { recursive: true })` before opening the file, so an uppercased
+ * FULL path (directory included) tries to create a sibling all-caps temp directory under the OS
+ * root (e.g. `/TMP/...` next to `/tmp/...`) -- on a genuinely case-sensitive filesystem (real
+ * Linux CI, not just the env-simulated branch under test) that's a distinct, non-existent, and
+ * typically unwritable path, so mkdirSync throws EACCES/EPERM before getDb ever reaches the
+ * case-folding logic this file exists to test. Keeping the directory identical and only case-
+ * varying `index.db` -> `INDEX.DB` stays within the same always-real, already-created TMP dir on
+ * every platform, so the test exercises getDb's cache-key folding without depending on the real
+ * FS's own case-sensitivity for a directory that was never created in that casing.
  */
 
 import * as fs from 'node:fs'
@@ -37,7 +48,7 @@ describe('getDb connection cache case-folding', () => {
   it('case-insensitive FS: shares one connection across differently-cased paths to the same file', () => {
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
     const lower = path.join(TMP, 'index.db')
-    const upper = lower.toUpperCase()
+    const upper = path.join(TMP, 'INDEX.DB')
 
     const a = getDb(lower)
     const b = getDb(upper)
@@ -48,7 +59,7 @@ describe('getDb connection cache case-folding', () => {
   it('case-insensitive FS: closeDb on a differently-cased path still evicts the cached connection', () => {
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
     const lower = path.join(TMP, 'index.db')
-    const upper = lower.toUpperCase()
+    const upper = path.join(TMP, 'INDEX.DB')
 
     const first = getDb(lower)
     closeDb(upper)
@@ -60,7 +71,7 @@ describe('getDb connection cache case-folding', () => {
   it('case-sensitive FS: differently-cased paths get distinct connections (they may be distinct files)', () => {
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '0'
     const lower = path.join(TMP, 'index.db')
-    const upper = lower.toUpperCase()
+    const upper = path.join(TMP, 'INDEX.DB')
 
     const a = getDb(lower)
     const b = getDb(upper)
