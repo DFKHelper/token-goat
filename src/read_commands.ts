@@ -1328,6 +1328,14 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       emit(`No data rows found in ${opts.file}`)
       return 0
     }
+    // csv_query carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry, but
+    // nothing here ever called recordStat -- the csv-query bucket in `token-goat stats --full`
+    // stayed permanently zero regardless of real usage, the same class of registry/producer
+    // desync previously fixed for map_lookup/changed_lookup (see
+    // project_runchanged_missing_stat memory). "Full source" is the on-disk size of the CSV
+    // file actually queried, mirroring recordReadStat's fullSourceBytes convention elsewhere in
+    // this file.
+    const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
       // queryCsv already applies --head to `result.rows` before returning, so a bare
       // rowsJson.length (== capped.totalCount below) would report the head-limited count, not
@@ -1337,9 +1345,13 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
       const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
-      emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows }))
+      const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows })
+      emit(jsonText)
+      recordReadStat('csv_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      emit(formatCsvTable(result))
+      const tableText = formatCsvTable(result)
+      emit(tableText)
+      recordReadStat('csv_query', fullSourceBytes, tableText, opts.file)
     }
     return 0
   } catch (e) {
