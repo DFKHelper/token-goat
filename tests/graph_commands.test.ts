@@ -617,6 +617,101 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS (line ~632) never included 'mixin' -- Dart's extractor
+  // (languages/dart.ts's MIXIN_RE) emits kind 'mixin' for `mixin Foo { ... }` declarations, a
+  // type declaration exactly analogous to `class`/`enum` (both indexed the same way), yet every
+  // Dart mixin was silently excluded from `token-goat types`, the same class of gap already
+  // fixed three times (Rust 'union', Swift 'protocol', Zig 'opaque').
+  it('surfaces a Dart mixin via TYPE_KINDS, matching class/enum', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-dartmixin-'))
+    try {
+      const file = join(dir, 'fixture.dart')
+      writeFileSync(file, ['mixin TypesDartMixinFixture {}', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesDartMixinFixture')
+      expect(parsed.find((r) => r.name === 'TypesDartMixinFixture')?.kind).toBe('mixin')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: TYPE_KINDS (line ~632) never included 'extension' -- Dart's extractor
+  // (languages/dart.ts's EXTENSION_RE) and Swift's (languages/swift.ts's TYPE_HEADER_RE) both
+  // emit kind 'extension' for an `extension Foo on Bar { ... }` declaration, yet every extension
+  // was silently excluded from `token-goat types` despite being indexed identically to the
+  // struct/enum/protocol kinds that already are in TYPE_KINDS.
+  it('surfaces a Dart extension via TYPE_KINDS, matching class/mixin', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-dartextension-'))
+    try {
+      const file = join(dir, 'fixture.dart')
+      writeFileSync(file, ['extension TypesDartExtensionFixture on String {}', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesDartExtensionFixture')
+      expect(parsed.find((r) => r.name === 'TypesDartExtensionFixture')?.kind).toBe('extension')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: TYPE_KINDS (line ~632) never included 'actor' -- Swift's extractor
+  // (languages/swift.ts's TYPE_HEADER_RE) emits kind 'actor' for `actor Foo { ... }`
+  // declarations (Swift concurrency's reference type, declared the same way as class/struct),
+  // yet every Swift actor was silently excluded from `token-goat types`.
+  it('surfaces a Swift actor via TYPE_KINDS, matching class/struct', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-swiftactor-'))
+    try {
+      const file = join(dir, 'fixture.swift')
+      writeFileSync(file, ['actor TypesSwiftActorFixture {}', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesSwiftActorFixture')
+      expect(parsed.find((r) => r.name === 'TypesSwiftActorFixture')?.kind).toBe('actor')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
