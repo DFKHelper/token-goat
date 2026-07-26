@@ -623,7 +623,10 @@ export function runDeps(opts: DepsOptions): number {
 
 // ---- types ------------------------------------------------------------------
 
-const TYPE_KINDS: ReadonlyArray<string> = ['type', 'interface', 'enum', 'struct', 'trait', 'union']
+// 'protocol' (Swift) is a type declaration exactly analogous to 'interface' -- already fixed
+// once for Rust's 'union' (which is analogous to struct/enum/trait); the same gap existed for
+// Swift protocols, indexed by languages/swift.ts but never surfaced by `token-goat types`.
+const TYPE_KINDS: ReadonlyArray<string> = ['type', 'interface', 'enum', 'struct', 'trait', 'union', 'protocol']
 
 export interface TypesOptions {
   file?: string
