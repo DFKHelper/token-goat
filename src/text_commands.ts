@@ -10,7 +10,7 @@ import * as path from 'path'
 
 import { load as loadYaml } from 'js-yaml'
 
-import { walkProject } from './baseline.js'
+import { SKIP_DIRS, walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
@@ -1487,8 +1487,20 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
 
 interface IgnoresReport {
   walkMode: 'git' | 'non-git'
-  gitIgnoreActive: boolean
-  nonGitBuiltins: string[]
+  // Scoped to `token-goat index` specifically -- it alone resolves files via getTrackedFiles()
+  // (git ls-files in git mode, so .gitignore is genuinely honored there). `map`/`todo`/
+  // `conflicts`/`hot --project` all resolve files via baseline.ts's walkProject instead, which
+  // never shells out to git and so never consults .gitignore regardless of walkMode -- see
+  // skipDirs below for what those commands actually exclude.
+  indexRespectsGitignore: boolean
+  // Scoped to `token-goat index --walk` specifically (walk_index.ts's isWalkExcluded) -- the
+  // only place `.env`/`.d.ts` filtering is wired in. `map`/`todo`/`conflicts`/`hot --project`
+  // never call it and so never exclude these files, in git mode or non-git mode alike.
+  walkIndexBuiltinExclusions: string[]
+  // The one exclusion genuinely shared by every walkProject-based command (map/todo/conflicts/
+  // hot --project), in git mode and non-git mode alike -- baseline.ts's SKIP_DIRS plus hidden
+  // (dot-prefixed) directories, neither of which is gitignore- or git-status-aware.
+  skipDirs: string[]
   blockedRoots: string[]
   excludeTests: boolean
 }
@@ -1511,12 +1523,13 @@ export function cmdIgnores(opts: { json?: boolean }): void {
   const cwd = process.cwd()
   const cfg = loadConfig()
   const walkMode = detectWalkMode(cwd)
-  const nonGitBuiltins = ['.env', '.env.*', '*.d.ts']
+  const walkIndexBuiltinExclusions = ['.env', '.env.*', '*.d.ts']
 
   const report: IgnoresReport = {
     walkMode,
-    gitIgnoreActive: walkMode === 'git',
-    nonGitBuiltins: walkMode === 'non-git' ? nonGitBuiltins : [],
+    indexRespectsGitignore: walkMode === 'git',
+    walkIndexBuiltinExclusions,
+    skipDirs: [...SKIP_DIRS].sort(),
     blockedRoots: cfg.worker.blocked_roots,
     excludeTests: cfg.repomap.exclude_tests,
   }
@@ -1528,10 +1541,20 @@ export function cmdIgnores(opts: { json?: boolean }): void {
 
   process.stdout.write(`Walk mode: ${walkMode}\n`)
   if (walkMode === 'git') {
-    process.stdout.write('Git mode: .gitignore exclusions are active (via git ls-files).\n')
+    process.stdout.write('token-goat index: .gitignore exclusions are active (via git ls-files).\n')
   } else {
-    process.stdout.write('Non-git walk mode. Built-in exclusions: .env, .env.*, *.d.ts\n')
+    process.stdout.write(
+      `token-goat index --walk: built-in exclusions ${walkIndexBuiltinExclusions.join(', ')}.\n`,
+    )
   }
+  // map/todo/conflicts/hot --project all resolve files via a raw filesystem walk (baseline.ts's
+  // walkProject), never via git ls-files -- they never see .gitignore or the index --walk
+  // exclusions above, in git mode or non-git mode alike. The only exclusion they genuinely share
+  // is SKIP_DIRS plus hidden (dot-prefixed) directories.
+  process.stdout.write(
+    `map/todo/conflicts (and hot --project) ignore neither .gitignore nor ${walkIndexBuiltinExclusions.join(', ')} in either mode -- ` +
+      `they only skip: ${report.skipDirs.join(', ')} (and hidden directories).\n`,
+  )
   if (cfg.worker.blocked_roots.length > 0) {
     process.stdout.write(`Blocked roots (config): ${cfg.worker.blocked_roots.join(', ')}\n`)
   } else {
