@@ -1550,6 +1550,38 @@ describe('ignores command', () => {
     const parsed = JSON.parse(r.stdout) as { walkMode: string }
     expect(parsed.walkMode).toBe('git')
   })
+
+  // Regression: `map`/`todo`/`conflicts`/`hot --project` all walk the filesystem directly via
+  // baseline.ts's walkProject, which never consults git ls-files/.gitignore and never excludes
+  // .env/*.d.ts (that filtering exists only in walk_index.ts's isWalkExcluded, wired to nothing
+  // but `token-goat index --walk`). The old report claimed ".gitignore exclusions are active"
+  // (git mode) and ".env, .env.*, *.d.ts" are "built-in exclusions" (non-git mode) as if those
+  // applied to every walk-based command -- false for map/todo/conflicts/hot in both modes. The
+  // report must scope those claims to `token-goat index` specifically and surface the one
+  // exclusion set (SKIP_DIRS) that genuinely applies to every walkProject-based command.
+  it('scopes the gitignore/.env claims to `index`, not every walk-based command', () => {
+    const r = run(['ignores', '--json'], { cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      skipDirs: string[]
+      walkIndexBuiltinExclusions: string[]
+      indexRespectsGitignore: boolean
+    }
+    // SKIP_DIRS is the only exclusion map/todo/conflicts/hot actually apply, in every mode.
+    expect(parsed.skipDirs).toContain('node_modules')
+    expect(parsed.skipDirs).toContain('.git')
+    // .env/*.d.ts filtering is real, but only for `token-goat index --walk` -- never reported
+    // as a blanket non-git-mode guarantee.
+    expect(parsed.walkIndexBuiltinExclusions).toContain('.env')
+    expect(parsed.walkIndexBuiltinExclusions).toContain('*.d.ts')
+    expect(parsed.indexRespectsGitignore).toBe(true)
+
+    const text = run(['ignores'], { cwd: ROOT }).stdout
+    // The human-readable report must name `token-goat index` explicitly wherever it claims
+    // gitignore/.env/.d.ts exclusion, so it never reads as a guarantee about every command.
+    expect(text).toContain('token-goat index')
+    expect(text).toContain('map/todo/conflicts')
+  })
 })
 
 describe('isProjectFrame path boundary check', () => {
