@@ -7,9 +7,9 @@
 
 import { eachUnfencedLine } from '../markdown_lines.js'
 
-/** Extract H1-H3 headings from markdown content with their byte offsets */
+/** Extract markdown headings (H1-H3 by default; H1-H6 when `limit` is Infinity) with their byte offsets */
 export interface MarkdownHeading {
-  level: number // 1, 2, or 3
+  level: number // 1-3 for a display-hint (finite limit) call, 1-6 for an Infinity-limit call
   text: string // heading text (stripped of #s)
   lineNumber: number // 1-based
 }
@@ -24,11 +24,12 @@ const MAX_HEADINGS = 40
 const MAX_OUTPUT_LINES = 60
 
 /**
- * Extract H1-H3 headings from markdown content.
- * Parses ATX headings (# ## ###) only — no setext style.
+ * Extract markdown headings.
+ * Parses ATX headings (# through ######) only — no setext style.
  * Skips headings inside fenced code blocks (``` or ~~~ fences).
- * @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display hints.
- *              Pass Infinity for indexing/embedding to capture all headings.
+ * @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display
+ *              hints, which also restricts extraction to H1-H3 for a readable outline. Pass
+ *              Infinity for indexing/embedding to capture all headings, H1 through H6.
  */
 export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
@@ -43,7 +44,15 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
     const headingText = match[2]!
 
     const level = hashes.length
-    if (level > 3) continue // Only H1-H3
+    // Display hints (finite `limit`, the MAX_HEADINGS default) show only H1-H3 for a readable
+    // outline. A caller passing `limit: Infinity` (parser.ts's buildEmbeddingBoundaries, for
+    // embedding chunk boundaries) needs every real markdown heading level (ATX headings are
+    // valid up to H6) so a doc's H4/H5 subsections still get their own chunk boundary instead of
+    // being silently folded into a coarser parent chunk -- the function's own doc comment already
+    // promises "Pass Infinity ... to capture all headings", which a hardcoded H1-H3-only filter
+    // here was quietly breaking.
+    const maxLevel = limit === Infinity ? 6 : 3
+    if (level > maxLevel) continue
 
     const text = headingText.trim()
     if (!text) continue

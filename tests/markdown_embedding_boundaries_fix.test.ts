@@ -94,4 +94,43 @@ describe('extractMarkdownHeadings with custom limit for embedding boundaries', (
     expect(headings[43].text).toBe('API Method 44')
     expect(headings[44].text).toBe('API Method 45')
   })
+
+  it('includes H4-H6 headings when limit is Infinity, not just H1-H3 (embedding boundaries)', () => {
+    // Same bug family as the >40-heading cap above: extractMarkdownHeadings's own doc comment
+    // promises Infinity captures "all headings", but a separate, unconditional `level > 3`
+    // filter silently dropped every H4/H5/H6 heading regardless of the limit passed in. A real
+    // API reference commonly nests method details under H4 (e.g. "#### Parameters", "#### Returns"
+    // beneath a "### methodName" heading) -- those subsections never became their own embedding
+    // chunk boundary and were folded into whatever coarser boundary/gap surrounded them, diluting
+    // semantic-search relevance for exactly the kind of deep-structure doc this file's other tests
+    // already care about.
+    const content = `# API Reference
+## methodName
+### Overview
+Some overview text.
+#### Parameters
+- foo: a parameter
+#### Returns
+A value.
+##### Errors
+Throws on bad input.
+###### Deprecated
+Use methodName2 instead.`
+
+    const headings = extractMarkdownHeadings(content, Infinity)
+    expect(headings.map((h) => `${h.level}:${h.text}`)).toEqual([
+      '1:API Reference',
+      '2:methodName',
+      '3:Overview',
+      '4:Parameters',
+      '4:Returns',
+      '5:Errors',
+      '6:Deprecated',
+    ])
+
+    // The display-hint path (finite/default limit) must keep its existing H1-H3-only behavior --
+    // this fix must not leak H4+ headings into the "large markdown file" navigation hint.
+    const displayHeadings = extractMarkdownHeadings(content)
+    expect(displayHeadings.map((h) => h.text)).toEqual(['API Reference', 'methodName', 'Overview'])
+  })
 })

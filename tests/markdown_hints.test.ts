@@ -35,13 +35,28 @@ Even more text`
     })
   })
 
-  it('skips H4+ headings', () => {
+  it('skips H4+ headings for the default (display-hint) limit', () => {
     const content = `# Title
 #### Skipped H4
 ##### Skipped H5`
     const headings = extractMarkdownHeadings(content)
     expect(headings).toHaveLength(1)
     expect(headings[0].text).toBe('Title')
+  })
+
+  it('captures H4-H6 headings when limit is Infinity (indexing/embedding boundaries)', () => {
+    // parser.ts's buildEmbeddingBoundaries calls extractMarkdownHeadings(content, Infinity) so
+    // embedding chunk boundaries snap to every heading level, not just H1-H3 -- the doc comment
+    // on extractMarkdownHeadings explicitly promises this ("Pass Infinity for indexing/embedding
+    // to capture all headings"). A doc with deep API-reference structure (H4/H5 subsections) must
+    // not have those subsections silently folded into a coarser chunk.
+    const content = `# Title
+#### Included H4
+##### Included H5
+###### Included H6`
+    const headings = extractMarkdownHeadings(content, Infinity)
+    expect(headings.map((h) => h.text)).toEqual(['Title', 'Included H4', 'Included H5', 'Included H6'])
+    expect(headings.map((h) => h.level)).toEqual([1, 4, 5, 6])
   })
 
   it('handles headings with trailing whitespace', () => {
