@@ -3407,6 +3407,35 @@ export function extractImports(text: string, ext: string): string[] {
         push(base)
       }
     }
+  } else if (['.kt', '.kts'].includes(e)) {
+    // Kotlin's own symbol/import extractor (kotlin.ts's IMPORT_RE) stops matching once the
+    // import path itself ends, so an aliased import (`import foo.Bar as Baz`, idiomatic when two
+    // imported names collide) resolves to the clean "foo.Bar". The generic
+    // `import|require|use|#include` fallback below has no such stop condition -- its greedy
+    // `[^'">;]+` capture class happily swallows the trailing " as Baz" too, so it reported the
+    // whole "foo.Bar as Baz" as a single, non-actionable import target instead of the real
+    // dependency, diverging from what the symbol index itself already extracts for the same
+    // file. Mirrors kotlin.ts's IMPORT_RE exactly (including its wildcard-import support) so
+    // `token-goat imports`/`deps` agrees with the symbol index.
+    const re = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
+    for (const line of lines) {
+      const m = re.exec(line.trim())
+      if (m) push(m[1])
+    }
+  } else if (e === '.swift') {
+    // Same gap as Kotlin above, mirrored from swift.ts's IMPORT_RE: Swift's submodule-import
+    // form (`import class UIKit.UIView`, importing just one member of a module) has its leading
+    // keyword (class/struct/enum/protocol/func/var/let/typealias) consumed by the dedicated
+    // extractor before the real target is captured, but the generic
+    // `import|require|use|#include` fallback below has no such stop condition and greedily
+    // captures "class UIKit.UIView" verbatim as the import target instead of the real
+    // "UIKit.UIView" dependency -- diverging from the symbol index for the same file.
+    const re =
+      /^(?:@testable\s+)?import\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
+    for (const line of lines) {
+      const m = re.exec(line.trim())
+      if (m) push(m[1])
+    }
   } else if (['.tf', '.tfvars', '.hcl'].includes(e)) {
     // Terraform's dependency mechanism is module composition (`module "foo" { source =
     // "./modules/foo" }`), not an import/require/use keyword -- the generic
@@ -3444,8 +3473,8 @@ export function extractImports(text: string, ext: string): string[] {
       if (useForward) push(useForward[1])
     }
   } else {
-    // Covers languages with no dedicated branch above (Kotlin, Swift, Dart, Apex, HTML/Liquid,
-    // Proto, Terraform, SQL, Vue/Svelte/Astro, ...) whose import syntax happens to use one of
+    // Covers languages with no dedicated branch above (Dart, Apex, HTML/Liquid,
+    // Proto, SQL, Vue/Svelte/Astro, ...) whose import syntax happens to use one of
     // these bare keywords. The negative lookbehind guards against the keyword appearing as a
     // substring of an unrelated word -- without it, "use" inside "because"/"house"/"reuse" (or
     // any prose/comment containing one) matched just as readily as a real `use Foo.Bar`
