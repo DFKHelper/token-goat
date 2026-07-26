@@ -318,6 +318,22 @@ describe('resolvePendingHintsForEvent', () => {
     expect(row.acted_on).toBe(0)
   })
 
+  // Regression: commandMentionsCorrelator only checked the character AFTER a substring match
+  // (guarding the prefix-collision direction above, e.g. ab12 vs ab1234), never the character
+  // BEFORE it -- so a later id that merely shares the correlator as a SUFFIX of a longer,
+  // distinct token (e.g. correlator '1234abcd' inside 'x1234abcd') was wrongly credited as
+  // acted-on. Mirrors read_commands.ts's endsWithPathBoundary / coverage_query.ts's
+  // endsWithPathBoundaryLocal convention, which both guard the boundary on the side missing here.
+  it('does not credit acted_on for bash_recall when a later id merely shares the correlator as a suffix (e.g. 1234abcd vs x1234abcd)', () => {
+    const n = nonce()
+    logHintEmission('bash_recall', n, '1234abcd')
+    resolvePendingHintsForEvent(bashEvent(n, 'token-goat bash-output x1234abcd'))
+
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT resolved, acted_on FROM hint_emissions WHERE session_id = ?').get(n) as { resolved: number; acted_on: number }
+    expect(row.acted_on).toBe(0)
+  })
+
   it('resolves as not-acted-on once the window is exhausted by unrelated tool calls', () => {
     const n = nonce()
     logHintEmission('bash_redirect', n, 'C:/repo/file.ts')

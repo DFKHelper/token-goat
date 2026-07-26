@@ -366,12 +366,25 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
 // whole point of checking that the CLI was actually invoked.
 const TOKEN_GOAT_INVOCATION_RE = /(?:^|[\s;&|])token-goat(?=[\s]|$)/
 
-/** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, and id `ab12` must not match `ab1234`) -- mirrors the boundary check other prefix-matching code in this codebase (e.g. skill_cache.ts's session-fragment guard) already applies. Requires the character immediately after every match to be absent or not a path/id-continuation character (alphanumeric, `_`, `.`, `-`); the character before is not checked since every correlator this module extracts already starts at a natural boundary (a drive letter, `./`, `../`, `/`, or a bare id token). */
+/** True when `command` contains `correlator` as a whole path/id token, not merely as a prefix or
+ * suffix of a longer, unrelated one (e.g. correlator `foo.ts` must not match `foo.tsx`, id `ab12`
+ * must not match `ab1234`, and correlator `1234abcd` must not match `x1234abcd`) -- mirrors the
+ * boundary check other prefix/suffix-matching code in this codebase (e.g.
+ * read_commands.ts's endsWithPathBoundary / coverage_query.ts's endsWithPathBoundaryLocal, and
+ * skill_cache.ts's session-fragment guard) already applies. Requires the character immediately
+ * before AND after every match to be absent or not a path/id-continuation character
+ * (alphanumeric, `_`, `.`, `-`) -- a correlator extracted from a hint's own text always starts and
+ * ends at such a boundary there, but that says nothing about whether a later, unrelated command
+ * happens to embed the same substring glued onto a longer token, so both sides of every match in
+ * `command` must be checked independently. */
 function commandMentionsCorrelator(command: string, correlator: string): boolean {
   let idx = command.indexOf(correlator)
   while (idx !== -1) {
+    const before = idx > 0 ? command[idx - 1] : undefined
     const after = command[idx + correlator.length]
-    if (after === undefined || !/[A-Za-z0-9_.-]/.test(after)) return true
+    const beforeOk = before === undefined || !/[A-Za-z0-9_.-]/.test(before)
+    const afterOk = after === undefined || !/[A-Za-z0-9_.-]/.test(after)
+    if (beforeOk && afterOk) return true
     idx = command.indexOf(correlator, idx + 1)
   }
   return false
