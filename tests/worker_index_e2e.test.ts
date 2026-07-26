@@ -140,6 +140,19 @@ beforeAll(() => {
     path.join(repo, 'namespace_fixture.cpp'),
     ['namespace BundleNamespaceSymbol {', '  void inner() {}', '}', ''].join('\n'),
   )
+  // A Go `interface` with declared methods — same tree-shaking concern: the method_elem -> 'method'
+  // entry added to GO_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'iface_fixture.go'),
+    [
+      'package main',
+      '',
+      'type BundleGoInterface interface {',
+      '\tBundleGoInterfaceMethod() error',
+      '}',
+      '',
+    ].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -226,6 +239,21 @@ describe('built bundle end-to-end indexing', () => {
     expect(ns.status).toBe(0)
     expect(ns.stdout).toContain('BundleNamespaceSymbol')
     expect(ns.stdout).toContain('namespace_fixture.cpp')
+  }, 60000)
+
+  it('index then symbol resolves a Go interface method signature from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const iface = runBundle(['symbol', 'BundleGoInterface'])
+    expect(iface.status).toBe(0)
+    expect(iface.stdout).toContain('BundleGoInterface')
+    expect(iface.stdout).toContain('iface_fixture.go')
+
+    const meth = runBundle(['symbol', 'BundleGoInterfaceMethod'])
+    expect(meth.status).toBe(0)
+    expect(meth.stdout).toContain('BundleGoInterfaceMethod')
+    expect(meth.stdout).toContain('iface_fixture.go')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.

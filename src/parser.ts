@@ -427,6 +427,14 @@ export function stripPythonStringQuotes(raw: string): string {
 const GO_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['function_declaration', 'function'],
   ['method_declaration', 'method'],
+  // An interface's declared method set (`type Reader interface { Read(...) (int, error) }`) is
+  // parsed as `method_elem` -- a distinct node type from `method_declaration` (a concrete method
+  // with a receiver and body). `method_elem` exposes its own `name` field (a `field_identifier`),
+  // exactly like `method_declaration` does, but had no map entry: every method signature declared
+  // inside a Go interface -- the entire point of the interface -- was silently invisible to
+  // `symbol`/`outline`/`skeleton`/`read`, even though the interface type itself indexed fine via
+  // `type_spec` below.
+  ['method_elem', 'method'],
   // Go type/const/var names live on the nested *_spec node, not the *_declaration wrapper (which exposes no `name` field). A grouped `type (...)` / `const (...)` / `var (...)` block holds several specs, each reached by the namedChildren recursion in extractGoSymbols, so keying on the spec node yields one symbol per declared name. `type X = Y` parses as type_alias, which also carries the name field.
   ['type_spec', 'type'],
   ['type_alias', 'type'],
@@ -447,6 +455,11 @@ const GO_LOCAL_KINDS: ReadonlySet<string> = new Set([
   'const_spec',
   'type_spec',
   'type_alias',
+  // A local interface type (`type Reader interface { Read(...) }` declared inside a func body) is
+  // itself excluded via `type_spec` above; its nested `method_elem` signatures must be excluded
+  // the same way, or a function-local interface's methods would leak into the index even though
+  // the interface type declaring them does not.
+  'method_elem',
 ])
 
 function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
