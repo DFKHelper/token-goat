@@ -654,13 +654,37 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // `union_specifier` exposes the same `name` field (a `type_identifier`) as struct/enum in both
   // the C and C++ grammars, so a named union indexes as kind 'union' and is visible to `types`.
   ['union_specifier', 'union'],
+  // A `typedef ... Alias;` parses as `type_definition`; its aliased name lives on the nested
+  // `declarator` chain, not a `name` field. The dominant real-world form `typedef struct { ... }
+  // Alias;` (anonymous tag) otherwise indexes nothing at all: the inner struct/enum/union
+  // specifier has no `name`, and the alias itself was never reached. Kind 'type' matches how the
+  // TS/Go/Rust type aliases are indexed and is in `types`' TYPE_KINDS.
+  ['type_definition', 'type'],
 ])
 
 function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
-  // C/C++ function names live in a nested `declarator` chain, not a `name` field, so reuse the refs helper that descends it; other specifiers (class/struct/enum) do expose a `name` field.
+  // C/C++ function and typedef-alias names live in a nested `declarator` chain, not a `name` field, so descend it; other specifiers (class/struct/enum/union) do expose a `name` field.
   return extractSimpleSymbols(root, filePath, CPP_KIND_BY_TYPE, (node) =>
-    node.type === 'function_definition' ? cFunctionName(node) : nodeName(node),
+    node.type === 'function_definition'
+      ? cFunctionName(node)
+      : node.type === 'type_definition'
+        ? cTypedefAliasName(node)
+        : nodeName(node),
   )
+}
+
+/** Descend a C/C++ `type_definition`'s `declarator` chain to the aliased `type_identifier`. */
+function cTypedefAliasName(node: TsNode): string | null {
+  let cur: TsNode | null = node.childForFieldName('declarator')
+  // Bound the walk so a malformed/unexpected tree can never loop forever.
+  for (let i = 0; cur !== null && i < 16; i++) {
+    if (cur.type === 'type_identifier') return cur.text
+    const next = cur.childForFieldName('declarator')
+    // A function-pointer typedef `typedef R (*Fn)(...)` wraps the alias in a
+    // `parenthesized_declarator` that holds its inner declarator as an unnamed child.
+    cur = next ?? (cur.type === 'parenthesized_declarator' ? (cur.namedChildren[0] ?? null) : null)
+  }
+  return null
 }
 
 // --- Reference (call-site) extraction via tree-sitter ----------------------
