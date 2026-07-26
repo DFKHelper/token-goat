@@ -549,6 +549,41 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS (line ~626) never included 'protocol' -- Swift's extractor
+  // (languages/swift.ts) emits kind 'protocol' for `protocol Foo { ... }` declarations, a type
+  // declaration exactly analogous to `interface` (which IS in TYPE_KINDS) in every other
+  // extractor's vocabulary. Every Swift protocol was indexed but silently excluded from
+  // `token-goat types`, the same class of gap already fixed once for Rust `union`.
+  it('surfaces a Swift protocol via TYPE_KINDS, matching interface', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-swiftprotocol-'))
+    try {
+      const file = join(dir, 'fixture.swift')
+      writeFileSync(
+        file,
+        ['protocol TypesSwiftProtocolFixture {', '    func doThing()', '}', ''].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesSwiftProtocolFixture')
+      expect(parsed.find((r) => r.name === 'TypesSwiftProtocolFixture')?.kind).toBe('protocol')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
