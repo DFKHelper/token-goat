@@ -16,6 +16,12 @@ const TEST_FAIL_RE = /^\s*--- FAIL:\s/
 const TEST_RPC_RE = /^=== (RUN|PAUSE|CONT)\s/
 const SKIP_RE = /^\s*--- SKIP:\s/
 const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current|Write at|Read at)\s/
+// A real `go test -race` stack frame is TWO physical lines: a function-signature line (e.g.
+// `  pkg.Func()`), immediately followed by an indented source-location line (e.g.
+// `      /path/file.go:12 +0x44`). Used by flushRaceBlock to pair the two together so the
+// MAX_RACE_GOROUTINE_FRAMES cutoff always lands on a frame boundary, never splitting a kept
+// function line from its own location line (or vice versa).
+const RACE_LOCATION_LINE_RE = /^\s+\S.*:\d+(?:\s+\+0x[0-9a-fA-F]+)?\s*$/
 const OK_PKG_RE = /^ok\s+\S+\s+(?:\d|\(cached\))/
 const FAIL_PKG_RE = /^FAIL\t\S+/
 // A panic or runtime fatal aborts the test binary before any `--- FAIL:` line, so the most recent `=== RUN/NAME` line is the only marker of which (sub)test was executing. Emit that buffered line ahead of the panic so it survives.
@@ -55,37 +61,59 @@ export class GoTestFilter extends ToolFilter {
     let raceCount = 0
 
     const flushRaceBlock = (): void => {
-      // Walk the block, collapsing goroutine stack frames beyond the limit.
+      // Walk the block, collapsing goroutine stack frames beyond the limit. Each real frame is
+      // a function-signature line optionally followed by a RACE_LOCATION_LINE_RE location line
+      // (see that constant's doc comment) -- the two are paired here so a kept function line
+      // never has its own location line silently dropped (or vice versa) by the cutoff landing
+      // mid-pair, and so "N goroutine frames omitted" counts real frames, not physical lines.
       let inGoroutine = false
       let goroutineFrameCount = 0
       let goroutineFramesDropped = 0
+      // True immediately after a frame's function-signature line, while we're still waiting to
+      // see whether the next indented line is that same frame's location line.
+      let expectLocationLine = false
+      let currentFrameKept = false
       const flushDroppedNote = (): void => {
         if (goroutineFramesDropped) {
           kept.push(`    [token-goat: +${goroutineFramesDropped} goroutine frames omitted]`)
         }
       }
+      const resetGoroutineState = (): void => {
+        goroutineFrameCount = 0
+        goroutineFramesDropped = 0
+        expectLocationLine = false
+        currentFrameKept = false
+      }
       for (const rline of raceBlockLines) {
         if (GOROUTINE_HEADER_RE.test(rline)) {
           flushDroppedNote()
           inGoroutine = true
-          goroutineFrameCount = 0
-          goroutineFramesDropped = 0
+          resetGoroutineState()
           kept.push(rline)
           continue
         }
         if (inGoroutine) {
           // Stack frame lines are indented whitespace.
           if ((rline.startsWith(' ') || rline.startsWith('\t')) && rline.trim()) {
+            if (expectLocationLine && RACE_LOCATION_LINE_RE.test(rline)) {
+              // This frame's location line -- inherits the function line's keep/drop decision,
+              // does not itself count as a new frame.
+              if (currentFrameKept) kept.push(rline)
+              expectLocationLine = false
+              continue
+            }
+            // A new frame's function-signature line.
             goroutineFrameCount += 1
-            if (goroutineFrameCount <= MAX_RACE_GOROUTINE_FRAMES) kept.push(rline)
+            currentFrameKept = goroutineFrameCount <= MAX_RACE_GOROUTINE_FRAMES
+            if (currentFrameKept) kept.push(rline)
             else goroutineFramesDropped += 1
+            expectLocationLine = true
             continue
           }
           // Leaving the goroutine section.
           flushDroppedNote()
           inGoroutine = false
-          goroutineFrameCount = 0
-          goroutineFramesDropped = 0
+          resetGoroutineState()
         }
         kept.push(rline)
       }

@@ -418,6 +418,37 @@ describe('go-test filter', () => {
     expect(result.text).not.toContain('read_frame_5()')
   })
 
+  it('collapses real two-line-per-frame race stacks at frame boundaries, never splitting a kept function line from its location line', () => {
+    // Real `go test -race` stack frames are TWO physical lines each: a function-signature line
+    // (e.g. "  pkg.Func()") immediately followed by a source-location line (e.g.
+    // "      /path/file.go:12 +0x44"). The line-counting collapse previously treated each
+    // physical line as its own "frame", so MAX_RACE_GOROUTINE_FRAMES (5) cut off mid-pair on an
+    // odd boundary, keeping a function-signature line with its location line silently deleted
+    // (and mislabeling the omitted-count as "frames" when it was actually stray lines).
+    const frame = (i: number): string => `  pkg.Func${i}()\n      /tmp/race.go:${10 + i} +0x44`
+    const frames = Array.from({ length: 6 }, (_, i) => frame(i)).join('\n')
+    const text =
+      '==================\n' +
+      'WARNING: DATA RACE\n' +
+      'Write at 0x00c0000140a0 by goroutine 8:\n' +
+      frames +
+      '\n' +
+      '==================\n' +
+      'FAIL\tgithub.com/org/repo\t0.10s\n'
+    const result = goTestFilter.apply(text, '', 1, ['go', 'test', '-race'])
+    // The first 5 full frames (function line + location line) survive intact.
+    for (let i = 0; i < 5; i++) {
+      expect(result.text).toContain(`pkg.Func${i}()`)
+      expect(result.text).toContain(`/tmp/race.go:${10 + i} +0x44`)
+    }
+    // The 6th frame is dropped as a whole pair, not split.
+    expect(result.text).not.toContain('pkg.Func5()')
+    expect(result.text).not.toContain('/tmp/race.go:15 +0x44')
+    // The omitted-count reflects real frames (1), not physical lines (which would be a
+    // different, larger number if line-based counting leaked through).
+    expect(result.text).toContain('+1 goroutine frames omitted')
+  })
+
   it('routes "go test" to go-test but "go build" elsewhere', () => {
     expect(selectFilter(['go', 'test', './...'])?.name).toBe('go-test')
     expect(selectFilter(['go', 'build', './...'])?.name).not.toBe('go-test')
