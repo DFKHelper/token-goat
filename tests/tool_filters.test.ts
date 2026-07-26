@@ -375,6 +375,19 @@ describe('dispatch: detection + compound handling', () => {
     expect(out).toBe('wrap[echo-test](mytool -m "a&&b") && echo done')
   })
 
+  // Regression: detectFromCommand rejects a bare `&` (backgrounded command) because spawnSync's
+  // piped stdio blocks on the backgrounded grandchild's inherited stdout until it exits or the
+  // wrapper's timeout kills the process tree the user wanted kept running (see the bug #242
+  // regression test above). tryWrapCompoundSegments' per-segment path (detectSingleSegment)
+  // never carried the same guard, so a trailing backgrounded segment in a compound command --
+  // e.g. `cd /app && npm run dev &`, a common "set up then start a dev server" pattern -- was
+  // still wrapped, reproducing the exact hang the sibling check exists to prevent.
+  it('tryWrapCompoundSegments does not wrap a segment ending in a bare backgrounded command', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const out = tryWrapCompoundSegments('echo start && mytool run &', (name, seg) => `wrap[${name}](${seg})`)
+    expect(out).toBeNull()
+  })
+
   // Regression: the char-by-char quote tracker had no backslash-escape handling, so an
   // escaped quote (\") inside a double-quoted argument closed the quote state one character
   // early -- causing a real, top-level && immediately after to be silently absorbed into the
