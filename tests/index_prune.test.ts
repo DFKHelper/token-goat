@@ -517,6 +517,31 @@ describe('recordKnownRootThrottled', () => {
     recordKnownRootThrottled(normalizePath(filePath), dir, dbPath)
     expect((db.prepare('SELECT COUNT(*) AS n FROM known_roots').get() as { n: number }).n).toBe(0)
   })
+
+  it('records each distinct project root independently, not just the first root seen in the rate-limit window', () => {
+    // The throttle marker lives under one shared global dataDir() regardless of which project
+    // is being edited (see recordKnownRootThrottled's real call site in hooks_edit.ts, which
+    // always passes dataDir()). A dev machine routinely has edits land in more than one project
+    // within the same hour -- the marker must not let the second project's root go permanently
+    // unregistered just because a first, unrelated project's edit happened to land first.
+    const proj1 = path.join(dir, 'proj1')
+    const proj2 = path.join(dir, 'proj2')
+    fs.mkdirSync(path.join(proj1, '.git'), { recursive: true })
+    fs.mkdirSync(path.join(proj2, '.git'), { recursive: true })
+    const file1 = path.join(proj1, 'a.ts')
+    const file2 = path.join(proj2, 'b.ts')
+    fs.writeFileSync(file1, 'export const a = 1\n')
+    fs.writeFileSync(file2, 'export const b = 1\n')
+
+    const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-prune-markers-'))
+    recordKnownRootThrottled(normalizePath(file1), markerDir, dbPath)
+    recordKnownRootThrottled(normalizePath(file2), markerDir, dbPath)
+
+    const db = getDb(dbPath)
+    const roots = (db.prepare('SELECT root FROM known_roots').all() as Array<{ root: string }>).map((r) => r.root)
+    expect(roots.map(normalizePath)).toContain(normalizePath(proj1))
+    expect(roots.map(normalizePath)).toContain(normalizePath(proj2))
+  })
 })
 
 describe('sweepKnownRoots', () => {
