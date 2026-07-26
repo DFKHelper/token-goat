@@ -209,6 +209,14 @@ const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['package.json', 'json'],
   ['tsconfig.json', 'json'],
   ['.envrc', 'env_file'],
+  // Gemfile and Rakefile are plain Ruby syntax with no extension -- the dominant, idiomatic
+  // dependency-manifest and task-runner files in virtually every real Ruby project (analogous to
+  // package.json for Node or a bare Makefile). Without these entries both fell through to
+  // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling their
+  // content exactly like any other .rb file -- the same has-extractor-but-no-dispatch-entry gap
+  // already fixed for bare `Makefile` / `.mk` fragments above.
+  ['gemfile', 'ruby'],
+  ['rakefile', 'ruby'],
 ])
 
 // Matches ".env" itself and any ".env.<suffix>" variant (.local, .example, .sample, .test,

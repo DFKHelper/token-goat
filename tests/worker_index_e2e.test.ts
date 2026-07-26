@@ -188,6 +188,14 @@ beforeAll(() => {
     path.join(repo, 'assoc_type_fixture.rs'),
     ['trait BundleAssocTypeTrait {', '    type BundleAssocTypeItem;', '}', ''].join('\n'),
   )
+  // A bare `Gemfile` (no extension, plain Ruby syntax) — same has-extractor-but-no-dispatch-entry
+  // concern as the .mk fixture below: the FILENAME_LANGUAGE 'gemfile' -> 'ruby' entry must resolve
+  // from the shipped binary too, not just from source, or a bundling regression could silently
+  // re-break every real project's dependency manifest.
+  fs.writeFileSync(
+    path.join(repo, 'Gemfile'),
+    ['def bundle_gemfile_symbol', '  1', 'end', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -339,6 +347,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(alias.status).toBe(0)
     expect(alias.stdout).toContain('BundlePyTypeAlias')
     expect(alias.stdout).toContain('pep695_fixture.py')
+  }, 60000)
+
+  it('index then symbol resolves a bare Gemfile method definition from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sym = runBundle(['symbol', 'bundle_gemfile_symbol'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('bundle_gemfile_symbol')
+    expect(sym.stdout).toContain('Gemfile')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
