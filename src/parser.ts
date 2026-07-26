@@ -485,6 +485,15 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // Not added to RUST_LOCAL_KINDS below: like a nested struct/fn, a mod declared inside a function
   // body stays indexed (only value bindings — `const` — are treated as function-local noise).
   ['mod_item', 'module'],
+  // Unbodied `fn` signatures — trait required methods (`fn find(&self) -> u32;` inside a `trait`
+  // block) and `extern "C" { ... }` foreign-function declarations — parse as `function_signature_item`,
+  // NOT `function_item` (which requires a body). Absent here, so every trait interface method without
+  // a default body and every FFI declaration was silently dropped from the index: `token-goat symbol`
+  // / `read` returned nothing for them even though the trait/extern block itself indexed. Mapped to
+  // 'function', matching bodied `function_item`, so a trait's methods index whether or not they carry
+  // a default body. Not a value binding, so it never appears as a function-local — no RUST_LOCAL_KINDS
+  // entry needed.
+  ['function_signature_item', 'function'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
