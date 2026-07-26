@@ -41,6 +41,22 @@ import {
 } from '../src/graph_commands.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 
+/** Run `fn` with `process.stderr.write` captured, returning whatever it wrote. Restores the
+ * original write function afterward regardless of whether `fn` throws. Shared helper for the
+ * `--top <= 0` rejection tests below (mirrors the inline pattern already used throughout this
+ * file, e.g. the `runTypes limit validation` suite). */
+function captureStderr(fn: () => void): string {
+  let errCaptured = ''
+  const origStderr = process.stderr.write.bind(process.stderr)
+  process.stderr.write = (chunk: unknown) => { errCaptured += String(chunk); return true }
+  try {
+    fn()
+  } finally {
+    process.stderr.write = origStderr
+  }
+  return errCaptured
+}
+
 // Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation.
 // vi.mock is hoisted above these imports by vitest, so every call site (this test file's own
 // `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked
@@ -698,8 +714,28 @@ describe('resolveCallers cross-project scoping', () => {
 
 describe('runDead integration', () => {
   it('exits 0 even when no dead symbols are found', () => {
-    const code = runDead({ top: 0 })
+    // A nonexistent kind genuinely finds zero symbols to check -- unlike a --top of 0, this
+    // exercises the "no dead symbols found" message path without relying on --top to force an
+    // empty slice (see the --top rejection test below).
+    const code = runDead({ kind: '__nonexistent_kind_xyzzy__' })
     expect(code).toBe(0)
+  })
+
+  it('rejects --top 0 as an explicit invalid-argument error instead of silently reporting a false-clean "no dead symbols" result', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runDead({ top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).not.toContain('No dead symbols found')
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('rejects a negative --top as an explicit invalid-argument error', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runDead({ top: -1 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('top')
   })
 
   it('returns valid JSON for --json flag with --top 5', () => {
@@ -2710,6 +2746,65 @@ describe('runAsk', () => {
     // Codex's noisy stdout must never leak into the emitted answer.
     expect(captured).not.toMatch(/reasoning summary noise/)
     expect(captured).not.toMatch(/SessionStart/)
+  })
+})
+
+// ---- --top <= 0 rejection (regression) --------------------------------------
+// Every --top consumer in this file used to slice its results list with `opts.top` unchecked,
+// so `--top 0` (or negative) silently produced an empty result -- reported as "No callers
+// found", "No dead symbols found.", "No coverage gaps found.", etc -- indistinguishable from a
+// genuinely clean project, exactly the failure mode runRefs' own --top validation (see
+// read_commands.test.ts) already guards against. Each command below must reject a non-positive
+// --top explicitly instead.
+describe('--top <= 0 rejection across graph_commands.ts', () => {
+  it('runImpact rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runImpact({ symbol: 'querySymbols', top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).not.toContain('No callers found')
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('runSimilar rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runSimilar({ spec: 'src/graph_commands.ts::enclosingSymbol', top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('runContextFor rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runContextFor({ task: 'query symbols', top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('runCoverageGaps rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runCoverageGaps({ top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).not.toContain('No coverage gaps found')
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('runArch rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runArch({ top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('top')
+  })
+
+  it('runAsk rejects --top 0', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runAsk({ question: 'how are refs stored', top: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('top')
   })
 })
 
