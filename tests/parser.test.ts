@@ -821,6 +821,31 @@ describe('parseFile', () => {
     expect(result.symbols.map((s) => s.name)).not.toContain('LOCAL_STATIC')
   })
 
+  it('indexes Rust trait associated types (the Iterator::Item / Deref::Target pattern)', async () => {
+    const rustFile = write(
+      'assoc_type.rs',
+      [
+        'trait Container {',
+        '    type Item;', // unbodied associated type — distinct node from free-standing `type Alias = Foo;`
+        '    fn get(&self) -> Self::Item;',
+        '}',
+        '',
+        'trait WithDefault {',
+        '    type Output = u32;', // associated type with a default
+        '}',
+        '',
+        'type Alias = u32;', // free-standing type alias — already indexed via type_item, sanity check it still works alongside associated_type
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const types = result.symbols.filter((s) => s.kind === 'type').map((s) => s.name)
+    expect(types).toContain('Item')
+    expect(types).toContain('Output')
+    expect(types).toContain('Alias')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',

@@ -181,6 +181,13 @@ beforeAll(() => {
     path.join(repo, 'pep695_fixture.py'),
     ['type BundlePyTypeAlias = list[int]', ''].join('\n'),
   )
+  // A Rust trait associated type (`type Item;`, the Iterator::Item / Deref::Target pattern) — same
+  // tree-shaking concern: the associated_type -> 'type' entry added to RUST_KIND_BY_TYPE must
+  // resolve from the shipped binary too, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'assoc_type_fixture.rs'),
+    ['trait BundleAssocTypeTrait {', '    type BundleAssocTypeItem;', '}', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -237,6 +244,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(uni.status).toBe(0)
     expect(uni.stdout).toContain('BundleUnionSymbol')
     expect(uni.stdout).toContain('static_union_fixture.rs')
+  }, 60000)
+
+  it('index then symbol resolves a Rust trait associated type from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sym = runBundle(['symbol', 'BundleAssocTypeItem'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('BundleAssocTypeItem')
+    expect(sym.stdout).toContain('assoc_type_fixture.rs')
   }, 60000)
 
   it('index then symbol resolves a C union definition from the built bundle', () => {
