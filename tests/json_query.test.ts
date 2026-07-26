@@ -237,6 +237,16 @@ describe('evalJsonPath / queryJson', () => {
     expect(() => queryJson(PEOPLE, 'items[0].doesNotExist')).toThrow(/path not found/);
   });
 
+  it('throws on a missing key that collides with an inherited Object.prototype member', () => {
+    // 'toString', 'constructor', 'hasOwnProperty', etc. are visible via the `in` operator on
+    // any plain object even when absent as an own property -- a key lookup must only ever
+    // succeed for a real own property, never fall through to the prototype chain.
+    const data = { id: 1 };
+    expect(() => queryJson(data, 'toString')).toThrow(/path not found/);
+    expect(() => queryJson(data, 'constructor')).toThrow(/path not found/);
+    expect(() => queryJson(data, 'hasOwnProperty')).toThrow(/path not found/);
+  });
+
   it('throws on an out-of-range index at a non-fanned path', () => {
     expect(() => queryJson(PEOPLE, 'items[99]')).toThrow(/out of range/);
   });

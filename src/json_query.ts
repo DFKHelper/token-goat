@@ -186,7 +186,12 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
     const next: unknown[] = []
     for (const item of current) {
       if (op.kind === 'key') {
-        if (typeof item === 'object' && item !== null && !Array.isArray(item) && op.name in (item as Record<string, unknown>)) {
+        if (
+          typeof item === 'object' &&
+          item !== null &&
+          !Array.isArray(item) &&
+          Object.prototype.hasOwnProperty.call(item, op.name)
+        ) {
           next.push((item as Record<string, unknown>)[op.name])
         } else if (!fanned) {
           throw new Error(`path not found: key '${op.name}' does not exist on ${jsonType(item)} value`)
