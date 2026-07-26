@@ -116,6 +116,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   brief_view: SOURCE_READ,
   session_outline: SOURCE_READ,
   session_slice: SOURCE_READ,
+  gdrive_sections: SOURCE_READ,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
@@ -161,6 +162,7 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   brief: new Set(['brief_view']),
   'session-outline': new Set(['session_outline']),
   'session-slice': new Set(['session_slice']),
+  'gdrive-sections': new Set(['gdrive_sections']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',
