@@ -454,5 +454,30 @@ describe('hooks_session', () => {
       const result = userPromptSubmitHandler(event);
       expect(result.hookType).toBe('pass');
     });
+
+    // Regression: the short-prompt length gate (< 8 trimmed chars) predates the drift-nudge
+    // feature and originally only existed to skip the git-branch subprocess for trivial prompts
+    // like "ok"/"yes"/"go". checkSkillVersionDrift was later added AFTER that same early return,
+    // so real, pending drift was silently never surfaced (and never marked notified) whenever a
+    // session's next turn happened to be short -- a very common real pattern ("continue", "yes",
+    // "go on", "next"). The nudge should still surface on a short prompt, even though no branch
+    // line is computed for it.
+    it('still surfaces the drift nudge on a short prompt (below the git-branch length gate)', () => {
+      const sessionId = nonce();
+      seedOldSkillVersionSnapshot(sessionId);
+
+      const event: HookEvent = {
+        eventName: 'user_prompt_submit',
+        toolName: undefined,
+        toolInput: {},
+        sessionId,
+        raw: { prompt: 'ok', cwd: '/tmp/repo' },
+      };
+
+      const result = userPromptSubmitHandler(event);
+      expect(util.runGit).not.toHaveBeenCalled();
+      expect(result.hookType).toBe('context');
+      expect((result as { context: string }).context).toContain(`upgraded v0.0.0-test-old -> v${VERSION}`);
+    });
   });
 });
