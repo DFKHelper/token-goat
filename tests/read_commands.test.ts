@@ -2993,15 +2993,32 @@ describe('read_commands', () => {
       ])
     })
 
-    it('generic fallback (Kotlin/Swift/etc.): matches a real import but not a keyword-as-substring false positive (regression: an unanchored match let "use" inside "because"/"house" fabricate phantom imports)', () => {
+    it('generic fallback (Dart/Apex/etc.): matches a real import but not a keyword-as-substring false positive (regression: an unanchored match let "use" inside "because"/"house" fabricate phantom imports)', () => {
       const src = [
         'because this comment mentions house rules', // "use" is a substring of both words
-        'import Foo.Bar', // real Kotlin/Swift-style import, should still match
+        'import Foo.Bar', // real generic-fallback import, should still match
       ].join('\n')
-      expect(extractImports(src, '.kt')).toEqual(['Foo.Bar'])
+      expect(extractImports(src, '.dart')).toEqual(['Foo.Bar'])
       // #include's leading "#" is itself a non-word character, so the same guard must not
       // also break the pre-existing C/C++ #include branch's sibling keyword form.
       expect(extractImports('#include <stdio.h>', '.unknownext')).toEqual(['stdio.h'])
+    })
+
+    it('extracts Kotlin imports, resolving an `as` alias to its clean import path (mirrors kotlin.ts IMPORT_RE, not the generic fallback\'s greedy capture)', () => {
+      const src = [
+        'import foo.Bar as Baz', // aliased import -- must resolve to "foo.Bar", not "foo.Bar as Baz"
+        'import kotlinx.android.synthetic.main.activity_main.*', // wildcard import
+      ].join('\n')
+      expect(extractImports(src, '.kt')).toEqual(['foo.Bar', 'kotlinx.android.synthetic.main.activity_main.*'])
+      expect(extractImports('import foo.Bar as Baz', '.kts')).toEqual(['foo.Bar'])
+    })
+
+    it('extracts Swift imports, stripping the submodule-import keyword (mirrors swift.ts IMPORT_RE, not the generic fallback\'s greedy capture)', () => {
+      const src = [
+        'import class UIKit.UIView', // submodule import -- must resolve to "UIKit.UIView", not "class UIKit.UIView"
+        '@testable import MyApp', // testable import
+      ].join('\n')
+      expect(extractImports(src, '.swift')).toEqual(['UIKit.UIView', 'MyApp'])
     })
 
     it('de-duplicates repeated specifiers', () => {

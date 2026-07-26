@@ -223,6 +223,23 @@ beforeAll(() => {
     path.join(repo, 'bundle_rake_fixture.rake'),
     ['def bundle_rake_symbol', '  1', 'end', ''].join('\n'),
   )
+  // A Kotlin file whose only import is aliased (`import ... as ...`, idiomatic when two imported
+  // names collide) -- extractImports' generic `import|require|use|#include` fallback (which .kt
+  // was routed through before the dedicated-branch fix) greedily captures the whole line,
+  // reporting "foo.bar.Baz as Qux" as a single non-actionable import target instead of the real
+  // dependency "foo.bar.Baz" that kotlin.ts's own symbol/import extractor already resolves.
+  fs.writeFileSync(
+    path.join(repo, 'kotlin_alias_fixture.kt'),
+    ['import foo.bar.Baz as Qux', '', 'fun bundleKotlinAliasFn() {}', ''].join('\n'),
+  )
+  // A Swift file whose only import is a submodule import (`import class UIKit.UIView`, importing
+  // just one member of a module) -- the same generic-fallback gap as Kotlin above, mirrored from
+  // swift.ts's IMPORT_RE: the fallback captures "class UIKit.UIView" verbatim instead of the real
+  // "UIKit.UIView" target.
+  fs.writeFileSync(
+    path.join(repo, 'swift_submodule_fixture.swift'),
+    ['import class UIKit.UIView', '', 'func bundleSwiftSubmoduleFn() {}', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -414,6 +431,26 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundle_rake_symbol')
     expect(sym.stdout).toContain('bundle_rake_fixture.rake')
+  }, 60000)
+
+  it('imports resolves a Kotlin aliased import to its clean path, not the whole "as"-suffixed line, from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const res = runBundle(['imports', 'kotlin_alias_fixture.kt'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('foo.bar.Baz')
+    expect(res.stdout).not.toContain('foo.bar.Baz as Qux')
+  }, 60000)
+
+  it('imports resolves a Swift submodule import to its clean path, not the leading keyword, from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const res = runBundle(['imports', 'swift_submodule_fixture.swift'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('UIKit.UIView')
+    expect(res.stdout).not.toContain('class UIKit.UIView')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
