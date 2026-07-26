@@ -1769,11 +1769,25 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
     switch (parsed.kind) {
       case 'files': {
         const files = fetchPrFiles(opts.pr, repo)
+        // pr-slice carries a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry
+        // (pr_slice), but nothing here ever called recordStat -- the pr-slice bucket in
+        // `token-goat stats --full` stayed permanently zero regardless of real usage, the same
+        // class of registry/producer desync previously fixed for
+        // map_lookup/changed_lookup/csv_query/brief_view/gdrive_sections (see
+        // project_runchanged_missing_stat memory). "Full source" is the raw fetched GH API
+        // payload (what a manual `gh pr view --json files` dump would be) vs the formatted/
+        // guarded slice actually emitted, mirroring recordReadStat's convention elsewhere in
+        // this file.
+        const fullSourceBytes = Buffer.byteLength(JSON.stringify(files), 'utf8')
         if (opts.json === true) {
           const capped = guardJsonRows(files)
-          emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+          const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
+          emit(jsonText)
+          recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} files`)
         } else {
-          emitGuarded(formatFilesSlice(files), 'pr-slice')
+          const text = formatFilesSlice(files)
+          emitGuarded(text, 'pr-slice')
+          recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} files`)
         }
         return 0
       }
@@ -1784,29 +1798,47 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           emitErr(`No diff found for '${parsed.path}' in PR #${opts.pr}`)
           return 1
         }
+        // "Full source" is the whole multi-file PR diff fetched before slicing down to one
+        // file's hunk -- see the `files` case above for the same recordStat rationale.
+        const fullSourceBytes = Buffer.byteLength(diffText, 'utf8')
         if (opts.json === true) {
-          emit(JSON.stringify({ path: parsed.path, diff: fileDiff }))
+          const jsonText = JSON.stringify({ path: parsed.path, diff: fileDiff })
+          emit(jsonText)
+          recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} diff:${parsed.path}`)
         } else {
           emitGuarded(fileDiff, 'pr-slice')
+          recordReadStat('pr_slice', fullSourceBytes, fileDiff, `${repo}#${opts.pr} diff:${parsed.path}`)
         }
         return 0
       }
       case 'comments': {
         const comments = fetchPrComments(opts.pr, repo)
+        // See the `files` case above for the same recordStat rationale.
+        const fullSourceBytes = Buffer.byteLength(JSON.stringify(comments), 'utf8')
         if (opts.json === true) {
           const capped = guardJsonRows(comments)
-          emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+          const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
+          emit(jsonText)
+          recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} comments`)
         } else {
-          emitGuarded(formatCommentsSlice(comments), 'pr-slice')
+          const text = formatCommentsSlice(comments)
+          emitGuarded(text, 'pr-slice')
+          recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} comments`)
         }
         return 0
       }
       case 'description': {
         const desc = fetchPrDescription(opts.pr, repo)
+        // See the `files` case above for the same recordStat rationale.
+        const fullSourceBytes = Buffer.byteLength(JSON.stringify(desc), 'utf8')
         if (opts.json === true) {
-          emit(JSON.stringify(desc))
+          const jsonText = JSON.stringify(desc)
+          emit(jsonText)
+          recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} description`)
         } else {
-          emitGuarded(formatDescriptionSlice(desc), 'pr-slice')
+          const text = formatDescriptionSlice(desc)
+          emitGuarded(text, 'pr-slice')
+          recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} description`)
         }
         return 0
       }

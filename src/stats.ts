@@ -117,6 +117,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   session_outline: SOURCE_READ,
   session_slice: SOURCE_READ,
   gdrive_sections: SOURCE_READ,
+  pr_slice: SOURCE_READ,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
@@ -163,6 +164,7 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   'session-outline': new Set(['session_outline']),
   'session-slice': new Set(['session_slice']),
   'gdrive-sections': new Set(['gdrive_sections']),
+  'pr-slice': new Set(['pr_slice']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',
