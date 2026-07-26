@@ -258,6 +258,19 @@ Some prose about versioning`
     expect(hint).toBe('')
   })
 
+  it('finds the most recent version when the changelog has no Unreleased placeholder at all', () => {
+    const content = `# Changelog
+
+## [1.2.3] - 2024-01-15
+
+Some changes here
+
+## [1.2.2] - 2023-12-01`
+    const hint = extractChangelogVersionHint(content, '/CHANGELOG.md')
+    expect(hint).toContain('[1.2.3]')
+    expect(hint).not.toContain('[1.2.2]')
+  })
+
   it('ignores a version heading that appears before Unreleased (fail-on-buggy: OR-vs-AND lets the pre-Unreleased version win)', () => {
     const content = `# Changelog
 
