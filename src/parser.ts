@@ -365,7 +365,27 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
 const PY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['function_definition', 'function'],
   ['class_definition', 'class'],
+  // PEP 695 (Python 3.12) `type X = ...` / `type X[T] = ...` statement. Its node carries no
+  // `name` field (only `left`/`right`, both wrapping a `type` node — see
+  // pythonTypeAliasName below), so nodeName() alone can never resolve it; without this entry
+  // every PEP 695 type alias in a 3.12+ codebase was silently invisible to symbol/read/outline.
+  ['type_alias_statement', 'type'],
 ])
+
+// `type_alias_statement`'s `left` field is a `type` node wrapping either a bare `identifier`
+// (`type IntList = list[int]`) or a `generic_type` whose own first named child is the
+// identifier (`type ListOrSet[T] = list[T] | set[T]`) -- never the field name lookup nodeName()
+// uses everywhere else, so this walks the `left` subtree for the first identifier instead.
+function pythonTypeAliasName(node: TsNode): string | null {
+  const left = node.childForFieldName('left')
+  if (left === null) return null
+  let cur: TsNode | null = left
+  while (cur !== null) {
+    if (cur.type === 'identifier') return cur.text
+    cur = cur.namedChildren[0] ?? null
+  }
+  return null
+}
 
 /**
  * Walk a Python tree collecting defs and classes. A `function_definition`
@@ -379,14 +399,18 @@ function extractPythonSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode, insideClass: boolean): void => {
     const baseKind = PY_KIND_BY_TYPE.get(node.type)
     if (baseKind !== undefined) {
-      const name = nodeName(node)
+      const name = node.type === 'type_alias_statement' ? pythonTypeAliasName(node) : nodeName(node)
       if (name !== null && name !== '') {
         const kind = node.type === 'function_definition' && insideClass ? 'method' : baseKind
         // A decorated def's tree-sitter node starts at `def`/`class`, not its `@decorator` line(s) above — decorated_definition has no PY_KIND_BY_TYPE entry, so it's never the node a symbol is built from. Widen to the enclosing decorated_definition's own range (decorators through end of the def) when present, so `read`/`skeleton` include the decorator lines; name/kind/docstring still come from the inner def node so method-vs-function and class-scope detection are unaffected.
         const rangeNode = node.parent?.type === 'decorated_definition' ? node.parent : node
+        // pythonDocstring() reads a `body` field that only function_definition/class_definition
+        // carry; type_alias_statement has none, so calling it unconditionally would be a
+        // childForFieldName() no-op returning '' anyway, but skip explicitly for clarity.
+        const docstring = node.type === 'type_alias_statement' ? '' : pythonDocstring(node)
         out.push({
           ...makeSymbol(filePath, name, kind, rangeNode),
-          docstring: pythonDocstring(node),
+          docstring,
         })
       }
     }

@@ -173,6 +173,14 @@ beforeAll(() => {
     path.join(repo, 'anno_fixture.java'),
     ['@interface BundleJavaAnno {', '  String bundleJavaAnnoElement() default "";', '}', ''].join('\n'),
   )
+  // A PEP 695 (Python 3.12) `type` alias statement — same tree-shaking concern: the
+  // type_alias_statement -> 'type' entry added to PY_KIND_BY_TYPE plus its custom
+  // left-field name helper (the node carries no `name` field) must resolve from the shipped
+  // binary too, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'pep695_fixture.py'),
+    ['type BundlePyTypeAlias = list[int]', ''].join('\n'),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -304,6 +312,16 @@ describe('built bundle end-to-end indexing', () => {
     expect(elem.status).toBe(0)
     expect(elem.stdout).toContain('bundleJavaAnnoElement')
     expect(elem.stdout).toContain('anno_fixture.java')
+  }, 60000)
+
+  it('index then symbol resolves a PEP 695 Python type alias from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const alias = runBundle(['symbol', 'BundlePyTypeAlias'])
+    expect(alias.status).toBe(0)
+    expect(alias.stdout).toContain('BundlePyTypeAlias')
+    expect(alias.stdout).toContain('pep695_fixture.py')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
