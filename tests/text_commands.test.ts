@@ -1467,10 +1467,13 @@ describe('hot command', () => {
         expect(r.status, `--limit ${bad}`).not.toBe(0)
         expect(r.stderr).toContain('--limit')
       }
+      // --limit 0 must be rejected, not silently sliced to an empty result -- a
+      // .slice(0, 0) would print "No session read data found." even though read data
+      // genuinely exists (the files written above), a false-clean claim about the cache's
+      // contents. Matches runFind's own --limit validation for the same failure mode.
       const zero = run(['hot', '--limit', '0', '--json'], { env: isolatedEnv(hotData) })
-      expect(zero.status, zero.stderr).toBe(0)
-      const parsedZero = JSON.parse(zero.stdout) as { entries: unknown[] }
-      expect(parsedZero.entries.length).toBe(0)
+      expect(zero.status, zero.stderr).not.toBe(0)
+      expect(zero.stderr).toContain('--limit')
     } finally {
       fs.rmSync(hotData, { recursive: true, force: true })
     }
@@ -1507,6 +1510,17 @@ describe('recent command', () => {
     // `--` forces commander to treat "-5" as the positional n argument rather than an
     // unrecognized option flag, so this exercises requireNonNegativeInt's sign check.
     const r = run(['recent', '--', '-5'])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('recent')
+  })
+
+  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in
+  // this session yet." -- an absolute claim about the session's contents -- even when files were
+  // genuinely read. Reject explicitly instead of silently rendering that false-clean result,
+  // matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
+  // validation for the same failure mode.
+  it('recent 0 errors instead of silently reporting an empty session', () => {
+    const r = run(['recent', '0'])
     expect(r.status).not.toBe(0)
     expect(r.stderr).toContain('recent')
   })

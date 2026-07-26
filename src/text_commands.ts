@@ -1397,6 +1397,14 @@ function loadAllSessionReadCounts(): Map<string, { path: string; readCount: numb
 
 export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean }): void {
   const limit = opts.limit !== undefined ? requireNonNegativeStrictInt('--limit', opts.limit) : 20
+  // --limit 0 would slice the sorted entries list down to zero and print "No session read data
+  // found." -- an absolute claim about the cache's contents -- even when read history genuinely
+  // exists. Reject explicitly instead of silently rendering that false-clean result, matching
+  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation
+  // for the same failure mode.
+  if (opts.limit !== undefined && limit === 0) {
+    throw new Error(`--limit must be a positive number, got: "${opts.limit}"`)
+  }
   const totals = loadAllSessionReadCounts()
 
   let entries: HotEntry[] = [...totals.values()].map(({ path: p, readCount: rc }) => ({ path: p, readCount: rc }))
@@ -1443,6 +1451,14 @@ interface RecentEntry {
 
 export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): void {
   const n = nStr !== undefined ? requireNonNegativeStrictInt('recent', nStr) : 20
+  // A limit of 0 would slice the sorted entries list down to zero and print "No files read in
+  // this session yet." -- an absolute claim about the session's contents -- even when files were
+  // genuinely read. Reject explicitly instead of silently rendering that false-clean result,
+  // matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
+  // validation for the same failure mode.
+  if (nStr !== undefined && n === 0) {
+    throw new Error(`recent: limit must be a positive number, got: "${nStr}"`)
+  }
   const sessionFiles = getSessionFiles()
 
   const entries: RecentEntry[] = [...sessionFiles.values()]

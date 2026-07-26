@@ -1232,6 +1232,17 @@ describe('cmdHistory', () => {
     expect(capturedErr()).toContain('--limit')
   })
 
+  // A --limit of 0 would slice the merged bash/web list down to zero entries and print "No
+  // history entries found" -- an absolute claim about the cache's contents -- even when
+  // entries genuinely exist. Reject explicitly instead of silently rendering that false-clean
+  // result, matching runFind's own --limit validation (read_commands.ts) and
+  // graph_commands.ts's --top validation for the same failure mode.
+  it('rejects --limit 0 instead of silently reporting an empty history', () => {
+    storeBlob(BASH_OUTPUT_SUBDIR, 'real1', { command: 'npm run build', storedAt: Date.now(), exitCode: 0, sizeBytes: 100 })
+    expect(() => cmdHistory({ limit: '0' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
   it('rejects a negative --limit instead of silently clamping to 1', () => {
     expect(() => cmdHistory({ limit: '-5' })).toThrow()
     expect(capturedErr()).toContain('--limit')

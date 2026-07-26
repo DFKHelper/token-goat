@@ -21,16 +21,28 @@ function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
-/** Parses a `--limit` option to a non-negative int, defaulting to `dflt` when unset. Shared by
- * cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way. */
+/** Parses a `--limit` option to a positive int, defaulting to `dflt` when unset. Shared by
+ * cmdBashHistory/cmdWebHistory/cmdMcpHistory, which all validate --limit the same way.
+ *
+ * `--limit 0` is rejected rather than accepted-and-sliced-to-empty: each caller's
+ * zero-results branch prints an absolute claim ("No bash output entries cached.") that a
+ * silently-empty `.slice(0, 0)` result would make even when entries genuinely exist --
+ * indistinguishable from a real empty cache. Same false-clean failure mode as runFind's own
+ * --limit validation (read_commands.ts) and graph_commands.ts's --top validation. */
 function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30): number {
   if (limitStr === undefined) return dflt
+  let n: number
   try {
-    return requireNonNegativeStrictInt('--limit', limitStr)
+    n = requireNonNegativeStrictInt('--limit', limitStr)
   } catch (e) {
-    emitErr(`${cmdName}: --limit must be a non-negative number, got: "${limitStr}"`)
+    emitErr(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
     throw new Error(`invalid --limit: ${limitStr}`, { cause: e })
   }
+  if (n === 0) {
+    emitErr(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
+    throw new Error(`invalid --limit: ${limitStr}`)
+  }
+  return n
 }
 
 // Confirmed storage subdirs operated on by clean-cache and prune-cache.
