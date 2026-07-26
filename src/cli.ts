@@ -141,7 +141,7 @@ import { colorStdout, stripAnsi } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
-import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
+import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import {
   collectFiles,
   collectFromStdin,
@@ -1849,17 +1849,33 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
   const fetchOpts = { fresh: opts.fresh === true }
+  // Fetch the whole doc once up front (honoring --fresh) so its raw byte size is available as
+  // the "full source" side of the bytes-saved calculation below, mirroring cmdSessionOutline/
+  // cmdSessionSlice's convention. fetchDoc() always writes its result to the on-disk web-output
+  // cache before returning, so the getSectionContent/getDocSections calls below can safely pass
+  // `fresh: false` -- they read through to the entry this call just (re)populated, guaranteeing
+  // exactly one network fetch even with --fresh, instead of two.
+  const text = await fetchDoc(fileId, fetchOpts)
+  const fullSourceBytes = Buffer.byteLength(text, 'utf8')
+  let emitted: string
   if (opts.heading !== undefined) {
-    const content = await getSectionContent(fileId, opts.heading, fetchOpts)
+    const content = await getSectionContent(fileId, opts.heading, { fresh: false })
     if (content === null) {
       throw new CliError(`section '${opts.heading}' not found in document ${fileId}`)
     }
-    out(`# ${opts.heading}\n${content}`)
+    emitted = `# ${opts.heading}\n${content}`
   } else {
-    const sections = await getDocSections(fileId, fetchOpts)
-    const formatted = formatSections(sections)
-    out(formatted)
+    const sections = await getDocSections(fileId, { fresh: false })
+    emitted = formatSections(sections)
   }
+  out(emitted)
+  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `gdrive-sections`/`gdrive_sections`
+  // entry and nothing ever called recordStat for this command -- the dashboard bucket was
+  // permanently zero regardless of real usage, the same class of gap already fixed for
+  // map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice (see
+  // project_runchanged_missing_stat memory).
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  recordStat('gdrive_sections', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 /**
