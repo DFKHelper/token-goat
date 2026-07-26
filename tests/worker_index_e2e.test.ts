@@ -111,6 +111,15 @@ beforeAll(() => {
     path.join(repo, 'macro_fixture.rs'),
     ['#[macro_export]', 'macro_rules! bundleMacroSymbol {', '    () => {};', '}', ''].join('\n'),
   )
+  // A top-level `static` and a `union` — same tree-shaking concern as the macro fixture above: a
+  // static_item/union_item extractor addition proven only against source (never the built bundle)
+  // could still be a bundling gap. These resolve from the shipped binary in the e2e test below.
+  fs.writeFileSync(
+    path.join(repo, 'static_union_fixture.rs'),
+    ['static BUNDLE_STATIC_SYMBOL: u32 = 42;', 'union BundleUnionSymbol { a: u32, b: f32 }', ''].join(
+      '\n',
+    ),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -152,6 +161,21 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('bundleMacroSymbol')
     expect(sym.stdout).toContain('macro_fixture.rs')
+  }, 60000)
+
+  it('index then symbol resolves Rust static and union definitions from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const stat = runBundle(['symbol', 'BUNDLE_STATIC_SYMBOL'])
+    expect(stat.status).toBe(0)
+    expect(stat.stdout).toContain('BUNDLE_STATIC_SYMBOL')
+    expect(stat.stdout).toContain('static_union_fixture.rs')
+
+    const uni = runBundle(['symbol', 'BundleUnionSymbol'])
+    expect(uni.status).toBe(0)
+    expect(uni.stdout).toContain('BundleUnionSymbol')
+    expect(uni.stdout).toContain('static_union_fixture.rs')
   }, 60000)
 
   // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
