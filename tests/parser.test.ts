@@ -612,6 +612,36 @@ describe('parseFile', () => {
     expect(logIt.body).toContain('macro_rules! log_it')
   })
 
+  it('indexes Rust static bindings (excluding function-local statics) and union definitions', async () => {
+    const rustFile = write(
+      'statics.rs',
+      [
+        'static GLOBAL_MAX: u32 = 100;',
+        'pub static mut COUNTER: i64 = 0;',
+        'union MyUnion { f1: u32, f2: f32 }',
+        'fn compute() -> u32 {',
+        '    static LOCAL_STATIC: u32 = 5;', // function-local static is excluded, like function-local const
+        '    union LocalUnion { a: u8 }', // a union nested in a fn body stays indexed (type def, not a value binding)
+        '    LOCAL_STATIC',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    const statics = result.symbols.filter((s) => s.kind === 'static').map((s) => s.name)
+    const unions = result.symbols.filter((s) => s.kind === 'union').map((s) => s.name)
+    // Top-level statics (including `pub static mut`) index as kind 'static'.
+    expect(statics).toContain('GLOBAL_MAX')
+    expect(statics).toContain('COUNTER')
+    // A `union` definition indexes as kind 'union'...
+    expect(unions).toContain('MyUnion')
+    // ...and stays indexed even when nested in a function body, mirroring nested structs/enums.
+    expect(unions).toContain('LocalUnion')
+    // A function-local `static` is excluded from the global index, matching function-local `const`.
+    expect(result.symbols.map((s) => s.name)).not.toContain('LOCAL_STATIC')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',

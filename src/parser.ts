@@ -513,13 +513,27 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // indexed, matching how nested fns/structs are kept and only `const`/`static` value bindings
   // are treated as function-local noise.
   ['macro_definition', 'macro'],
+  // `static FOO: T = ...;` / `pub static mut COUNTER: T = ...;` bindings parse as `static_item`,
+  // which was absent here, so every `static` was silently dropped from the index — including the
+  // ubiquitous top-level `static` tables and `static mut` globals real Rust code carries. Like
+  // `const_item`, a `static` is a value binding, so it is ALSO added to RUST_LOCAL_KINDS below: a
+  // `static` declared inside a function body is function-local noise (it has `'static` lifetime but
+  // function scope) and must not pollute the global symbol index, matching how function-local
+  // `const` is excluded. Its name lives on the standard `name` field, so `nodeName` resolves it.
+  ['static_item', 'static'],
+  // `union Foo { ... }` (C-style untagged unions, mostly FFI/unsafe code) parse as `union_item`,
+  // which was absent here, so every union was silently dropped from the index. A union is a type
+  // definition like `struct`/`enum` — NOT a value binding — so it stays indexed even when nested,
+  // and gets no RUST_LOCAL_KINDS entry (mirroring how nested structs/enums stay indexed). Its name
+  // lives on the standard `name` field.
+  ['union_item', 'union'],
 ])
 
 // Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
 const RUST_FN_SCOPE_TYPES: ReadonlySet<string> = new Set(['function_item', 'closure_expression'])
 
-// Rust declaration kinds that are package-level symbols at top level but locals inside a function body; gated on scope. Only value bindings are excluded - nested structs, enums, functions, traits, impls, and types stay indexed, mirroring how the TS/JS extractor keeps nested classes and functions while dropping local `const`/`let`/`var`.
-const RUST_LOCAL_KINDS: ReadonlySet<string> = new Set(['const_item'])
+// Rust declaration kinds that are package-level symbols at top level but locals inside a function body; gated on scope. Only value bindings (`const`, `static`) are excluded - nested structs, enums, unions, functions, traits, impls, and types stay indexed, mirroring how the TS/JS extractor keeps nested classes and functions while dropping local `const`/`let`/`var`.
+const RUST_LOCAL_KINDS: ReadonlySet<string> = new Set(['const_item', 'static_item'])
 
 // Rust `#[...]` attributes (`#[derive(Debug)]`, `#[test]`, `#[async_trait]`, ...) parse as
 // standalone `attribute_item` siblings immediately preceding the item they annotate, not as a
