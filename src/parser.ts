@@ -726,6 +726,12 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // specifier has no `name`, and the alias itself was never reached. Kind 'type' matches how the
   // TS/Go/Rust type aliases are indexed and is in `types`' TYPE_KINDS.
   ['type_definition', 'type'],
+  // `using Alias = Type;` (the C++11 alias-declaration form) parses as `alias_declaration`, a
+  // distinct node type from `type_definition` above -- it had no entry here, so every C++11-style
+  // type alias was silently invisible to symbol/outline/skeleton/types even though its `name`
+  // field (a `type_identifier`) resolves fine via the default nodeName() lookup, unlike typedef's
+  // declarator-chain descent (cTypedefAliasName). Kind 'type' matches type_definition's convention.
+  ['alias_declaration', 'type'],
   // `namespace Foo { ... }` (including the C++17 nested `namespace A::B { ... }` shorthand) parses
   // as `namespace_definition`, which had no entry here, so the namespace itself was silently
   // dropped from the index -- `symbol`/`outline`/`skeleton` never showed the declaration line,

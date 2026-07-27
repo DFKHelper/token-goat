@@ -356,6 +356,24 @@ describe('parseFile', () => {
     expect(cppResult.symbols.some((s) => s.name === 'Complex' && s.kind === 'type')).toBe(true)
   })
 
+  it('indexes C++11 alias declarations (using X = Y;) as kind type, including inside a namespace', async () => {
+    // `using Alias = Type;` parses as alias_declaration, a distinct node type from
+    // type_definition (the `typedef` form above) -- CPP_KIND_BY_TYPE had no entry for it, so
+    // every C++11-style type alias was silently invisible to symbol/outline/skeleton/types,
+    // even though its `name` field resolves fine via the default nodeName() lookup (no special
+    // declarator-chain descent needed, unlike typedef's cTypedefAliasName).
+    const cppFile = write(
+      'alias.cpp',
+      ['using MyAlias = int;', 'namespace Foo {', '  using Bar = double;', '}', ''].join('\n'),
+    )
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    expect(cppResult.symbols.some((s) => s.name === 'MyAlias' && s.kind === 'type')).toBe(true)
+    // Nested inside a namespace -- extractSimpleSymbols always recurses into children regardless
+    // of the parent's kind-map membership, so this must resolve as its own symbol too.
+    expect(cppResult.symbols.some((s) => s.name === 'Bar' && s.kind === 'type')).toBe(true)
+  })
+
   it('indexes C++ namespace definitions (kind namespace), including nested `A::B` form', async () => {
     // `namespace Foo { ... }` parses as namespace_definition, which had no CPP_KIND_BY_TYPE entry —
     // the namespace itself was invisible to symbol/outline/skeleton even though its nested
