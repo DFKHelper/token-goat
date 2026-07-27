@@ -60,7 +60,7 @@ export function preFetchHandler(event: HookEvent): HookOutput {
     if (cached !== null) {
       const cachedBytes = Buffer.byteLength(cached, 'utf-8');
       if (cachedBytes >= loadConfig().hints.web_dedup_min_bytes) {
-        recordStat('webfetch:recall', cachedBytes, Math.round(cached.length / 4));
+        recordStat('webfetch:recall', cachedBytes, Math.round(cachedBytes / 4));
         return denyOutput(
           'Already fetched this URL with this prompt; the response is cached. ' +
           'Use `token-goat web-output ' + cacheId + '` to recall it ' +
