@@ -3246,7 +3246,17 @@ export function extractImports(text: string, ext: string): string[] {
   // them, so a .mts/.cts file's imports fell through to the far weaker generic
   // `import|require|use|#include` fallback below instead of the dedicated multi-form TS/JS
   // matcher (fromRe/bareRe/reqRe/dynRe).
-  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].includes(e)) {
+  // `.vue`/`.svelte`/`.astro` single-file components embed plain ES-module import syntax inside
+  // their `<script>` (or, for Astro, `---` frontmatter) block -- previously listed in the generic
+  // fallback's own doc comment as one of the languages it was expected to cover, but that
+  // fallback's capture class `[^'">;]+` does not stop at `{`, so a named import
+  // (`import { ref } from 'vue'`) fabricated the non-actionable blob "{ ref } from 'vue" instead
+  // of the real target "vue", and a default import (`import Foo from './Foo.vue'`) fared no
+  // better ("Foo from"). Routing these three extensions through the same multi-form TS/JS matcher
+  // used above extracts the real module targets; it operates on whole-file text already (not
+  // scoped to the script block), but import/require syntax doesn't otherwise occur in the
+  // surrounding template/markup, so this is safe.
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.vue', '.svelte', '.astro'].includes(e)) {
     // Match against the whole file text (not per-line) so multi-line/Prettier-style
     // import statements (import spanning several lines before `from '...'`) are still
     // found -- mirrors extractExportNames's whole-text approach below.

@@ -3155,6 +3155,32 @@ describe('read_commands', () => {
       const src = ['import scala.util.matching.Regex', 'import java.util._'].join('\n')
       expect(extractImports(src, '.scala')).toEqual(['scala.util.matching.Regex', 'java.util._'])
     })
+
+    it('extracts named ES-module imports from Vue/Svelte/Astro single-file components (regression: .vue/.svelte/.astro have no dedicated branch, so a <script> block\'s named import fell through to the generic fallback, whose capture class does not stop at "{" -- for "import { ref } from \'vue\'" that fabricated the non-actionable blob "{ ref } from \'vue" instead of the real target "vue", and a default-import sibling line was correctly extracted only by accident)', () => {
+      const vueSrc = [
+        '<script setup>',
+        "import { ref, computed } from 'vue'",
+        "import Foo from './Foo.vue'",
+        '</script>',
+        '<template><div>{{ ref }}</div></template>',
+      ].join('\n')
+      expect(extractImports(vueSrc, '.vue')).toEqual(['vue', './Foo.vue'])
+
+      const svelteSrc = [
+        '<script>',
+        "  import { onMount } from 'svelte'",
+        '</script>',
+      ].join('\n')
+      expect(extractImports(svelteSrc, '.svelte')).toEqual(['svelte'])
+
+      const astroSrc = [
+        '---',
+        "import { getCollection } from 'astro:content'",
+        '---',
+        '<div></div>',
+      ].join('\n')
+      expect(extractImports(astroSrc, '.astro')).toEqual(['astro:content'])
+    })
   })
 
   describe('importsExtensionFor', () => {
