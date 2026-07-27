@@ -32,6 +32,34 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
   return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true }) as Array<Record<string, string>>
 }
 
+/**
+ * Resolve the real header column names, even when the file has zero data rows.
+ *
+ * `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV --
+ * there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns`
+ * deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints
+ * a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that
+ * same emptiness was also being used as the sole "does this column exist" check for `--columns`/
+ * `--where`: a spec naming a column that is honestly present in the header line -- just with zero
+ * data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the
+ * column itself didn't exist, rather than either working (returning the correctly-empty result)
+ * or falling into the same friendly "no data rows" message. This resolves the REAL header
+ * (independent of whether any data rows exist) so `--columns`/`--where` validation can tell
+ * "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files
+ * have no header line to recover (their `colN` names are synthesized from data-row cell counts,
+ * which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over.
+ */
+function csvHeader(content: string, opts: { delimiter?: string; noHeader?: boolean }): string[] {
+  if (opts.noHeader === true) return []
+  const delimiter = opts.delimiter ?? ','
+  try {
+    const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, to: 1 }) as string[][]
+    return rows[0] ?? []
+  } catch {
+    return []
+  }
+}
+
 export interface CsvQueryResult {
   header: string[]
   rows: string[][]
@@ -134,19 +162,25 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
 export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult {
   const records = parseRecords(content, opts)
 
+  // allColumns stays [] for a header-only (zero data row) file with no explicit --columns --
+  // that emptiness is what tells the CLI layer to print "No data rows found" instead of an
+  // empty table (see read_commands.ts's runCsvQuery). realHeader is the true header column list
+  // regardless of data-row count, used only to validate that a --columns/--where name is
+  // genuinely known -- see csvHeader's doc comment for why the two must not be conflated.
   const allColumns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
+  const realHeader = records.length > 0 ? allColumns : csvHeader(content, opts)
   const columns = opts.columns && opts.columns.length > 0 ? opts.columns : allColumns
 
   for (const c of columns) {
-    if (!allColumns.includes(c)) {
-      throw new Error(`unknown column: ${c} (available: ${allColumns.join(', ')})`)
+    if (!realHeader.includes(c)) {
+      throw new Error(`unknown column: ${c} (available: ${realHeader.join(', ')})`)
     }
   }
-  const wheres = (opts.wheres ?? []).map((w) => resolveWhereColumn(w, allColumns))
+  const wheres = (opts.wheres ?? []).map((w) => resolveWhereColumn(w, realHeader))
 
   for (const w of wheres) {
-    if (!allColumns.includes(w.column)) {
-      throw new Error(`unknown column: ${w.column} (available: ${allColumns.join(', ')})`)
+    if (!realHeader.includes(w.column)) {
+      throw new Error(`unknown column: ${w.column} (available: ${realHeader.join(', ')})`)
     }
   }
 
@@ -199,6 +233,9 @@ export interface CsvColumnProfile {
  * reading every row. */
 export function profileCsv(content: string, opts: { delimiter?: string; noHeader?: boolean } = {}): CsvColumnProfile[] {
   const records = parseRecords(content, opts)
+  // Deliberately [] on zero data rows (not the real header): an empty result here is what tells
+  // the CLI layer to print "No data rows found" instead of a header with no stats to show (see
+  // read_commands.ts's runCsvProfile and queryCsv's allColumns doc comment above).
   const columns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
 
   return columns.map((col) => {

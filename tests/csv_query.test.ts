@@ -131,6 +131,30 @@ describe('queryCsv', () => {
     expect(result.rows[0]).toEqual(['1', 'Alice']);
   });
 
+  // Regression: csv-parse's `columns: true` mode returns an EMPTY records array for a CSV that
+  // has only a header row and zero data rows -- there is nothing to derive `Object.keys()` from.
+  // queryCsv used to validate --columns/--where purely against that records-derived list, so for
+  // a header-only file ANY --columns/--where naming a real header column threw a misleading
+  // "unknown column: X (available: )", as if the column itself didn't exist, instead of returning
+  // the (correctly empty) result set for a column that genuinely is in the header. (With no
+  // explicit --columns/--where, queryCsv still deliberately reports an empty header for this case
+  // -- that's the signal the CLI layer uses to print "No data rows found" instead of an empty
+  // table; see read_commands.ts's runCsvQuery.)
+  it('recognizes header columns from a header-only CSV with zero data rows (regression)', () => {
+    const headerOnly = 'id,name,status\n';
+    const result = queryCsv(headerOnly, { columns: ['name', 'status'] });
+    expect(result.header).toEqual(['name', 'status']);
+    expect(result.rows).toEqual([]);
+    expect(result.totalRows).toBe(0);
+
+    const filtered = queryCsv(headerOnly, { wheres: [{ column: 'id', op: '=', value: '1' }] });
+    expect(filtered.totalRows).toBe(0);
+  });
+
+  it('still throws unknown column for a --columns spec naming a genuinely absent column on a header-only CSV', () => {
+    expect(() => queryCsv('id,name,status\n', { columns: ['nope'] })).toThrow(/unknown column: nope/);
+  });
+
   it('resolves a --where spec against the correct column when a header name contains operator characters', () => {
     // Regression: WHERE_SPEC_RE's column capture excludes = < > ~ ! outright, so it always
     // splits at the FIRST operator-class character. With headers `a` and `a<b`, the spec
