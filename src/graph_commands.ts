@@ -663,6 +663,17 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'apex_class',
   'apex_interface',
   'apex_enum',
+  // GraphQL (languages/graphql_idx.ts's KIND_MAP) uses its own prefixed kind strings rather
+  // than the generic 'type'/'interface'/'union'/'enum' TYPE_KINDS already recognizes -- a
+  // GraphQL `input` declaration is likewise a struct-shaped type with no generic equivalent
+  // above. Without these, every GraphQL type/interface/input/enum/union declaration was
+  // indexed but silently excluded from `token-goat types` in its entirety, the same class of
+  // gap already fixed for Rust/Swift/Zig/Dart/proto/Apex kinds.
+  'graphql_type',
+  'graphql_interface',
+  'graphql_input',
+  'graphql_enum',
+  'graphql_union',
 ]
 
 export interface TypesOptions {
