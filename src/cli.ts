@@ -764,7 +764,7 @@ function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: s
 function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
-): void {
+): string {
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
     if (sectionResult === null) {
@@ -819,7 +819,18 @@ function _applyFiltersAndPrint(
     result = lines.slice(Math.max(0, lines.length - tailN))
   }
 
-  out(result.join('\n'))
+  const printed = result.join('\n')
+  out(printed)
+  return printed
+}
+
+/** Best-effort on-disk size of a file; 0 if it can't be stat'd (never blocks stat recording). */
+function fileSizeOrZero(filePath: string): number {
+  try {
+    return fs.statSync(filePath).size
+  } catch {
+    return 0
+  }
 }
 
 function cmdBashOutput(
@@ -897,7 +908,16 @@ async function cmdPdfExtract(
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean },
 ) {
   const text = await runPdfExtractText(file, opts.pages, opts.layout === true)
-  _applyFiltersAndPrint(text, opts)
+  const printed = _applyFiltersAndPrint(text, opts)
+  // stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `pdf-extract`/`pdf_extract` entry
+  // and nothing ever called recordStat for this command -- the dashboard bucket was permanently
+  // zero regardless of real usage, the same class of gap already fixed for
+  // map_lookup/changed_lookup/csv_query/gdrive_sections (see project_runchanged_missing_stat
+  // memory). "Full source" is the on-disk PDF size; "emitted" is the text actually printed
+  // after --pages/--head/--tail/--grep filtering, mirroring recordReadStat's convention.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(printed, 'utf8'))
+  recordStat('pdf_extract', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 async function cmdPdfOutline(file: string) {
@@ -906,7 +926,12 @@ async function cmdPdfOutline(file: string) {
     out('no bookmarks in this PDF; try pdf-extract')
     return
   }
-  out(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
+  const text = entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
+  out(text)
+  // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('pdf_outline', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 async function cmdPdfMeta(file: string) {
@@ -917,7 +942,12 @@ async function cmdPdfMeta(file: string) {
     `Author: ${meta.author ?? '(none)'}`,
     `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
   ]
-  out(lines.join('\n'))
+  const text = lines.join('\n')
+  out(text)
+  // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('pdf_meta', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 function cmdVideoChapters(file: string) {
@@ -969,20 +999,36 @@ function cmdSharepointResolve(url: string) {
   out(lines.join('\n'))
 }
 
+// stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `xlsx-*`/`xlsx_*` entries and nothing
+// ever called recordStat for this family -- the dashboard buckets were permanently zero
+// regardless of real usage, the same class of gap already fixed for
+// map_lookup/changed_lookup/csv_query/gdrive_sections (see project_runchanged_missing_stat
+// memory). "Full source" is the on-disk workbook size, mirroring recordReadStat's convention.
+function recordXlsxStat(kind: string, file: string, emitted: string): void {
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
+}
+
 async function cmdXlsxSheets(file: string) {
   const sheets = await xlsxListSheets(file)
-  const lines = sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`)
-  out(lines.join('\n'))
+  const text = sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
+  out(text)
+  recordXlsxStat('xlsx_sheets', file, text)
 }
 
 async function cmdXlsxHead(file: string, opts: { sheet: string; rows?: string }) {
   const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
-  out(await xlsxHeadSheet(file, opts.sheet, rows))
+  const text = await xlsxHeadSheet(file, opts.sheet, rows)
+  out(text)
+  recordXlsxStat('xlsx_head', file, text)
 }
 
 async function cmdXlsxRange(file: string, opts: { sheet: string; range: string; formulas?: boolean }) {
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
-  out(formatXlsxRange(result))
+  const text = formatXlsxRange(result)
+  out(text)
+  recordXlsxStat('xlsx_range', file, text)
 }
 
 async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: string; where?: string[]; head?: string }) {
@@ -998,26 +1044,41 @@ async function cmdXlsxQuery(file: string, opts: { sheet: string; columns?: strin
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
   })
-  out(formatCsvTable(result))
+  const text = formatCsvTable(result)
+  out(text)
+  recordXlsxStat('xlsx_query', file, text)
+}
+
+// Same registry/producer desync as recordXlsxStat above, for the pptx-*/docx-*/transcript*
+// families -- see that function's comment.
+function recordDocStat(kind: string, file: string, emitted: string): void {
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emitted, 'utf8'))
+  recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
 }
 
 async function cmdPptxOutline(file: string) {
   const slides = await pptxOutline(file)
-  const lines = slides.map(
-    (s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`,
-  )
-  out(lines.join('\n'))
+  const text = slides
+    .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
+    .join('\n')
+  out(text)
+  recordDocStat('pptx_outline', file, text)
 }
 
 async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }) {
   const n = requireNonNegativeInt('--slide', opts.slide)
-  out(await pptxSlideText(file, n, opts.notes === true))
+  const text = await pptxSlideText(file, n, opts.notes === true)
+  out(text)
+  recordDocStat('pptx_slide', file, text)
 }
 
 async function cmdPptxNotes(file: string, opts: { slide?: string }) {
   const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
   const text = await pptxNotesText(file, n)
-  out(text.length > 0 ? text : 'no speaker notes found')
+  const printed = text.length > 0 ? text : 'no speaker notes found'
+  out(printed)
+  recordDocStat('pptx_notes', file, printed)
 }
 
 async function cmdPptxText(file: string, opts: { grep: string }) {
@@ -1026,7 +1087,9 @@ async function cmdPptxText(file: string, opts: { grep: string }) {
     out('no matches')
     return
   }
-  out(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
+  const text = matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n')
+  out(text)
+  recordDocStat('pptx_text', file, text)
 }
 
 async function cmdDocxOutline(file: string) {
@@ -1035,7 +1098,9 @@ async function cmdDocxOutline(file: string) {
     out('no headings found (try docx-text for full body text)')
     return
   }
-  out(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
+  const text = headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
+  out(text)
+  recordDocStat('docx_outline', file, text)
 }
 
 async function cmdDocxText(
@@ -1043,7 +1108,8 @@ async function cmdDocxText(
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ) {
   const text = await docxText(file)
-  _applyFiltersAndPrint(text, opts)
+  const printed = _applyFiltersAndPrint(text, opts)
+  recordDocStat('docx_text', file, printed)
 }
 
 function cmdTranscriptOutline(file: string) {
@@ -1058,7 +1124,9 @@ function cmdTranscriptOutline(file: string) {
     lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
   }
   lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
-  out(lines.join('\n'))
+  const text = lines.join('\n')
+  out(text)
+  recordDocStat('transcript_outline', file, text)
 }
 
 function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }) {
@@ -1069,7 +1137,9 @@ function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to
     out('no cues match')
     return
   }
-  out(formatCues(sliced))
+  const text = formatCues(sliced)
+  out(text)
+  recordDocStat('transcript', file, text)
 }
 
 function cmdCsvQuery(
