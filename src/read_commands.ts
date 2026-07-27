@@ -3411,6 +3411,19 @@ export function extractImports(text: string, ext: string): string[] {
       const m = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/.exec(line)
       if (m) push(m[1])
     }
+  } else if (['.sh', '.bash'].includes(e)) {
+    // Bash's idiomatic cross-file dependency mechanism is sourcing another script, via either
+    // the `source foo.sh` builtin or the POSIX dot form `. foo.sh` -- neither matches the generic
+    // `import|require|use|#include` fallback below: "source" isn't in its keyword set at all, and
+    // a bare `.` isn't a word character for the fallback's lookbehind/keyword match to key off.
+    // So every .sh/.bash file silently reported zero imports/deps despite sourcing being the one
+    // real cross-file dependency shell scripts actually have. Anchored at line start (mirrors the
+    // other line-anchored branches above) since mid-line `source`/`.` usage is far rarer than the
+    // idiomatic standalone form.
+    for (const line of lines) {
+      const m = /^\s*(?:source|\.)\s+['"]?([^\s'";]+)['"]?/.exec(line)
+      if (m) push(m[1])
+    }
   } else if (['.ps1', '.psm1'].includes(e)) {
     // PowerShell's idiomatic import forms ("Import-Module Foo", "using module Foo") don't fall
     // through to the generic `import|require|use|#include` fallback below: PowerShell keywords
