@@ -3203,6 +3203,17 @@ describe('read_commands', () => {
       ].join('\n')
       expect(extractImports(astroSrc, '.astro')).toEqual(['astro:content'])
     })
+
+    it('extracts Bash source/dot-sourcing targets (regression: neither "source foo.sh" nor the POSIX ". foo.sh" form matches the generic import|require|use|#include fallback -- "source" is not in its keyword set and a bare "." is not a word character, so every .sh/.bash file silently reported zero imports/deps despite sourcing being the one real cross-file dependency shell scripts have)', () => {
+      const src = [
+        '#!/bin/bash',
+        'source "./lib/common.sh"',
+        '. ./lib/other.sh',
+        'echo "hello"',
+      ].join('\n')
+      expect(extractImports(src, '.sh')).toEqual(['./lib/common.sh', './lib/other.sh'])
+      expect(extractImports(src, '.bash')).toEqual(['./lib/common.sh', './lib/other.sh'])
+    })
   })
 
   describe('importsExtensionFor', () => {
