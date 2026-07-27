@@ -122,6 +122,22 @@ public delegate void Plain();
     expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('interface')
   })
 
+  it('records the enclosing class name for a delegate nested inside a class, matching how the same-named class/constructor/property/method declarations already carry their parent (regression: DELEGATE_RE\'s makeLineSymbol call never passed a parent argument, unlike class/constructor/property/method above, so a nested delegate\'s docstring -- the field regex-parsed adapters use to store the enclosing class name for read_commands.ts\'s ambiguity-disambiguation logic, per findParentName\'s doc comment -- was always empty; two same-named delegates nested in different classes were then indistinguishable to that scoping logic, which silently fell through to the first candidate regardless of which class was actually requested)', () => {
+    const content = `namespace App {
+public class EventArgsHolder {
+    public delegate void MyHandler(object sender, EventArgs e);
+}
+public class OtherHolder {
+    public delegate void MyHandler(object sender, EventArgs e);
+}
+}
+`
+    const { symbols } = extractCsharp(content, 'Handler.cs')
+    const delegates = symbols.filter((s) => s.name === 'MyHandler' && s.kind === 'interface')
+    expect(delegates).toHaveLength(2)
+    expect(delegates.map((s) => s.docstring).sort()).toEqual(['EventArgsHolder', 'OtherHolder'])
+  })
+
   it('indexes a readonly struct and its members, plus ref struct and file class (regression: CLASS_HEADER_RE\'s modifier alternation only recognized public/protected/private/internal/abstract/sealed/static/partial, so readonly, ref, unsafe, and file -- all legal C# type-declaration modifiers -- caused the whole header line to fail to match, silently dropping the type and misattributing every member inside it)', () => {
     const content = `namespace Demo {
     public readonly struct Point

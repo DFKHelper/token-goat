@@ -163,10 +163,17 @@ export function extractCsharp(
     // delegate. Matched against stripLeadingAttributes(stripped), same as CLASS_HEADER_RE below --
     // without it, an idiomatic `[Serializable] public delegate void Handler();` (the attribute
     // list sits directly before the access modifier, exactly like a class/constructor/property/
-    // method declaration) silently dropped the whole delegate from the index.
+    // method declaration) silently dropped the whole delegate from the index. A delegate nested
+    // inside a class (a common shape for an event-handler type scoped to that class) must also
+    // record its enclosing class name in docstring, exactly like the class/constructor/property/
+    // method declarations below already do -- otherwise read_commands.ts's ambiguity-
+    // disambiguation logic (findParentName's doc comment; the `c.docstring === symBase` scoping
+    // filter) can never tell two same-named delegates nested in different classes apart and
+    // silently falls through to the first candidate regardless of which class was requested.
     const delM = DELEGATE_RE.exec(stripLeadingAttributes(stripped))
     if (delM) {
-      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200)))
+      const delegateParent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
+      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200), delegateParent))
     }
 
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
