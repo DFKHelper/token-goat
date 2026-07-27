@@ -2378,6 +2378,43 @@ function bar() return 2 end
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('does not let a bare anonymous function expression desync subsequent parent attribution', () => {
+    // Regression: a `function() ... end` used as an expression (a `return function() ... end`
+    // closure, or a callback argument like `foo(function() ... end)`) matches none of
+    // FUNC_RE/LOCAL_FUNC_RE/ASSIGN_FUNC_RE (no name, no `= function(`), so the old code pushed
+    // no frame for it. Its own `end` line then popped whatever real frame happened to be on
+    // top of the stack instead -- here, `makeCb`'s frame -- leaving `makeCb`'s own closing
+    // `end` to pop `outer` instead, so `after` (declared next) lost its correct parent.
+    const content = `function outer()
+  local function makeCb()
+    return function()
+      return 1
+    end
+  end
+  local function after()
+    return 2
+  end
+  return after()
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'makeCb')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+  })
+
+  it('does not push a frame for a one-liner anonymous callback that closes itself', () => {
+    const content = `function outer()
+  foo(function() return 1 end)
+  local function after()
+    return 2
+  end
+  return after()
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+  })
 })
 
 // ---------------------------------------------------------------------------

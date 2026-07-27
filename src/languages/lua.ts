@@ -156,6 +156,22 @@ export function extractLua(
       continue
     }
 
+    // Anonymous function expression -- a callback argument (`foo(function() ... end)`) or a
+    // closure used as a value (`return function() ... end`) -- matches none of
+    // FUNC_RE/LOCAL_FUNC_RE/ASSIGN_FUNC_RE above (no name, no `= function(`), so without this
+    // check no frame was pushed for it. Its own `end` line (when the body spans multiple
+    // lines) would then pop whatever real frame happened to be on top of the stack instead,
+    // corrupting parent attribution for every symbol declared afterward in the same scope --
+    // the same class of desync the if/for/while block frames below already guard against, and
+    // fixed the same way: push an unnamed placeholder frame so its `end` is accounted for
+    // without ever being reported as a parent (isBlock, skipped by nearestFunctionName). A
+    // one-liner (`foo(function() return 1 end)`) is already self-balanced and must not push a
+    // frame at all, matching the same lineClosesItself gate used by the named cases above.
+    if (/\bfunction\s*\(/.test(stripped) && !lineClosesItself(stripped)) {
+      funcStack.push({ name: '', endKeywordNeeded: true, isBlock: true })
+      continue
+    }
+
     // `local variable` — only at top-level (a local inside a function is not indexed).
     if (!isIndented) {
       const lvm = LOCAL_VAR_RE.exec(stripped)
