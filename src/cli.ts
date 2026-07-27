@@ -970,7 +970,14 @@ function cmdVideoChapters(file: string) {
     }
     lines.push('(extract a subtitle stream to .vtt/.srt with ffmpeg, then use transcript/transcript-outline on it)')
   }
-  out(lines.join('\n'))
+  const text = lines.join('\n')
+  out(text)
+  // Same registry/producer desync as cmdPdfMeta/recordXlsxStat/recordDocStat above -- video-chapters
+  // never called recordStat, so its dashboard bucket in `token-goat stats --full` stayed
+  // permanently zero regardless of real usage (see project_runchanged_missing_stat memory).
+  const fullSourceBytes = fileSizeOrZero(file)
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(text, 'utf8'))
+  recordStat('video_chapters', bytesSaved, Math.round(bytesSaved / 4))
 }
 
 function formatVideoTimestamp(totalSeconds: number): string {
