@@ -109,6 +109,19 @@ using System;
     expect(symbols.filter((s) => s.name === 'Foo' && s.kind === 'method')).toHaveLength(1)
   })
 
+  it('extracts a delegate declaration that carries a same-line attribute (regression: DELEGATE_RE, unlike CLASS_HEADER_RE/CONSTRUCTOR_RE/PROPERTY_RE/METHOD_RE above, is matched against the raw stripped line instead of stripLeadingAttributes(stripped), so an idiomatic [Serializable] public delegate void Handler(); silently dropped the whole delegate declaration from the index)', () => {
+    const content = `namespace App {
+[Serializable] public delegate void Handler(object sender, EventArgs e);
+public delegate void Plain();
+}
+`
+    const { symbols } = extractCsharp(content, 'Handler.cs')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Handler')
+    expect(names).toContain('Plain')
+    expect(symbols.find((s) => s.name === 'Handler')?.kind).toBe('interface')
+  })
+
   it('indexes a readonly struct and its members, plus ref struct and file class (regression: CLASS_HEADER_RE\'s modifier alternation only recognized public/protected/private/internal/abstract/sealed/static/partial, so readonly, ref, unsafe, and file -- all legal C# type-declaration modifiers -- caused the whole header line to fail to match, silently dropping the type and misattributing every member inside it)', () => {
     const content = `namespace Demo {
     public readonly struct Point
