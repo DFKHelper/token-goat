@@ -97,6 +97,41 @@ describe('preFetchHandler', () => {
     }
   });
 
+  it('records webfetch:recall tokensSaved from UTF-8 byte length, not UTF-16 string length (regression: multi-byte cached content undercounted tokensSaved)', () => {
+    const url = 'https://example.com/multibyte-cached';
+    const sessionId = 'multibyte-cache-session';
+    // Each '日' char is 3 UTF-8 bytes but 1 UTF-16 code unit, so cachedBytes (4500) and
+    // cached.length (1500) diverge sharply -- exposing the bug if tokensSaved is derived
+    // from the wrong one. Length must also clear postFetchHandler's own 1024-char cache
+    // floor (measured in JS string length, not bytes).
+    const body = '日'.repeat(1500);
+
+    const postResult = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: { tool_response: body },
+    });
+    expect(postResult.hookType).toBe('pass');
+
+    vi.mocked(recordStat).mockClear();
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: {},
+    });
+    expect(result.hookType).toBe('deny');
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:recall');
+    expect(call).toBeDefined();
+    const [, bytesSaved, tokensSaved] = call as unknown[];
+    expect(tokensSaved).toBe(Math.round((bytesSaved as number) / 4));
+  });
+
   it('does not redirect a cached response below hints.web_dedup_min_bytes, and re-fetches instead', () => {
     const url = 'https://example.com/tiny-cached';
     const sessionId = 'tiny-cache-session';
