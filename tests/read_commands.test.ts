@@ -938,6 +938,15 @@ describe('read_commands', () => {
       expect(stderr).toContain('Install')
     })
 
+    it('reports "File not found" instead of a misleading "Section not found" when the file itself does not exist (regression: a bad path masqueraded as a missing heading, sending an agent hunting for a section that was never the actual problem)', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue([])
+      const { text: stderr, code } = runSection({ spec: 'nonexistent-file-xyz/SKILL.md::Some Heading' })
+      expect(code).toBe(1)
+      expect(stderr).toContain('File not found')
+      expect(stderr).not.toContain("Section 'Some Heading' not found")
+    })
+
     it('caps the heading list on section miss at DIDYOUMEAN_LIMIT (5), matching runRead\'s "did you mean" cap, instead of dumping every heading (regression: unbounded "Available sections" dump)', () => {
       mockReadSection.mockReturnValue(null)
       mockListSections.mockReturnValue([
