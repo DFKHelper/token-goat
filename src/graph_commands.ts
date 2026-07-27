@@ -687,6 +687,15 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   // Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/
   // service, Apex class/interface/enum, and GraphQL type/interface/input/enum/union.
   'object',
+  // languages/sfc_idx.ts (Vue/Svelte/Astro single-file components) emits 'sfc_script_class' for
+  // a top-level class declaration in the component's script block, a distinct kind string rather
+  // than the generic 'class' -- so unlike a plain class it never reaches the looksLikeTypeClass
+  // fallback below either, which only ever queries kind === 'class' literally. Every SFC
+  // top-level class was indexed but silently excluded from `token-goat types` in its entirety,
+  // the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart
+  // mixin/extension, proto message/enum/service, Apex class/interface/enum, GraphQL
+  // type/interface/input/enum/union, and Kotlin/Scala object.
+  'sfc_script_class',
 ]
 
 export interface TypesOptions {
