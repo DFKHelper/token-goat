@@ -626,6 +626,19 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     lines.push('')
   }
 
+  // Ported from Python's _build_manifest_from_cache (compact.py, section "6b.5. Session
+  // Goal"), which wired infer_session_goal into the manifest so the compaction LLM gets
+  // immediate context about what the session was trying to accomplish. The TS port carried
+  // over inferSessionGoal itself (fully implemented, unit-tested in isolation) but never
+  // called it from here, so `## Session goal` never appeared in any real manifest -- the
+  // same "dead field" shape already fixed for symbolsBonus/created_ts above.
+  const sessionGoal = inferSessionGoal(cache)
+  if (sessionGoal) {
+    lines.push('## Session goal')
+    lines.push(sessionGoal)
+    lines.push('')
+  }
+
   if (bashOutputs.length > 0) {
     lines.push('## Recent bash')
     lines.push('(bash history recorded)')

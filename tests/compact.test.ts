@@ -675,6 +675,25 @@ auto_trigger_multiplier = 2.0
       expect(manifest).toContain('## Web fetches')
       expect(manifest).toContain('https://example.com/page')
     })
+
+    // Regression: the Python original (compact.py, section "6b.5. Session Goal") wired
+    // infer_session_goal into _build_manifest_from_cache so the compaction LLM gets
+    // immediate context about what the session was trying to accomplish. The TS port
+    // carried inferSessionGoal itself over (fully implemented, unit-tested in isolation
+    // under the 'inferSessionGoal' describe block above) but never called it from
+    // _buildManifestText, so a real session's manifest -- driven end to end through
+    // recordFileEdit -> saveSessionState -> loadSessionCache -> buildManifest, the same
+    // production path every other test in this block exercises -- never contained a
+    // '## Session goal' section no matter how much real edit activity was recorded.
+    it('renders a Session goal section inferred from real recorded edit activity', () => {
+      recordFileEdit('C:/proj/src/widgets/one.ts')
+      recordFileEdit('C:/proj/src/widgets/two.ts')
+      saveSessionState('real-goal-session')
+
+      const manifest = buildManifest('real-goal-session')
+      expect(manifest).toContain('## Session goal')
+      expect(manifest).toContain('widgets')
+    })
   })
 
   // End-to-end coverage for two fields that compact.ts reads but that nothing
