@@ -8,6 +8,7 @@ import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
+import { normalizePath } from '../src/paths.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -168,8 +169,14 @@ describe('cli_doctor', () => {
       const healthyRoot = path.join(tempDir, 'proj-healthy')
 
       // Broken project: file indexed, but the parser never ran -- zero of ITS symbols.
+      // Stored via normalizePath(), matching the invariant every real writer relies on
+      // (see worker.ts's dirty-queue write doc comment, line ~138) -- a raw backslash-replace here
+      // would drift from the real on-disk key on platforms where normalizePath() does more
+      // than swap separators (e.g. macOS's /var -> /private/var alias, or Windows 8.3
+      // short-name expansion when %TEMP% is pinned to short form), silently breaking the
+      // rootDir LIKE-prefix match this test exists to exercise.
       db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
-        path.join(brokenRoot, 'src', 'main.ts').replace(/\\/g, '/'),
+        normalizePath(path.join(brokenRoot, 'src', 'main.ts')),
         'sha',
         1,
         'typescript',
@@ -177,7 +184,7 @@ describe('cli_doctor', () => {
       )
 
       // Unrelated healthy project sharing the same global.db, with real symbols.
-      const healthyFile = path.join(healthyRoot, 'src', 'main.ts').replace(/\\/g, '/')
+      const healthyFile = normalizePath(path.join(healthyRoot, 'src', 'main.ts'))
       db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)').run(
         healthyFile,
         'sha',
