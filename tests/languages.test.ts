@@ -2257,6 +2257,22 @@ import java.util.{_}
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('extracts top-level val/var declarations, not just nested ones', () => {
+    // Regression: VAL_RE/VAR_RE are checked inside the `frame !== null` (nested-in-type)
+    // branch, but the top-level (`frame === null`) branch only ever called FUNC_RE.exec --
+    // unlike kotlin.ts's CONST_RE, which is checked in both its nested and top-level
+    // branches. Every top-level `val`/`var` (Scala script/worksheet style, or Scala 3's
+    // top-level definitions outside any object) was silently dropped from the index.
+    const content = `val PI: Double = 3.14159
+var counter: Int = 0
+def foo() = 1
+`
+    const { symbols } = extractScala(content, 'toplevel.scala')
+    expect(symbols.find((s) => s.name === 'PI')?.kind).toBe('val')
+    expect(symbols.find((s) => s.name === 'counter')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'foo')?.kind).toBe('function')
+  })
 })
 
 // ---------------------------------------------------------------------------

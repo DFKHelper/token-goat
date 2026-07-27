@@ -191,10 +191,26 @@ export function extractScala(
         }
       }
     } else if (!matched && frame === null && !isIndented) {
-      // Top-level function.
+      // Top-level function/val/var (Scala script/worksheet style, or Scala 3's top-level
+      // definitions outside any object) -- matches kotlin.ts's top-level branch, which checks
+      // both TOP_FUN_RE and CONST_RE, rather than only the function regex.
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200)))
+        matched = true
+      }
+
+      const vm = !matched ? VAL_RE.exec(stripped) : null
+      if (vm) {
+        symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200)))
+        matched = true
+      }
+
+      if (!matched) {
+        const varm = VAR_RE.exec(stripped)
+        if (varm) {
+          symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200)))
+        }
       }
     }
 
