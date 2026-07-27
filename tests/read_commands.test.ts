@@ -3088,6 +3088,16 @@ describe('read_commands', () => {
       expect(targets).toContain('App\\Config\\MAX_RETRIES')
     })
 
+    it('extracts Liquid include/render/section tag targets (regression: none of "include"/"render"/"section" match the generic import|require|use|#include fallback -- no leading "#" and none of those words is itself "import"/"require"/"use" -- so every .liquid file silently reported zero imports/deps despite liquid.ts already indexing the same tags as AdapterImport entries)', () => {
+      const src = [
+        "{% include 'header' %}",
+        "{%- include 'footer.liquid' -%}",
+        '{% render "card", product: product %}',
+        "{% section 'hero-banner' %}",
+      ].join('\n')
+      expect(extractImports(src, '.liquid')).toEqual(['header', 'footer.liquid', 'card', 'hero-banner'])
+    })
+
     it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
       const src = [
         'Import-Module Az.Accounts',

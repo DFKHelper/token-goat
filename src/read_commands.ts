@@ -3604,8 +3604,22 @@ export function extractImports(text: string, ext: string): string[] {
       const useForward = /@(?:use|forward)\s+['"]([^'"]+)['"]/.exec(line)
       if (useForward) push(useForward[1])
     }
+  } else if (e === '.liquid') {
+    // Liquid's `{% include %}`/`{% render %}`/`{% section %}` tags are its idiomatic cross-file
+    // dependency mechanism -- liquid.ts's own INCLUDE_RE/RENDER_RE/SECTION_RE already extract
+    // these same tags as AdapterImport entries for the symbol index -- but none of
+    // "include"/"render"/"section" match the generic `import|require|use|#include` fallback
+    // below: there's no leading `#`, and none of those three words is itself "import"/"require"/
+    // "use" as a substring, the same keyword-mismatch gap already fixed for .cs's `using`, .ps1's
+    // `Import-Module`, .mk's `include`, and .tf's `source =`. Without this branch every .liquid
+    // file silently reported zero imports/deps. Mirrors liquid.ts's own regex shape (an
+    // optional `-` for whitespace-control tags, either quote style) so `token-goat
+    // imports`/`deps` agrees with the symbol index.
+    const re = /{%-?\s*(?:include|render|section)\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) push(m[2])
   } else {
-    // Covers languages with no dedicated branch above (Dart, Apex, HTML/Liquid,
+    // Covers languages with no dedicated branch above (Dart, Apex, HTML,
     // Proto, SQL, Vue/Svelte/Astro, ...) whose import syntax happens to use one of
     // these bare keywords. The negative lookbehind guards against the keyword appearing as a
     // substring of an unrelated word -- without it, "use" inside "because"/"house"/"reuse" (or
