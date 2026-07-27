@@ -812,6 +812,68 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS never included 'graphql_type'/'graphql_interface'/'graphql_input'/
+  // 'graphql_enum'/'graphql_union' -- the GraphQL extractor (languages/graphql_idx.ts's
+  // KIND_MAP) emits those prefixed kinds (not the generic 'type'/'interface'/'enum'/'union'
+  // TYPE_KINDS already recognizes) for `type`/`interface`/`input`/`enum`/`union` declarations,
+  // so every GraphQL type/interface/input/enum/union was indexed but silently excluded from
+  // `token-goat types` in its entirety -- the same class of gap already fixed for Rust union,
+  // Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, and
+  // Apex class/interface/enum.
+  it('surfaces GraphQL type/interface/input/enum/union via TYPE_KINDS, matching struct/enum/interface', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-graphql-'))
+    try {
+      const file = join(dir, 'fixture.graphql')
+      writeFileSync(
+        file,
+        [
+          'type TypesGraphqlTypeFixture {',
+          '  id: ID!',
+          '}',
+          'interface TypesGraphqlInterfaceFixture {',
+          '  id: ID!',
+          '}',
+          'input TypesGraphqlInputFixture {',
+          '  id: ID!',
+          '}',
+          'enum TypesGraphqlEnumFixture {',
+          '  A',
+          '  B',
+          '}',
+          'union TypesGraphqlUnionFixture = TypesGraphqlTypeFixture',
+          '',
+        ].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      for (const [name, kind] of [
+        ['TypesGraphqlTypeFixture', 'graphql_type'],
+        ['TypesGraphqlInterfaceFixture', 'graphql_interface'],
+        ['TypesGraphqlInputFixture', 'graphql_input'],
+        ['TypesGraphqlEnumFixture', 'graphql_enum'],
+        ['TypesGraphqlUnionFixture', 'graphql_union'],
+      ] as const) {
+        expect(parsed.map((r) => r.name)).toContain(name)
+        expect(parsed.find((r) => r.name === name)?.kind).toBe(kind)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
