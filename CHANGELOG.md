@@ -4,7 +4,23 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.18] - 2026-07-27
+
 ### Fixed
+- C# delegates nested in a class now correctly remember which class they belong to, fixing lookups when two classes have a delegate with the same name.
+- `csv-query`/`csv-profile` no longer wrongly reject a real column name when the CSV file has a header but no data rows.
+- Scala: top-level `val`/`var` declarations (outside any class or object) are now indexed.
+- C# delegates marked with an attribute (like `[Serializable]`) are now indexed.
+- C++ `using X = Y;` alias declarations are now indexed.
+- `token-goat resume` now includes a Skills section with checklists from recently used skills.
+- The compact-hint manifest now includes a short "Session goal" summary line.
+- `token-goat types` now shows GraphQL scalar declarations.
+- `token-goat types` now shows Kotlin and Scala `object` declarations.
+- `token-goat types` now shows GraphQL types, interfaces, inputs, enums, and unions.
+- `token-goat types` now shows Apex classes, interfaces, and enums.
+- Fixed a Lua parsing bug where anonymous functions used as callbacks could corrupt which function a later symbol belonged to.
+- 15 more commands — PDF, Excel, PowerPoint, Word, and transcript extraction — now show up in usage stats.
+- `csv-profile` now shows up in usage stats.
 - **`checkSymbolCount`'s rootDir-scoping test failed deterministically on Windows/macOS CI (never locally).** The regression test built its `files.path` fixture with a raw backslash-to-forward-slash replace instead of `normalizePath()`, diverging from the invariant every real writer relies on: on macOS, `os.tmpdir()`'s `/var/...` public alias gets rewritten to `/private/var/...` by `normalizePath()`'s query-side `normalizeDarwinSystemAlias()` step but not by the raw fixture path; on Windows, a `%TEMP%` pinned to 8.3 short form hits the same divergence via `expandShortPath()`. Fixed by normalizing the fixture path. This is the 4th occurrence of this anti-pattern, so `tests/guards/windows_path_fixture_normalization.test.ts` was hardened with a second check that flags any test hand-flipping backslashes while inserting fixture rows into a path-keyed table, independent of whether a `.toLowerCase()` call happens to co-occur. See [tests/cli_doctor.test.ts](tests/cli_doctor.test.ts), [tests/guards/windows_path_fixture_normalization.test.ts](tests/guards/windows_path_fixture_normalization.test.ts).
 - **`extractImports` missed parenthesized PHP `require_once`/`include_once` calls.** The bare-keyword form (`require_once 'x.php'`) matched but the equally common function-call form (`require_once('x.php')`) did not, because the regex required whitespace directly before the quote. See [src/read_commands.ts](src/read_commands.ts), regression-tested in [tests/read_commands.test.ts](tests/read_commands.test.ts).
 - **`cleanupStaleDownloads` could delete an in-flight WebFetch download.** It swept every `.tmp` file in the download cache unconditionally, with no age check, so a concurrent download's temp file could be deleted mid-write. Added a 10-minute mtime-based staleness threshold. See [src/webfetch.ts](src/webfetch.ts), regression-tested in [tests/webfetch.test.ts](tests/webfetch.test.ts).
