@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { strToU8, zipSync } from 'fflate'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from '../src/pptx_extract.js'
 import { buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
@@ -122,6 +123,46 @@ describe('pptxTextGrep', () => {
   it('returns no matches for a pattern not present', async () => {
     const matches = await pptxTextGrep(file, 'nonexistent-pattern-xyz')
     expect(matches).toHaveLength(0)
+  })
+})
+
+describe('pptxSlideText with a table shape', () => {
+  // PowerPoint tables (`p:graphicFrame` > `a:tbl` > `a:tr` > `a:tc`) don't use `p:sp` at all --
+  // a real, common slide shape (comparison tables, data grids) that pptxOutline's bodyChars
+  // (whole-tree collectTextRuns) and pptxTextGrep (same) both already account for, but
+  // pptxSlideText builds its blocks from slideShapes()'s p:sp-only collection, silently
+  // dropping every table's cell text from the one command whose whole job is showing a
+  // slide's actual text.
+  let tableDir: string
+  let tableFile: string
+
+  beforeAll(() => {
+    tableDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-table-'))
+    tableFile = path.join(tableDir, 'table.pptx')
+    const slideXml = `<?xml version="1.0"?><p:sld><p:cSld><p:spTree>` +
+      `<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Budget</a:t></a:r></a:p></p:txBody></p:sp>` +
+      `<p:graphicFrame><a:graphic><a:graphicData><a:tbl>` +
+      `<a:tr><a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>Q3 Total</a:t></a:r></a:p></a:txBody></a:tc></a:tr>` +
+      `<a:tr><a:tc><a:txBody><a:p><a:r><a:t>EMEA</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>412000</a:t></a:r></a:p></a:txBody></a:tc></a:tr>` +
+      `</a:tbl></a:graphicData></a:graphic></p:graphicFrame>` +
+      `</p:spTree></p:cSld></p:sld>`
+    fs.writeFileSync(tableFile, zipSync({ 'ppt/slides/slide1.xml': strToU8(slideXml) }))
+  })
+
+  afterAll(() => {
+    fs.rmSync(tableDir, { recursive: true, force: true })
+  })
+
+  it('includes table cell text in the slide text output', async () => {
+    const text = await pptxSlideText(tableFile, 1, false)
+    expect(text).toContain('Budget')
+    expect(text).toContain('EMEA')
+    expect(text).toContain('412000')
+  })
+
+  it('is found by pptxTextGrep (whole-tree scan already sees table text)', async () => {
+    const matches = await pptxTextGrep(tableFile, 'EMEA')
+    expect(matches).toHaveLength(1)
   })
 })
 

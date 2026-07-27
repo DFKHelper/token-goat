@@ -33,6 +33,28 @@ function shapeText(shape: unknown): string {
   return collectTextRuns(shape, 'a:t').join(' ').trim()
 }
 
+/**
+ * Text blocks from every table on a slide, one block per row (cells joined with ` | `). A
+ * PowerPoint table (`p:graphicFrame` > `a:graphic` > `a:graphicData` > `a:tbl` > `a:tr` > `a:tc`)
+ * never uses `p:sp` at all -- slideShapes()'s p:sp-only collection silently drops every table's
+ * cell text, even though pptxOutline's bodyChars and pptxTextGrep both already see it (they scan
+ * the whole parsed slide tree via collectTextRuns, not slideShapes()). Without this, a real,
+ * common slide shape (comparison tables, data grids) is completely absent from pptxSlideText's
+ * output -- the one command whose job is showing a slide's actual text -- even though
+ * pptx-text-grep can find a match inside it.
+ */
+function tableRowBlocks(parsedSlide: unknown): string[] {
+  const blocks: string[] = []
+  for (const tbl of collectElements(parsedSlide, 'a:tbl')) {
+    for (const row of collectElements(tbl, 'a:tr')) {
+      const cellTexts = collectElements(row, 'a:tc').map((cell) => collectTextRuns(cell, 'a:t').join(' ').trim())
+      const rowText = cellTexts.join(' | ').trim()
+      if (rowText.length > 0) blocks.push(rowText)
+    }
+  }
+  return blocks
+}
+
 interface RelationshipLike {
   '@_Id'?: string
   '@_Target'?: string
@@ -179,7 +201,7 @@ export async function pptxSlideText(filePath: string, slideNumber: number, inclu
   const path = slidePaths[slideNumber - 1] as string
   const parsed = await parseSlide(entries, path)
   const shapes = slideShapes(parsed)
-  const blocks = shapes.map(shapeText).filter((t) => t.length > 0)
+  const blocks = [...shapes.map(shapeText).filter((t) => t.length > 0), ...tableRowBlocks(parsed)]
   const lines = [`# Slide ${slideNumber}`, ...blocks]
   if (includeNotes) {
     const notes = await notesTextFor(entries, await notesPathFor(entries, path))
