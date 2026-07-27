@@ -674,6 +674,15 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'graphql_input',
   'graphql_enum',
   'graphql_union',
+  // languages/kotlin.ts and languages/scala.ts both deliberately emit kind 'object' (not folded
+  // into 'class', per each file's own comment) for a top-level `object Foo { ... }` singleton
+  // declaration or a Kotlin companion object. Unlike a plain class, the looksLikeTypeClass(cls.body)
+  // fallback below only ever queries kind === 'class' literally, so it never picks up 'object'
+  // either -- every Kotlin/Scala object/companion-object declaration was indexed but silently
+  // excluded from `token-goat types` in its entirety, the same class of gap already fixed for
+  // Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/
+  // service, Apex class/interface/enum, and GraphQL type/interface/input/enum/union.
+  'object',
 ]
 
 export interface TypesOptions {
