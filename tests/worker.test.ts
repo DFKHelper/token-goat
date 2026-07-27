@@ -1724,6 +1724,49 @@ describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
   })
 })
 
+// Regression: runWorkerLoop never checked whether its own data dir still existed, so a detached
+// daemon spawned against an ephemeral/scratch directory (e.g. `index --walk` in a temp dir during
+// dogfooding, or a test that never called `worker stop`) ran forever once that directory was
+// deleted out from under it -- confirmed in practice as 524 stray `--worker-daemon` processes
+// accumulated over two weeks. `shouldStop` here always returns false (mirroring a real daemon,
+// which has no external stop signal until `worker stop` sends SIGTERM), so the only thing that
+// can end this loop is the new self-existence check.
+describe('runWorkerLoop self-terminates when its data dir is deleted (regression)', () => {
+  it('exits on its own once the data dir no longer exists, even though shouldStop never fires', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-orphan-'))
+    try {
+      const loopPromise = runWorkerLoop(scratchDir, 5, () => false)
+      // Give the loop one tick to start, then delete the directory it's polling.
+      await new Promise<void>((resolve) => setTimeout(resolve, 15))
+      // Both `lastSnapshotCleanupMs`/`lastKnownRootsSweepMs` start at 0, so the very first loop
+      // iteration always fires the known-roots sweep too, which opens (and caches) a
+      // better-sqlite3 connection to `${scratchDir}/global.db` -- release it first, same as this
+      // file's own afterEach does for DIR, or the still-open native handle makes the directory
+      // removal below fail with EPERM on Windows.
+      closeDb(path.join(scratchDir, 'global.db'))
+      // maxRetries/retryDelay: Windows can transiently EPERM a recursive rmSync on a directory
+      // whose contents a background process (this test's own runWorkerLoop, still mid-cycle)
+      // just touched -- retry rather than flake.
+      fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+
+      const timeout = new Promise<string>((resolve) =>
+        setTimeout(() => resolve('timeout'), 2000),
+      )
+      const result = await Promise.race([loopPromise.then(() => 'stopped'), timeout])
+      expect(result).toBe('stopped')
+    } finally {
+      // Best-effort: the test body above already removed scratchDir; a second removal attempt
+      // can spuriously EPERM on Windows (transient AV/handle lock on an already-deleted temp
+      // dir) and must not mask the assertion result above.
+      try {
+        fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+      } catch {
+        // ignore
+      }
+    }
+  })
+})
+
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called
 // them -- session_snapshots/<sessionId>/ directories accumulated forever. runWorkerLoop now
 // sweeps stale session snapshots on the same periodic loop as the dirty-queue drain. This drives
