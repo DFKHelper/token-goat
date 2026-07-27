@@ -1048,6 +1048,15 @@ export async function runWorkerLoop(
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0
   while (!shouldStop()) {
+    // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a
+    // detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a
+    // temp directory during dogfooding or a test run) and then deletes that directory without an
+    // explicit `worker stop` leaves the daemon with nothing left to poll -- `dirty.txt`/the pid
+    // file/global.db are all gone, so every subsequent drainOnce/cleanup call below is pure
+    // wasted work against a directory that will never come back. Without this check the daemon
+    // runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over
+    // two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
+    if (!fs.existsSync(dir)) break
     try {
       drainOnce(dir)
     } catch {
