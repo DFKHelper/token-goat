@@ -950,10 +950,18 @@ function parseRequirementsTxt(content: string): DepEntry[] {
     // the real package name. Recover the name from the fragment before the generic comment-strip
     // would otherwise discard it.
     // Only apply the egg-fragment recovery when the line itself IS the VCS spec (starts
-    // with a VCS scheme). An ordinary pinned dependency with a trailing inline comment that
-    // merely mentions "#egg=" (e.g. documenting an alternate install method) must not have
-    // its real spec discarded and replaced by a fabricated dependency parsed from the comment.
-    const eggMatch = /^\s*(?:git|hg|svn|bzr)\+.*#egg=([A-Za-z0-9_.-]+)/.exec(raw)
+    // with a VCS scheme, optionally behind pip's editable-install flag). An ordinary pinned
+    // dependency with a trailing inline comment that merely mentions "#egg=" (e.g. documenting
+    // an alternate install method) must not have its real spec discarded and replaced by a
+    // fabricated dependency parsed from the comment.
+    // The optional `-e `/`--editable[= ]` prefix covers pip's editable-install form
+    // (`-e git+https://github.com/x/y.git#egg=y`) -- pip's own documentation recommends this
+    // exact shape for a VCS dependency, making it at least as common as the non-editable form
+    // already handled above. Without it, the line falls through to the generic `line.startsWith('-')`
+    // guard below (added to skip pip flag lines like `-r other.txt`), which also matches `-e ...`
+    // and silently drops the whole dependency -- not just its egg name, the entry itself never
+    // appears in `lockdeps`'s output at all.
+    const eggMatch = /^\s*(?:-e\s+|--editable[\s=]+)?(?:git|hg|svn|bzr)\+.*#egg=([A-Za-z0-9_.-]+)/.exec(raw)
     if (eggMatch !== null) {
       deps.push({ name: eggMatch[1] ?? '', version: '', kind: 'unknown' })
       continue

@@ -736,6 +736,20 @@ describe('lockdeps command', () => {
     expect(names).toEqual(['requests', 'requests-oauthlib', 'numpy'])
   })
 
+  it('recovers the package name from an editable ("-e ") VCS #egg= fragment in requirements.txt (regression: pip\'s idiomatic editable-install form "-e git+...#egg=name" fell through to the generic "-" flag-line skip -- meant for plain option lines like "-r other.txt" -- and the whole dependency silently vanished, not just its egg name)', () => {
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(
+      req,
+      'requests==2.31.0\n-e git+https://github.com/psf/requests-oauthlib.git@v1.3.0#egg=requests-oauthlib\nnumpy>=1.24.0\n',
+      'utf8',
+    )
+    const r = run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string }> }
+    const names = parsed.deps.map((d) => d.name)
+    expect(names).toEqual(['requests', 'requests-oauthlib', 'numpy'])
+  })
+
   it('does not fabricate a dependency from a "#egg=" fragment mentioned inside a comment line (regression: the #104 VCS-fragment recovery ran unconditionally on every raw line, so a doc comment giving a VCS-install example was parsed as a real dependency)', () => {
     const req = path.join(tmpDir, 'requirements.txt')
     fs.writeFileSync(
