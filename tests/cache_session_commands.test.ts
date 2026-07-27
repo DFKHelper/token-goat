@@ -641,28 +641,28 @@ describe('listBlobs mutation-verify anchor', () => {
 // ── D2: resume ────────────────────────────────────────────────────────────────
 
 describe('buildResumePacket', () => {
-  it('returns null when session blob does not exist', () => {
-    expect(buildResumePacket('no_such_session_xyz')).toBeNull()
+  it('returns null when session blob does not exist', async () => {
+    expect(await buildResumePacket('no_such_session_xyz')).toBeNull()
   })
 
-  it('returns a non-empty string when the session blob exists', () => {
+  it('returns a non-empty string when the session blob exists', async () => {
     const session = { files: [{ path: 'src/foo.ts', readCount: 3, lastReadAt: Date.now(), wasEdited: true, sizeBytes: 100 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-sess-1', session)
-    const packet = buildResumePacket('test-sess-1')
+    const packet = await buildResumePacket('test-sess-1')
     expect(packet).not.toBeNull()
     expect(packet!.length).toBeGreaterThan(0)
     expect(packet).toContain('src/foo.ts')
   })
 
-  it('includes edited files in the packet', () => {
+  it('includes edited files in the packet', async () => {
     const session = { files: [{ path: 'src/edited.ts', readCount: 1, lastReadAt: Date.now(), wasEdited: true, sizeBytes: 50 }, { path: 'src/read.ts', readCount: 5, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 50 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-sess-2', session)
-    const packet = buildResumePacket('test-sess-2')
+    const packet = await buildResumePacket('test-sess-2')
     expect(packet).toContain('Edited files')
     expect(packet).toContain('src/edited.ts')
   })
 
-  it('includes recent bash commands when present', () => {
+  it('includes recent bash commands when present', async () => {
     // Store real bash output entries.
     const bashEntry1 = { id: 'id1', command: 'npm test', output: 'test output', exitCode: 0, storedAt: Date.now(), sizeBytes: 11 }
     const bashEntry2 = { id: 'id2', command: 'git status', output: 'status output', exitCode: 0, storedAt: Date.now(), sizeBytes: 13 }
@@ -670,13 +670,13 @@ describe('buildResumePacket', () => {
     storeBlob(BASH_OUTPUT_SUBDIR, bashEntry2.id, bashEntry2)
     const session = { files: [], hintsShown: [], webFetches: [], bashOutputs: [['hash1', 'id1'], ['hash2', 'id2']] as Array<[string, string]>, curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-sess-3', session)
-    const packet = buildResumePacket('test-sess-3')
+    const packet = await buildResumePacket('test-sess-3')
     expect(packet).toContain('Recent bash commands')
     expect(packet).toContain('npm test')
     expect(packet).toContain('git status')
   })
 
-  it('resolves bash output ids to command text (regression: printed hash instead of command)', () => {
+  it('resolves bash output ids to command text (regression: printed hash instead of command)', async () => {
     // Store real bash output entries.
     const entry1 = { id: 'abc123def456', command: 'npm test', output: 'test output', exitCode: 0, storedAt: Date.now(), sizeBytes: 11 }
     const entry2 = { id: 'xyz789uvw012', command: 'git status', output: 'status output', exitCode: 0, storedAt: Date.now(), sizeBytes: 13 }
@@ -685,7 +685,7 @@ describe('buildResumePacket', () => {
     // Record them in session the way the real code does: [commandHash, outputId] pairs.
     const session = { files: [], hintsShown: [], webFetches: [], bashOutputs: [['hash1', entry1.id], ['hash2', entry2.id]] as Array<[string, string]>, curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-sess-bash-real', session)
-    const packet = buildResumePacket('test-sess-bash-real')
+    const packet = await buildResumePacket('test-sess-bash-real')
     expect(packet).toContain('Recent bash commands')
     // Bug: used to print the hash (entry[0]) instead of the command (entry[1]->getBashOutput->command).
     expect(packet).toContain('npm test')
@@ -695,31 +695,31 @@ describe('buildResumePacket', () => {
     expect(packet).not.toContain('hash2')
   })
 
-  it('packet stays within MAX_RESUME_CHARS cap even for large sessions', () => {
+  it('packet stays within MAX_RESUME_CHARS cap even for large sessions', async () => {
     const files = Array.from({ length: 500 }, (_, i) => ({ path: `src/module_with_a_long_path_${i}_to_generate_large_text/component.ts`, readCount: i, lastReadAt: Date.now(), wasEdited: i % 3 === 0, sizeBytes: 100 }))
     storeBlob(SESSIONS_SUBDIR, 'test-sess-cap', { files, hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
-    const packet = buildResumePacket('test-sess-cap')
+    const packet = await buildResumePacket('test-sess-cap')
     expect(packet).not.toBeNull()
     expect(packet!.length).toBeLessThanOrEqual(MAX_RESUME_CHARS + 50)
   })
 })
 
 describe('cmdResume', () => {
-  it('throws when session not found', () => {
-    expect(() => cmdResume({ sessionId: 'no_such_id' })).toThrow(/no session blob found/i)
+  it('throws when session not found', async () => {
+    await expect(cmdResume({ sessionId: 'no_such_id' })).rejects.toThrow(/no session blob found/i)
   })
 
-  it('prints packet text when session exists', () => {
+  it('prints packet text when session exists', async () => {
     const session = { files: [{ path: 'src/x.ts', readCount: 2, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 10 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-resume-ok', session)
-    cmdResume({ sessionId: 'test-resume-ok' })
+    await cmdResume({ sessionId: 'test-resume-ok' })
     expect(capturedOutput()).toContain('Resume packet')
   })
 
-  it('emits JSON with sessionId and packet when --json is set', () => {
+  it('emits JSON with sessionId and packet when --json is set', async () => {
     const session = { files: [{ path: 'src/y.ts', readCount: 1, lastReadAt: Date.now(), wasEdited: false, sizeBytes: 5 }], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-resume-json', session)
-    cmdResume({ sessionId: 'test-resume-json', json: true })
+    await cmdResume({ sessionId: 'test-resume-json', json: true })
     const parsed = JSON.parse(capturedOutput()) as { sessionId: string; packet: string }
     expect(parsed.sessionId).toBe('test-resume-json')
     expect(typeof parsed.packet).toBe('string')
@@ -871,12 +871,12 @@ describe('cmdBaseline', () => {
 // ── D2 mutation-verify: buildResumePacket cap enforcement ─────────────────────
 
 describe('buildResumePacket cap mutation-verify anchor', () => {
-  it('cap-enforcement test: session with very long file paths produces packet at or below MAX_RESUME_CHARS + cap-suffix length', () => {
+  it('cap-enforcement test: session with very long file paths produces packet at or below MAX_RESUME_CHARS + cap-suffix length', async () => {
     // Each path is 600 chars; with 10 edited + 8 read that is ~11000 chars of file lines alone, well above MAX_RESUME_CHARS=8000.
     const longPath = 'a'.repeat(600)
     const files = Array.from({ length: 500 }, (_, i) => ({ path: `${longPath}_${i}.ts`, readCount: 500 - i, lastReadAt: Date.now(), wasEdited: i < 100, sizeBytes: 100 }))
     storeBlob(SESSIONS_SUBDIR, 'cap-mv-test', { files, hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
-    const packet = buildResumePacket('cap-mv-test')
+    const packet = await buildResumePacket('cap-mv-test')
     expect(packet).not.toBeNull()
     expect(packet!.length).toBeLessThanOrEqual(MAX_RESUME_CHARS + 60)
   })

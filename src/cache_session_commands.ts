@@ -349,8 +349,8 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
 // ── resume ────────────────────────────────────────────────────────────────────
 
 /** Print a recovery context packet for the given session id. Throws if no session blob found. */
-export function cmdResume(opts: { sessionId: string; json?: boolean }): void {
-  const packet = buildResumePacket(opts.sessionId)
+export async function cmdResume(opts: { sessionId: string; json?: boolean }): Promise<void> {
+  const packet = await buildResumePacket(opts.sessionId)
   if (packet === null) {
     throw new Error(`no session blob found for '${opts.sessionId}' — list sessions with: token-goat session-summary --json`)
   }
