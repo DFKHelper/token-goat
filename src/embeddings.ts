@@ -330,7 +330,14 @@ function splitRangeIntoChunks(
     const lineWithNewline = line + '\n'
     if (currentChunk.length + lineWithNewline.length > chunkSize && currentChunk.length > 0) {
       // Flush current chunk if adding the next line would exceed size.
-      const currentChunkTooSmall = currentChunk.length < MIN_CHUNK_CHARS
+      // Measured against the TRIMMED length, not the raw accumulated buffer: a long run of
+      // whitespace-only lines can clear MIN_CHUNK_CHARS in raw chars while trimming down to an
+      // empty string, and the text actually pushed below is `currentChunk.trim()` -- comparing
+      // the untrimmed length here let an all-whitespace chunk sail past this "too small" filter
+      // and get embedded/stored with text === "" (confirmed via a scratch repro: 30 whitespace-
+      // only lines followed by real content produced a chunk with rawTextLen 60+ but an entirely
+      // empty trimmed text).
+      const currentChunkTooSmall = currentChunk.trim().length < MIN_CHUNK_CHARS
       if (!currentChunkTooSmall) {
         chunks.push({
           filePath,
@@ -374,7 +381,9 @@ function splitRangeIntoChunks(
   // existing, intended behavior (chunkFile's own boundary/gap folding already guarantees a
   // boundary-derived range clears MIN_CHUNK_CHARS before calling here -- this remaining case is
   // only reachable for the whole-file window path with no boundaries at all).
-  if (currentChunk.length >= MIN_CHUNK_CHARS) {
+  // Same trimmed-length check as the mid-loop flush above -- an all-whitespace trailing buffer
+  // must not be pushed as an empty-text chunk just because its raw length cleared MIN_CHUNK_CHARS.
+  if (currentChunk.trim().length >= MIN_CHUNK_CHARS) {
     chunks.push({
       filePath,
       startLine,
@@ -460,10 +469,18 @@ export function chunkFile(
     openEnd = b.end
   }
 
+  // Measured on the TRIMMED text of the range, matching the threshold splitRangeIntoChunks
+  // itself now applies (see the currentChunkTooSmall fix above) -- a raw-char-count version of
+  // this check let a whitespace-heavy range (or gap) clear MIN_CHUNK_CHARS here and stay
+  // standalone instead of folding into a neighbor, only for splitRangeIntoChunks to then
+  // silently drop that same range's real content (interspersed with the whitespace) because its
+  // own trimmed-length check disagreed, with no neighbor left to fold into by that point. Using
+  // the same trimmed measure here keeps the outer fold-vs-standalone decision and the inner
+  // drop-vs-keep decision consistent, so real content lines are never silently lost between them.
   const gapLength = (start: number, end: number): number => {
-    let len = 0
-    for (let lineNo = start; lineNo <= end; lineNo++) len += (lines[lineNo - 1]?.length ?? 0) + 1
-    return len
+    let text = ''
+    for (let lineNo = start; lineNo <= end; lineNo++) text += (lines[lineNo - 1] ?? '') + '\n'
+    return text.trim().length
   }
 
   interface Range {

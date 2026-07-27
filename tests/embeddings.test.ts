@@ -327,6 +327,42 @@ describe('embeddings module', () => {
       }
     })
 
+    it('never emits a chunk whose trimmed text is empty (regression: the too-small check compared MIN_CHUNK_CHARS against the untrimmed buffer length while the pushed text was the trimmed buffer, so a long run of whitespace-only lines -- long enough in raw chars to clear MIN_CHUNK_CHARS but entirely blank once trimmed -- was pushed as a chunk with text === "")', () => {
+      const blankLines = Array.from({ length: 30 }, () => '   ') // whitespace-only, long enough in raw chars
+      const realLine = 'real content line that is not blank'
+      const content = [...blankLines, realLine].join('\n')
+
+      const chunks = embeddings.chunkFile('blank-run.ts', content, 60, 5, [
+        { start: 1, end: blankLines.length + 1, kind: 'symbol' },
+      ])
+
+      for (const c of chunks) {
+        expect(c.text.trim().length).toBeGreaterThan(0)
+      }
+    })
+
+    it('does not silently drop a boundary range whose real content is interspersed with enough whitespace to clear MIN_CHUNK_CHARS in raw chars but not in trimmed chars (regression: chunkFile\'s own boundary/gap pre-filter (gapLength) measured raw length, disagreeing with splitRangeIntoChunks\' now-trimmed-length too-small check -- a whitespace-heavy leading boundary range passed the outer "big enough to stand alone" check, was handed to splitRangeIntoChunks as a lone range with no accumulated chunks yet, and was silently dropped there instead of being folded into a neighbor, taking its real content line down with it)', () => {
+      // A short leading boundary section: 3 whitespace-only lines followed by one real line -- big
+      // enough in raw chars (with newlines) to clear MIN_CHUNK_CHARS as a standalone range, but not
+      // once trimmed.
+      const leadingBoundaryLines = ['                                              ', '   ', '   ', 'const real = 1']
+      const restOfFile = Array.from({ length: 5 }, (_, i) => `function f${i}() { return ${i}; }`)
+      const contentLines = [...leadingBoundaryLines, ...restOfFile]
+      const content = contentLines.join('\n')
+
+      const chunks = embeddings.chunkFile('leading-blank-boundary.ts', content, embeddings.MAX_CHUNK_CHARS, 200, [
+        { start: 1, end: leadingBoundaryLines.length, kind: 'symbol' },
+      ])
+
+      const covered = new Set<number>()
+      for (const c of chunks) {
+        for (let line = c.startLine; line <= c.endLine; line++) covered.add(line)
+      }
+      // Line 4 ("const real = 1") must land in some chunk -- it is real content and must never be
+      // silently lost, regardless of how the surrounding whitespace gets folded.
+      expect(covered.has(4)).toBe(true)
+    })
+
     it('clips a partially-overlapping boundary to start after the previously-accepted boundary instead of dropping it', () => {
       const contentLines = Array(30)
         .fill(0)
