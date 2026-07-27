@@ -1381,7 +1381,14 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       emit(`No data rows found in ${opts.file}`)
       return 0
     }
-    emit(formatCsvProfile(profiles))
+    // csv_profile never had a live recordStat call, the same class of registry/producer desync
+    // fixed for csv_query above (see that function's doc comment) -- the csv-profile bucket in
+    // `token-goat stats --full` stayed permanently zero regardless of real usage. "Full source"
+    // is the on-disk size of the CSV file actually profiled, mirroring runCsvQuery's convention.
+    const fullSourceBytes = sumFileSizes([opts.file])
+    const profileText = formatCsvProfile(profiles)
+    emit(profileText)
+    recordReadStat('csv_profile', fullSourceBytes, profileText, opts.file)
     return 0
   } catch (e) {
     emitErr(extractErrorMessage(e))
