@@ -8,13 +8,21 @@
  * normalizePath expands that to its long form while a hand-rolled version does not. The
  * fixture then never matches what the app's own normalizePath-routed code produces at
  * runtime, so the test fails on CI while passing on a dev machine whose %TEMP% happens not
- * to be short-form. This exact anti-pattern has already caused three separate incidents
- * (commit 442f42d3, the cmdHot --project regression test, and cli_waste.test.ts's
- * no-transcript-found --json test in commit f592ea05) -- the third one slipped past this
- * guard's original detection, which additionally required a dedicated `[A-Za-z]`
- * drive-letter capture-group regex to be present; a blanket whole-string `.toLowerCase()`
- * folds the drive letter too without needing one, so that variant went undetected. The
- * drive-letter-regex requirement is dropped below so this guard makes a fourth one fail
+ * to be short-form. This exact anti-pattern has already caused four separate incidents
+ * (commit 442f42d3, the cmdHot --project regression test, cli_waste.test.ts's
+ * no-transcript-found --json test in commit f592ea05, and cli_doctor.test.ts's rootDir-
+ * scoping regression test in commit bf10171a) -- the third one slipped past this guard's
+ * original detection, which additionally required a dedicated `[A-Za-z]` drive-letter
+ * capture-group regex to be present; a blanket whole-string `.toLowerCase()` folds the
+ * drive letter too without needing one, so that variant went undetected. The fourth one
+ * slipped past even the widened `.toLowerCase()`-co-occurrence check: it hand-flipped
+ * backslashes with no lowercase call at all, and still diverged from normalizePath() --
+ * not via 8.3 short-name expansion this time, but via normalizeDarwinSystemAlias()
+ * rewriting macOS's `/var` temp-dir alias to `/private/var`, which a bare backslash-flip
+ * never applies either. A second, independent check below flags any file that hand-rolls
+ * a backslash-flip while also inserting rows directly into `files`/`symbols`/`refs` --
+ * the fixture-construction shape every one of these four incidents shared -- regardless
+ * of whether `.toLowerCase()` happens to be present, so this guard makes a fifth one fail
  * loudly and locally instead of silently only on CI.
  */
 
@@ -43,6 +51,15 @@ function walkTestFiles(dir: string, out: string[] = []): string[] {
 // The literal regex-literal token a hand-rolled backslash-to-forward-slash conversion uses.
 const BACKSLASH_TO_SLASH_TOKEN = '/\\\\/g'
 
+// Any direct INSERT into a path-keyed table -- the fixture-construction shape shared by
+// every incident so far, independent of what else the conversion happens to do (lowercase,
+// nothing at all).
+const INSERT_PATH_TABLE_RE = /INSERT INTO (files|symbols|refs)\b/
+
+function importsNormalizePath(src: string): boolean {
+  return /from\s+['"](\.\.\/)+src\/paths\.js['"]/.test(src) && src.includes('normalizePath')
+}
+
 describe('no hand-rolled Windows path normalization in test fixtures', () => {
   it('every test file that flips backslashes to slashes for a path fixture and also lowercases it imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
@@ -50,8 +67,19 @@ describe('no hand-rolled Windows path normalization in test fixtures', () => {
       const src = fs.readFileSync(file, 'utf8')
       if (!src.includes(BACKSLASH_TO_SLASH_TOKEN)) continue
       if (!src.toLowerCase().includes('tolowercase()')) continue
-      const importsNormalizePath = /from\s+['"](\.\.\/)+src\/paths\.js['"]/.test(src) && src.includes('normalizePath')
-      if (importsNormalizePath) continue
+      if (importsNormalizePath(src)) continue
+      offenders.push(path.relative(ROOT, file))
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('every test file that hand-flips backslashes AND inserts fixture rows into a path-keyed table (files/symbols/refs) imports normalizePath from src/paths.ts instead of reimplementing it', () => {
+    const offenders: string[] = []
+    for (const file of walkTestFiles(TESTS_DIR)) {
+      const src = fs.readFileSync(file, 'utf8')
+      if (!src.includes(BACKSLASH_TO_SLASH_TOKEN)) continue
+      if (!INSERT_PATH_TABLE_RE.test(src)) continue
+      if (importsNormalizePath(src)) continue
       offenders.push(path.relative(ROOT, file))
     }
     expect(offenders).toEqual([])
