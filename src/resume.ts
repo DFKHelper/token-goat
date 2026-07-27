@@ -1,20 +1,79 @@
 // Single-command post-compact restoration packet. Emits a structured context bundle for token-goat resume <session_id>.
+import { readFile } from 'node:fs/promises'
 import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
 import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
+import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
 
 export const MAX_RESUME_TOKENS = 2000
 export const MAX_RESUME_CHARS = MAX_RESUME_TOKENS * 4
 
+// Mirrors the Python predecessor's `_SKILL_MAX_COUNT`/`_SKILL_MAX_CHARS_EACH` (resume.py):
+// how many recently-loaded skills to surface, and how many characters of each one's checklist
+// section to keep before the per-skill budget forces a truncation.
+const SKILL_MAX_COUNT = 3
+const SKILL_MAX_CHARS_EACH = 400
+
+/**
+ * Build the `## Skills` section: for each of the most recently loaded skills this session
+ * (per {@link listSkills}, already sorted newest-first), extract its checklist/DoD section
+ * (via {@link extractChecklistSection}) from the skill's on-disk body -- the same source
+ * `token-goat skill-body <name>` reads. Falls back to a bare pointer line when no checklist
+ * section is found (an unstructured skill, or the source file is no longer readable) so the
+ * skill's use this session is still visible even without extractable content, mirroring the
+ * Python original's identical fallback.
+ *
+ * Ports resume.py's "Section 1: Skill checklists" -- dropped entirely in the TS port even
+ * though every primitive it needs (listSkills, getSkillFilePath, extractChecklistSection) was
+ * already implemented and unit-tested here, just never wired to this call site. Without it,
+ * `token-goat resume` silently omitted every skill a session had loaded, unlike the Python
+ * predecessor whose resume packet led with exactly this section.
+ */
+async function buildSkillsSection(sessionId: string): Promise<string[]> {
+  const skills = await listSkills(sessionId)
+  if (skills.length === 0) return []
+
+  const skillLines: string[] = ['## Skills']
+  for (const skill of skills.slice(0, SKILL_MAX_COUNT)) {
+    let checklist: string | null = null
+    try {
+      const filePath = await getSkillFilePath(skill.name)
+      if (filePath !== null) {
+        const body = await readFile(filePath, 'utf-8')
+        checklist = extractChecklistSection(body)
+      }
+    } catch {
+      // fail-soft: unreadable skill file falls through to the pointer-only line below
+      checklist = null
+    }
+    if (checklist !== null) {
+      const trimmed =
+        checklist.length > SKILL_MAX_CHARS_EACH ? checklist.slice(0, SKILL_MAX_CHARS_EACH).trimEnd() + '…' : checklist
+      skillLines.push(`**${skill.name}**:`)
+      skillLines.push(trimmed)
+    } else {
+      skillLines.push(`**${skill.name}** — \`token-goat skill-body ${skill.name} --section DoD\``)
+    }
+  }
+  skillLines.push('')
+  return skillLines
+}
+
 /** Build a recovery context packet for the given session id. Returns null if the session blob is not found. Never throws. */
-export function buildResumePacket(sessionId: string): string | null {
+export async function buildResumePacket(sessionId: string): Promise<string | null> {
   const blob = loadBlob(SESSIONS_SUBDIR, sessionId)
   if (blob === null || typeof blob !== 'object') return null
   const raw = blob as Record<string, unknown>
   const filesArr = Array.isArray(raw['files']) ? (raw['files'] as Array<Record<string, unknown>>) : []
   const lines: string[] = [`# Resume packet — session ${sessionId}`, '']
+
+  try {
+    lines.push(...(await buildSkillsSection(sessionId)))
+  } catch {
+    // fail-soft: skill lookup must never block the rest of the resume packet
+  }
 
   const editedPaths = filesArr
     .filter((f) => f['wasEdited'] === true)
