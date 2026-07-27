@@ -3604,6 +3604,22 @@ export function extractImports(text: string, ext: string): string[] {
       const useForward = /@(?:use|forward)\s+['"]([^'"]+)['"]/.exec(line)
       if (useForward) push(useForward[1])
     }
+  } else if (['.graphql', '.gql'].includes(e)) {
+    // GraphQL's idiomatic cross-file dependency mechanism is the `# import` pragma
+    // (`# import FragmentName from "./someFragment.graphql"`) -- graphql_idx.ts's own
+    // GRAPHQL_IMPORT_RE already extracts this as an AdapterImport for the symbol index -- but
+    // this generic keyword-substring fallback below mismatches it the same way the .vue/.svelte
+    // named-import fallback used to (fixed in 626fa5bc): the pragma has free-form text
+    // ("FragmentName from ") between the `import` keyword and the quoted path, and the fallback's
+    // capture class `[^'">;]+` starts capturing right after `import` (there's no quote directly
+    // after it) instead of at the actual quoted target, so it fabricated the non-actionable blob
+    // "FragmentName from " instead of the real target "./someFragment.graphql". Mirrors
+    // GRAPHQL_IMPORT_RE's shape (optional leading whitespace, `#`, optional whitespace, `import`,
+    // then anything up to the first quote) so `token-goat imports`/`deps` agrees with the symbol
+    // index.
+    const re = /^[ \t]*#[ \t]*import\b(?:[^"'\n]*)?['"]([^'"]+)['"]/gm
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) push(m[1])
   } else if (e === '.liquid') {
     // Liquid's `{% include %}`/`{% render %}`/`{% section %}` tags are its idiomatic cross-file
     // dependency mechanism -- liquid.ts's own INCLUDE_RE/RENDER_RE/SECTION_RE already extract
