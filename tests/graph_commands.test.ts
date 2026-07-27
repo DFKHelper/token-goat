@@ -713,6 +713,53 @@ describe('runTypes integration', () => {
     }
   })
 
+  // Regression: TYPE_KINDS never included 'apex_class'/'apex_interface'/'apex_enum' -- the
+  // Apex extractor (languages/apex.ts) emits those kinds (not the generic 'class'/'interface'/
+  // 'enum' TYPE_KINDS already recognizes) for `class`/`interface`/`enum` declarations, and
+  // runTypes' separate looksLikeTypeClass(cls.body) fallback only ever queries kind === 'class'
+  // literally, so it never picks up 'apex_class' either. Every Apex class/interface/enum was
+  // indexed but silently excluded from `token-goat types` in its entirety, the same class of
+  // gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension,
+  // and proto message/enum/service.
+  it('surfaces Apex class/interface/enum via TYPE_KINDS, matching struct/enum/interface', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-apex-'))
+    try {
+      const clsFile = join(dir, 'TypesApexClassFixture.cls')
+      writeFileSync(clsFile, ['public class TypesApexClassFixture {', '}', ''].join('\n'))
+      const intfFile = join(dir, 'TypesApexInterfaceFixture.cls')
+      writeFileSync(intfFile, ['public interface TypesApexInterfaceFixture {', '    void doThing();', '}', ''].join('\n'))
+      const enumFile = join(dir, 'TypesApexEnumFixture.cls')
+      writeFileSync(enumFile, ['public enum TypesApexEnumFixture {', '    A, B', '}', ''].join('\n'))
+      indexFileSync(normalizePath(clsFile))
+      indexFileSync(normalizePath(intfFile))
+      indexFileSync(normalizePath(enumFile))
+
+      for (const [file, name, kind] of [
+        [clsFile, 'TypesApexClassFixture', 'apex_class'],
+        [intfFile, 'TypesApexInterfaceFixture', 'apex_interface'],
+        [enumFile, 'TypesApexEnumFixture', 'apex_enum'],
+      ] as const) {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          const code = runTypes({ file: normalizePath(file), json: true })
+          expect(code).toBe(0)
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+        expect(parsed.map((r) => r.name)).toContain(name)
+        expect(parsed.find((r) => r.name === name)?.kind).toBe(kind)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // Regression: TYPE_KINDS never included 'proto_message'/'proto_enum'/'proto_service' --
   // the .proto extractor (languages/proto_idx.ts's KIND_MAP) emits those kinds for `message`,
   // `enum`, and `service` declarations, the exact type/interface-shaped constructs TYPE_KINDS

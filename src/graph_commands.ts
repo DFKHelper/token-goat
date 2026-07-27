@@ -654,6 +654,15 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'proto_message',
   'proto_enum',
   'proto_service',
+  // Apex (languages/apex.ts) uses its own prefixed kind strings rather than the generic
+  // 'class'/'interface'/'enum' TYPE_KINDS already recognizes -- and the separate
+  // looksLikeTypeClass(cls.body) fallback below only ever queries kind === 'class' literally,
+  // so it never picks these up either. Without them, every Apex class/interface/enum was
+  // indexed but silently excluded from `token-goat types` in its entirety, the same class of
+  // gap already fixed for Rust/Swift/Zig/Dart/proto kinds.
+  'apex_class',
+  'apex_interface',
+  'apex_enum',
 ]
 
 export interface TypesOptions {
