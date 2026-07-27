@@ -160,8 +160,11 @@ export function extractCsharp(
       symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
     }
 
-    // delegate
-    const delM = DELEGATE_RE.exec(stripped)
+    // delegate. Matched against stripLeadingAttributes(stripped), same as CLASS_HEADER_RE below --
+    // without it, an idiomatic `[Serializable] public delegate void Handler();` (the attribute
+    // list sits directly before the access modifier, exactly like a class/constructor/property/
+    // method declaration) silently dropped the whole delegate from the index.
+    const delM = DELEGATE_RE.exec(stripLeadingAttributes(stripped))
     if (delM) {
       symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200)))
     }
