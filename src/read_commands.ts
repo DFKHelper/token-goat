@@ -776,6 +776,13 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
 
   const result = readSection(filePath, heading)
   if (result === null) {
+    // readSection returns null both when the file is unreadable (missing, permissions, etc.)
+    // and when the file exists but the heading isn't in it -- distinguish the two so a bad
+    // path doesn't masquerade as a missing section (an agent debugging "section not found"
+    // wastes turns hunting for a heading that was never the actual problem).
+    if (!fs.existsSync(filePath)) {
+      return { text: `File not found: '${filePath}'`, code: 1 }
+    }
     const messages = [`Section '${heading}' not found in '${filePath}'`]
     const available = listSections(filePath)
     if (available.length > 0) messages.push(didYouMean(available))
