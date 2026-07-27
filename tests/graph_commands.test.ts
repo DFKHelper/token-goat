@@ -874,6 +874,49 @@ describe('runTypes integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Regression: TYPE_KINDS never included 'object' -- languages/kotlin.ts and languages/scala.ts
+  // both deliberately emit kind 'object' (not folded into 'class') for a top-level `object Foo {
+  // ... }` singleton declaration or a Kotlin companion object, per each file's own comment. Unlike
+  // a plain class/interface/enum, `runTypes`' fallback loop only ever re-queries kind === 'class'
+  // through looksLikeTypeClass -- it never considers 'object' rows at all, so every Kotlin/Scala
+  // object/companion-object declaration was indexed but silently and totally excluded from
+  // `token-goat types`, the same class of gap already fixed for Rust union, Swift
+  // protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, Apex
+  // class/interface/enum, and GraphQL type/interface/input/enum/union.
+  it("surfaces Kotlin/Scala 'object' declarations via TYPE_KINDS, matching class/interface", () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-object-'))
+    try {
+      const ktFile = join(dir, 'fixture.kt')
+      writeFileSync(ktFile, ['object TypesKotlinObjectFixture {', '    val x = 1', '}', ''].join('\n'))
+      indexFileSync(normalizePath(ktFile))
+
+      const scalaFile = join(dir, 'fixture.scala')
+      writeFileSync(scalaFile, ['object TypesScalaObjectFixture {', '  val x = 1', '}', ''].join('\n'))
+      indexFileSync(normalizePath(scalaFile))
+
+      for (const file of [ktFile, scalaFile]) {
+        let captured = ''
+        const origWrite = process.stdout.write.bind(process.stdout)
+        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+          if (typeof chunk === 'string') captured += chunk
+          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+        }
+        try {
+          const code = runTypes({ file: normalizePath(file), json: true })
+          expect(code).toBe(0)
+        } finally {
+          process.stdout.write = origWrite
+        }
+        const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+        const expectedName = file === ktFile ? 'TypesKotlinObjectFixture' : 'TypesScalaObjectFixture'
+        expect(parsed.map((r) => r.name)).toContain(expectedName)
+        expect(parsed.find((r) => r.name === expectedName)?.kind).toBe('object')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---- integration: runCallers against the real repo index -------------------
