@@ -668,12 +668,16 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   // GraphQL `input` declaration is likewise a struct-shaped type with no generic equivalent
   // above. Without these, every GraphQL type/interface/input/enum/union declaration was
   // indexed but silently excluded from `token-goat types` in its entirety, the same class of
-  // gap already fixed for Rust/Swift/Zig/Dart/proto/Apex kinds.
+  // gap already fixed for Rust/Swift/Zig/Dart/proto/Apex kinds. 'graphql_scalar' -- the same
+  // KIND_MAP's entry for the `scalar` keyword (e.g. `scalar DateTime`) -- was omitted from this
+  // same fix; a custom scalar declaration is a first-class SDL type declaration exactly like
+  // enum/union, so it was indexed but silently excluded from `token-goat types` too.
   'graphql_type',
   'graphql_interface',
   'graphql_input',
   'graphql_enum',
   'graphql_union',
+  'graphql_scalar',
   // languages/kotlin.ts and languages/scala.ts both deliberately emit kind 'object' (not folded
   // into 'class', per each file's own comment) for a top-level `object Foo { ... }` singleton
   // declaration or a Kotlin companion object. Unlike a plain class, the looksLikeTypeClass(cls.body)
