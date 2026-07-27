@@ -3098,6 +3098,18 @@ describe('read_commands', () => {
       expect(extractImports(src, '.liquid')).toEqual(['header', 'footer.liquid', 'card', 'hero-banner'])
     })
 
+    it('extracts GraphQL "# import" pragma targets (regression: the pragma has free-form text between the "import" keyword and the quoted path -- "# import FragmentName from \\"./x.graphql\\"" -- so the generic import|require|use|#include fallback\'s capture class [^\'">;]+ started right after "import" instead of at the quoted target, fabricating the non-actionable blob "FragmentName from " instead of the real target, despite graphql_idx.ts already indexing the same pragma as an AdapterImport entry)', () => {
+      const src = [
+        '# import FragmentName from "./someFragment.graphql"',
+        '#import OtherFragment from "./other.gql"',
+        'query Foo {',
+        '  bar { ...FragmentName }',
+        '}',
+      ].join('\n')
+      expect(extractImports(src, '.graphql')).toEqual(['./someFragment.graphql', './other.gql'])
+      expect(extractImports(src, '.gql')).toEqual(['./someFragment.graphql', './other.gql'])
+    })
+
     it('extracts PowerShell Import-Module, using module, and dot-sourcing', () => {
       const src = [
         'Import-Module Az.Accounts',
