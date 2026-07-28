@@ -1019,7 +1019,8 @@ function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
   for (const ref of refs) byFile.set(ref.filePath, (byFile.get(ref.filePath) ?? 0) + 1)
   return [...byFile.entries()]
     .map(([file, count]) => ({ file, count }))
-    .sort((a, b) => b.count - a.count || a.file.localeCompare(b.file))
+    // Ordinal (not locale-aware) tiebreak -- an unlocaled localeCompare() sorts differently across Node's small-icu vs full-icu builds and different system default locales, making the truncation-affecting top-N ranking nondeterministic across machines/CI runners.
+    .sort((a, b) => b.count - a.count || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }
 
 /** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). */

@@ -4046,6 +4046,19 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     expect(stdout).not.toContain('elided')
   })
 
+  it('breaks a count tie by ordinal filePath comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+    const spy = vi.spyOn(String.prototype, 'localeCompare')
+    mockQueryRefs.mockReturnValue([ref('src/zzz.ts', 1, 'x'), ref('src/aaa.ts', 1, 'x')])
+    const { stdout } = capture(() => runRefs({ spec: 'login', top: 2 }))
+    const aaaIdx = stdout.indexOf('src/aaa.ts')
+    const zzzIdx = stdout.indexOf('src/zzz.ts')
+    expect(aaaIdx).toBeGreaterThanOrEqual(0)
+    expect(zzzIdx).toBeGreaterThanOrEqual(0)
+    expect(aaaIdx).toBeLessThan(zzzIdx)
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
   it('emits the fileCounts/totalFiles/totalRefs/shown envelope under --json instead of items/truncated/totalCount', () => {
     mockQueryRefs.mockReturnValue([
       ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x'),
