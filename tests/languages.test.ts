@@ -2590,6 +2590,32 @@ end
     expect(symbols.find((s) => s.name === 'after_macro')?.docstring).toBe('Helpers')
   })
 
+  it('does not let a bare (do-less) multi-clause `fn ... end` desync scope tracking', () => {
+    // Regression test: `fn` opens a block closed by a bare `end` without ever using the `do`
+    // keyword (e.g. `handler = fn` / multi-clause fn stored to a variable). Only `do`-ending
+    // lines pushed a placeholder frame, so this `end` had no frame of its own to pop and
+    // instead prematurely popped the enclosing function's real frame -- corrupting parent
+    // attribution for every symbol declared after it in the same module.
+    const content = `defmodule Helpers do
+  def process(x) do
+    handler = fn
+      :a -> 1
+      :b -> 2
+    end
+
+    handler.(x)
+  end
+
+  def after_fn(x) do
+    x + 1
+  end
+end
+`
+    const { symbols } = extractElixir(content, 'helpers.ex')
+    expect(symbols.find((s) => s.name === 'process')?.docstring).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'after_fn')?.docstring).toBe('Helpers')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractElixir('', 'empty.ex')
     expect(symbols).toHaveLength(0)
