@@ -549,6 +549,32 @@ describe('parseFile', () => {
     // Abstract class method signature (abstract_method_signature) -- dropped pre-fix.
     expect(names).toContain('run')
   })
+  it('indexes TypeScript namespace declarations (internal_module, kind namespace) -- no TSJS_KIND_BY_TYPE entry meant the namespace itself was invisible even though members nested inside it still indexed', async () => {
+    const file = write(
+      'ns.ts',
+      [
+        'namespace Utils {',
+        '  export function helper(): void {}',
+        '}',
+        'declare module "my-module" {',
+        '  export function fn(): void;',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+    // `namespace Utils { ... }` parses as internal_module -- dropped pre-fix.
+    expect(names).toContain('Utils')
+    // Members nested inside the namespace already indexed fine (recursion doesn't depend on
+    // the parent's kind-map membership) -- confirms the fix doesn't disturb them.
+    expect(names).toContain('helper')
+    // `declare module "my-module" { ... }` parses as module -- dropped pre-fix. Its name field is
+    // a `string` node, so the quotes are part of `.text` (matches how a plain identifier name is
+    // captured verbatim elsewhere in this extractor -- no special-casing to strip them).
+    expect(names).toContain('"my-module"')
+  })
+
     it('excludes function-local var/const/type declarations from the Go index', async () => {
     const goFile = write(
       'locals.go',
