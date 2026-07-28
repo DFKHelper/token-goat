@@ -260,6 +260,16 @@ describe('project_memory', () => {
       expect(mangoIdx).toBeLessThan(zebraIdx);
     });
 
+    it('sorts entries by ordinal comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+      const spy = vi.spyOn(String.prototype, 'localeCompare');
+      setEntry('test-ordinal', 'zebra', 'z');
+      setEntry('test-ordinal', 'apple', 'a');
+      setEntry('test-ordinal', 'mango', 'm');
+      buildInjection('test-ordinal');
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
     it('sorts numeric-string keys alphabetically, not by JS numeric-key enumeration order (regression: buildInjection relied on raw Object.entries() order, which JS reorders "9"/"10" ascending numerically regardless of insertion order, diverging from setEntry\'s eviction logic which assumes alphabetical iteration)', () => {
       setEntry('test', '10', 'ten');
       setEntry('test', '9', 'nine');

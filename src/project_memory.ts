@@ -14,6 +14,11 @@ const MAX_VALUE_LEN = 300;
 const MAX_TOTAL_CHARS = 4000;
 const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
+// Ordinal (not locale-aware) sort -- an unlocaled localeCompare() orders differently across Node's small-icu vs full-icu builds and different system default locales, which would make key ordering (and thus setEntry's eviction and buildInjection's display order) nondeterministic across machines/CI runners.
+function ordinal(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /**
  * Return the TOML file path for this project's memory entries.
  */
@@ -81,7 +86,7 @@ function loadRaw(filePath: string): Record<string, string> {
  */
 function save(filePath: string, entries: Record<string, string>): void {
   const lines: string[] = [];
-  const sorted = Object.entries(entries).sort(([a], [b]) => a.localeCompare(b));
+  const sorted = Object.entries(entries).sort(([a], [b]) => ordinal(a, b));
   for (const [k, v] of sorted) {
     const escaped = v
       .replace(/\\/g, '\\\\')
@@ -124,7 +129,7 @@ export function setEntry(projectHash: string, key: string, value: string): void 
     const isNewKey = !(key in entries);
     if (isNewKey && Object.keys(entries).length >= MAX_ENTRIES) {
       const keysToKeep = MAX_ENTRIES - 1;
-      const allKeys = Object.keys(entries).sort((a, b) => a.localeCompare(b));
+      const allKeys = Object.keys(entries).sort((a, b) => ordinal(a, b));
       for (const k of allKeys.slice(keysToKeep)) {
         delete entries[k];
       }
@@ -186,7 +191,7 @@ export function buildInjection(projectHash: string): string | null {
 
     // Explicit localeCompare sort, not raw Object.entries() order: JS engines enumerate canonical-integer-string keys (e.g. "9", "10") in ascending numeric order regardless of insertion order, which would silently diverge from the alphabetical order setEntry's eviction logic above assumes this function iterates in.
     const entries_list = Object.entries(entries)
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => ordinal(a, b))
       .slice(0, MAX_ENTRIES);
     for (const [key, val] of entries_list) {
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
