@@ -2321,6 +2321,29 @@ sealed trait Status
     expect(symbols.find((s) => s.name === 'count')?.kind).toBe('var')
     expect(symbols.find((s) => s.name === 'Status')?.kind).toBe('trait')
   })
+
+  it('does not leak a TypeFrame for a fully bodyless one-line case class', () => {
+    // Regression: `case class Foo(x: Int)` has NO `{}` at all -- no brace ever arrives to flip
+    // `bodyEntered`, so the pushed TypeFrame was never popped. That permanently failed
+    // `typeDetectionGateOk` for every subsequent top-level declaration, silently dropping the
+    // rest of the file's symbols from the index.
+    const content = `case class Foo(x: Int)
+
+case object Bar
+
+class Baz {
+  def method(): Int = 1
+}
+
+def topLevelFn(): Unit = {}
+`
+    const { symbols } = extractScala(content, 'bodyless.scala')
+    expect(symbols.find((s) => s.name === 'Foo')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Bar')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'Baz')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'method')?.docstring).toBe('Baz')
+    expect(symbols.find((s) => s.name === 'topLevelFn')?.kind).toBe('function')
+  })
 })
 
 // ---------------------------------------------------------------------------
