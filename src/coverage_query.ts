@@ -101,10 +101,21 @@ function hasGap(f: FileCoverageGaps): boolean {
 
 /** Drops fully-covered files and sorts the rest worst-offenders-first: uncovered-line-count
  * descending (the most actionable signal -- biggest test-writing opportunity first), ties
- * broken by path ascending for determinism. */
+ * broken by path ascending for determinism. The tiebreak uses a plain ordinal (UTF-16
+ * code-unit) comparison, never localeCompare() -- with no explicit locale it resolves to the
+ * host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which
+ * genuinely differs across locales for non-ASCII paths, defeating the "determinism" this
+ * tiebreak exists for. formatCoverageGaps's output can also be truncated by emitGuarded's byte
+ * budget, so a locale-dependent tie order can silently change which files survive truncation
+ * on a different machine. Same class of bug already fixed in hooks_read.ts's
+ * isProtectedRecentRead and graph_commands.ts's compareHopEntries. */
 function rankAndFilter(files: readonly FileCoverageGaps[]): FileCoverageGaps[] {
   const withGaps = files.filter(hasGap)
-  withGaps.sort((a, b) => b.uncoveredLineCount - a.uncoveredLineCount || a.filePath.localeCompare(b.filePath))
+  withGaps.sort((a, b) => {
+    const byCount = b.uncoveredLineCount - a.uncoveredLineCount
+    if (byCount !== 0) return byCount
+    return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0
+  })
   return withGaps
 }
 
