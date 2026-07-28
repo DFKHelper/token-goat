@@ -37,7 +37,11 @@ export function listZipEntries(data: Uint8Array): ZipEntry[] {
       return false
     },
   })
-  entries.sort((a, b) => a.path.localeCompare(b.path))
+  // Ordinal (not locale-aware) sort -- an unlocaled localeCompare() orders differently across
+  // Node's small-icu vs full-icu builds and different system default locales, which would make
+  // "reads the same regardless of the archive's own central-directory order" (see doc comment
+  // above) false across machines/CI runners.
+  entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   return entries
 }
 
