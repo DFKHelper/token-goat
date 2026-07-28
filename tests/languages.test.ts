@@ -2746,6 +2746,27 @@ class Robot {
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('extracts a Dart 3.3 extension type distinctly from a plain function, with members nested under it', () => {
+    // Regression: `extension type Name(repr)` shares the `extension` keyword prefix with the
+    // plain `extension Name on Type` form but takes a `(repr)` primary constructor instead of
+    // `on Type`, so EXTENSION_RE's `on\s+` requirement never matched it. Left unmatched, the
+    // line fell through to FUNC_RE, which misread the representation-type constructor's parens
+    // as a function call -- mis-indexing the whole declaration as a plain top-level function and,
+    // because no scope frame was pushed for it, dropping every member declared inside its body.
+    const content = `extension type Meters(int value) {
+  int toMillimeters() {
+    return value * 1000;
+  }
+}
+`
+    const { symbols } = extractDart(content, 'meters.dart')
+    const meters = symbols.find((s) => s.name === 'Meters')
+    expect(meters?.kind).toBe('extension_type')
+    const method = symbols.find((s) => s.name === 'toMillimeters')
+    expect(method?.kind).toBe('function')
+    expect(method?.docstring).toBe('Meters')
+  })
 })
 
 // ---------------------------------------------------------------------------

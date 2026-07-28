@@ -645,6 +645,11 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   'opaque',
   'mixin',
   'extension',
+  // 'extension_type' (Dart 3.3's zero-cost wrapper type, `extension type Meters(int value)`) is
+  // a distinct declaration kind from a plain 'extension' -- languages/dart.ts's
+  // EXTENSION_TYPE_RE emits it via the same makeLineSymbol code path as 'class'/'mixin'/
+  // 'extension' above, so it needs the same TYPE_KINDS entry those already have.
+  'extension_type',
   'actor',
   // Protocol Buffers (languages/proto_idx.ts's KIND_MAP) uses its own kind strings rather
   // than the generic 'enum'/'interface' -- a proto message is a struct-shaped type, a proto
