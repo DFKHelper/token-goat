@@ -100,6 +100,22 @@ function isNodeModulesPath(p: string): boolean {
   return check.includes('/node_modules/') || check.includes('\\node_modules\\')
 }
 
+/** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually
+ *  inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both
+ *  cross-session-manifest call sites below) is not sufficient on Windows: when `root` and
+ *  `target` are on different drive letters, `path.relative` returns `target`'s own absolute path
+ *  unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a
+ *  bug in path.relative), so a file on an unrelated drive silently passed the guard and got
+ *  written into (or matched against) the project's cross-session read-dedup manifest as if it
+ *  were a real in-project relative path -- leaking an out-of-project absolute path into a
+ *  manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot`
+ *  guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
+export function relPathWithinRoot(root: string, target: string): string | null {
+  const rel = path.relative(root, target).replace(/\\/g, '/')
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+  return rel
+}
+
 /** True for documentation/markup files where `section` applies but `skeleton` and `symbol` do not. */
 function _isDocFile(filePath: string): boolean {
   const lower = filePath.toLowerCase()
@@ -430,7 +446,8 @@ function scanCrossSessionManifests(
   ttlSecs: number,
 ): boolean {
   try {
-    const relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/')
+    const relPath = relPathWithinRoot(projectRoot, filePath)
+    if (relPath === null) return false
     // Case-insensitive filesystems (Windows, macOS): rel_path is stored case-preserved by
     // writeSessionManifest/readAllSessionManifests, so a sibling session that read the same
     // physical file under a different literal casing (e.g. "Worker.ts" vs "worker.ts") must
@@ -900,8 +917,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         project = makeProjectAt(cwd)
       }
 
-      const relPath = path.relative(project.root, normalized).replace(/\\/g, '/')
-      if (!relPath.startsWith('..')) {
+      if (relPathWithinRoot(project.root, normalized) !== null) {
         const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordActualRead(event, normalized)
@@ -1197,8 +1213,8 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
       const mappedFiles: Array<{rel_path: string; hit_count: number}> = []
 
       for (const fileEntry of sessionState.files) {
-        const relPath = path.relative(project.root, fileEntry.path).replace(/\\/g, '/')
-        if (!relPath.startsWith('..')) {
+        const relPath = relPathWithinRoot(project.root, fileEntry.path)
+        if (relPath !== null) {
           mappedFiles.push({
             rel_path: relPath,
             hit_count: fileEntry.readCount,

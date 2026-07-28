@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { preReadHandler, postReadHandler } from '../src/hooks_read'
+import { preReadHandler, postReadHandler, relPathWithinRoot } from '../src/hooks_read'
 import type { HookEvent } from '../src/hook_registry'
 import { loadConfig } from '../src/config'
 import { getSessionId } from '../src/session'
@@ -311,6 +311,28 @@ describe('Cross-session read dedup', () => {
     expect(fs.existsSync(staleManifestPath)).toBe(false)
     expect(fs.existsSync(freshManifestPath)).toBe(true)
     expect(results).toEqual([{ files: [{ rel_path: 'b.txt', hit_count: 1 }] }])
+  })
+
+  describe('relPathWithinRoot', () => {
+    it('rejects a same-drive sibling path outside root', () => {
+      expect(relPathWithinRoot(path.join(os.tmpdir(), 'root'), path.join(os.tmpdir(), 'sibling', 'x.txt'))).toBeNull()
+    })
+
+    it('accepts a genuine descendant of root', () => {
+      const root = path.join(os.tmpdir(), 'root')
+      expect(relPathWithinRoot(root, path.join(root, 'sub', 'x.txt'))).toBe('sub/x.txt')
+    })
+
+    // Regression: path.relative(root, target) returns target's OWN ABSOLUTE PATH unchanged
+    // (not a '..'-prefixed relative path) when root and target are on different Windows drive
+    // letters -- documented Node behavior, not a bug in path.relative itself. The previous guard
+    // here was a bare `!rel.startsWith('..')`, which that absolute-path result trivially passes,
+    // so a file on an unrelated drive was silently treated as "inside" the project and its
+    // absolute path leaked into the project's cross-session read-dedup manifest instead of being
+    // excluded like any other out-of-project file.
+    it.skipIf(process.platform !== 'win32')('rejects a cross-drive path on Windows instead of treating it as in-root', () => {
+      expect(relPathWithinRoot('D:\\some\\project', 'C:\\Users\\someone\\secret.env')).toBeNull()
+    })
   })
 
   describe('cross-session case-fold (case-insensitive FS)', () => {
