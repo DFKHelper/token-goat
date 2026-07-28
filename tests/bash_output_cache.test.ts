@@ -189,6 +189,19 @@ describe('storeBashOutput', () => {
     const hits = likeSearchForTesting(secret, 'bash')
     expect(hits).toHaveLength(0)
   })
+
+  // Regression: the command line itself can carry a secret too (e.g. a curl -H
+  // "Authorization: Bearer sk-ant-..." header), not just its output. storeBlob()'s
+  // whole-JSON redaction strips it from the on-disk blob, but entry.command (in-memory)
+  // and the recall index's label/content both bypassed that pass entirely for the
+  // command text specifically -- only the output half of this fix was ever applied.
+  it('never surfaces a raw secret embedded in the command itself', async () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const id = await storeBashOutput(`curl -H "Authorization: Bearer ${secret}" https://example.com`, 'ok', 0)
+    expect(getBashOutput(id)?.command).not.toContain(secret)
+    const hits = likeSearchForTesting(secret, 'bash')
+    expect(hits).toHaveLength(0)
+  })
 })
 
 describe('retrieval', () => {

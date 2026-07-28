@@ -513,9 +513,16 @@ export async function storeBashOutput(command: string, output: string, exitCode:
   // output), leaking secrets via same-process reads and `token-goat recall`/FTS search.
   // Redacting here keeps disk, in-memory, and the recall index all consistent.
   const redactedOutput = redactSecrets(output).text
+  // The command line itself can carry a secret too (e.g. `curl -H "Authorization: Bearer
+  // sk-ant-..."`), not just its output. storeBlob()'s whole-JSON redaction pass would strip
+  // it from the on-disk blob's `command` field, but the in-memory `entry.command` below and
+  // the recall index write both bypassed that pass entirely for the command text specifically
+  // -- only the output half of this same fix was ever applied. Redacting here closes that gap
+  // the same way the output redaction above already did.
+  const redactedCommand = redactSecrets(command).text
   const entry: BashOutputEntry = {
     id,
-    command,
+    command: redactedCommand,
     output: redactedOutput,
     exitCode,
     storedAt: Date.now(),
@@ -526,7 +533,7 @@ export async function storeBashOutput(command: string, output: string, exitCode:
   // Persist so a later, separate hook process (and the CLI) can recall it.
   storeBlob(BASH_OUTPUT_SUBDIR, id, entry)
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts.
-  indexRecallEntry('bash', id, command, `${command}\n${redactedOutput}`, entry.storedAt)
+  indexRecallEntry('bash', id, redactedCommand, `${redactedCommand}\n${redactedOutput}`, entry.storedAt)
   return id
 }
 

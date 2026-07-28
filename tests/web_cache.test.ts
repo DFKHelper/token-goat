@@ -48,6 +48,16 @@ describe('storeWebOutput', () => {
     const hits = likeSearchForTesting(secret, 'web')
     expect(hits).toHaveLength(0)
   })
+
+  // Regression: the url itself can carry a secret too (a signed URL's token query param), not
+  // just the fetched body. The recall index's label/content were built from the raw url,
+  // bypassing redaction entirely -- only the content half of this fix was ever applied.
+  it('never surfaces a raw secret embedded in the url via the recall table', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    storeWebOutput(`https://example.com/download?token=${secret}`, 'ok')
+    const hits = likeSearchForTesting(secret, 'web')
+    expect(hits).toHaveLength(0)
+  })
 })
 
 describe('retrieval', () => {
