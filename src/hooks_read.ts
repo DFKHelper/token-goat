@@ -518,12 +518,21 @@ function contextPressureAdvisorySuffix(): string {
  * True if `normalized` is among the `n` most-recently-read files this session (ranked by
  * lastReadAt descending, ties broken by path for determinism). `n` <= 0 means no exemption
  * ever applies. Used to exempt just-read files from the re-read-deny hints below.
+ *
+ * The path tiebreak uses a plain ordinal (UTF-16 code-unit) comparison, never localeCompare()
+ * -- with no explicit locale it resolves to the host's default ICU collation (Windows regional
+ * setting, or LANG/LC_ALL on Linux/CI), which genuinely differs across locales for non-ASCII
+ * paths. lastReadAt ties are common in practice: a reloaded session's entries come from
+ * session_store.ts's second-granularity persisted timestamps (`lastReadTs * 1000`), so any two
+ * files read within the same second tie exactly, and a locale-dependent tiebreak could
+ * silently protect a different file on a different machine. Same fix already applied to
+ * graph_commands.ts's compareHopEntries for the identical reason.
  */
 function isProtectedRecentRead(normalized: string, n: number): boolean {
   if (n <= 0) return false
   const ranked = Array.from(getSessionFiles().entries()).sort((a, b) => {
     const byRecency = b[1].lastReadAt - a[1].lastReadAt
-    return byRecency !== 0 ? byRecency : a[0].localeCompare(b[0])
+    return byRecency !== 0 ? byRecency : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
   })
   const rank = ranked.findIndex(([filePath]) => filePath === normalized)
   return rank !== -1 && rank < n

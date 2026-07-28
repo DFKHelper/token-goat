@@ -483,6 +483,41 @@ describe('preReadHandler', () => {
         expect(result.message).toContain('already read this session')
       }
     })
+
+    // Regression: isProtectedRecentRead's rank sort broke lastReadAt ties with
+    // a[0].localeCompare(b[0]) -- unlocaled, so it resolves to the host's default ICU
+    // collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which can order two
+    // tied paths differently on different machines and silently protect a different file from
+    // the re-read deny depending on locale. lastReadAt ties are realistic in practice: two
+    // files read within the same event-loop tick (fake timers below pin them to the exact
+    // same instant) or two entries reloaded from session_store.ts's second-granularity
+    // persisted timestamps (`lastReadTs * 1000`) both tie exactly. The fix uses a plain
+    // ordinal (UTF-16 code-unit) comparison instead, matching graph_commands.ts's
+    // compareHopEntries fix for the identical class of bug -- so localeCompare must never be
+    // invoked by this code path at all.
+    it('breaks lastReadAt ties without calling the locale-dependent String.prototype.localeCompare', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 2
+      saveConfig(cfg)
+
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
+
+      const target = makeTmpFile('x'.repeat(60 * 1024))
+      const other = makeTmpFile('other')
+      // Both files read at the exact same instant -- lastReadAt ties exactly, forcing the
+      // sort's tiebreak branch to run.
+      recordFileRead(normalizePath(target))
+      recordFileRead(normalizePath(other))
+
+      const localeCompareSpy = vi.spyOn(String.prototype, 'localeCompare')
+      try {
+        preReadHandler(readEvent(target))
+        expect(localeCompareSpy).not.toHaveBeenCalled()
+      } finally {
+        localeCompareSpy.mockRestore()
+      }
+    })
   })
 
   // Regression: hints.min_file_lines_for_hint was defined, validated, persisted, and
