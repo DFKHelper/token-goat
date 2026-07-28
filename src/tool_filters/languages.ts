@@ -532,7 +532,7 @@ export const flutterFilter = new FlutterFilter()
 const DART_ANALYZING_RE = /^Analyzing\s/
 const DART_ANALYZE_RESULT_RE = /^(?:No issues found!|\d+ issue[s]? found\.|warning -|error -|info -|hint -)/
 const DART_TEST_PROGRESS_RE = /^\d{2}:\d{2}\s+[+\d]|^[.]+$/
-const DART_COMPILE_DONE_RE = /^(?:Generated:\s|Compiling\s)/
+const DART_COMPILE_DONE_RE = /^Generated:\s/
 const DART_TEST_SUMMARY_RE = /(?:All tests passed\.?|\d+\s+test[s]?\s+(?:passed|failed))/
 const PUB_KEEP_RE =
   /^(?:Resolving dependencies|Changed \d+|No dependencies changed|Got dependencies|Downloading packages|Building package executable)/
