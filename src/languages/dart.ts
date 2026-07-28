@@ -40,6 +40,16 @@ const MIXIN_RE = /^(?:base\s+)?mixin\s+([A-Za-z_][A-Za-z0-9_]*)/
 // `extension MyExtension on Type`, `extension on Type` (unnamed extensions)
 const EXTENSION_RE = /^extension\s+(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?on\s+/
 
+// `extension type Meters(int value)`, Dart 3.3's extension type declaration -- a zero-cost
+// wrapper over a representation type. It shares the `extension` keyword prefix with EXTENSION_RE
+// above but takes a literal `type` keyword and a `(repr)` primary-constructor instead of
+// `on Type`, so EXTENSION_RE's `on\s+` requirement never matches it. Left unmatched, the line
+// fell through to FUNC_RE, which misread the representation-type constructor's parens as a
+// function call and mis-indexed the whole declaration as a plain top-level function named after
+// the extension type -- and because no scope frame was pushed for it, every member declared
+// inside the body was silently dropped from the index (real data loss, not just a wrong kind).
+const EXTENSION_TYPE_RE = /^extension\s+type\s+([A-Za-z_][A-Za-z0-9_]*)/
+
 // `void foo()`, `int bar()`, `String baz()` — requires either `void` keyword or an explicit return type.
 // This guards against matching function calls like `print("text")` as function declarations.
 const FUNC_RE = /(?:^|\s)(?:static\s+)?(?:(?:void|Future|Stream|async|external)\s+|[A-Za-z_][A-Za-z0-9_<>]*(?:\s*\?)?\s+)([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(/
@@ -118,6 +128,19 @@ export function extractDart(
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
         symbols.push(makeLineSymbol(filePath, mname, 'mixin', lineNum, stripped.slice(0, 200), parent))
         typeStack.push({ name: mname, startDepth: braceDepth, bodyEntered: false })
+        matched = true
+      }
+
+      // Extension type checked before the plain `extension ... on` form -- both share the
+      // `extension` keyword prefix, but only the extension-type form has a literal `type`
+      // keyword next, so trying it first avoids relying on EXTENSION_RE's `on\s+` requirement
+      // failing to fall through correctly.
+      const etm = !matched ? EXTENSION_TYPE_RE.exec(stripped) : null
+      if (etm) {
+        const etname = etm[1] ?? ''
+        const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
+        symbols.push(makeLineSymbol(filePath, etname, 'extension_type', lineNum, stripped.slice(0, 200), parent))
+        typeStack.push({ name: etname, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
 
