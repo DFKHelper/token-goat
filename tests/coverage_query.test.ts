@@ -306,6 +306,37 @@ describe('parseLcov', () => {
     expect(r.files.map((f) => f.filePath)).toEqual(['src/aaa.ts', 'src/zzz.ts'])
   })
 
+  // Regression: rankAndFilter's tie-break used a.filePath.localeCompare(b.filePath) -- with no
+  // explicit locale this resolves to the host's default ICU collation (Windows regional
+  // setting, or LANG/LC_ALL on Linux/CI), which can order two tied paths differently across
+  // machines, defeating the "determinism" the tie-break exists for. formatCoverageGaps's output
+  // can be truncated by size, so a locale-dependent tie order can silently change which files
+  // survive truncation on a different machine. The fix uses a plain ordinal (UTF-16 code-unit)
+  // comparison instead, matching hooks_read.ts's isProtectedRecentRead fix for the identical
+  // bug class -- so localeCompare must never be invoked by this code path at all.
+  it('breaks the uncovered-line-count tie without calling the locale-dependent String.prototype.localeCompare', () => {
+    const lcov = [
+      'SF:src/zzz.ts',
+      'FN:1,zzzFn',
+      'FNDA:0,zzzFn',
+      'DA:1,1',
+      'end_of_record',
+      'SF:src/aaa.ts',
+      'FN:1,aaaFn',
+      'FNDA:0,aaaFn',
+      'DA:1,1',
+      'end_of_record',
+      '',
+    ].join('\n')
+    const localeCompareSpy = vi.spyOn(String.prototype, 'localeCompare')
+    try {
+      parseLcov(lcov)
+      expect(localeCompareSpy).not.toHaveBeenCalled()
+    } finally {
+      localeCompareSpy.mockRestore()
+    }
+  })
+
   it('tolerates a missing trailing end_of_record by closing the last open section at EOF', () => {
     const r = parseLcov('SF:src/noeor.ts\nDA:1,0\n')
     const f = r.files.find((f2) => f2.filePath === 'src/noeor.ts')
