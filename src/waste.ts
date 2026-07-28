@@ -94,8 +94,16 @@ const FILE_PATH_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'Multi
 function extractFilePath(name: string, input: unknown): string | null {
   if (!FILE_PATH_TOOLS.has(name)) return null
   if (input === null || typeof input !== 'object') return null
-  const fp = (input as Record<string, unknown>)['file_path']
-  return typeof fp === 'string' ? fp : null
+  const o = input as Record<string, unknown>
+  const fp = o['file_path']
+  if (typeof fp === 'string') return fp
+  // NotebookEdit's real wire field is `notebook_path`, not `file_path` (mirrors
+  // hooks_common.ts's getFilePath fallback) -- without this, every NotebookEdit call's
+  // filePath came back null, so tokensByFile silently dropped its token cost from the
+  // per-file breakdown instead of attributing it, the same class of gap already fixed for
+  // MultiEdit above.
+  const notebookPath = o['notebook_path']
+  return typeof notebookPath === 'string' ? notebookPath : null
 }
 
 function extractCommand(name: string, input: unknown): string | null {
