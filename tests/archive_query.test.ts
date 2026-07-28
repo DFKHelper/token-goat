@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 
 import { listZipEntries, extractZipEntry, formatZipList, type ZipEntry } from '../src/archive_query.js'
@@ -26,6 +26,20 @@ describe('listZipEntries', () => {
     const readme = entries.find((e) => e.path === 'README.md') as ZipEntry
     expect(readme.size).toBe(strToU8('# hello\n').length)
     expect(readme.isDirectory).toBe(false)
+  })
+
+  it('sorts by ordinal path comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+    const spy = vi.spyOn(String.prototype, 'localeCompare')
+    const zip = makeZip({
+      'src/zzz.ts': 'z\n',
+      'src/aaa.ts': 'a\n',
+      'README.md': '# hello\n',
+    })
+
+    const entries = listZipEntries(zip)
+    expect(entries.map((e) => e.path)).toEqual(['README.md', 'src/aaa.ts', 'src/zzz.ts'])
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 
   it('returns an empty array for an empty archive', () => {
