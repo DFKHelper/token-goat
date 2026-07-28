@@ -273,6 +273,48 @@ describe('runDepDocs — @types/<package> companion resolution', () => {
   })
 })
 
+// Regression: resolveTypesLocation's @types/<pkg> entry resolution only ever tried appending
+// '.d.ts' to the resolved entry name (from `types`/`typings`/`main`, in that priority order) --
+// unlike the bundled-types `declared` resolution a few lines above it in the same function,
+// which also tries swapping a trailing .js/.ts/.mjs/.cjs extension for .d.ts. A companion @types
+// package whose package.json has no explicit `types`/`typings` field (falls back to `main`) and
+// whose `main` points at a non-"index" .js file (e.g. "main": "foo.js") never found the real
+// sibling "foo.d.ts": the append-only guess produced "foo.js.d.ts" (never exists), and the
+// hardcoded final fallback only ever tries "index.d.ts" (also absent here), so types silently
+// resolved to null even though "foo.d.ts" was sitting right there.
+describe('runDepDocs — @types/<package> companion resolution falls back to package.json "main" with a non-index .js entry', () => {
+  let dir: string
+
+  beforeEach(() => {
+    mockLoadConfig.mockReturnValue(DEFAULT_CONFIG)
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-dep-docs-attypes-main-'))
+    const pkgDir = path.join(dir, 'node_modules', 'legacy-js-pkg2')
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'legacy-js-pkg2', version: '3.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(pkgDir, 'index.js'), 'module.exports = {}\n')
+
+    const typesDir = path.join(dir, 'node_modules', '@types', 'legacy-js-pkg2')
+    fs.mkdirSync(typesDir, { recursive: true })
+    // No `types`/`typings` field -- forces the `main`-fallback path. `main` names a non-"index"
+    // .js entry, whose real declaration sibling is "foo.d.ts", not "index.d.ts".
+    fs.writeFileSync(typesDir + '/package.json', JSON.stringify({ name: '@types/legacy-js-pkg2', main: 'foo.js' }))
+    fs.writeFileSync(typesDir + '/foo.d.ts', 'export declare function doThing2(x: string): number;\n')
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('resolves foo.d.ts via extension-swap instead of silently reporting no types found', () => {
+    const { text, code } = runDepDocs({ packageName: 'legacy-js-pkg2', projectRoot: dir, json: true })
+    expect(code).toBe(0)
+    const parsed = JSON.parse(text) as { types: { source: string; entry: string } | null; declarations: { items: Array<{ name: string }> } | null }
+    expect(parsed.types?.source).toBe('@types')
+    expect(parsed.types?.entry).toMatch(/foo\.d\.ts$/)
+    expect(parsed.declarations?.items.map((d) => d.name)).toContain('doThing2')
+  })
+})
+
 describe('runDepDocs — typescript compiler API unavailable', () => {
   let dir: string
 

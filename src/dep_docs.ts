@@ -207,8 +207,18 @@ function resolveTypesLocation(pkgDir: string, pkgJson: Record<string, unknown>, 
         (typeof typesPkgJson['types'] === 'string' ? typesPkgJson['types'] : undefined) ??
         (typeof typesPkgJson['main'] === 'string' ? typesPkgJson['main'] : undefined) ??
         'index.d.ts'
-      const entryPath = path.join(typesPkgDir, entry.endsWith('.d.ts') ? entry : `${entry}.d.ts`)
-      if (fileExists(entryPath)) return { path: entryPath, source: '@types' }
+      // Same three-candidate strategy as the bundled-types `declared` resolution above: an
+      // entry falling back to `main` commonly names a .js/.mjs/.cjs/.ts sibling of the real
+      // .d.ts (e.g. "main": "foo.js" whose real declaration file is "foo.d.ts"), not a name
+      // that already ends in .d.ts or that .d.ts can simply be appended to -- appending alone
+      // produced the non-existent "foo.js.d.ts" and silently fell through to a hardcoded
+      // "index.d.ts" guess that is equally wrong for a non-"index" main, reporting no types
+      // found even though the real declaration file was sitting right there.
+      const entryCandidates = [entry, entry.endsWith('.d.ts') ? entry : `${entry}.d.ts`, entry.replace(/\.[cm]?[jt]s$/, '.d.ts')]
+      for (const c of entryCandidates) {
+        const entryPath = path.join(typesPkgDir, c)
+        if (fileExists(entryPath)) return { path: entryPath, source: '@types' }
+      }
     } catch {
       // Malformed @types package.json -- fall through to the plain index.d.ts guess below.
     }
