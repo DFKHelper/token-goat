@@ -216,6 +216,17 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['method_signature', 'method'],
   ['property_signature', 'var'],
   ['abstract_method_signature', 'method'],
+  // `namespace Foo { ... }` (and the legacy `module Foo { ... }` synonym) parses as
+  // `internal_module`; `declare module "some-string" { ... }` (an ambient module declaration,
+  // common in .d.ts files) parses as `module` -- a distinct node type from either. Neither had a
+  // kind-map entry, so the namespace/module declaration itself was silently invisible to
+  // `symbol`/`outline`/`skeleton`/`read`, even though everything nested inside it still indexed
+  // fine (the walk recurses into every node's children regardless of the parent's kind-map
+  // membership) -- the same container-drop shape already fixed for C++ `namespace_definition`
+  // and Rust `mod_item`. Both node types expose their name on the standard `name` field
+  // (an identifier, nested_identifier, or string), so `nodeName` resolves it without special-casing.
+  ['internal_module', 'namespace'],
+  ['module', 'namespace'],
 ])
 
 // TS/JS class-member decorators (`@Override`, `@Input()`, ...) are wrapped as a `decorator` field
