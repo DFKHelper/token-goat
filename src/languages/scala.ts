@@ -143,6 +143,16 @@ export function extractScala(
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
+      // A `case class` is idiomatically bodyless (`case class Foo(x: Int)`, optionally with
+      // `extends`/`with` clauses, but never a `{...}` body). If this line has no `{` at all, no
+      // brace will ever arrive to flip `bodyEntered` and pop the frame -- it would sit on
+      // typeStack forever, permanently failing typeDetectionGateOk and silently dropping every
+      // subsequent top-level class/object/trait/enum/def/val/var in the file. Pop it immediately
+      // for this known-bodyless form (mirrors php.ts's self-contained-one-liner immediate pop,
+      // generalized to "no brace on the line" instead of "open+close both on the line").
+      if (/\bcase\s+class\b/.test(stripped) && !stripStringLiterals(line).includes('{')) {
+        typeStack.pop()
+      }
       matched = true
     }
 
@@ -152,6 +162,11 @@ export function extractScala(
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent))
       typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false })
+      // Same bodyless-one-liner leak as `case class` above, but for `case object Foo` (the
+      // idiomatic zero-argument ADT variant, e.g. Scala 3 enum-alternative style).
+      if (/\bcase\s+object\b/.test(stripped) && !stripStringLiterals(line).includes('{')) {
+        typeStack.pop()
+      }
       matched = true
     }
 
