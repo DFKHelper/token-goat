@@ -40,6 +40,10 @@ const _DOCKER_OLD_SHA_RE = /^ *---> (?:sha256:)?[0-9a-f]{12,}\s*$/
 const _DOCKER_OLD_STEP_RE = /^Step \d+\/\d+ : /
 const _DOCKER_OLD_SUCCESS_RE = /^Successfully built [0-9a-f]+/
 const _DOCKER_OLD_INTERMEDIATE_RE = /^Removing intermediate container [0-9a-f]+/
+// Real-world RUN failures rarely spell the literal word "error" (npm/yarn use "npm ERR!"), but
+// docker's own legacy builder always emits this line right after a failed step's command output,
+// so it's a reliable signal even when the command's own error text doesn't say "error".
+const _DOCKER_OLD_STEP_ERROR_RE = /error|returned a non-zero code/i
 
 // ---------------------------------------------------------------------------
 // DockerFilter
@@ -113,7 +117,7 @@ export class DockerFilter extends ToolFilter {
           oldStepErr = false
           continue
         }
-        if (ol.toLowerCase().includes('error')) oldStepErr = true
+        if (_DOCKER_OLD_STEP_ERROR_RE.test(ol)) oldStepErr = true
         oldNew.push(ol)
       }
       if (oldStepHdr !== null) {
