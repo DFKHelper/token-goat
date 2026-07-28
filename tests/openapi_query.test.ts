@@ -151,6 +151,18 @@ describe('extractOperations', () => {
     ])
   })
 
+  it('sorts operations by ordinal path/method comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+    const spy = vi.spyOn(String.prototype, 'localeCompare')
+    const ops = extractOperations(SPEC_JSON)
+    expect(ops.map((o) => `${o.method} ${o.path}`)).toEqual([
+      'GET /users',
+      'POST /users',
+      'GET /users/{id}',
+    ])
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
   it('merges path-level parameters ahead of the operation own parameters', () => {
     const ops = extractOperations(SPEC_JSON)
     const getById = ops.find((o) => o.operationId === 'getUserById')

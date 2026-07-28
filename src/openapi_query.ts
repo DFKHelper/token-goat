@@ -113,7 +113,9 @@ export function extractOperations(spec: unknown): OpenApiOperation[] {
     }
   }
 
-  operations.sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
+  // Ordinal (not locale-aware) sort -- an unlocaled localeCompare() orders differently across Node's small-icu vs full-icu builds and different system default locales, which would make the operation listing order nondeterministic across machines/CI runners.
+  const ordinal = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+  operations.sort((a, b) => ordinal(a.path, b.path) || ordinal(a.method, b.method))
   return operations
 }
 
