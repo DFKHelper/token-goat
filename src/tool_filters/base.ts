@@ -23,6 +23,7 @@ import {
   stripPrefixes,
   truncateMiddleSmart,
 } from './helpers.js'
+import { redactSecrets } from '../secret_redact.js'
 
 /**
  * Result of running a {@link ToolFilter} over a captured command output.
@@ -250,6 +251,19 @@ export abstract class ToolFilter {
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')
     // Step 9: byte cap (backstop for pathological lines).
     body = capBytes(body, maxBytes)
+    // Step 9.5: defense-in-depth secret redaction -- every other place token-goat persists or
+    // serves tool output (bash_output_cache, disk_cache, web_cache, mcp_cache) passes it through
+    // redactSecrets() first. This `apply()` pipeline is the one exception: it is what an agent
+    // actually sees live, in the same turn (hooks_bash.ts's maybeCompressRewrite rewrites plain
+    // `env`/`printenv`/etc. Bash calls to run through this exact path by default), yet it never
+    // redacted anything -- e.g. EnvFilter's ENV_KEEP_PREFIXES intentionally keeps AWS_/GITHUB_/
+    // GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for debugging context, which also keeps
+    // any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value verbatim. Applied last (after every
+    // per-tool filter has already run) so this is a single choke point for all of them, not a
+    // per-filter patch.
+    const redacted = redactSecrets(body)
+    body = redacted.text
+    if (redacted.count > 0) notes.push(`redacted ${redacted.count} secret-shaped value(s)`)
     // Step 10: prepend notes.
     if (notes.length) body = `[${notes.join('; ')}]\n${body}`
 

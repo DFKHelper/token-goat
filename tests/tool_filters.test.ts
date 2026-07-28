@@ -287,6 +287,27 @@ describe("apply(): normalisation early-exit ratio uses pre-normalisation size, n
   })
 })
 
+describe('apply(): redacts secret-shaped values before returning', () => {
+  // hooks_bash.ts's maybeCompressRewrite rewrites plain `env`/`printenv`/etc. Bash calls to run
+  // through this exact `apply()` pipeline by default -- its output is what an agent sees live, in
+  // the same turn. Every other place token-goat persists or serves tool output (bash_output_cache,
+  // disk_cache, web_cache, mcp_cache) already redacts secret-shaped values before the text leaves
+  // that module; this pipeline is the one live, model-visible path that must do the same.
+  it('redacts an AWS access key id that survives filtering into the final body', () => {
+    const raw = 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nsome other output line'
+    const result = new GenericFilter().apply(raw, '', 0, [])
+    expect(result.text).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(result.text).toContain('[REDACTED:aws_access_key]')
+  })
+
+  it('redacts a GitHub token that survives filtering into the final body', () => {
+    const raw = `GITHUB_TOKEN=ghp_${'a'.repeat(36)}\nsome other output line`
+    const result = new GenericFilter().apply(raw, '', 0, [])
+    expect(result.text).not.toContain('ghp_' + 'a'.repeat(36))
+    expect(result.text).toContain('[REDACTED:github_token]')
+  })
+})
+
 describe('error-passthrough filters', () => {
   class PassthroughFilter extends ToolFilter {
     readonly name = 'passthrough'
