@@ -365,6 +365,20 @@ describe('DartFilter compress: pub', () => {
   })
 })
 
+describe('DartFilter compress: generic (run/compile)', () => {
+  it('collapses Compiling progress lines and keeps Generated', () => {
+    const stdout = [
+      'Compiling lib/main.dart',
+      'Compiling lib/src/widget.dart',
+      'Generated: build/main.exe',
+    ].join('\n')
+    const out = compress(dartFilter, stdout, ['dart', 'compile', 'exe', 'lib/main.dart'])
+    expect(out).toContain('Generated: build/main.exe')
+    expect(out).toContain('collapsed 2 compilation step(s)')
+    expect(out).not.toContain('Compiling lib/main.dart')
+  })
+})
+
 // ===========================================================================
 // SwiftFilter
 // ===========================================================================
