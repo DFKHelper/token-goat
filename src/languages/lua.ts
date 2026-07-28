@@ -190,9 +190,15 @@ export function extractLua(
       continue
     }
 
-    // Pop finished function/block frames when we see `end` keyword.
-    if (stripped === 'end' || /^end\s/.test(stripped) || /^end$/.test(stripped)) {
-      if (funcStack.length > 0) {
+    // Pop finished function/block frames when we see `end` keyword(s). A line can close
+    // multiple nested blocks at once (`end end`, `end end end` -- a common compact style for
+    // stacked closes), so the whole line must consist of nothing but `end` tokens (each
+    // followed by whitespace or end-of-line) before popping once PER `end` token; popping only
+    // once regardless of count left a stale frame on the stack, corrupting parent attribution
+    // for every symbol declared afterward in the enclosing scope.
+    if (/^(?:end(?:\s+|$))+$/.test(stripped)) {
+      const popCount = (stripped.match(/\bend\b/g) ?? []).length
+      for (let k = 0; k < popCount && funcStack.length > 0; k++) {
         funcStack.pop()
       }
     }

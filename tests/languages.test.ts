@@ -2460,6 +2460,26 @@ end
     const { symbols } = extractLua(content, 'main.lua')
     expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
   })
+
+  it('pops one frame per `end` token when multiple closes share a line', () => {
+    // Regression: `end end` (a common compact style closing two nested blocks on one line)
+    // only popped ONE frame regardless of how many `end` keywords were present, leaving a
+    // stale frame on the stack and misattributing the parent of every symbol declared
+    // afterward in the enclosing scope.
+    const content = `function outer()
+  local function inner()
+    local function innermost()
+      return 1
+    end end
+  local function after()
+    return 2
+  end
+  return after()
+end
+`
+    const { symbols } = extractLua(content, 'main.lua')
+    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+  })
 })
 
 // ---------------------------------------------------------------------------
