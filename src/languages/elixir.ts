@@ -83,6 +83,16 @@ export function extractElixir(
     // of the enclosing module/function frame it actually belongs to.
     const opensDoBlock = /\bdo\s*$/.test(stripped)
 
+    // Whether this line opens a `fn ... end` block -- Elixir's anonymous-function keyword
+    // closes with a bare `end`, never with `do`, so a do-less multi-clause fn stored to a
+    // variable (`handler = fn`) or passed inline (`Enum.map(list, fn x ->`) was invisible to
+    // opensDoBlock above: no frame was pushed for it, so its closing `end` fell through to the
+    // final pop-check below and prematurely popped the enclosing function/module's real frame
+    // instead, corrupting parent attribution for every symbol declared after it. A `fn ... end`
+    // that is fully self-contained on one line (already balanced) must NOT push a frame, hence
+    // the `!/\bend\b/` guard.
+    const opensFnBlock = /\bfn\b/.test(stripped) && !/\bend\b/.test(stripped) && /(?:fn|->)\s*$/.test(stripped)
+
     // defmodule Foo / defmodule Foo.Bar
     const modM = MODULE_RE.exec(stripped)
     if (modM) {
@@ -148,10 +158,11 @@ export function extractElixir(
       continue
     }
 
-    // Any other `do ... end` construct (quote/case/cond/try/receive/if/unless/with, etc.) --
-    // push a placeholder block frame so its `end` doesn't prematurely pop a real def/module
-    // frame and corrupt parent attribution for whatever comes after it.
-    if (opensDoBlock) {
+    // Any other `do ... end` construct (quote/case/cond/try/receive/if/unless/with, etc.), or
+    // a do-less `fn ... end` block -- push a placeholder block frame so its `end` doesn't
+    // prematurely pop a real def/module frame and corrupt parent attribution for whatever
+    // comes after it.
+    if (opensDoBlock || opensFnBlock) {
       moduleStack.push({ name: '', endKeywordNeeded: true, isBlock: true })
       continue
     }
