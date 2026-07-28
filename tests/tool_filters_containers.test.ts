@@ -198,6 +198,25 @@ describe('DockerFilter', () => {
     expect(result).toContain('building 4 layers, 1 cached')
     expect(result).toContain('Successfully built ffffffffffff')
   })
+
+  it('keeps the failing step header for a legacy (non-BuildKit) RUN failure whose error text never spells out "error"', () => {
+    // npm's real-world failure marker is "npm ERR!", not the literal substring "error" -- and
+    // the docker-emitted failure line ("returned a non-zero code") doesn't say "error" either.
+    // A failing RUN step must still keep its "Step N/M :" header so the agent knows *which*
+    // command failed, not just see an orphaned npm ERR! line with no context.
+    const text = [
+      'Step 1/4 : FROM node:18',
+      ' ---> aaaaaaaaaaaa',
+      'Step 2/4 : RUN npm install',
+      ' ---> Running in bbbbbbbbbbbb',
+      'npm ERR! code E404',
+      'npm ERR! 404 Not Found - GET https://registry.npmjs.org/nonexistent-package',
+      "The command '/bin/sh -c npm install' returned a non-zero code: 1",
+    ].join('\n')
+    const result = apply(f, text, '', 1, ['docker', 'build'])
+    expect(result).toContain('Step 2/4 : RUN npm install')
+    expect(result).toContain('npm ERR! code E404')
+  })
 })
 
 // ---------------------------------------------------------------------------
