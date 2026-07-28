@@ -18,6 +18,7 @@ import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
+import { redactSecrets } from './secret_redact.js'
 
 /**
  * Return true when a tool_response is an MCP `CallToolResult` carrying an
@@ -90,9 +91,17 @@ function postMcpHandler(event: HookEvent): HookOutput {
       // this never feeds preMcpHandler's dedup check, which independently re-gates on isMcpReadOnly.
       if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
       if (id !== null) {
+        // storeMcpOutput() above redacts before writing to the recall cache/index, but this
+        // rewriteOutput is what the model actually reads THIS turn -- neither mcp_compress.ts nor
+        // mcp_compress_packs.ts run any redaction themselves (they build `compressed` straight from
+        // the raw resultText), so a secret sitting in an MCP result's non-stripped fields (a GitHub
+        // PAT in a commit message, an API key in an env-dump tool's output) would reach the model
+        // unredacted on this live path even though every other place that ever persists MCP output
+        // redacts it first. Same defense-in-depth choke point ToolFilter.apply() applies for bash
+        // output; mirror it here for MCP's live rewrite.
         return {
           hookType: 'rewriteOutput',
-          updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${compressed}`,
+          updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${redactSecrets(compressed).text}`,
         }
       }
     }

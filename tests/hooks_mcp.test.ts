@@ -342,6 +342,33 @@ describe('postMcpHandler generic compression (real runHook dispatch)', () => {
     expect(pre.hookType).toBe('pass')
   })
 
+  // Bug: storeMcpOutput() redacts before writing to the recall cache/index, but the
+  // rewriteOutput text returned here for THIS turn was built straight from the raw
+  // resultText by mcp_compress.ts/mcp_compress_packs.ts, neither of which redact --
+  // so a secret embedded in a field that survives compression (e.g. a per-row `title`
+  // column that differs across rows and so isn't hoisted/dropped) reached the model
+  // in plaintext on the live path even though the cached copy was clean.
+  it('redacts a secret embedded in a compressed MCP result before the live rewrite', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const secret = 'ghp_' + 'a'.repeat(36)
+    const rows = homogeneousRows(200).map((r, i) =>
+      i === 0 ? { ...r, title: `leaked token ${secret} in issue title` } : r,
+    )
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: compressTool,
+        tool_input: compressInput,
+        session_id: sessionId,
+        tool_response: JSON.stringify(rows),
+      }),
+    )
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).not.toContain(secret)
+      expect(result.updatedOutput).toContain('[REDACTED:github_token]')
+    }
+  })
+
   it('is disabled by TOKEN_GOAT_MCP_COMPRESS=0, still caches the raw result', async () => {
     process.env['TOKEN_GOAT_MCP_COMPRESS'] = '0'
     const rows = homogeneousRows(200)
