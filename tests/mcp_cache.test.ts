@@ -336,6 +336,20 @@ describe('storeMcpOutput / getMcpOutput', () => {
     expect(hits).toHaveLength(0)
   })
 
+  // Regression: the label (built from toolInput via mcpInputPreview -- e.g. an agent passing a
+  // secret as a call argument) can carry a secret too, not just resultText. entry.command and
+  // the recall index's label/content were both built from the raw, unredacted label, bypassing
+  // redaction entirely -- only the resultText half of this fix was ever applied.
+  it('never surfaces a raw secret embedded in the toolInput label', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    const id = storeMcpOutput(sessionId, toolName, { ...toolInput, token: secret }, 'body')
+    expect(id).not.toBeNull()
+    const entry = getBashOutput(id as string)
+    expect(entry?.command).not.toContain(secret)
+    const hits = likeSearchForTesting(secret, 'mcp')
+    expect(hits).toHaveLength(0)
+  })
+
   // Regression: storeMcpOutput computed sizeBytes from the raw pre-redaction resultText even
   // though the stored/served entry.output is the redacted (shorter) text -- mismatching
   // bash_output_cache.ts's storeBashOutput, whose sizeBytes is sized off the redacted output.

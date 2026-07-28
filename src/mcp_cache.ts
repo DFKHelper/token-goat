@@ -110,13 +110,18 @@ export function storeMcpOutput(
   const rawSizeBytes = Buffer.byteLength(resultText, 'utf-8')
   if (rawSizeBytes > MCP_MAX_CACHE_BYTES) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
-  const label = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
+  const rawLabel = `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim()
   // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
   // redaction pass to the JSON it writes to disk, but the recall index write below
   // bypassed that pass entirely (indexed raw resultText), leaking secrets into
   // `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the
   // recall index all consistent with the same sanitized text.
   const redactedOutput = redactSecrets(resultText).text
+  // The label itself is built from toolInput (mcpInputPreview), which can carry a secret an
+  // agent passed as a call argument (an API key, a token) just as readily as the result text
+  // can -- redact it too, mirroring the output redaction above, so entry.command (in-memory
+  // and the recall index's label/content) never surfaces one either.
+  const label = redactSecrets(rawLabel).text
   const entry: BashOutputEntry = {
     id,
     command: label,

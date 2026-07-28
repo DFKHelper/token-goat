@@ -68,8 +68,16 @@ export function storeWebOutput(url: string, content: string, dedupKey: string = 
   _urlIndex.set(url, cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.
   storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content: redactedContent })
+  // The url itself can carry a secret (a signed URL's token query param, an embedded API key)
+  // just like content can -- redact ONLY the copy fed to the recall index (label/content), not
+  // the `url` used above for _urlIndex/storeBlob: those need the real url intact for exact-match
+  // lookups (getWebOutputByUrl) and display, and storeBlob() already applies its own whole-JSON
+  // redaction pass to what actually lands on disk there. Without this, the recall index (a
+  // separate, directly FTS-searchable table) indexed the raw url unconditionally, bypassing that
+  // protection -- the same gap already closed for content/output above.
+  const redactedUrl = redactSecrets(url).text
   // Keep the cross-cache recall index (`token-goat recall`) current -- see recall_index.ts. Web blobs carry no storedAt field of their own; Date.now() at write time is the closest available signal, same as bash-history/web-history's own mtime-based ordering fallback.
-  indexRecallEntry('web', cacheId, url, `${url}\n${redactedContent}`, Date.now())
+  indexRecallEntry('web', cacheId, redactedUrl, `${redactedUrl}\n${redactedContent}`, Date.now())
   return cacheId
 }
 
