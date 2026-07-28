@@ -213,6 +213,24 @@ describe('cost aggregation', () => {
     expect(byFile[0]?.tokens).toBe(34)
   })
 
+  // Regression: extractFilePath only read `file_path`, but NotebookEdit's real wire field is
+  // `notebook_path` (see hooks_common.ts's getFilePath) -- so every NotebookEdit call's
+  // filePath came back null and tokensByFile silently dropped its token cost from the
+  // per-file breakdown instead of attributing it, the same class of gap already fixed for
+  // MultiEdit above.
+  it('tokensByFile also aggregates NotebookEdit calls, keyed by notebook_path', () => {
+    const transcript = writeFixture(tempDir, [
+      toolUseLine('t1', 'NotebookEdit', { notebook_path: '/c.ipynb', new_source: 'print(1)' }),
+      toolResultLine('t1', 'ok'.repeat(50)),
+    ])
+    const costs = costPerCall(parseTranscript(transcript))
+    const byFile = tokensByFile(costs)
+    expect(byFile).toHaveLength(1)
+    expect(byFile[0]?.key).toBe('/c.ipynb')
+    // Pin the exact estimateTokens() value for the 100-char result instead of just ">0".
+    expect(byFile[0]?.tokens).toBe(34)
+  })
+
   it('topExpensiveCalls returns the N highest-cost calls, descending', () => {
     const transcript = writeFixture(tempDir, [
       toolUseLine('t1', 'Read', { file_path: '/small.ts' }),
