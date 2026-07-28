@@ -752,7 +752,8 @@ function _renderByDaySection(stats: StatsData): string[] {
     return _tokenOrByteShare(d.tokens, d.bytes, stats.totals.tokens, stats.totals.bytes)
   }
 
-  for (const d of [...stats.by_day].sort((a, b) => b.date.localeCompare(a.date))) {
+  // Ordinal (not locale-aware) sort -- an unlocaled localeCompare() orders differently across Node's small-icu vs full-icu builds and different system default locales, which would make the "By day" ordering nondeterministic across machines/CI runners.
+  for (const d of [...stats.by_day].sort((a, b) => (b.date < a.date ? -1 : b.date > a.date ? 1 : 0))) {
     const s = share(d)
     lines.push(
       _tableRow({

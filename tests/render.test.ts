@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   fg,
   vlen,
@@ -264,6 +264,25 @@ describe('Stats rendering', () => {
     const result = renderStats(minimalStats)
     expect(result).toContain('By day')
     expect(result).toContain('2024-01-31')
+  })
+
+  it('renderStats sorts by-day section by ordinal date comparison without calling localeCompare (deterministic across locales/ICU builds)', () => {
+    const spy = vi.spyOn(String.prototype, 'localeCompare')
+    const stats = {
+      ...minimalStats,
+      by_day: [
+        { date: '2024-01-05', bytes: 1000, tokens: 100, events: 2 },
+        { date: '2024-01-31', bytes: 2000, tokens: 200, events: 3 },
+        { date: '2024-01-20', bytes: 3000, tokens: 300, events: 4 },
+      ],
+    }
+    const result = renderStats(stats)
+    const byDaySection = result.split('Insights')[0]
+    const dayLines = byDaySection.split('\n').filter((l) => /2024-01-(05|20|31)/.test(l))
+    const dates = dayLines.map((l) => (/2024-01-\d{2}/.exec(l) as RegExpExecArray)[0])
+    expect(dates).toEqual(['2024-01-31', '2024-01-20', '2024-01-05'])
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 
   it('renderStats includes by-project section', () => {
