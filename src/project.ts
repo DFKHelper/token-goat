@@ -205,10 +205,14 @@ function markerExists(current: string, marker: string): boolean {
     if (!stat.isSymbolicLink()) {
       return true;
     }
-    // Symlink: verify target stays inside current.
+    // Symlink: verify target stays inside current. On Windows, path.relative() across drive
+    // letters (e.g. C:\project -> D:\evil\file) returns the absolute target path unchanged
+    // rather than a '..'-prefixed relative path, so the startsWith('..') check alone lets a
+    // cross-drive escaping symlink through; also reject any result that is itself absolute
+    // (mirrors hooks_read.ts's relPathWithinRoot / pack.ts's isPathWithinRoot).
     const resolved = fs.realpathSync(markerPath);
     const rel = path.relative(path.resolve(current), path.resolve(resolved));
-    return !rel.startsWith('..');
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
   } catch {
     return false;
   }

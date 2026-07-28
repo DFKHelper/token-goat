@@ -348,6 +348,30 @@ describe('project', () => {
       }
     });
 
+    // Regression: on Windows, path.relative() across drive letters (e.g. C:\project ->
+    // D:\evil\file) returns the absolute target path unchanged instead of a '..'-prefixed
+    // relative path, so a startsWith('..')-only check lets a cross-drive escaping symlink
+    // through. Uses a drive letter that differs from tmpDir's own drive (derived, not hardcoded,
+    // so the test is correct regardless of which drive the CI/dev box's temp dir lives on).
+    it.runIf(process.platform === 'win32')('does not treat a marker symlink escaping to a different drive letter as valid', () => {
+      const tmpDrive = path.parse(tmpDir).root.slice(0, 1).toUpperCase();
+      const otherDrive = tmpDrive === 'D' ? 'E' : 'D';
+      const outsideTarget = `${otherDrive}:\\evil\\marker-target`;
+      const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => path.basename(p.toString()) === '.git')
+      const lstatSpy = vi
+        .spyOn(fs, 'lstatSync')
+        .mockReturnValue({ isSymbolicLink: () => true } as unknown as NodeFs.Stats);
+      const realpathSpy = vi.spyOn(fs, 'realpathSync').mockReturnValue(outsideTarget);
+      try {
+        const project = findProject(tmpDir);
+        expect(project).toBeNull();
+      } finally {
+        existsSpy.mockRestore();
+        lstatSpy.mockRestore();
+        realpathSpy.mockRestore();
+      }
+    });
+
     it('should prefer earliest marker in walk', () => {
       const parentMarker = path.join(tmpDir, '.git');
       fs.mkdirSync(parentMarker);
