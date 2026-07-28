@@ -955,6 +955,45 @@ describe('runTypes integration', () => {
     }
   })
 
+  // Regression: TYPE_KINDS never included 'graphql_extend'. languages/graphql_idx.ts's TYPE_RE
+  // handler maps EVERY `extend type|interface|input|enum|union|scalar Foo { ... }` declaration
+  // (GraphQL's mechanism for adding fields to a type from another file/module, ubiquitous in
+  // federation and schema-stitching) to this one shared kind regardless of which keyword follows
+  // `extend` -- but unlike the six non-extend KIND_MAP entries above (all already fixed), this
+  // kind was never added to TYPE_KINDS, so every `extend` declaration was indexed but silently
+  // excluded from `token-goat types` in its entirety -- the same class of gap already fixed for
+  // the other six GraphQL kinds, Rust union, Swift protocol/actor, Zig opaque, Dart mixin/
+  // extension, proto message/enum/service, Apex class/interface/enum, and Kotlin/Scala 'object'.
+  it("surfaces GraphQL 'extend' declarations via TYPE_KINDS, matching the other GraphQL kinds", () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-graphql-extend-'))
+    try {
+      const file = join(dir, 'fixture.graphql')
+      writeFileSync(
+        file,
+        ['extend type TypesGraphqlExtendFixture {', '  extraField: String', '}', ''].join('\n'),
+      )
+      indexFileSync(normalizePath(file))
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+        if (typeof chunk === 'string') captured += chunk
+        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+      }
+      try {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      } finally {
+        process.stdout.write = origWrite
+      }
+      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      expect(parsed.map((r) => r.name)).toContain('TypesGraphqlExtendFixture')
+      expect(parsed.find((r) => r.name === 'TypesGraphqlExtendFixture')?.kind).toBe('graphql_extend')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // Regression: TYPE_KINDS never included 'sfc_script_class'. languages/sfc_idx.ts (Vue/Svelte/
   // Astro single-file components) emits this distinct kind for a top-level `class Foo { ... }`
   // declaration in a component's script block rather than the generic 'class', so unlike a plain

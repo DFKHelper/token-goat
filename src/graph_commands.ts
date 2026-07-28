@@ -701,6 +701,16 @@ const TYPE_KINDS: ReadonlyArray<string> = [
   // mixin/extension, proto message/enum/service, Apex class/interface/enum, GraphQL
   // type/interface/input/enum/union, and Kotlin/Scala object.
   'sfc_script_class',
+  // languages/graphql_idx.ts's TYPE_RE handler maps EVERY `extend type|interface|input|enum|
+  // union|scalar Foo { ... }` declaration to this one shared kind regardless of which keyword
+  // follows `extend` -- GraphQL's mechanism for adding fields to a type from another file/module,
+  // ubiquitous in federation and schema-stitching -- but unlike the six non-extend KIND_MAP
+  // entries already listed above, this kind was never added here, so every `extend` declaration
+  // was indexed but silently excluded from `token-goat types` in its entirety, the same class of
+  // gap already fixed for the other six GraphQL kinds, Rust union, Swift protocol/actor, Zig
+  // opaque, Dart mixin/extension, proto message/enum/service, Apex class/interface/enum, and
+  // Kotlin/Scala object.
+  'graphql_extend',
 ]
 
 export interface TypesOptions {
