@@ -29,14 +29,21 @@ const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\._)?)/
 const BRACE_IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*)\.\{([^}]*)\}/
 
 // `class Foo`, `class Foo[T]`, `class Foo(x: Int)`, `class Foo extends Base`
-// Also matches `case class Foo`
-const CLASS_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
+// Also matches `case class Foo`. The modifier group is `(?:...\s+)*` (zero or MORE, not the
+// old `?` zero-or-one) because real Scala routinely stacks several modifiers before the keyword
+// -- `sealed abstract class Shape` (the idiomatic Scala ADT base-class pattern) and
+// `final case class Foo(...)` (an extremely common case-class form) both carry two modifiers.
+// With the old `?` cap, matching one modifier left the following keyword expected immediately
+// after it; the second modifier word sat where `class`/`object`/`trait`/`def`/`val`/`var` was
+// expected, so the WHOLE line failed to match and the declaration -- plus, for a type, every
+// symbol nested in its body -- was silently dropped from the index entirely.
+const CLASS_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|\(|:|$)/
 
 // `object Singleton`, `object Foo extends Base`
-const OBJECT_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*object\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|:|$)/
+const OBJECT_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*object\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|:|$)/
 
 // `trait Viewable`, `trait Comparable[T]`
-const TRAIT_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*trait\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|:|$)/
+const TRAIT_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*trait\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s|\[|:|$)/
 
 // Scala 3 (2021) `enum` type declaration: `enum Color`, `enum Option[+T]`,
 // `enum Color(val rgb: Int)`. A brand-new type keyword absent from CLASS_RE/OBJECT_RE/
@@ -48,15 +55,17 @@ const ENUM_RE = /^\s*(?:private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)(?:
 
 // Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form),
 // can also be infix operators like `def +(other: Int)`. Generics come between name and params.
-const FUNC_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*def\s+([A-Za-z_][A-Za-z0-9_]*|[+\-*/%=!<>&|^~]+)(?:\s*\[|\s*\(|\s*:)/
+// Modifier group allows multiple stacked modifiers (`private final def`, `override lazy def`),
+// same fix as CLASS_RE/OBJECT_RE/TRAIT_RE above.
+const FUNC_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*def\s+([A-Za-z_][A-Za-z0-9_]*|[+\-*/%=!<>&|^~]+)(?:\s*\[|\s*\(|\s*:)/
 
-// `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`
+// `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`, `private final val MAX = 5`
 // Scala allows `val` to bind multiple names in pattern-match style (`val (a, b) = tuple`),
 // but for simplicity we extract only the first word-boundary identifier after `val`.
-const VAL_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*val\s+([A-Za-z_][A-Za-z0-9_]*)/
+const VAL_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*val\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 // `var x: Int = 5`, `var y = "hello"` — same pattern as val.
-const VAR_RE = /^\s*(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)?\s*var\s+([A-Za-z_][A-Za-z0-9_]*)/
+const VAR_RE = /^\s*(?:(?:implicit|lazy|sealed|abstract|final|private|protected|override|covariant|contravariant|case)\s+)*var\s+([A-Za-z_][A-Za-z0-9_]*)/
 
 export function extractScala(
   content: string,

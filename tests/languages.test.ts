@@ -2289,6 +2289,38 @@ def foo() = 1
     expect(symbols.find((s) => s.name === 'counter')?.kind).toBe('var')
     expect(symbols.find((s) => s.name === 'foo')?.kind).toBe('function')
   })
+
+  it('extracts declarations with multiple stacked modifiers', () => {
+    // Regression: the modifier group in CLASS_RE/OBJECT_RE/TRAIT_RE/FUNC_RE/VAL_RE/VAR_RE was
+    // `(?:...)?` (zero or ONE modifier), but real Scala routinely stacks several -- `sealed
+    // abstract class` is the idiomatic ADT base-class pattern and `final case class` is an
+    // extremely common case-class form. With only one modifier allowed, the second modifier word
+    // sat where the keyword (`class`/`def`/`val`/...) was expected, so the whole line failed to
+    // match and the declaration -- plus every symbol nested in a dropped type's body -- was
+    // silently absent from the index.
+    const content = `sealed abstract class Shape {
+  final def area(): Double = 0.0
+}
+
+final case class Circle(radius: Double) extends Shape {}
+
+private final object Registry {
+  private final val MAX_ITEMS = 100
+  private final var count = 0
+}
+
+sealed trait Status
+`
+    const { symbols } = extractScala(content, 'modifiers.scala')
+    expect(symbols.find((s) => s.name === 'Shape')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'area')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'area')?.docstring).toBe('Shape')
+    expect(symbols.find((s) => s.name === 'Circle')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Registry')?.kind).toBe('object')
+    expect(symbols.find((s) => s.name === 'MAX_ITEMS')?.kind).toBe('val')
+    expect(symbols.find((s) => s.name === 'count')?.kind).toBe('var')
+    expect(symbols.find((s) => s.name === 'Status')?.kind).toBe('trait')
+  })
 })
 
 // ---------------------------------------------------------------------------
