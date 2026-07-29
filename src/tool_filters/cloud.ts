@@ -429,6 +429,25 @@ const _AWS_DOWNLOAD_RE = /^download:\s+s3:\/\//i
 const _AWS_S3_PROGRESS_RE =
   /^(?:Completed\s+\d|\d+(?:\.\d+)?\s*(?:KiB|MiB|GiB|B)\/s|Calculating|upload\s+failed:|download\s+failed:)/i
 
+// AWS CLI's documented global options that take a separate value token (as opposed to a
+// no-value boolean like --debug/--no-verify-ssl, or a `--flag=value` form already handled by
+// positionalArgs' own `-`-prefix filter). These are valid anywhere in the argv, including
+// before the subcommand (`aws --profile prod s3 cp ...`), so positionalArgs must skip both the
+// flag and its value token to keep positions[0]/[1] pointing at the real subcommand/action.
+const AWS_GLOBAL_VALUE_FLAGS = new Set([
+  '--profile',
+  '--region',
+  '--endpoint-url',
+  '--output',
+  '--query',
+  '--color',
+  '--ca-bundle',
+  '--cli-read-timeout',
+  '--cli-connect-timeout',
+  '--cli-binary-format',
+  '--cli-pager',
+])
+
 // ---------------------------------------------------------------------------
 // AwsCliFilter  (enhanced — registered BEFORE AwsFilter)
 // ---------------------------------------------------------------------------
@@ -447,7 +466,7 @@ export class AwsCliFilter extends ToolFilter {
     _exitCode: number,
     argv: string[],
   ): string {
-    const positionals = positionalArgs(argv.slice(1))
+    const positionals = positionalArgs(argv.slice(1), AWS_GLOBAL_VALUE_FLAGS)
     const isS3Transfer =
       positionals.length >= 2 &&
       positionals[0] === 's3' &&
