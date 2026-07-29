@@ -1,6 +1,6 @@
 // Shell / file-tool filter family (Batch H): grep/rg, ls/eza/tree/fd, wc, bat, delta, fzf, lazygit, jq, yq, curl/wget, rsync, diff, ffmpeg, xxd/hexdump, file, ps/top.
 //
-// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
+// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. EzaFilter must precede LsFilter — both claim `ls` (an aliased `alias ls=eza` shell setup means token-goat only ever sees the literal "ls ..." command text), but EzaFilter's matches() only claims a bare 'ls' invocation when an eza-only flag (--tree/--icons/--git/--level/...) is present; a plain `ls` with none of those falls through to LsFilter's simpler truncation.
 
 import { ToolFilter } from './base.js'
 import { loadConfig } from '../config.js'
@@ -8,6 +8,7 @@ import {
   headTailCompress,
   maybeNote,
   normalise,
+  pathName,
   pathStem,
   positionalArgs,
   compressTestOutput,
@@ -400,6 +401,30 @@ const _SUMMARY_KEYWORDS = ['director', 'file', 'total']
 export class EzaFilter extends ToolFilter {
   readonly name = 'eza'
   override readonly binaries = new Set(['eza', 'exa', 'ls'])
+
+  // Flags eza/exa support that plain GNU/BSD `ls` does not -- used to disambiguate the shared
+  // 'ls' binary claim below (a common `alias ls=eza` setup means the literal command text is
+  // "ls ...", but token-goat only ever sees that raw text, never the shell's alias resolution).
+  private static readonly _EZA_ONLY_FLAGS = new Set([
+    '--tree', '-T', '--icons', '--no-icons', '--git', '--git-repos', '--git-repos-no-status', '--level',
+  ])
+
+  // LsFilter (registered before EzaFilter in SHELL_FILE_FILTERS) always wins a plain `ls`
+  // invocation since binary-name matching alone can't tell a real GNU/BSD `ls` from an
+  // `alias ls=eza` shell alias -- the literal command text is "ls ..." either way. Without this
+  // gate, EzaFilter's own 'ls' binary claim was permanently unreachable dead code: LsFilter's
+  // generic ls-format compressor (no awareness of eza's tree/column output) silently ran on
+  // every aliased `ls --tree`/`ls --icons`/etc. invocation instead. Mirrors RgFilter's own
+  // `_hasContextFlags` gate, which resolves the same kind of shared-binary ambiguity between
+  // itself and GrepFilter.
+  override matches(argv: string[]): boolean {
+    if (!super.matches(argv)) return false
+    const first = argv[0]!
+    const stem = pathStem(first).toLowerCase()
+    const name = pathName(first).toLowerCase()
+    if (stem !== 'ls' && name !== 'ls') return true
+    return argv.slice(1).some((a) => EzaFilter._EZA_ONLY_FLAGS.has(a))
+  }
 
   protected override compressBody(
     stdout: string,
@@ -1433,9 +1458,11 @@ export const SHELL_FILE_FILTERS: ToolFilter[] = [
   ffmpegFilter,
   // Diff tool (plain POSIX diff; git diff is handled by GitFilter)
   diffFilter,
-  // Directory listings — LsFilter (simple) before EzaFilter (richer tree/column-aware)
-  lsFilter,
+  // Directory listings — EzaFilter before LsFilter: EzaFilter's matches() gate falls through to
+  // LsFilter for a plain `ls` with no eza-only flag, but must run FIRST so it can actually claim
+  // an aliased `ls --tree`/`ls --icons`/etc. invocation (see EzaFilter.matches doc comment).
   ezaFilter,
+  lsFilter,
   fdFilter,
   wcFilter,
   treeFilter,

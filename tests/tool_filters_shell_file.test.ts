@@ -304,9 +304,16 @@ describe('EzaFilter dispatch', () => {
 
   it('matches eza', () => expect(f.matches(['eza'])).toBe(true))
   it('matches exa (legacy)', () => expect(f.matches(['exa'])).toBe(true))
-  // EzaFilter also claims 'ls' as a secondary binary for richer formatting
-  it('matches ls as secondary binary', () => expect(f.matches(['ls'])).toBe(true))
   it('matches eza --tree', () => expect(f.matches(['eza', '--tree'])).toBe(true))
+  // A bare `ls` with no eza-only flag is a real GNU/BSD ls invocation, not an aliased eza -- must
+  // fall through to LsFilter, not be claimed here.
+  it('does not match a plain ls with no eza-only flag', () => expect(f.matches(['ls'])).toBe(false))
+  it('does not match ls -la', () => expect(f.matches(['ls', '-la'])).toBe(false))
+  // `alias ls=eza` means token-goat only ever sees the literal "ls ..." command text; an
+  // eza-only flag on the 'ls' binary is the only signal available to tell the two apart.
+  it('matches ls --tree (aliased eza)', () => expect(f.matches(['ls', '--tree'])).toBe(true))
+  it('matches ls --icons (aliased eza)', () => expect(f.matches(['ls', '--icons'])).toBe(true))
+  it('matches ls --git (aliased eza)', () => expect(f.matches(['ls', '--git'])).toBe(true))
 })
 
 describe('EzaFilter compression', () => {
@@ -1057,11 +1064,14 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(lsIdx).toBeGreaterThan(diffIdx)
   })
 
-  it('LsFilter precedes EzaFilter in SHELL_FILE_FILTERS', () => {
-    const lsIdx = SHELL_FILE_FILTERS.findIndex((f) => f instanceof LsFilter)
+  // EzaFilter must precede LsFilter: its matches() gate falls through to a plain `ls` (see
+  // EzaFilter.matches doc comment), so it needs first crack at claiming an aliased
+  // `ls --tree`/`ls --icons`/etc. invocation.
+  it('EzaFilter precedes LsFilter in SHELL_FILE_FILTERS', () => {
     const ezaIdx = SHELL_FILE_FILTERS.findIndex((f) => f instanceof EzaFilter)
-    expect(lsIdx).toBeGreaterThanOrEqual(0)
-    expect(ezaIdx).toBeGreaterThan(lsIdx)
+    const lsIdx = SHELL_FILE_FILTERS.findIndex((f) => f instanceof LsFilter)
+    expect(ezaIdx).toBeGreaterThanOrEqual(0)
+    expect(lsIdx).toBeGreaterThan(ezaIdx)
   })
 
   it('all 20 filters are present in SHELL_FILE_FILTERS', () => {
@@ -1098,6 +1108,14 @@ describe('SHELL_FILE_FILTERS registry', () => {
 
   it('selectFilter dispatches ls to LsFilter', () => {
     expect(selectFilter(['ls', '-la'])).toBeInstanceOf(LsFilter)
+  })
+
+  // Regression: EzaFilter's own 'ls' binary claim was unreachable dead code when LsFilter was
+  // registered first -- an `alias ls=eza` shell setup running `ls --tree` (token-goat only ever
+  // sees the literal "ls --tree" text, never the shell's alias resolution) was always routed to
+  // LsFilter's generic ls-format compressor instead of EzaFilter's tree-aware one.
+  it('selectFilter dispatches ls --tree (aliased eza) to EzaFilter, not LsFilter', () => {
+    expect(selectFilter(['ls', '--tree'])).toBeInstanceOf(EzaFilter)
   })
 
   // 'eza' is only claimed by EzaFilter (LsFilter no longer double-claims it), so a real `eza` invocation gets EzaFilter's tree/column-aware compression.
