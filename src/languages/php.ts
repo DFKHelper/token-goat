@@ -61,10 +61,6 @@ export function extractPhp(
   let inComment = false
   let mlState: MultilineStringState | null = null
 
-  function currentClass(): string | null {
-    return contextStack.length > 0 ? (contextStack[contextStack.length - 1]?.[0] ?? null) : null
-  }
-
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
@@ -155,12 +151,20 @@ export function extractPhp(
       continue
     }
 
-    // class/interface/trait/enum
+    // class/interface/trait/enum. Attributed to the enclosing class only when declared directly
+    // in that class's own body (pre-line depth exactly one level past its frame's start) - same
+    // gate as the method/property/const branches below. PHP has no true nested classes: a class
+    // declared inside a method body (a legal idiom for lazy/conditional class definition) is
+    // still a standalone global class, not a member of whatever class the method belongs to.
+    // Without the gate, currentClass() unconditionally returned the top of the stack regardless
+    // of depth, misattributing any function-local class as a real nested member class.
     const clsM = CLASS_RE.exec(stripped)
     if (clsM) {
       const kind = clsM[1] ?? 'class'
       const name = clsM[2] ?? ''
-      const parent = currentClass()
+      const preLineDepth = braceDepth - openB + closeB
+      const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
+      const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
       symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
       contextStack.push([name, braceDepth - openB + closeB, false])
       if (openB > 0 && openB === closeB) {

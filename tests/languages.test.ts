@@ -919,6 +919,22 @@ class Outer {
     expect(symbols.find((s) => s.name === 'REAL')?.docstring).toBe('Outer')
   })
 
+  it('does not attribute a function-local class declaration to the enclosing method\'s class (regression: CLASS_RE\'s handler had no brace-depth gate, unlike the method/property/const branches, so a class declared inside a method body - a legal PHP idiom for lazy/conditional class definition - was mistaken for a real nested member class of whatever class the enclosing method belonged to, when PHP has no true nested classes)', () => {
+    const content = `<?php
+class Outer {
+    public function make() {
+        class Helper {
+            public function h() {}
+        }
+    }
+}
+`
+    const { symbols } = extractPhp(content, 'FnLocalClass.php')
+    // Helper is declared two brace-levels inside Outer (inside make's body), not directly in
+    // Outer's own body, so it is not a real nested class of Outer - PHP has no nested classes.
+    expect(symbols.find((s) => s.name === 'Helper')?.docstring).toBe('')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
