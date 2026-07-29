@@ -34,6 +34,8 @@ const _GIT_VALUE_FLAGS = new Set([
   '--file',
   '--author',
   '--date',
+  '--git-dir',
+  '--work-tree',
 ])
 
 /** Positional (non-flag) args for git argv, skipping the value token of known value-taking git
