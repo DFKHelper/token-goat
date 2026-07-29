@@ -268,6 +268,15 @@ describe('AwsCliFilter', () => {
     expect(text).not.toContain('upload: ./file-1.js')
   })
 
+  it('still applies S3-transfer compression when a global --profile flag precedes the subcommand (regression: positionalArgs did not skip the flag\'s value token, shifting "s3"/"cp" out of position 0/1)', () => {
+    const lines = ['Starting upload...']
+    for (let i = 0; i < 20; i++) lines.push(`upload: ./file-${i}.js to s3://my-bucket/file-${i}.js`)
+    lines.push('Completed.')
+    const { text } = apply(f, lines.join('\n'), '', 0, ['aws', '--profile', 'prod', 's3', 'cp', '.', 's3://my-bucket/'])
+    expect(text).toContain('uploaded 20')
+    expect(text).not.toContain('upload: ./file-1.js')
+  })
+
   it('collapses CFN IN_PROGRESS repeated events', () => {
     const events = Array.from({ length: 15 }, (_, i) => ({
       LogicalResourceId: 'MyBucket',

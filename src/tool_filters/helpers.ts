@@ -552,9 +552,29 @@ export function pathStem(p: string): string {
   return dot > 0 ? name.slice(0, dot) : name
 }
 
-/** Positional arguments only (drop `-x` / `--xyz` flags). */
-export function positionalArgs(args: string[]): string[] {
-  return args.filter((a) => !a.startsWith('-'))
+/**
+ * Positional arguments only (drop `-x` / `--xyz` flags). Optionally accepts `valueFlags`, the
+ * set of long flags (e.g. `--profile`) that take a SEPARATE next-token value rather than a
+ * `--flag=value` or a no-value boolean form -- without it, that value token (which itself
+ * doesn't start with `-`) survives the filter and shifts every real positional after it by one.
+ * This matters for callers (AwsCliFilter's `s3 cp`/`cloudformation describe-stack-events`
+ * subcommand routing, say) that key off `positionals[0]`/`positionals[1]`: a real-world
+ * `aws --profile prod s3 cp ...` invocation -- global flags placed before the subcommand are
+ * valid AWS CLI syntax, not a rare edge case -- silently misrouted to the generic JSON/table
+ * fallback instead of the dedicated S3-transfer compressor, with no error, just a permanently
+ * over-verbose upload/download log. Omitted (the default), this behaves exactly as before.
+ */
+export function positionalArgs(args: string[], valueFlags?: ReadonlySet<string>): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string
+    if (a.startsWith('-')) {
+      if (valueFlags?.has(a) === true && i + 1 < args.length) i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
 }
 
 // `-i` is deliberately absent: for the passthrough wrappers this set gates
