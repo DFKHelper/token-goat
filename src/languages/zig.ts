@@ -77,17 +77,24 @@ export function extractZig(
     // of the file (same bug class fixed in scala.ts/dart.ts).
     let matched = false
 
-    // container type (struct/enum/union/opaque) bound to a const — top-level or nested.
-    // Detected before the plain const/var branch below so `const Point = struct { ... }` is
-    // classified by its container kind (and pushes a scope frame for its methods) rather than
-    // being swallowed as an ordinary const.
-    if (!isIndented || scopeStack.length > 0) {
+    // container type (struct/enum/union/opaque) bound to a const — top-level, or nested exactly
+    // one brace level inside another type's body (a real nested/member type). Gated the same way
+    // as swift.ts's typeDetectionGateOk (=== 1, not >= 1): a local `const Inner = struct { ... }`
+    // declared inside a method's body -- a common Zig idiom for local helper types -- sits at
+    // depthInType 2+ relative to the enclosing struct, not 1. An ungated `scopeStack.length > 0`
+    // check (the prior behaviour) misattributed that method-local struct as a direct member of
+    // the enclosing struct instead of leaving it unattributed, corrupting `token-goat outline`/
+    // `symbol` results for the enclosing type with a symbol that was never actually its member.
+    const outerFrame = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]! : null
+    const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
+    const typeDetectionGateOk = scopeStack.length === 0 || outerDepthInType === 1
+    if (typeDetectionGateOk && (!isIndented || scopeStack.length > 0)) {
       const sm = CONTAINER_RE.exec(stripped)
       if (sm) {
         const sname = sm[1] ?? ''
         const skind = sm[2] ?? 'struct'
         if (sname) {
-          const parent = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]!.name : undefined
+          const parent = outerFrame !== null ? outerFrame.name : undefined
           symbols.push(makeLineSymbol(filePath, sname, skind, lineNum, stripped.slice(0, 200), parent))
           scopeStack.push({ name: sname, startDepth: braceDepth, bodyEntered: false })
           matched = true
@@ -96,21 +103,26 @@ export function extractZig(
     }
 
     // fn / pub fn — functions
-    if (!matched && !isIndented) {
+    const frame = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1]! : null
+    if (!matched && !isIndented && frame === null) {
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         const fname = fm[2] ?? ''
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
         matched = true
       }
-    } else if (!matched && scopeStack.length > 0) {
-      // Method-like functions inside a struct
-      const fm = FUNC_RE.exec(stripped)
-      if (fm) {
-        const fname = fm[2] ?? ''
-        const parent = scopeStack[scopeStack.length - 1]!.name
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent))
-        matched = true
+    } else if (!matched && frame !== null) {
+      // Method-like functions inside a struct — same === 1 depth gate as the container check
+      // above, so a fn-shaped line nested inside another method's body is never mistaken for a
+      // direct member of the enclosing type.
+      const depthInType = braceDepth - frame.startDepth
+      if (depthInType === 1) {
+        const fm = FUNC_RE.exec(stripped)
+        if (fm) {
+          const fname = fm[2] ?? ''
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name))
+          matched = true
+        }
       }
     }
 

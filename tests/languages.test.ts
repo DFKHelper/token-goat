@@ -2915,6 +2915,27 @@ const Vector = struct {
     expect(symbols).toHaveLength(0)
     expect(imports).toHaveLength(0)
   })
+
+  it('does not misattribute a method-local struct as a direct member of the enclosing type', () => {
+    // Regression: a local `const Inner = struct { ... }` declared inside a method's body -- a
+    // common Zig idiom for local helper types -- sits at depthInType 2+ relative to the
+    // enclosing struct, not 1. The prior ungated `scopeStack.length > 0` check misattributed it
+    // as a direct member of the enclosing struct (parent: 'Foo'), the same bug class already
+    // fixed with the === 1 depth gate in swift.ts/dart.ts/scala.ts.
+    const content = `const Foo = struct {
+    pub fn bar() void {
+        const Inner = struct {
+            pub fn baz() void {}
+        };
+        _ = Inner;
+    }
+};
+`
+    const { symbols } = extractZig(content, 'main.zig')
+    const inner = symbols.find((s) => s.name === 'Inner')
+    expect(inner).toBeUndefined()
+    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBe('Foo')
+  })
 })
 
 // ---------------------------------------------------------------------------
