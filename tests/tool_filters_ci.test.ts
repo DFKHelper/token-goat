@@ -481,6 +481,21 @@ describe('GhFilter gh list truncation', () => {
     const out = apply(f, makeListOutput(32), ['gh', 'pr', 'list'])
     expect(out).toContain('showing first 30 of 32 prs')
   })
+
+  it('regression: global -R/--repo value flag before the subcommand does not shift positional routing', () => {
+    // Real gh syntax: `gh -R owner/repo pr list` and `gh --repo owner/repo pr list` are valid,
+    // commonly-used invocations (global repo override placed before the subcommand). Before the
+    // fix, positionalArgs() had no knowledge that -R/--repo consumes a separate next-token value,
+    // so that value token ("owner/repo") survived the filter and shifted positionals[0]/[1] from
+    // "pr"/"list" to "owner/repo"/"pr" -- silently missing the dedicated list-truncation path.
+    const out = apply(f, makeListOutput(31), ['gh', '-R', 'owner/repo', 'pr', 'list'])
+    expect(out).toContain('showing first 30 of 31 prs')
+  })
+
+  it('regression: --repo=owner/repo (equals form) still routes correctly (sanity check)', () => {
+    const out = apply(f, makeListOutput(31), ['gh', '--repo=owner/repo', 'pr', 'list'])
+    expect(out).toContain('showing first 30 of 31 prs')
+  })
 })
 
 // ---------------------------------------------------------------------------

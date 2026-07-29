@@ -28,6 +28,10 @@ const _GH_RUN_FAIL_STEP_RE = /^\s*[X✗❌]\s|^\s*FAIL(:|ED|URE)\b|^\s*Error:\s/
 // GitHub API URL-field stripping
 const _GH_API_URL_SUFFIX = '_url'
 const _GH_API_URL_KEEP = new Set(['html_url', 'avatar_url', 'clone_url', 'ssh_url'])
+
+// gh global flags that consume a separate next-token value (e.g. `gh -R owner/repo pr list`) --
+// without this, positionalArgs() lets the value token survive and shifts subcommand routing.
+const GH_GLOBAL_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
 const _GH_API_NOISE_KEYS = new Set(['gravatar_id', 'site_admin'])
 
 // Base64 content redaction
@@ -465,7 +469,7 @@ export class GhFilter extends ToolFilter {
 
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const redactedStdout = redactGhBase64Content(stdout)
-    const positionals = positionalArgs(argv.slice(1))
+    const positionals = positionalArgs(argv.slice(1), GH_GLOBAL_VALUE_FLAGS)
     const subcommand = positionals[0] ?? ''
     const action = positionals[1] ?? ''
     const merged = this.combineOutput(redactedStdout, stderr)
