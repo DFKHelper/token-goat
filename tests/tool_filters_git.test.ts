@@ -952,6 +952,23 @@ describe('GitFilter fallback', () => {
   it('git grep routes to the grep filter, not the generic git catch-all', () => {
     expect(selectFilter(['git', 'grep', 'TODO'])?.name).toBe('grep')
   })
+
+  // Regression: --git-dir/--work-tree taking a SEPARATE next-token value (valid git syntax,
+  // e.g. `git --git-dir /repo/.git fetch origin`) must not leak that path token into
+  // positionals[0] and shift the real subcommand out of position -- or GitFilter.compress()
+  // mistakes the path for the subcommand and skips the remote-progress-line dedup entirely.
+  it('drops remote: progress lines for git fetch even with a separate-token --git-dir before the subcommand', () => {
+    const stdout = [
+      'remote: Counting objects: 100, done.',
+      'remote: Compressing objects: 100% (50/50), done.',
+      'From https://example.com/repo',
+      '   1234567..89abcde  main       -> origin/main',
+    ].join('\n')
+    const out = apply(_gitFilter, stdout, ['git', '--git-dir', '/repo/.git', 'fetch', 'origin'])
+    expect(out).not.toContain('remote: Counting objects')
+    expect(out).not.toContain('remote: Compressing objects')
+    expect(out).toContain('89abcde')
+  })
 })
 
 // ---------------------------------------------------------------------------
