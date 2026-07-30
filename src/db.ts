@@ -35,6 +35,7 @@ const _connections = new Map<string, BetterSqlite3Database>()
  *   - symbols — extracted definitions (functions, classes, types, ...).
  *   - refs    — references/usages of names, for caller lookups.
  *   - chunks  — semantic search chunk metadata (filePath, startLine, endLine, text, kind).
+ *   - notes   — file/symbol-attached architecture notes with a staleness fingerprint (notes.ts).
  *   - symbols_fts — FTS5 mirror of symbols for full-text name/body search.
  *
  * The FTS5 table is content-linked to `symbols` (external-content) so the row
@@ -181,6 +182,33 @@ CREATE TABLE IF NOT EXISTS hint_suppression_probes (
   PRIMARY KEY (category, harness)
 );
 
+-- Free-text architecture/rationale notes (the "why" layer -- see notes.ts), attached either to
+-- a whole file (symbol = '') or to one specific indexed symbol within it (symbol = that
+-- symbol's name). '' rather than NULL for the whole-file case because SQLite's UNIQUE treats
+-- NULLs as pairwise-distinct (never conflicting with each other), which would let note-add
+-- accumulate unlimited duplicate whole-file notes for the same file instead of upserting one;
+-- '' is a real, comparable value so UNIQUE(file_path, symbol) enforces "at most one note per
+-- attachment point" for both cases identically. 'fingerprint' is a SHA-256 digest (see
+-- fingerprintContent in fingerprint.ts) captured at write time of exactly what the note
+-- describes -- the resolved symbol's current body text for a symbol-scoped note, or a stable
+-- digest of the file's current top-level symbol manifest (name:kind:line-range per symbol,
+-- sorted) for a file-scoped note -- so 'token-goat note-list --stale-only' can recompute the
+-- same fingerprint against the live index later and flag a mismatch (see notes.ts's
+-- isNoteStale). Staleness detection is purely advisory: nothing here ever auto-rewrites or
+-- deletes a note's content, only flags that the code it describes has moved since it was
+-- written -- a human/agent re-review decides what to do with a stale note.
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT NOT NULL,
+  symbol TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(file_path, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_notes_file_folded ON notes(TG_LOWER(file_path));
+
 -- Baseline for skill_version_drift.ts's one-shot nudge: the token-goat CLI version (and its
 -- flat command-name set, JSON-encoded) active the moment the token-goat skill's body was
 -- last (re)loaded into this session -- see hooks_skill.ts's postSkillHandler. A session that
@@ -249,8 +277,8 @@ CREATE TRIGGER IF NOT EXISTS cache_recall_au AFTER UPDATE ON cache_recall BEGIN
 END;
 `
 
-// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above).
-export const SCHEMA_VERSION = 7 as const
+// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add the matching step to MIGRATIONS below. It represents the schema as it exists today. v3 -> v4: added cache_recall / cache_recall_fts (token-goat recall). Purely additive -- `CREATE TABLE/VIRTUAL TABLE IF NOT EXISTS` in SCHEMA_SQL/FTS_SQL already handles a pre-existing v3 database, so no MIGRATIONS[3] step is needed (same reasoning as the comment on MIGRATIONS below for a bump with no registered step). v4 -> v5: added hint_emissions / hint_manual_marks (token-goat hint-stats). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v4 database, so no MIGRATIONS[4] step is needed (same reasoning as v3 -> v4 above). v5 -> v6: added hint_suppression_probes (backoff-threshold probe-recovery counter for hint_stats.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v5 database, so no MIGRATIONS[5] step is needed (same reasoning as v4 -> v5 above). v6 -> v7: added skill_version_snapshots (skill_version_drift.ts's one-shot "token-goat was upgraded since you loaded this skill" nudge). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v6 database, so no MIGRATIONS[6] step is needed (same reasoning as v5 -> v6 above). v7 -> v8: added notes (token-goat note-add/note-get/note-list -- file/symbol-attached architecture notes with a staleness fingerprint, see notes.ts). Purely additive -- `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL already handles a pre-existing v7 database, so no MIGRATIONS[7] step is needed (same reasoning as v6 -> v7 above).
+export const SCHEMA_VERSION = 8 as const
 
 type Migration = (conn: BetterSqlite3Database) => void
 

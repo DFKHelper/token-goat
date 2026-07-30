@@ -54,6 +54,7 @@ import { parseConflicts, summarizeFileConflicts, formatConflicts, formatConflict
 import { extractPdfMeta, extractPdfOutline, extractPdfText, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
+import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 
 // ---- constants --------------------------------------------------------------
@@ -170,7 +171,7 @@ function staleWarning(resolvedPath: string): string {
  * (see that function's doc): indexFileSync always wipes `files.embed_sha`, so semantic search
  * needs the same re-embed signal here too. Never throws.
  */
-function healStaleIndex(resolvedPath: string): void {
+export function healStaleIndex(resolvedPath: string): void {
   const entry = getFileEntry(resolvedPath)
   if (entry === null) {
     // Never indexed. If the file is actually present on disk, parse it once on demand so
@@ -3863,4 +3864,93 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   return { text, code: 0 }
 }
 
+
+// ---- notes (note-get / note-list) -------------------------------------------
+//
+// note-add is a write (like insert-section/replace) and lives in cli.ts alongside those
+// sibling write commands; note-get/note-list are read-only surgical extraction, following
+// the same run*(opts) => { text, code } convention every other read command in this file uses.
+
+export interface NoteGetOptions {
+  file: string
+  symbol?: string
+  json?: boolean
+  projectRoot?: string
+}
+
+/**
+ * `token-goat note-get <file> [--symbol NAME]`: read back the note attached to a file (or one
+ * specific indexed symbol within it), flagging whether it has gone stale (see notes.ts's
+ * isNoteStale) since it was written. A miss reports which attachment point was searched rather
+ * than a bare "not found", since a note-get for the wrong --symbol (or a file with only a
+ * whole-file note) is the most likely real-world miss.
+ */
+export function runNoteGet(opts: NoteGetOptions): { text: string; code: number } {
+  const resolvedPath = resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())
+  healStaleIndex(resolvedPath)
+  const symbol = opts.symbol ?? WHOLE_FILE_NOTE_SYMBOL
+  const note = getNote(resolvedPath, symbol)
+  if (note === null) {
+    const where = opts.symbol !== undefined ? ` for symbol '${opts.symbol}'` : ' (whole-file note)'
+    return { text: `No note found for '${opts.file}'${where}`, code: 1 }
+  }
+
+  const stale = isNoteStale(note)
+  if (opts.json === true) {
+    const payload = {
+      filePath: note.filePath,
+      symbol: note.symbol === WHOLE_FILE_NOTE_SYMBOL ? null : note.symbol,
+      content: note.content,
+      stale,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+    }
+    const text = JSON.stringify(payload, null, 2)
+    recordStat('note_read')
+    return { text, code: 0 }
+  }
+
+  const target = note.symbol === WHOLE_FILE_NOTE_SYMBOL ? opts.file : `${opts.file}::${note.symbol}`
+  const staleTag = stale ? ' [STALE — code changed since this note was written]' : ''
+  const text = `# note — ${target}${staleTag}\n${note.content}`
+  recordStat('note_read')
+  return { text, code: 0 }
+}
+
+export interface NoteListOptions {
+  staleOnly?: boolean
+  json?: boolean
+}
+
+/**
+ * `token-goat note-list [--stale-only]`: list every recorded architecture note, or (with
+ * --stale-only) just the subset whose stored fingerprint no longer matches the current index --
+ * i.e. the code they describe has changed since the note was written. Never deletes or rewrites
+ * a note; this is a read-only discovery surface for the mechanical staleness signal.
+ */
+export function runNoteList(opts: NoteListOptions = {}): { text: string; code: number } {
+  const withStale = listNotes().map((note) => ({ note, stale: isNoteStale(note) }))
+  const filtered = opts.staleOnly === true ? withStale.filter((n) => n.stale) : withStale
+
+  if (opts.json === true) {
+    const items = filtered.map(({ note, stale }) => ({
+      filePath: note.filePath,
+      symbol: note.symbol === WHOLE_FILE_NOTE_SYMBOL ? null : note.symbol,
+      stale,
+      updatedAt: note.updatedAt,
+    }))
+    recordStat('note_list')
+    return { text: JSON.stringify(items, null, 2), code: 0 }
+  }
+
+  recordStat('note_list')
+  if (filtered.length === 0) {
+    return { text: opts.staleOnly === true ? 'No stale notes.' : 'No notes recorded.', code: 0 }
+  }
+  const lines = filtered.map(({ note, stale }) => {
+    const target = note.symbol === WHOLE_FILE_NOTE_SYMBOL ? note.filePath : `${note.filePath}::${note.symbol}`
+    return `${stale ? '[STALE] ' : ''}${target}`
+  })
+  return { text: lines.join('\n'), code: 0 }
+}
 export { querySymbols, queryRefs, readSection, listSections, extractSection, runSemantic }

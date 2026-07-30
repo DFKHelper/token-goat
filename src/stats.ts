@@ -135,6 +135,14 @@ const KIND_TO_SOURCE: Record<string, string> = {
   session_slice: SOURCE_READ,
   gdrive_sections: SOURCE_READ,
   pr_slice: SOURCE_READ,
+  note_read: SOURCE_READ,
+  note_list: SOURCE_READ,
+  // note-add is a write (like insert-section/replace, which record no stat at all -- neither
+  // has a "full source it replaces" savings concept). It still gets an event-only entry here
+  // (no bytesSaved/tokensSaved argument, same as skill_load) purely so `token-goat note-add`
+  // usage is visible in `token-goat stats --full` at all -- SOURCE_OTHER, not SOURCE_READ,
+  // since it is not a token-savings substitute for a read.
+  note_write: SOURCE_OTHER,
   web_fetch: SOURCE_WEB,
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
@@ -199,6 +207,9 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   'session-slice': new Set(['session_slice']),
   'gdrive-sections': new Set(['gdrive_sections']),
   'pr-slice': new Set(['pr_slice']),
+  'note-add': new Set(['note_write']),
+  'note-get': new Set(['note_read']),
+  'note-list': new Set(['note_list']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',

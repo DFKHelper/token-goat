@@ -29,7 +29,7 @@ import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible }
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
-import { fingerprintFile } from './fingerprint.js'
+import { fingerprintFile, fingerprintContent } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
@@ -107,7 +107,11 @@ import {
   extractSection,
   findSpecSeparator,
   runSemantic,
+  healStaleIndex,
+  runNoteGet,
+  runNoteList,
 } from './read_commands.js'
+import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
 import { buildCommandManifest, formatCommandManifest } from './cli_commands.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
@@ -1727,6 +1731,74 @@ function decodeBase64Buffer(payload: string, label: string): Buffer {
   return Buffer.from(normalized, 'base64')
 }
 
+/**
+ * Handles `token-goat note-add <file> [--symbol NAME] --content-from <path>|--content-b64 <b64>`:
+ * writes (or overwrites) a free-text architecture note attached to a file, or to one specific
+ * indexed symbol within it, alongside a fingerprint of exactly what the note currently
+ * describes -- the resolved symbol's body text, or a digest of the file's whole top-level
+ * symbol manifest for a file-scoped note. That fingerprint is the staleness anchor
+ * `token-goat note-list --stale-only` compares against the live index later (see notes.ts's
+ * isNoteStale) -- this command only ever captures the baseline, never decides staleness.
+ *
+ * A write like insert-section/replace, not a surgical read, so it follows their convention:
+ * throw CliError on failure, print a confirmation via out() on success, wired through guard().
+ */
+function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: string; contentB64?: string }): void {
+  if (!file || !file.trim()) {
+    throw new CliError('file path cannot be empty')
+  }
+
+  const usingFrom = opts.contentFrom !== undefined
+  const usingB64 = opts.contentB64 !== undefined
+  if (usingFrom && usingB64) {
+    throw new CliError('cannot mix --content-from with --content-b64')
+  }
+  if (!usingFrom && !usingB64) {
+    throw new CliError('must provide either --content-from or --content-b64')
+  }
+  const contentBytes = usingFrom
+    ? readFileBoundedRaw(opts.contentFrom!, '--content-from')
+    : decodeBase64Buffer(opts.contentB64!, '--content-b64')
+  if (contentBytes.length === 0) {
+    throw new CliError('note content cannot be empty')
+  }
+  // Note content is stored/rendered as Markdown text, so a byte sequence that is not valid UTF-8
+  // would silently decode to U+FFFD replacement characters below -- reject it explicitly instead,
+  // same boundary-validation stance section.ts/insert-section take for text content.
+  if (Buffer.compare(Buffer.from(contentBytes.toString('utf8'), 'utf8'), contentBytes) !== 0) {
+    throw new CliError('note content must be valid UTF-8 text')
+  }
+
+  const resolvedPath = resolveIndexPath(file)
+  if (!fs.existsSync(resolvedPath)) {
+    throw new CliError(`File not found: '${resolvedPath}'`)
+  }
+  // Self-heal before resolving/fingerprinting so a note attached moments after an edit
+  // fingerprints the CURRENT code, not a stale pre-edit index snapshot -- same pattern
+  // runSymbol/runSection/runOutline already use via read_commands.ts's own healStaleIndex.
+  healStaleIndex(resolvedPath)
+
+  let symbol = WHOLE_FILE_NOTE_SYMBOL
+  let fingerprint: string
+  if (opts.symbol !== undefined) {
+    const match = resolveSymbolMatch(resolvedPath, opts.symbol)
+    if (match === null) {
+      const messages = [`No symbol named '${opts.symbol}' is indexed in '${file}'`]
+      const available = symbolNamesInFile(resolvedPath)
+      if (available.length > 0) messages.push(didYouMean(available))
+      throw new CliError(messages.join('\n'))
+    }
+    symbol = opts.symbol
+    fingerprint = fingerprintContent(match.body)
+  } else {
+    fingerprint = computeFileFingerprint(resolvedPath)
+  }
+
+  upsertNote(resolvedPath, symbol, contentBytes.toString('utf8'), fingerprint)
+  const target = opts.symbol !== undefined ? `${file}::${opts.symbol}` : file
+  out(`Note saved: ${target} (fingerprint ${fingerprint.slice(0, 12)})`)
+  recordStat('note_write')
+}
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   validateWritablePath(dest, 'destination')
   if (opts.from !== undefined && opts.b64 !== undefined) {
@@ -3605,6 +3677,45 @@ export function buildProgram(): Command {
     .option('--content-from <source>', 'read the content to insert from this source file')
     .option('--content-b64 <payload>', 'base64 payload for the content to insert')
     .action(guard(cmdInsertSection))
+
+  program
+    .command('note-add <file>')
+    .description(
+      'attach a free-text architecture note to a file, or to one specific indexed symbol within it (--symbol NAME), fingerprinting what the note describes so `note-list --stale-only` can flag it once the code changes',
+    )
+    .option('--symbol <name>', 'attach the note to one indexed symbol in the file instead of the whole file')
+    .option('--content-from <source>', 'read the note content (Markdown) from this source file')
+    .option('--content-b64 <payload>', 'base64 payload for the note content')
+    .action(guard(cmdNoteAdd))
+
+  program
+    .command('note-get <file>')
+    .description('read back the note attached to a file, or to one indexed symbol within it (--symbol NAME); flags whether it has gone stale since it was written')
+    .option('--symbol <name>', 'read the note attached to this indexed symbol instead of the whole-file note')
+    .option('-j, --json', 'output as JSON')
+    .action((file: string, opts: { symbol?: string; json?: boolean }) =>
+      runExitText(() =>
+        runNoteGet({
+          file,
+          ...(opts.symbol !== undefined ? { symbol: opts.symbol } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('note-list')
+    .description('list every recorded architecture note; --stale-only shows just the notes whose attached file/symbol changed since they were written')
+    .option('--stale-only', 'only list notes whose fingerprint no longer matches the current index')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { staleOnly?: boolean; json?: boolean }) =>
+      runExitText(() =>
+        runNoteList({
+          ...(opts.staleOnly === true ? { staleOnly: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('gdrive-sections <file-id>')
