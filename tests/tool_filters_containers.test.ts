@@ -319,6 +319,18 @@ describe('KubectlFilter', () => {
     expect(result).toBe(text)
   })
 
+  it('get truncates long table when -n namespace precedes the subcommand', () => {
+    // Global `-n <namespace>` before the subcommand is valid kubectl syntax
+    // (`kubectl -n myns get pods`) and must not shift positional routing.
+    const rows = ['NAME READY STATUS RESTARTS AGE']
+    for (let i = 0; i < 50; i++) rows.push(`pod-${i} 1/1 Running 0 5m`)
+    const text = rows.join('\n')
+    const result = apply(f, text, '', 0, ['kubectl', '-n', 'myns', 'get', 'pods'])
+    expect(result).toContain('more rows')
+    expect(result).toContain('pod-0')
+    expect(result).toContain('pod-9')
+  })
+
   it('top truncates long table', () => {
     // Ported from Python test_top_truncates_long_table
     const rows = ['NAME CPU(cores) MEMORY(bytes)']
@@ -423,6 +435,8 @@ describe('KubectlLogsFilter', () => {
   it('matches k alias with logs', () => expect(f.matches(['k', 'logs', 'my-pod'])).toBe(true))
   it('does not match kubectl get', () => expect(f.matches(['kubectl', 'get', 'pods'])).toBe(false))
   it('does not match kubectl with no subcommand', () => expect(f.matches(['kubectl'])).toBe(false))
+  it('matches kubectl logs when -n namespace precedes the subcommand', () =>
+    expect(f.matches(['kubectl', '-n', 'myns', 'logs', 'my-pod'])).toBe(true))
 
   it('passes through short log output unchanged', () => {
     const lines = Array.from({ length: 20 }, (_, i) => `2024-01-01T00:00:${String(i).padStart(2,'0')}Z INFO message ${i}`)
