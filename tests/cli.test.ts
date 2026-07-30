@@ -811,6 +811,141 @@ describe('token-goat CLI', () => {
         fs.rmSync(tmp, { force: true })
       }
     })
+
+    it('replace --normalize-newlines converts a CRLF old/new snippet to match an LF target', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-normeol-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-normeol-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-normeol-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha\nbeta\ngamma\n', 'utf8')
+      fs.writeFileSync(oldFile, 'beta\r\ngamma\r\n', 'utf8')
+      fs.writeFileSync(newFile, 'BETA\r\nGAMMA\r\n', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile, '--normalize-newlines'])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nBETA\nGAMMA\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace without --normalize-newlines still reports the CRLF near-match (flag is opt-in)', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-normeol-off-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha\nbeta\ngamma\n', 'utf8')
+      fs.writeFileSync(oldFile, 'beta\r\ngamma\r\n', 'utf8')
+      fs.writeFileSync(newFile, 'BETA\r\nGAMMA\r\n', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('near-match')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace zero matches with no near-match reports a closest-matching line hint instead of a bare "not found"', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-closest-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'one\ntwo\nthree\nfour\nfive\n', 'utf8')
+      const oldB64 = Buffer.from('two\nthree\nSIX', 'utf8').toString('base64')
+      const newB64 = Buffer.from('replacement', 'utf8').toString('base64')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(r.stderr).toContain('closest match at line 2')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('one\ntwo\nthree\nfour\nfive\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+  })
+
+  describe('insert-section', () => {
+    it('insert-section --help exits 0', () => {
+      const r = runCli(['insert-section', '--help'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('insert-section')
+    })
+
+    it('insert-section --content-b64 inserts after an exact heading match', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-exact-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
+      const contentB64 = Buffer.from('## Lesson 1.5\nnew content\n', 'utf8').toString('base64')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-b64', contentB64])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe(
+          '# Doc\n\n## Lesson 1\nfirst\n## Lesson 1.5\nnew content\n\n## Lesson 2\nsecond\n',
+        )
+        expect(r.stdout).toContain("inserted after 'Lesson 1'")
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('insert-section resolves an unambiguous heading prefix and reports the redirect', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-prefix-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n\n## Lesson 17\nother\n', 'utf8')
+      const contentB64 = Buffer.from('## Lesson 16.5\nnew\n', 'utf8').toString('base64')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Lesson 16', '--content-b64', contentB64])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe(
+          '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n## Lesson 16.5\nnew\n\n## Lesson 17\nother\n',
+        )
+        expect(r.stdout).toContain('redirected from')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('insert-section on an unresolvable heading exits 1 with a "Did you mean" hint', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-notfound-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
+      const contentB64 = Buffer.from('new\n', 'utf8').toString('base64')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Nonexistent Heading', '--content-b64', contentB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('not found')
+        expect(r.stderr).toContain('Lesson 1')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('insert-section --content-from reads content from a file and normalizes CRLF to match an LF target', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-from-${Date.now()}.md`)
+      const contentFile = path.join(os.tmpdir(), `tg-ins-from-content-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '## Lesson 1\nfirst\n', 'utf8')
+      fs.writeFileSync(contentFile, '## Lesson 2\r\nsecond\r\n', 'utf8')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', contentFile])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('## Lesson 1\nfirst\n## Lesson 2\nsecond\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(contentFile, { force: true })
+      }
+    })
+
+    it('insert-section --content-from and --content-b64 together exits 1', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-both-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '## Lesson 1\nfirst\n', 'utf8')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', tmp, '--content-b64', 'dGVzdA=='])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('cannot mix --content-from with --content-b64')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
   })
 
   // regression: same atomicWriteBuffer/atomicWriteCore mode-drop bug, exercised via

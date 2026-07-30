@@ -70,6 +70,7 @@ import {
   runBrief,
   runSection,
   runListSections,
+  didYouMean,
   runRefs,
   runSkeleton,
   runOutline,
@@ -136,6 +137,7 @@ import {
 } from './graph_commands.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
+import { readSection, listSections } from './section_reader.js'
 import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
@@ -1825,7 +1827,83 @@ function diagnoseNearMiss(targetText: string, oldText: string): string | undefin
 
   return undefined
 }
-function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean }): void {
+
+/** Detects whether `buf` predominantly uses CRLF or LF line endings, by counting each. */
+function detectDominantEol(buf: Buffer): '\r\n' | '\n' {
+  let crlf = 0
+  let lfOnly = 0
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0a) {
+      if (i > 0 && buf[i - 1] === 0x0d) crlf++
+      else lfOnly++
+    }
+  }
+  return crlf > lfOnly ? '\r\n' : '\n'
+}
+
+/**
+ * Converts `source`'s line endings to match `reference`'s dominant line ending. Operates on
+ * raw bytes (never decodes to a string): CR (0x0D) and LF (0x0A) can only appear as
+ * standalone single-byte characters in valid UTF-8, never as a multi-byte sequence's
+ * continuation byte, so rewriting them byte-by-byte is safe even on non-UTF-8 content —
+ * preserving the same byte-exactness guarantee as the rest of `cmdReplace`.
+ */
+function normalizeEolToMatch(source: Buffer, reference: Buffer): Buffer {
+  const eol = detectDominantEol(reference)
+  const CR = 0x0d
+  const LF = 0x0a
+  const collapsed: number[] = []
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === CR && source[i + 1] === LF) continue
+    collapsed.push(source[i]!)
+  }
+  if (eol === '\n') return Buffer.from(collapsed)
+  const expanded: number[] = []
+  for (const b of collapsed) {
+    if (b === LF) expanded.push(CR, LF)
+    else expanded.push(b)
+  }
+  return Buffer.from(expanded)
+}
+
+// Bounds the cost of the closest-match scan below (worst case targetLines * windowSize
+// comparisons) so a huge file paired with a huge snippet can't turn a failed replace into a
+// multi-second stall -- past this, skip the fallback hint rather than block.
+const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
+
+/**
+ * Best-effort fallback for `cmdReplace`'s "old string not found" error when it's not a
+ * CRLF/trailing-newline near-match either: slides a window the size of `oldText` (in lines)
+ * across `targetText` and returns the window with the most exact line matches, so the caller
+ * gets a concrete line number and region to diff against instead of a bare "not found" —
+ * mirroring the "Did you mean" pattern `section` already has for unresolvable headings.
+ * Returns undefined when no informative window exists (e.g. oldText longer than the file) or
+ * the scan would exceed the cost bound above.
+ */
+function findClosestLineWindow(targetText: string, oldText: string): { lineStart: number; region: string } | undefined {
+  const targetLines = targetText.split('\n')
+  const oldLines = oldText.split('\n')
+  const windowSize = oldLines.length
+  if (windowSize === 0 || windowSize > targetLines.length) return undefined
+  if ((targetLines.length - windowSize + 1) * windowSize > MAX_CLOSEST_MATCH_COMPARISONS) return undefined
+
+  let bestIdx = -1
+  let bestScore = 0
+  for (let i = 0; i <= targetLines.length - windowSize; i++) {
+    let score = 0
+    for (let j = 0; j < windowSize; j++) {
+      if (targetLines[i + j] === oldLines[j]) score++
+    }
+    if (score > bestScore) {
+      bestScore = score
+      bestIdx = i
+    }
+  }
+  if (bestIdx === -1) return undefined
+  return { lineStart: bestIdx + 1, region: targetLines.slice(bestIdx, bestIdx + windowSize).join('\n') }
+}
+
+function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean }): void {
   validateWritablePath(file, 'target file')
 
   const targetBuf = readFileBoundedRaw(file, 'target file', true)
@@ -1862,7 +1940,16 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
     ? readFileBoundedRaw(opts.newFrom!, '--new-from')
     : decodeBase64Buffer(opts.newB64!, '--new-b64')
 
-  if (oldBytes.length === 0) {
+  // Opt-in: convert the caller-supplied old/new text's line endings to match the target
+  // file's dominant one before matching. Off by default so byte-exact matching (this
+  // command's core guarantee -- see the no-UTF-8-decode note below) never silently changes
+  // what's matched without the caller asking for it; this is purely for the extremely common
+  // case of an agent's intermediate snippet defaulting to CRLF (or LF) while the target file
+  // uses the other, which would otherwise always require a manual round-trip to fix.
+  const normalizedOldBytes = opts.normalizeNewlines === true ? normalizeEolToMatch(oldBytes, targetBuf) : oldBytes
+  const normalizedNewBytes = opts.normalizeNewlines === true ? normalizeEolToMatch(newBytes, targetBuf) : newBytes
+
+  if (normalizedOldBytes.length === 0) {
     throw new CliError('old string cannot be empty')
   }
 
@@ -1870,17 +1957,31 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
 
   const matches: number[] = []
   let cursor = 0
-  while ((cursor = targetBuf.indexOf(oldBytes, cursor)) !== -1) {
+  while ((cursor = targetBuf.indexOf(normalizedOldBytes, cursor)) !== -1) {
     matches.push(cursor)
-    cursor += oldBytes.length
+    cursor += normalizedOldBytes.length
   }
   const occurrences = matches.length
 
   if (occurrences === 0) {
     // Diagnostic only: decoding lossily here is fine — it only shapes the human-readable near-miss
     // hint and never feeds back into what gets matched or written.
-    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), oldBytes.toString('utf8'))
-    throw new CliError(nearMiss !== undefined ? `old string not found in ${file} — ${nearMiss}` : `old string not found in ${file}`)
+    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), normalizedOldBytes.toString('utf8'))
+    if (nearMiss !== undefined) {
+      throw new CliError(`old string not found in ${file} — ${nearMiss}`)
+    }
+    // Neither an exact match nor a CRLF/trailing-newline near-match — fall back to a
+    // best-effort closest-matching-region hint so the caller can self-correct without a
+    // separate re-fetch round-trip, mirroring the "Did you mean" pattern `section` already
+    // has for unresolvable headings.
+    const closest = findClosestLineWindow(targetBuf.toString('utf8'), normalizedOldBytes.toString('utf8'))
+    if (closest !== undefined) {
+      const diff = buildLineDiff(closest.region, normalizedOldBytes.toString('utf8'), file)
+      throw new CliError(
+        `old string not found in ${file} — closest match at line ${closest.lineStart} (showing: what's actually there vs. what --old-from/--old-b64 searched for):\n${diff}`,
+      )
+    }
+    throw new CliError(`old string not found in ${file}`)
   }
   if (occurrences > 1 && !opts.all) {
     throw new CliError(`old string appears ${occurrences} times in ${file} — pass --all to replace every occurrence, or provide a more specific match`)
@@ -1890,8 +1991,8 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   let prevEnd = 0
   for (const pos of matches) {
     parts.push(targetBuf.subarray(prevEnd, pos))
-    parts.push(newBytes)
-    prevEnd = pos + oldBytes.length
+    parts.push(normalizedNewBytes)
+    prevEnd = pos + normalizedOldBytes.length
   }
   parts.push(targetBuf.subarray(prevEnd))
   const replacedBuf = Buffer.concat(parts)
@@ -1922,6 +2023,102 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   }
   enqueueDirtyPathSafe(file)
   out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
+}
+
+/**
+ * Handles `token-goat insert-section <file> --after <heading>`: inserts new content
+ * immediately after a matched section's last line, resolved the same way `section`/`replace`
+ * resolve headings (exact, normalized, or an unambiguous prefix — see resolveHeaderPos in
+ * section_reader.ts). Exists because every real-world use of `replace` for an
+ * append-to-a-running-log edit (e.g. adding the next "## Lesson N" to a lessons-learned doc)
+ * requires reproducing the *exact current trailing bytes* of the previous entry as the match
+ * anchor — which goes stale the moment an earlier edit in the same session already changed
+ * that trailing text. Resolving by heading instead of by byte-anchor removes that staleness
+ * window entirely.
+ *
+ * Unlike `replace`, which stays byte-buffer-only so it never has to assume valid UTF-8,
+ * `insert-section` inherently requires text/heading matching (like `section` itself already
+ * does) — so this command does assume the target is valid UTF-8 text.
+ */
+function cmdInsertSection(file: string, opts: { after: string; contentFrom?: string; contentB64?: string }): void {
+  validateWritablePath(file, 'target file')
+
+  const usingFrom = opts.contentFrom !== undefined
+  const usingB64 = opts.contentB64 !== undefined
+  if (usingFrom && usingB64) {
+    throw new CliError('cannot mix --content-from with --content-b64')
+  }
+  if (!usingFrom && !usingB64) {
+    throw new CliError('must provide either --content-from or --content-b64')
+  }
+  const contentBytes = usingFrom
+    ? readFileBoundedRaw(opts.contentFrom!, '--content-from')
+    : decodeBase64Buffer(opts.contentB64!, '--content-b64')
+  if (contentBytes.length === 0) {
+    throw new CliError('content to insert cannot be empty')
+  }
+
+  // Optimistic-concurrency guard, same pattern as cmdReplace: the section-boundary lookup
+  // below only protects the matched region -- a concurrent write elsewhere in the file
+  // between this stat and the final rename would otherwise be silently lost.
+  let preWriteStat: fs.Stats | undefined
+  try {
+    preWriteStat = fs.statSync(file)
+  } catch {
+    // If the file vanished between now and the write below, let the write path surface its own error.
+  }
+
+  const result = readSection(file, opts.after)
+  if (result === null) {
+    const available = listSections(file)
+    const messages = [`Section '${opts.after}' not found in '${file}'`]
+    if (available.length > 0) messages.push(didYouMean(available))
+    throw new CliError(messages.join('\n'))
+  }
+
+  let rawText: string
+  try {
+    rawText = fs.readFileSync(file, 'utf-8')
+  } catch (e) {
+    mapFsError(e, undefined, file)
+  }
+  if (rawText.charCodeAt(0) === 0xfeff) rawText = rawText.slice(1)
+
+  const eol = detectDominantEol(Buffer.from(rawText, 'utf8'))
+  // Collapse to LF-only for splicing (avoids ever joining an already-CRLF-terminated line with
+  // another CRLF, which would double the CR), then re-expand once at the end if needed.
+  // Collapsing/expanding CRLF<->LF changes no line count or position, so result.lineEnd (an
+  // index computed by section_reader.ts against the *un*-collapsed text.split('\n')) still
+  // points at the identical line here.
+  const lfLines = rawText.replace(/\r\n/g, '\n').split('\n')
+  const insertAt = result.lineEnd
+
+  const insertedLines = contentBytes.toString('utf8').replace(/\r\n/g, '\n').split('\n')
+  if (insertedLines.length > 0 && insertedLines[insertedLines.length - 1] === '') insertedLines.pop()
+
+  const mergedLfText = [...lfLines.slice(0, insertAt), ...insertedLines, ...lfLines.slice(insertAt)].join('\n')
+  const mergedText = eol === '\n' ? mergedLfText : mergedLfText.replace(/\n/g, '\r\n')
+
+  if (preWriteStat !== undefined) {
+    let preRenameStat: fs.Stats | undefined
+    try {
+      preRenameStat = fs.statSync(file)
+    } catch {
+      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
+    }
+    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
+      throw new CliError(`${file} changed on disk while insert-section was running -- the file was modified concurrently, so the insert was NOT applied. Retry.`)
+    }
+  }
+
+  try {
+    atomicWriteBuffer(file, Buffer.from(mergedText, 'utf8'))
+  } catch (e) {
+    mapFsError(e, undefined, file)
+  }
+  enqueueDirtyPathSafe(file)
+  const redirectNote = result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
+  out(`inserted after '${result.heading}'${redirectNote} in ${file}`)
 }
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh?: boolean }): Promise<void> {
@@ -2255,7 +2452,9 @@ export function buildProgram(): Command {
 
   program
     .command('section <spec>')
-    .description('read one section from a file (spec: file::heading), or list all sections with --list')
+    .description(
+      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading), or list all sections with --list',
+    )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
     .action((spec: string, opts: { json?: boolean; list?: boolean }) =>
@@ -3391,7 +3590,21 @@ export function buildProgram(): Command {
     .option('--old-b64 <payload>', 'base64 payload for the old text')
     .option('--new-b64 <payload>', 'base64 payload for the new text')
     .option('--all', 'replace every occurrence instead of requiring a unique match')
+    .option(
+      '--normalize-newlines',
+      'convert the old/new text\'s line endings (CRLF/LF) to match the target file\'s dominant line ending before matching, instead of requiring a byte-exact line-ending match',
+    )
     .action(guard(cmdReplace))
+
+  program
+    .command('insert-section <file>')
+    .description(
+      'insert content immediately after a matched section (spec resolved the same way as `section`: exact heading, or an unambiguous prefix), avoiding a stale byte-exact anchor for append-to-a-running-log edits',
+    )
+    .requiredOption('--after <heading>', 'heading text (or unambiguous prefix) to insert after')
+    .option('--content-from <source>', 'read the content to insert from this source file')
+    .option('--content-b64 <payload>', 'base64 payload for the content to insert')
+    .action(guard(cmdInsertSection))
 
   program
     .command('gdrive-sections <file-id>')

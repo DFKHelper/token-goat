@@ -294,7 +294,7 @@ function endsWithPathBoundary(full: string, suffix: string): boolean {
   return boundaryChar === '/' || boundaryChar === '\\'
 }
 
-function didYouMean(candidates: string[]): string {
+export function didYouMean(candidates: string[]): string {
   if (candidates.length === 0) return ''
   const lines = ['Did you mean:']
   for (const c of candidates.slice(0, DIDYOUMEAN_LIMIT)) {
