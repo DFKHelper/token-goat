@@ -276,6 +276,51 @@ Two things change how Claude Code sessions behave: hooks fire automatically (ima
 
 The background indexer is not started by `install`. Run `token-goat worker start` on any platform to launch it as a detached process; `token-goat worker status` / `token-goat worker stop` manage it from there.
 
+### Companion CLI tools (recommended — install these too)
+
+token-goat covers the **narrow-read** half of cheap context: pulling one symbol, one section, one cached command output instead of a whole file. It does not cover the **deterministic-transform** half — searching wide, rewriting code structurally, converting data, running language tooling. Those belong in utilities, not in model output: an operation with a defined algorithm is reproducible, cheaper, and checkable against a spec rather than re-read for plausibility. Install these alongside token-goat so an agent has a real tool for each job instead of burning tokens simulating one.
+
+**Priority tier** — the three that close actual gaps in a token-goat-only setup:
+
+| Tool | Why it matters next to token-goat |
+|---|---|
+| `ast-grep` | The symbol-aware **write** half. token-goat reads by symbol; ast-grep matches the AST and rewrites it (`--rewrite`, YAML rule files). Repo-wide renames, call-shape changes, and codemods become a reviewable diff instead of a model regenerating files. Unlike `rg`/`sd` it ignores comments and strings. |
+| `uv` | One Rust binary replacing pip, pyenv, virtualenv, and pipx. Every Python env probe and validation cycle gets an order-of-magnitude faster, so verification stops being the slow step agents skip. |
+| `ruff` | Python lint + format in one binary. Agent environment probes commonly emit `ruff check` as the Python verify command; without it installed that path silently degrades to no check at all. |
+
+**Base stack** — assumed by the read/search guidance token-goat writes into your agent config:
+
+`rg` (search) · `fd` (file discovery) · `bat` (paged/piped reads) · `eza` (listings) · `delta` (diff rendering) · `jq` / `yq` (JSON / YAML) · `sd` (find-replace) · `mlr` (CSV/TSV/JSON records) · `sqlite3` (structured queries) · `gh` (PRs, issues, CI) · `hyperfine` (benchmarks) · `fzf`, `lazygit` (interactive)
+
+Optional but useful: `difft` (difftastic — syntax-aware diff, so reformats and moved blocks stop generating review noise), `just` (task runner, keeps verify commands discoverable), `typos` (deterministic spellcheck).
+
+```bash
+# macOS / Linux (Homebrew)
+brew install ast-grep uv ruff ripgrep fd bat eza git-delta jq yq sd miller sqlite gh hyperfine fzf lazygit
+
+# Debian / Ubuntu — note the binary renames: rg=ripgrep, fd=fdfind, bat=batcat
+sudo apt install -y ripgrep fd-find bat jq sqlite3 fzf
+curl -LsSf https://astral.sh/uv/install.sh | sh   # uv, then: uv tool install ruff
+npm install -g @ast-grep/cli
+```
+
+```powershell
+# Windows (winget)
+winget install BurntSushi.ripgrep.MSVC sharkdp.fd sharkdp.bat eza-community.eza `
+               dandavison.delta jqlang.jq MikeFarah.yq chmln.sd Miller.Miller `
+               SQLite.SQLite GitHub.cli sharkdp.hyperfine junegunn.fzf JesseDuffield.lazygit
+winget install astral-sh.uv        # then: uv tool install ruff
+npm install -g @ast-grep/cli       # provides `ast-grep` (the old `sg` alias is deprecated)
+```
+
+If `winget` is unavailable (common when a session runs under a service account rather than an interactive login), `uv` also installs via `python -m pip install uv`, and `ast-grep` only needs npm. Verify the whole set in one pass:
+
+```bash
+for t in token-goat ast-grep uv ruff rg fd bat eza delta jq yq sd mlr sqlite3 gh hyperfine; do
+  command -v "$t" >/dev/null 2>&1 && echo "$t ok" || echo "$t MISSING"
+done
+```
+
 ### Codex CLI users
 
 ```
