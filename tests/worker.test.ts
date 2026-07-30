@@ -33,6 +33,13 @@ import { pathEqClause } from '../src/sql_path.js'
 
 vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
+// tests/setup/isolate-home.ts pins TOKEN_GOAT_NO_WORKER_SPAWN='1' by default for the whole
+// suite so an incidental ensureWorkerAlive call elsewhere never spawns a real daemon -- but this
+// file's own tests deliberately exercise real startDetachedWorker/ensureWorkerAlive spawning
+// (pid-file claiming, stale-pid replacement, real process lifecycle), so it opts back out here,
+// same "a test that sets its own value wins" pattern documented in isolate-home.ts.
+process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '0'
+
 let DIR: string
 
 function queueFile(dir: string): string {
@@ -172,6 +179,29 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
     // No restart was attempted -- the stale pid is untouched.
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('999999999')
     expect(isWorkerRunning(DIR)).toBe(false)
+  })
+
+  // Regression: TOKEN_GOAT_NO_WORKER_SPAWN is pinned to '1' by tests/setup/isolate-home.ts for
+  // the whole suite specifically so that any test exercising the postEditHandler hot path (e.g.
+  // hooks_edit.test.ts) never spawns a REAL detached daemon process as an incidental side
+  // effect of testing something unrelated -- but ensureWorkerAlive never actually read that env
+  // var, so it was a dead no-op: every such test silently spawned (and orphaned, until the
+  // daemon's own data-dir-deleted self-check eventually noticed and exited) a real child
+  // process. This file overrides the var back to unset above so its own deliberate real-spawn
+  // tests (this describe block, and the others above) are unaffected.
+  it('does not spawn a real daemon when TOKEN_GOAT_NO_WORKER_SPAWN is set (test-isolation guard)', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    const prev = process.env['TOKEN_GOAT_NO_WORKER_SPAWN']
+    process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'
+    try {
+      ensureWorkerAlive(DIR)
+      // No real daemon was spawned -- the stale pid is untouched and nothing claimed the slot.
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('999999999')
+      expect(isWorkerRunning(DIR)).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_NO_WORKER_SPAWN']
+      else process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = prev
+    }
   })
 })
 

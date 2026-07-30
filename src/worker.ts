@@ -853,6 +853,17 @@ const WORKER_HEALTHCHECK_MIN_INTERVAL_MS = 5 * 60 * 1000
  * hook handler.
  */
 export function ensureWorkerAlive(dir: string = dataDir()): void {
+  // Test-isolation escape hatch: this is the one auto-heal path that fires as an incidental side
+  // effect of exercising unrelated code (any test that drives postEditHandler), not a deliberate
+  // "test worker spawning" call -- without this, every such test spawned a REAL detached daemon
+  // child process, relying only on that daemon's own data-dir-deleted self-check to eventually
+  // notice and exit rather than never spawning it in the first place. tests/setup/isolate-home.ts
+  // pins TOKEN_GOAT_NO_WORKER_SPAWN='1' for exactly this reason; a test that deliberately wants
+  // real spawning through this function (worker.test.ts's own ensureWorkerAlive suite) opts back
+  // out by setting the var itself, the same override pattern used for the harness/embeddings
+  // pins. Never gates startDetachedWorker itself -- the explicit `worker start` CLI command and
+  // dedicated daemon e2e tests call that directly and must still spawn for real.
+  if (process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] === '1') return
   const markerPath = workerHealthCheckMarkerPath(dir)
   try {
     const stat = fs.statSync(markerPath)
