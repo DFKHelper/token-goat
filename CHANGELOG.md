@@ -4,12 +4,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.19] - 2026-07-30
+
 ### Added
 - **`insert-section` command.** Inserts new content immediately after a matched section, resolved the same way `section`/`replace` resolve headings (exact, normalized, or an unambiguous prefix) instead of requiring a byte-exact anchor of the previous section's current trailing text — removes the staleness window that bites any append-to-a-running-log edit (e.g. adding the next entry to a lessons-learned doc) the moment an earlier edit in the same session already changed what used to be the last line. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts) and [tests/command_matrix_e2e.test.ts](tests/command_matrix_e2e.test.ts).
 - **`replace --normalize-newlines` flag.** Converts the `--old-from`/`--new-from`/`--old-b64`/`--new-b64` text's line endings to match the target file's dominant line ending before matching, instead of requiring a byte-exact CRLF/LF match. Opt-in — the previous byte-exact-only behavior remains the default. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
 - **`replace`'s "old string not found" now falls back to a closest-matching-line hint** when the CRLF/trailing-newline near-match diagnostic doesn't explain it either, instead of a bare "not found" — mirrors the "Did you mean" pattern `section` already has for unresolvable headings. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
 - **`section`'s existing unambiguous-heading-prefix matching is now documented** in its CLI description and in the large-markdown-file hint, instead of being discoverable only by reading the source — a short prefix like `"Lesson 16"` resolves a much longer unique heading, which is both shorter to type and avoids shell-quoting issues with punctuation in long headings. See [src/cli.ts](src/cli.ts), [src/hints/markdown_hints.ts](src/hints/markdown_hints.ts).
 - **The large-markdown-file deny hint now promotes `--old-b64`/`--new-b64`** as the no-temp-file path for editing anyway, alongside the existing `--old-from`/`--new-from` example. See [src/hooks_read.ts](src/hooks_read.ts).
+- **Architecture notes: `note-add`/`note-get`/`note-list` commands.** Attach a free-text rationale note to a file or a specific symbol (`token-goat note-add <file> [--symbol NAME] --content-from <path>|--content-b64 <b64>`), and read it back with `note-get` or list all notes with `note-list --stale-only`. Each note is fingerprinted against the symbol's body (or the file's symbol manifest) at write time, so `note-list --stale-only` surfaces notes whose underlying code has since changed — advisory only, nothing is auto-rewritten or deleted. See [src/notes.ts](src/notes.ts), [src/cli.ts](src/cli.ts), [src/read_commands.ts](src/read_commands.ts).
 
 ### Fixed
 - `dep-docs`'s `@types/<pkg>` fallback could point at the wrong file when a package's `main` was a `.js` file — it now correctly swaps the extension to `.d.ts` instead of appending it. See [src/dep_docs.ts](src/dep_docs.ts).
@@ -21,6 +24,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
   - `gh -R owner/repo pr list` / `gh --hostname ...`. See [src/tool_filters/ci.ts](src/tool_filters/ci.ts).
   - `git --git-dir ... fetch` / `git --work-tree ...`. See [src/tool_filters/git.ts](src/tool_filters/git.ts).
   - `kubectl -n myns get pods` (and `--context`/`--kubeconfig`/`--cluster`/`--user`/`--server`/etc.). See [src/tool_filters/containers.ts](src/tool_filters/containers.ts).
+- **The `TOKEN_GOAT_NO_WORKER_SPAWN` test-isolation env var was silently ignored.** The auto-heal path that restarts the background worker daemon after an edit never checked it, so any test exercising the post-edit hook could spawn a real detached worker process during the test run, relying only on the daemon's own self-check to eventually notice and exit. See [src/worker.ts](src/worker.ts).
 
 ## [2.6.18] - 2026-07-27
 
