@@ -20,6 +20,7 @@ import * as os from 'node:os'
 
 import {
   claudeMdPath,
+  findStrayClaudeMdBlocks,
   installClaudeMd,
   installSkill,
   skillDir,
@@ -27,6 +28,7 @@ import {
   uninstallClaudeMd,
   uninstallSkill,
 } from '../src/install.js'
+import { checkStrayClaudeMdBlocks } from '../src/cli_doctor.js'
 
 let TMP: string
 
@@ -168,5 +170,108 @@ describe('uninstallSkill', () => {
 
   it('reports false when no skill directory exists', () => {
     expect(uninstallSkill()).toBe(false)
+  })
+})
+
+describe('findStrayClaudeMdBlocks', () => {
+  // Writes a markdown file under ~/.claude containing a real token-goat block, simulating a
+  // user tidying the block out of CLAUDE.md into a "reference" file.
+  const writeStray = (...segments: string[]): string => {
+    installClaudeMd()
+    const block = fs.readFileSync(claudeMdPath(), 'utf8')
+    const p = path.join(TMP, '.claude', ...segments)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, `# Notes\n\n${block}\n`)
+    return p
+  }
+
+  it('reports nothing when the block lives only in CLAUDE.md', () => {
+    installClaudeMd()
+    expect(findStrayClaudeMdBlocks()).toEqual([])
+  })
+
+  it('reports nothing when no install has happened at all', () => {
+    expect(findStrayClaudeMdBlocks()).toEqual([])
+  })
+
+  it('finds a block relocated into another markdown file', () => {
+    const stray = writeStray('reference', 'tools.md')
+    expect(findStrayClaudeMdBlocks()).toEqual([stray])
+  })
+
+  it('never reports CLAUDE.md itself, even though it holds the canonical block', () => {
+    installClaudeMd()
+    const strays = findStrayClaudeMdBlocks()
+    expect(strays).not.toContain(claudeMdPath())
+  })
+
+  it('finds strays nested several directories deep', () => {
+    const stray = writeStray('docs', 'notes', 'deep', 'cheatsheet.md')
+    expect(findStrayClaudeMdBlocks()).toContain(stray)
+  })
+
+  it('ignores non-markdown files and markdown without the marker', () => {
+    installClaudeMd()
+    const dir = path.join(TMP, '.claude', 'reference')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'notes.md'), '# Just notes, no marker here\n')
+    fs.writeFileSync(path.join(dir, 'block.txt'), '<!-- token-goat-begin -->\n')
+    expect(findStrayClaudeMdBlocks()).toEqual([])
+  })
+
+  it('skips node_modules so a vendored copy of the docs is not flagged', () => {
+    const buried = writeStray('node_modules', 'some-pkg', 'README.md')
+    expect(findStrayClaudeMdBlocks()).not.toContain(buried)
+  })
+
+  // Regression: a substring match flagged the pointer note left behind *after* correctly
+  // relocating a block back to CLAUDE.md -- the file was clean, but its prose named the
+  // marker, so doctor warned about it forever. Verbatim text that triggered it.
+  it('does not flag prose that merely mentions the marker inline', () => {
+    installClaudeMd()
+    const p = path.join(TMP, '.claude', 'reference', 'tools.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(
+      p,
+      '**token-goat:** the command cheatsheet is a token-goat-managed block in ' +
+        '`~/.claude/CLAUDE.md` (between `<!-- token-goat-begin -->` / `<!-- token-goat-end -->`), ' +
+        'refreshed by `token-goat install`.\n',
+    )
+    expect(findStrayClaudeMdBlocks()).toEqual([])
+  })
+
+  it('does not flag an orphaned begin marker with no matching end', () => {
+    installClaudeMd()
+    const p = path.join(TMP, '.claude', 'partial.md')
+    fs.writeFileSync(p, '<!-- token-goat-begin -->\n## token-goat\n\nsome notes, never closed\n')
+    expect(findStrayClaudeMdBlocks()).toEqual([])
+  })
+
+  it('reports every stray when the block was copied to more than one file', () => {
+    const a = writeStray('reference', 'tools.md')
+    const b = writeStray('reference', 'cheatsheet.md')
+    expect(findStrayClaudeMdBlocks()).toEqual([b, a].sort())
+  })
+})
+
+describe('checkStrayClaudeMdBlocks', () => {
+  it('passes when there is nothing to report', () => {
+    installClaudeMd()
+    const result = checkStrayClaudeMdBlocks(path.join(TMP, '.claude'))
+    expect(result.status).toBe('ok')
+  })
+
+  it('warns and names the offending path when a stray exists', () => {
+    installClaudeMd()
+    const block = fs.readFileSync(claudeMdPath(), 'utf8')
+    const stray = path.join(TMP, '.claude', 'reference', 'tools.md')
+    fs.mkdirSync(path.dirname(stray), { recursive: true })
+    fs.writeFileSync(stray, block)
+
+    const result = checkStrayClaudeMdBlocks(path.join(TMP, '.claude'))
+    expect(result.status).toBe('warn')
+    expect(result.message).toContain(stray)
+    // The warning has to say *why* it matters, or a user just re-tidies it back.
+    expect(result.message).toContain('stale')
   })
 })

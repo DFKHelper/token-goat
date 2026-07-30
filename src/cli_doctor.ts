@@ -16,6 +16,7 @@ import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './co
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
+import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
 
 /**
@@ -430,6 +431,27 @@ export function checkCopilotCli(configPath: string, scriptPath: string): DoctorR
 /**
  * Run all doctor checks and return results.
  */
+/**
+ * Warn when a token-goat marker block lives in a markdown file other than `~/.claude/CLAUDE.md`.
+ *
+ * install/uninstall resolve one hardcoded path, so a relocated block is never refreshed and
+ * never removed -- and the next install appends a fresh copy to CLAUDE.md, duplicating the
+ * guidance with only one copy live. Detection only; the user's file is never edited here.
+ */
+export function checkStrayClaudeMdBlocks(searchRoot?: string): DoctorResult {
+  const strays = findStrayClaudeMdBlocks(searchRoot)
+  if (strays.length === 0) {
+    return { name: 'CLAUDE.md block', status: 'ok', message: 'no stray copies outside CLAUDE.md' }
+  }
+  return {
+    name: 'CLAUDE.md block',
+    status: 'warn',
+    message:
+      `${strays.length} stray cop${strays.length === 1 ? 'y' : 'ies'} outside CLAUDE.md ` +
+      `(never refreshed by install, never removed by uninstall, will go stale): ${strays.join(', ')}`,
+  }
+}
+
 export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
@@ -437,6 +459,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   // Basic checks
   results.push(checkInstall())
   results.push(checkTsCompiler())
+  results.push(checkStrayClaudeMdBlocks())
   results.push(checkWorkerRunning(actualDataDir) ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
   // File checks
