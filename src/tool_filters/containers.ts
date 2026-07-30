@@ -376,6 +376,26 @@ function _compressKubectlDescribe(text: string): string {
   return kept.join('\n')
 }
 
+// kubectl's global options that take a SEPARATE next-token value rather than a `--flag=value`
+// or a no-value boolean form. These are valid before the subcommand (`kubectl -n myns get pods`,
+// `kubectl --context prod describe pod x`), so positionalArgs must skip both the flag and its
+// value token to keep pos[0]/pos[1] pointing at the real subcommand/resource, matching the
+// AWS_GLOBAL_VALUE_FLAGS precedent in cloud.ts.
+const KUBECTL_GLOBAL_VALUE_FLAGS = new Set([
+  '-n',
+  '--namespace',
+  '--context',
+  '--kubeconfig',
+  '--cluster',
+  '--user',
+  '-s',
+  '--server',
+  '--token',
+  '--as',
+  '--as-group',
+  '--request-timeout',
+])
+
 // ---------------------------------------------------------------------------
 // KubectlFilter
 // ---------------------------------------------------------------------------
@@ -386,7 +406,7 @@ export class KubectlFilter extends ToolFilter {
   override readonly errorPassthrough = true
 
   protected override compressBody(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
-    const pos = positionalArgs(argv.slice(1))
+    const pos = positionalArgs(argv.slice(1), KUBECTL_GLOBAL_VALUE_FLAGS)
     const subcommand = pos[0] ?? ''
     let text = stdout
 
@@ -616,7 +636,7 @@ export class KubectlLogsFilter extends ToolFilter {
     const stem = pathStem(argv[0]!).toLowerCase()
     const name = pathName(argv[0]!).toLowerCase()
     if (!['kubectl', 'k'].includes(stem) && !['kubectl', 'k'].includes(name)) return false
-    const pos = positionalArgs(argv.slice(1))
+    const pos = positionalArgs(argv.slice(1), KUBECTL_GLOBAL_VALUE_FLAGS)
     return pos.length > 0 && pos[0] === 'logs'
   }
 
