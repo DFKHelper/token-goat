@@ -354,6 +354,76 @@ export function uninstallClaudeMd(): boolean {
   return stripClaudeMdBlock(claudeMdPath())
 }
 
+/**
+ * Find token-goat marker blocks sitting in some markdown file *other* than
+ * `~/.claude/CLAUDE.md`.
+ *
+ * The block is plain markdown in a file the user is explicitly told they own and edit, so
+ * relocating it into a tidier "reference" file is a natural thing to do -- and it silently
+ * breaks: {@link installClaudeMd} and {@link uninstallClaudeMd} both resolve the single
+ * hardcoded {@link claudeMdPath}, so a relocated copy is never refreshed (it freezes at
+ * whatever version was current when it moved) and never removed on uninstall. Worse, the next
+ * install sees CLAUDE.md missing its block and appends a fresh one, leaving the guidance
+ * duplicated across two files with only one of them live.
+ *
+ * Detection only -- callers report; nothing here edits or deletes a user's file.
+ *
+ * Matches a real block, not a mention of one: both markers must appear on their own lines.
+ * Prose that references `<!-- token-goat-begin -->` inline -- a pointer explaining where the
+ * managed block actually lives, which is exactly what a user is told to leave behind after
+ * relocating one -- would otherwise be flagged forever as the very thing it documents.
+ *
+ * Bounded walk: skips `node_modules`/`.git`, caps depth, and ignores symlinked directories
+ * (`Dirent.isDirectory()` is false for a symlink), so it cannot loop.
+ */
+export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
+  const root = searchRoot ?? path.join(os.homedir(), '.claude')
+  const canonical = path.resolve(claudeMdPath())
+  const found: string[] = []
+  if (!fs.existsSync(root)) return found
+
+  const SKIP_DIRS = new Set(['node_modules', '.git'])
+  const MAX_DEPTH = 6
+
+  const hasRealBlock = (text: string): boolean => {
+    let sawBegin = false
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === CLAUDE_MD_BEGIN) sawBegin = true
+      else if (sawBegin && trimmed === CLAUDE_MD_END) return true
+    }
+    return false
+  }
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MAX_DEPTH) return
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(full, depth + 1)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue
+      if (path.resolve(full) === canonical) continue
+      let text: string
+      try {
+        text = fs.readFileSync(full, 'utf8')
+      } catch {
+        continue
+      }
+      if (hasRealBlock(text)) found.push(full)    }
+  }
+
+  walk(root, 0)
+  return found.sort()
+}
+
 // --- token-goat skill writer ---
 // README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form". Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 

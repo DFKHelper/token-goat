@@ -274,6 +274,8 @@ Three commands. Done. Hooks register and start working immediately; no terminal 
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
 
+**Keep that block where install put it.** It's plain markdown in a file you own, so moving it into a tidier reference file is tempting — but `install` and `uninstall` resolve one hardcoded path (`~/.claude/CLAUDE.md`). A relocated copy is never refreshed, so it freezes at whatever version was current when it moved, and the next `install` sees CLAUDE.md missing its block and appends a fresh one — leaving the guidance duplicated across two files with only one of them live. `token-goat doctor` warns when it finds a block outside CLAUDE.md, naming the file; `install` warns at write time and `uninstall` reports what it couldn't remove. None of them edit a file token-goat doesn't own, so cleanup stays your call. A pointer that merely *mentions* the markers in prose is fine — detection requires both markers on their own lines.
+
 The background indexer is not started by `install`. Run `token-goat worker start` on any platform to launch it as a detached process; `token-goat worker status` / `token-goat worker stop` manage it from there.
 
 ### Companion CLI tools (recommended — install these too)

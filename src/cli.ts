@@ -42,6 +42,7 @@ import {
   uninstallHooks,
   installClaudeMd,
   uninstallClaudeMd,
+  findStrayClaudeMdBlocks,
   installSkill,
   uninstallSkill,
 } from './install.js'
@@ -410,6 +411,12 @@ async function cmdInstall(opts: {
       : `Updated CLAUDE.md → ${claudeMdResult.path}`,
   )
 
+  // A block relocated into some other markdown file is invisible to install/uninstall, so the
+  // write above just created a second copy. Say so rather than leaving a silent duplicate.
+  for (const stray of findStrayClaudeMdBlocks()) {
+    out(`WARNING: stray token-goat block in ${stray} — not managed by install/uninstall; delete it to avoid duplicate, stale guidance.`)
+  }
+
   const skillResult = installSkill()
   out(
     skillResult.alreadyInstalled
@@ -562,6 +569,12 @@ function cmdUninstall(opts: {
   // the CLAUDE.md block and remove the skill directory.
   const claudeMdRemoved = uninstallClaudeMd()
   out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+
+  // Strays live in files token-goat doesn't own, so uninstall reports them rather than
+  // deleting: silently editing a user's own markdown is worse than leaving a line behind.
+  for (const stray of findStrayClaudeMdBlocks()) {
+    out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
+  }
 
   const skillRemoved = uninstallSkill()
   out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
