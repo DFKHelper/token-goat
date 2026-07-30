@@ -11,6 +11,17 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`section`'s existing unambiguous-heading-prefix matching is now documented** in its CLI description and in the large-markdown-file hint, instead of being discoverable only by reading the source — a short prefix like `"Lesson 16"` resolves a much longer unique heading, which is both shorter to type and avoids shell-quoting issues with punctuation in long headings. See [src/cli.ts](src/cli.ts), [src/hints/markdown_hints.ts](src/hints/markdown_hints.ts).
 - **The large-markdown-file deny hint now promotes `--old-b64`/`--new-b64`** as the no-temp-file path for editing anyway, alongside the existing `--old-from`/`--new-from` example. See [src/hooks_read.ts](src/hooks_read.ts).
 
+### Fixed
+- `dep-docs`'s `@types/<pkg>` fallback could point at the wrong file when a package's `main` was a `.js` file — it now correctly swaps the extension to `.d.ts` instead of appending it. See [src/dep_docs.ts](src/dep_docs.ts).
+- The Zig language adapter could misattribute a struct declared inside a method as a member of the method's enclosing type, instead of the method-local struct it actually is. See [src/languages/zig.ts](src/languages/zig.ts).
+- An aliased `eza --tree` invocation was silently compressed as plain `ls` output instead of using the dedicated eza compressor, because the `ls` binary-claim check ran first and always matched. See [src/tool_filters/shell_file.ts](src/tool_filters/shell_file.ts).
+- PHP class/interface/trait/enum detection had no brace-depth check, so a function-local `class Helper {}` (a common lazy-class-definition idiom) was misattributed as a nested member of the enclosing method's class. See [src/languages/php.ts](src/languages/php.ts).
+- Bash-output compression could shift real command arguments by one position when a flag's value was a separate token, causing several CLI-aware compressors to silently miss their subcommand and fall back to plain generic compression:
+  - `aws --profile prod s3 cp ...` (and other global value-taking AWS flags before the subcommand). See [src/tool_filters/cloud.ts](src/tool_filters/cloud.ts).
+  - `gh -R owner/repo pr list` / `gh --hostname ...`. See [src/tool_filters/ci.ts](src/tool_filters/ci.ts).
+  - `git --git-dir ... fetch` / `git --work-tree ...`. See [src/tool_filters/git.ts](src/tool_filters/git.ts).
+  - `kubectl -n myns get pods` (and `--context`/`--kubeconfig`/`--cluster`/`--user`/`--server`/etc.). See [src/tool_filters/containers.ts](src/tool_filters/containers.ts).
+
 ## [2.6.18] - 2026-07-27
 
 ### Fixed
