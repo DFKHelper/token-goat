@@ -1106,6 +1106,17 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(fs.readFileSync(dest, 'utf8')).toBe('fox fox dog')
     expect(r.stdout).toContain('replaced 2 occurrences')
   },
+  'insert-section': () => {
+    const dest = path.join(mkIsolated('tg-matrix-ins-'), 'out.md')
+    fs.writeFileSync(dest, '# Title\n\n## Section One\nfirst body\n\n## Section Two\nsecond body\n', 'utf8')
+    const contentB64 = Buffer.from('## Section 1.5\ninserted body\n', 'utf8').toString('base64')
+    const r = run(['insert-section', dest, '--after', 'Section One', '--content-b64', contentB64])
+    expect(r.status, r.stderr).toBe(0)
+    expect(fs.readFileSync(dest, 'utf8')).toBe(
+      '# Title\n\n## Section One\nfirst body\n## Section 1.5\ninserted body\n\n## Section Two\nsecond body\n',
+    )
+    expect(r.stdout).toContain("inserted after 'Section One'")
+  },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
     const r = run(['install', '--project'], { cwd: proj })

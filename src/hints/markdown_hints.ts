@@ -94,6 +94,7 @@ export function formatHeadingTree(headings: MarkdownHeading[], filePath: string)
   const lines: string[] = []
   lines.push(`Large markdown file (${headings.length} headings). Use token-goat section to read a specific section:`)
   lines.push(`  token-goat section "${filePath}::Heading Name"`)
+  lines.push(`  Tip: an unambiguous heading prefix also resolves (e.g. "Lesson 16" instead of the full heading text) — shorter to type and avoids shell-quoting issues with punctuation in long headings.`)
   lines.push(``)
   lines.push(`Sections:`)
 

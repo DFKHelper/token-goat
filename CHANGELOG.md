@@ -4,6 +4,13 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+- **`insert-section` command.** Inserts new content immediately after a matched section, resolved the same way `section`/`replace` resolve headings (exact, normalized, or an unambiguous prefix) instead of requiring a byte-exact anchor of the previous section's current trailing text — removes the staleness window that bites any append-to-a-running-log edit (e.g. adding the next entry to a lessons-learned doc) the moment an earlier edit in the same session already changed what used to be the last line. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts) and [tests/command_matrix_e2e.test.ts](tests/command_matrix_e2e.test.ts).
+- **`replace --normalize-newlines` flag.** Converts the `--old-from`/`--new-from`/`--old-b64`/`--new-b64` text's line endings to match the target file's dominant line ending before matching, instead of requiring a byte-exact CRLF/LF match. Opt-in — the previous byte-exact-only behavior remains the default. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+- **`replace`'s "old string not found" now falls back to a closest-matching-line hint** when the CRLF/trailing-newline near-match diagnostic doesn't explain it either, instead of a bare "not found" — mirrors the "Did you mean" pattern `section` already has for unresolvable headings. See [src/cli.ts](src/cli.ts), regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+- **`section`'s existing unambiguous-heading-prefix matching is now documented** in its CLI description and in the large-markdown-file hint, instead of being discoverable only by reading the source — a short prefix like `"Lesson 16"` resolves a much longer unique heading, which is both shorter to type and avoids shell-quoting issues with punctuation in long headings. See [src/cli.ts](src/cli.ts), [src/hints/markdown_hints.ts](src/hints/markdown_hints.ts).
+- **The large-markdown-file deny hint now promotes `--old-b64`/`--new-b64`** as the no-temp-file path for editing anyway, alongside the existing `--old-from`/`--new-from` example. See [src/hooks_read.ts](src/hooks_read.ts).
+
 ## [2.6.18] - 2026-07-27
 
 ### Fixed
