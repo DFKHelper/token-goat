@@ -76,6 +76,33 @@ describe('getDb', () => {
     expect(names).toContain('refs')
   })
 
+  it('creates the notes table (architecture notes, notes.ts) on first open', () => {
+    const db = getDb(tmpDbPath())
+    const names = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
+    ).map((r) => r.name)
+    expect(names).toContain('notes')
+
+    const cols = (db.prepare('PRAGMA table_info(notes)').all() as { name: string }[]).map((r) => r.name)
+    expect(cols).toEqual(
+      expect.arrayContaining(['id', 'file_path', 'symbol', 'content', 'fingerprint', 'created_at', 'updated_at']),
+    )
+
+    // UNIQUE(file_path, symbol) is the upsert key note-add relies on -- a second insert with the
+    // same pair must conflict (and be handled by ON CONFLICT DO UPDATE at the call site), not
+    // silently create a duplicate row.
+    db.prepare(
+      "INSERT INTO notes (file_path, symbol, content, fingerprint, created_at, updated_at) VALUES ('a.ts', '', 'x', 'fp', 1, 1)",
+    ).run()
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO notes (file_path, symbol, content, fingerprint, created_at, updated_at) VALUES ('a.ts', '', 'y', 'fp2', 2, 2)",
+        )
+        .run(),
+    ).toThrow()
+  })
+
   it('creates the symbols_fts virtual table when FTS5 is available', () => {
     const db = getDb(tmpDbPath())
     const names = (

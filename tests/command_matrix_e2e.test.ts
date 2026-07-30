@@ -1117,6 +1117,35 @@ const cases: Record<string, () => void | Promise<void>> = {
     )
     expect(r.stdout).toContain("inserted after 'Section One'")
   },
+  'note-add': () => {
+    const dest = path.join(mkIsolated('tg-matrix-noteadd-'), 'out.ts')
+    fs.writeFileSync(dest, 'export function matrixNoteFn(): number {\n  return 1\n}\n', 'utf8')
+    const b64 = Buffer.from('Rationale for matrixNoteFn.', 'utf8').toString('base64')
+    const r = run(['note-add', dest, '--symbol', 'matrixNoteFn', '--content-b64', b64])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Note saved')
+    expect(r.stdout).toContain('matrixNoteFn')
+  },
+  'note-get': () => {
+    const dest = path.join(mkIsolated('tg-matrix-noteget-'), 'out.md')
+    fs.writeFileSync(dest, '# doc\n', 'utf8')
+    const b64 = Buffer.from('Whole-file note body.', 'utf8').toString('base64')
+    const added = run(['note-add', dest, '--content-b64', b64])
+    expect(added.status, added.stderr).toBe(0)
+    const r = run(['note-get', dest])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Whole-file note body.')
+  },
+  'note-list': () => {
+    const dest = path.join(mkIsolated('tg-matrix-notelist-'), 'out.md')
+    fs.writeFileSync(dest, '# doc\n', 'utf8')
+    const b64 = Buffer.from('note-list matrix body.', 'utf8').toString('base64')
+    const added = run(['note-add', dest, '--content-b64', b64])
+    expect(added.status, added.stderr).toBe(0)
+    const r = run(['note-list'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/out\.md/)
+  },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
     const r = run(['install', '--project'], { cwd: proj })
