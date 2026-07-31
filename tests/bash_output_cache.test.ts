@@ -679,6 +679,13 @@ describe('summarizeOutputDelta', () => {
     expect(delta).toBe('[token-goat: delta] 2 of 2 prior issues resolved; remaining: 0')
   })
 
+  it('counts resolved/remaining as a multiset, not a Set, when an issue line is duplicated', () => {
+    const oldOutput = ['error: dup.ts:1 unexpected token', 'error: dup.ts:1 unexpected token', 'error: dup.ts:1 unexpected token', ''].join('\n')
+    const newOutput = ['error: dup.ts:1 unexpected token', ''].join('\n')
+    const delta = summarizeOutputDelta(oldOutput, newOutput)
+    expect(delta).toBe('[token-goat: delta] 2 of 3 prior issues resolved; remaining: 1')
+  })
+
   it('falls back to a line-count delta when the prior output has no issue-shaped lines', () => {
     const oldOutput = ['build complete', 'line2', ''].join('\n')
     const newOutput = ['build complete', 'line2', 'line3', ''].join('\n')
