@@ -145,6 +145,20 @@ describe('stripComments', () => {
     expect(result).toContain('y = 1')
   })
 
+  it('still strips a real comment on a later line after an apostrophe inside a double-quoted string (.ts)', () => {
+    // Regression: advanceQuoteState tracked dq/sq/bt as independent toggles instead of a single
+    // mutually-exclusive "which quote is open" state (unlike languages/common.ts's
+    // isInsideStringLiteral, which explicitly guards against this). An apostrophe inside a
+    // double-quoted string (e.g. "don't") flipped the independent `sq` flag to open and it never
+    // closed, since the string's own closing `"` only resets `dq`. That stray open `sq` state then
+    // carried into computeLineStartQuoteStates for every subsequent line, permanently misclassifying
+    // a real trailing `//` comment as "inside a string" and leaving it unstripped.
+    const code = 'const s = "don\'t panic";\n// real comment\nconst y = 1;\n'
+    const result = stripComments(code, 'file.ts')
+    expect(result).not.toContain('real comment')
+    expect(result).toContain('const y = 1;')
+  })
+
   it('leaves a `//`-looking sequence inside a multi-line template literal untouched (.ts)', () => {
     // Same regression as the Python triple-quoted-string case above, for a JS/TS template
     // literal that spans multiple lines.
