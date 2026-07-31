@@ -152,6 +152,18 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 
+## Not just source repos
+
+`token-goat semantic` works on any folder of markdown, not only source code — a notes vault, an agent-memory directory, a docs folder. Project-root resolution falls back to treating any directory as an ad-hoc project when no `.git`/`package.json`/other marker is present, so there's no setup beyond indexing the folder.
+
+```bash
+cd ~/notes                  # or any plain folder of .md files, no .git required
+token-goat index . --walk   # non-git folders need --walk (git repos: plain `token-goat index .`)
+token-goat semantic "how long to steep cold brew"
+```
+
+Returns relevance-ranked, distance-scored hits straight from the notes, the same surgical-read path used for code.
+
 ## Token savings, measured
 
 Numbers below come from synthetic-fixture benchmarks in the test suite. Each row points at the source file where the measurement is reproduced.
