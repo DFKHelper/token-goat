@@ -29,6 +29,7 @@ import {
   uninstallSkill,
 } from '../src/install.js'
 import { checkStrayClaudeMdBlocks } from '../src/cli_doctor.js'
+import { buildGuidanceBlock, buildGuidanceBody } from '../src/bridges/guidance_block.js'
 
 let TMP: string
 
@@ -51,10 +52,10 @@ describe('installClaudeMd', () => {
     const content = fs.readFileSync(result.path, 'utf8')
     expect(content).toContain('<!-- token-goat-begin -->')
     expect(content).toContain('<!-- token-goat-end -->')
-    expect(content).toContain('token-goat symbol NAME')
-    expect(content).toContain('token-goat map --compact')
-    expect(content).toContain('token-goat refs')
-    expect(content).toContain('token-goat changed --symbol')
+    expect(content).toContain('answer one question first')
+    expect(content).toContain('violation, not an oversight')
+    expect(content).toContain('Read, Grep, and Glob')
+    expect(content).toContain('`map --compact`')
   })
 
   it('is idempotent (second call reports alreadyInstalled and does not duplicate the block)', () => {
@@ -94,7 +95,7 @@ describe('installClaudeMd', () => {
     expect(content).toContain('# Before')
     expect(content).toContain('# After')
     expect(content).not.toContain('stale content')
-    expect(content).toContain('token-goat symbol NAME')
+    expect(content).toContain('answer one question first')
   })
 })
 
@@ -127,6 +128,9 @@ describe('uninstallClaudeMd', () => {
 })
 
 describe('installSkill', () => {
+  const CLAUDE_FALLBACK_CLAUSE = "Claude Code's own Read, Grep, and Glob preference rules"
+  const sharedBody = buildGuidanceBody(CLAUDE_FALLBACK_CLAUSE)
+
   it('writes SKILL.md on a fresh install', () => {
     const result = installSkill()
     expect(result.alreadyInstalled).toBe(false)
@@ -135,10 +139,49 @@ describe('installSkill', () => {
 
     const content = fs.readFileSync(result.path, 'utf8')
     expect(content).toContain('name: token-goat')
-    expect(content).toContain('token-goat symbol NAME')
-    expect(content).toContain('token-goat map --compact')
-    expect(content).toContain('token-goat refs')
-    expect(content).toContain('token-goat changed --symbol')
+  })
+
+  it('body carries the pre-call gate, not the old advisory phrasing', () => {
+    installSkill()
+    const content = fs.readFileSync(skillPath(), 'utf8')
+    // The gate, phrased as an interrupt.
+    expect(content).toContain('answer one question first')
+    expect(content).toContain('violation, not an oversight')
+    expect(content).toContain('per file')
+    // Names Claude Code's own read tools in the conflict-resolution clause.
+    expect(content).toContain('Read, Grep, and Glob')
+    // The old advisory list phrasing is gone.
+    expect(content).not.toContain('Prefer token-goat commands over reading whole files')
+  })
+
+  it('renders its body from the shared guidance builder, so it stays in sync with the other three surfaces', () => {
+    installSkill()
+    const content = fs.readFileSync(skillPath(), 'utf8')
+    // The skill body is byte-identical to the shared gate body...
+    expect(content).toContain(sharedBody)
+    // ...which is exactly the body the CLAUDE.md/AGENTS.md/copilot blocks wrap in markers.
+    const claudeBlock = buildGuidanceBlock({
+      beginMarker: '<!-- token-goat-begin -->',
+      endMarker: '<!-- token-goat-end -->',
+      fallbackToolClause: CLAUDE_FALLBACK_CLAUSE,
+    })
+    expect(claudeBlock).toContain(sharedBody)
+  })
+
+  it('keeps well-formed frontmatter that is unaffected by the gate body', () => {
+    installSkill()
+    const content = fs.readFileSync(skillPath(), 'utf8')
+    // Opens with a closed YAML frontmatter fence before any body content.
+    expect(content.startsWith('---\n')).toBe(true)
+    const fenceEnd = content.indexOf('\n---\n')
+    expect(fenceEnd).toBeGreaterThan(0)
+    const frontmatter = content.slice(0, fenceEnd)
+    expect(frontmatter).toContain('name: token-goat')
+    // The description stays the deliberately-advisory relevance trigger, NOT the gate wording.
+    expect(frontmatter).toContain('description:')
+    expect(frontmatter).not.toContain('violation, not an oversight')
+    // The gate body lives strictly after the frontmatter fence.
+    expect(content.indexOf('answer one question first')).toBeGreaterThan(fenceEnd)
   })
 
   it('is idempotent (second call reports alreadyInstalled)', () => {
@@ -157,7 +200,7 @@ describe('installSkill', () => {
 
     const content = fs.readFileSync(p, 'utf8')
     expect(content).not.toContain('stale body')
-    expect(content).toContain('token-goat symbol NAME')
+    expect(content).toContain('answer one question first')
   })
 })
 
