@@ -146,6 +146,12 @@ export interface HintsConfig {
   cross_session_read_dedup: boolean
   cross_session_read_dedup_ttl_secs: number
   mcp_dedup_ttl_secs: number
+  // Whether the SessionStart hook (hooks_session_start.ts) injects a short command-routing
+  // reminder as additionalContext at session start/resume/compact-restart. The one-time static
+  // CLAUDE.md block install.ts writes only reaches the model once per install, with zero
+  // reinforcement across a long session -- this re-injects a short reminder every time a
+  // SessionStart fires. Defaults true; set false to silence it entirely.
+  session_start_reminder: boolean
 }
 
 export interface HooksConfig {
@@ -358,6 +364,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     cross_session_read_dedup: false,
     cross_session_read_dedup_ttl_secs: 2700,
     mcp_dedup_ttl_secs: 45,
+    session_start_reminder: true,
   },
   hooks: {
     watchdog_ms: 700,
@@ -1197,6 +1204,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs, ...boundsOf('hints.cross_session_read_dedup_ttl_secs'))
   hi.mcp_dedup_ttl_secs = validatedInt(hi_raw['mcp_dedup_ttl_secs'], hi.mcp_dedup_ttl_secs, ...boundsOf('hints.mcp_dedup_ttl_secs'))
   hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs, ...boundsOf('hints.mcp_dedup_ttl_secs'))
+  hi.session_start_reminder = validatedBool(hi_raw['session_start_reminder'], hi.session_start_reminder)
+  hi.session_start_reminder = envBool('TOKEN_GOAT_SESSION_START_REMINDER', hi.session_start_reminder)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
@@ -1329,6 +1338,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.cross_session_read_dedup': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP'],
   'hints.cross_session_read_dedup_ttl_secs': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'],
   'hints.mcp_dedup_ttl_secs': ['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'],
+  'hints.session_start_reminder': ['TOKEN_GOAT_SESSION_START_REMINDER'],
   'hints.min_session_hint_savings_bytes': ['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'],
   'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
@@ -1461,6 +1471,7 @@ export function saveConfig(config: Config): void {
       cross_session_read_dedup: config.hints.cross_session_read_dedup,
       cross_session_read_dedup_ttl_secs: config.hints.cross_session_read_dedup_ttl_secs,
       mcp_dedup_ttl_secs: config.hints.mcp_dedup_ttl_secs,
+      session_start_reminder: config.hints.session_start_reminder,
     },
     hooks: {
       watchdog_ms: config.hooks.watchdog_ms,

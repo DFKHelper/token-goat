@@ -52,6 +52,7 @@ const VALID_HOOK_EVENTS = new Set([
   'pre_compact',
   'user_prompt_submit',
   'subagent_stop',
+  'session_start',
 ])
 
 // Keep in sync with CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts -- the
@@ -66,6 +67,7 @@ const HOOK_EVENT_NAME_MAP = {
   pre_compact: 'PreCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
+  session_start: 'SessionStart',
 }
 
 function stripTg(value) {

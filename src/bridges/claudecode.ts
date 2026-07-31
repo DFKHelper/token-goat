@@ -50,6 +50,7 @@ const VALID_HOOK_EVENTS = new Set([
   'pre_compact',
   'user_prompt_submit',
   'subagent_stop',
+  'session_start',
 ])
 
 // Attempts the in-process hook call: import()s dist/token-goat-hook.mjs (a sibling of

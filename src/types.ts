@@ -50,6 +50,7 @@ export const HOOK_EVENTS = [
   'pre_compact',
   'user_prompt_submit',
   'subagent_stop',
+  'session_start',
 ] as const
 
 export type HookEventName = (typeof HOOK_EVENTS)[number]

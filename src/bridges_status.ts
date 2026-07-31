@@ -69,7 +69,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'claudecode',
     label: 'Claude Code',
     sourceFile: 'src/install.ts (HOOK_EVENT_MAP)',
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
   },
   {
@@ -77,14 +77,28 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     label: 'Codex CLI',
     sourceFile: 'src/bridges/codex_install.ts (CODEX_HOOK_EVENTS, CODEX_GLOBAL_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
-    reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+    reasons: [
+      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      {
+        events: ['session_start'],
+        reason:
+          "Codex CLI's hook config schema (CODEX_EVENT_ARG) has no session-start-equivalent event to map onto token-goat's session_start -- unlike Claude Code's real SessionStart hook",
+      },
+    ],
   },
   {
     harness: 'grok',
     label: 'Grok CLI',
     sourceFile: 'src/bridges/grok_install.ts (GROK_HOOK_EVENTS)',
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
-    reasons: [{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON }],
+    reasons: [
+      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      {
+        events: ['session_start'],
+        reason:
+          "GROK_HOOK_EVENTS (this row's explicit `install --grok` writer) mirrors install.ts's HOOK_EVENT_MAP as of the doc verification date -- Grok's real hooks doc has not been re-checked for SessionStart support since, so it is left unwired rather than guessed at (Grok's *default*, non---grok path still rides Claude Code's own settings.json directly and does receive session_start there, same as claudecode)",
+      },
+    ],
   },
   {
     harness: 'copilot_cli',
@@ -97,6 +111,10 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
         reason:
           "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/postToolUseFailure/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at",
       },
+      {
+        events: ['session_start'],
+        reason: 'COPILOT_TO_TG_EVENT has no session-start mapping wired yet -- left unimplemented rather than guessed at',
+      },
     ],
   },
   {
@@ -106,7 +124,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason: "Gemini CLI's hooks integration only wires BeforeTool/AfterTool/PreCompress (README \"Gemini CLI users\")",
       },
     ],
@@ -123,6 +141,10 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
           "Only five Qwen Code events have a token-goat handler; every other real event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at (qwen_install.ts)",
       },
       { events: ['stop'], reason: NO_SERVER_HANDLER_REASON },
+      {
+        events: ['session_start'],
+        reason: 'QWEN_EVENT_ARG has no session-start mapping wired yet -- left unimplemented rather than guessed at',
+      },
     ],
   },
   {
@@ -132,7 +154,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:
           "opencode's plugin API only exposes three relevant hooks -- tool.execute.before, tool.execute.after, experimental.session.compacting (opencode.ts module docstring, verified against opencode's real source)",
       },
@@ -145,7 +167,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:
           "OpenClaw's in-process plugin API only exposes before_tool_call/after_tool_call/before_compaction as api.on() handlers relevant here",
       },
@@ -158,9 +180,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact']),
     reasons: [
       {
-        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop'],
+        events: ['notification', 'stop', 'user_prompt_submit', 'subagent_stop', 'session_start'],
         reason:
-          "pi's extension API subscribes to session_start/tool_call/tool_result/session_before_compact/session_compact, of which only tool_call/tool_result/session_before_compact map onto real HOOK_EVENTS names (pre_tool_use/post_tool_use/pre_compact)",
+          "pi's extension API subscribes to session_start/tool_call/tool_result/session_before_compact/session_compact, of which only tool_call/tool_result/session_before_compact map onto real HOOK_EVENTS names (pre_tool_use/post_tool_use/pre_compact) -- pi's own session_start event is never forwarded to token-goat's callHook()",
       },
     ],
   },
