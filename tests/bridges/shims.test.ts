@@ -174,6 +174,7 @@ describe('CODEX_HOOK_SCRIPT hookEventName casing (regression: the shim previousl
     pre_compact: 'PreCompact',
     user_prompt_submit: 'UserPromptSubmit',
     subagent_stop: 'SubagentStop',
+    session_start: 'SessionStart',
   }
 
   it('maps every HOOK_EVENTS entry to its PascalCase spelling when the child process omits hookEventName', () => {

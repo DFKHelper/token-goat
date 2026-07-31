@@ -201,9 +201,9 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
  * per-harness diff.
  */
 const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
-  claudecode: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
-  grok: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
-  hermes: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
+  claudecode: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  grok: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  hermes: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
   codex: ['pre_tool_use', 'post_tool_use'],
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
