@@ -489,10 +489,28 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
   const newLines = newOutput.split('\n')
   const oldIssueLines = oldLines.filter((l) => ISSUE_LINE_PATTERN.test(l))
   if (oldIssueLines.length > 0) {
-    const newIssueLineSet = new Set(newLines.filter((l) => ISSUE_LINE_PATTERN.test(l)))
+    const newIssueLines = newLines.filter((l) => ISSUE_LINE_PATTERN.test(l))
     const priorTotal = oldIssueLines.length
-    const resolved = oldIssueLines.filter((l) => !newIssueLineSet.has(l)).length
-    const remaining = newIssueLineSet.size
+    // Multiset (count-aware) matching, not a Set membership check: a Set collapses repeated
+    // identical issue lines (e.g. the same "error: foo.ts:10 unexpected token" reported N times
+    // by a linter across N files) into one entry, so `.has(l)` reports true as long as ANY one
+    // instance survives -- silently undercounting `resolved` (every duplicate instance that
+    // actually disappeared gets counted as "still present" just because a sibling duplicate
+    // remains) whenever a repeat command's issue output contains any duplicate line. Consuming
+    // one available count per old-line match, rather than checking Set membership, correctly
+    // credits each individually-resolved duplicate instance.
+    const availableCounts = new Map<string, number>()
+    for (const l of newIssueLines) availableCounts.set(l, (availableCounts.get(l) ?? 0) + 1)
+    let resolved = 0
+    for (const l of oldIssueLines) {
+      const avail = availableCounts.get(l) ?? 0
+      if (avail > 0) {
+        availableCounts.set(l, avail - 1)
+      } else {
+        resolved++
+      }
+    }
+    const remaining = newIssueLines.length
     return `[token-goat: delta] ${resolved} of ${priorTotal} prior issues resolved; remaining: ${remaining}`
   }
   return `[token-goat: delta] output changed: ${oldLines.length} -> ${newLines.length} lines`
