@@ -35,18 +35,27 @@ export interface GuidanceHarness {
 }
 
 /**
- * Render the shared token-goat routing gate for one harness. The body is
- * identical across harnesses; only the markers and the fallback-tool clause
- * vary. Returned as a single string ready to hand to `upsertDelimitedBlock`.
+ * Render the shared token-goat routing gate *body* — the guidance itself,
+ * without any delimited-block markers. This is the single source of the gate
+ * wording used by all four surfaces:
+ *   - `buildGuidanceBlock` wraps it in begin/end markers for the three files
+ *     upserted into user-owned instruction files (CLAUDE.md, AGENTS.md,
+ *     copilot-instructions.md);
+ *   - the SKILL.md writer in `../install.ts` embeds it whole, under its own
+ *     frontmatter, because a skill file is written as a complete standalone
+ *     document rather than patched into a delimited region.
+ *
+ * `fallbackToolClause` names the surface's own read tools for the
+ * conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob
+ * preference rules".
  */
-export function buildGuidanceBlock(h: GuidanceHarness): string {
+export function buildGuidanceBody(fallbackToolClause: string): string {
   return [
-    h.beginMarker,
     '## token-goat',
     '',
     '**Gate — before every file read, answer one question first: is there a token-goat command that returns just what I need?** If yes, run it. A read tool invoked without answering the gate is a violation, not an oversight. The gate is per file: batched or parallel reads do not exempt it.',
     '',
-    `This gate decides *whether* to reach for a read tool at all. ${h.fallbackToolClause} only pick the *fallback* once token-goat has been ruled out for this read — they never authorize skipping the gate.`,
+    `This gate decides *whether* to reach for a read tool at all. ${fallbackToolClause} only pick the *fallback* once token-goat has been ruled out for this read — they never authorize skipping the gate.`,
     '',
     'Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is binary or an image; the target has no symbol handle (e.g. a literal mid-function).',
     '',
@@ -64,6 +73,15 @@ export function buildGuidanceBlock(h: GuidanceHarness): string {
     'Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.',
     '',
     '`token-goat stats` — self-check. Flat counts during code work mean the gate is being skipped.',
-    h.endMarker,
   ].join('\n')
+}
+
+/**
+ * Render the shared token-goat routing gate for one harness, wrapped in the
+ * harness's begin/end markers. The body is identical across harnesses (see
+ * {@link buildGuidanceBody}); only the markers and the fallback-tool clause
+ * vary. Returned as a single string ready to hand to `upsertDelimitedBlock`.
+ */
+export function buildGuidanceBlock(h: GuidanceHarness): string {
+  return [h.beginMarker, buildGuidanceBody(h.fallbackToolClause), h.endMarker].join('\n')
 }
