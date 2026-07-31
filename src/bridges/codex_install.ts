@@ -55,6 +55,7 @@ import { parse, stringify } from 'smol-toml'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
+import { buildGuidanceBlock } from './guidance_block.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
@@ -380,23 +381,11 @@ const AGENTS_END = '<!-- token-goat-codex-end -->'
 
 /** Routing-guidance block, adapted for Codex's own tool names (see `CODEX_TOOL_NAME_MAP` in `../hooks_cli.ts`). */
 function buildAgentsBlock(): string {
-  return [
-    AGENTS_BEGIN,
-    '## token-goat',
-    '',
-    'Prefer token-goat commands over reading whole files:',
-    '- `token-goat symbol NAME` -- find a function/class/type',
-    '- `token-goat read "file::symbol"` -- one function/method body',
-    '- `token-goat section "file::Heading"` -- one doc or config section',
-    '- `token-goat semantic "description"` -- find code by meaning',
-    '- `token-goat outline file` / `token-goat skeleton file` -- signatures without bodies',
-    '',
-    'Use this before a full-file read via `shell` (cat/type), before previewing a diff with',
-    '`apply_patch`, and before a `view_image` on a large screenshot (token-goat hooks shrink',
-    'oversized images automatically). token-goat commands return narrow slices, typically',
-    '85-97% smaller than the full file.',
-    AGENTS_END,
-  ].join('\n')
+  return buildGuidanceBlock({
+    beginMarker: AGENTS_BEGIN,
+    endMarker: AGENTS_END,
+    fallbackToolClause: "Codex's own `shell` (cat/type), `apply_patch` preview, and `view_image` preferences",
+  })
 }
 
 /**

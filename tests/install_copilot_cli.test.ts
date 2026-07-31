@@ -23,6 +23,7 @@ import * as os from 'node:os'
 
 import {
   copilotCliConfigPath,
+  copilotCliInstructionsPath,
   copilotCliProjectHooksDir,
   copilotCliScriptPath,
   copilotCliUserHooksDir,
@@ -300,6 +301,121 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     installCopilotCli({ local: true })
     uninstallCopilotCli({ local: true })
     expect(fs.existsSync(userResult.configPath)).toBe(true)
+  })
+})
+
+const TG_BEGIN = '<!-- token-goat-begin -->'
+const TG_END = '<!-- token-goat-end -->'
+
+describe('copilot-instructions.md routing block', () => {
+  it('writes a delimited token-goat gate block on a fresh install and surfaces its path', () => {
+    const result = installCopilotCli()
+    expect(result.instructionsPath).toBe(copilotCliInstructionsPath())
+    expect(fs.existsSync(result.instructionsPath)).toBe(true)
+
+    const text = fs.readFileSync(result.instructionsPath, 'utf8')
+    expect(text).toContain(TG_BEGIN)
+    expect(text).toContain(TG_END)
+    // Phrased as a pre-call gate, not an advisory tip.
+    expect(text).toContain('Gate')
+    expect(text).toContain('violation, not an oversight')
+    expect(text).toContain('per file')
+    expect(text).toContain('~200 lines')
+    // Names Copilot CLI's own read tools in the conflict-resolution clause.
+    expect(text).toContain('`view`')
+    expect(text).toContain('`grep`')
+    expect(text).toContain('`glob`')
+    expect(text).toContain('Get-Content')
+    expect(text).toContain('Select-String')
+    // Carries the sub-agent instruction and the stats self-check.
+    expect(text).toContain('Sub-agent briefs')
+    expect(text).toContain('token-goat stats')
+
+    expect(isCopilotCliInstalled()).toBe(true)
+  })
+
+  it('resolves copilotCliInstructionsPath() to <userHooksDir>/../copilot-instructions.md (user) and <cwd>/.github/copilot-instructions.md (project)', () => {
+    expect(copilotCliInstructionsPath()).toBe(path.join(path.dirname(copilotCliUserHooksDir()), 'copilot-instructions.md'))
+    expect(copilotCliInstructionsPath({ local: true })).toBe(path.join(process.cwd(), '.github', 'copilot-instructions.md'))
+  })
+
+  it('is idempotent: a reinstall neither duplicates the block nor reports a change', () => {
+    const first = installCopilotCli()
+    const before = fs.readFileSync(first.instructionsPath, 'utf8')
+    const second = installCopilotCli()
+    expect(second.alreadyInstalled).toBe(true)
+    const after = fs.readFileSync(second.instructionsPath, 'utf8')
+    expect(after).toBe(before)
+    // Exactly one block, never two.
+    expect(after.split(TG_BEGIN).length - 1).toBe(1)
+    expect(after.split(TG_END).length - 1).toBe(1)
+  })
+
+  it('preserves every byte outside the markers when upserting into a large hand-written file', () => {
+    const p = copilotCliInstructionsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    // A large, user-authored file with NO existing token-goat block: the writer
+    // must append its block and leave all prior content byte-for-byte intact.
+    const preamble = '# My personal instructions\n\n' + 'Some paragraph about my workflow. '.repeat(400) + '\n'
+    fs.writeFileSync(p, preamble)
+
+    installCopilotCli()
+
+    const after = fs.readFileSync(p, 'utf8')
+    expect(after.startsWith(preamble.replace(/\s+$/, ''))).toBe(true)
+    expect(after).toContain(TG_BEGIN)
+    // Everything before the injected block equals the original (trailing whitespace normalized by upsert).
+    expect(after.slice(0, after.indexOf(TG_BEGIN)).trim()).toBe(preamble.trim())
+  })
+
+  it('upgrades a legacy/older token-goat block in place rather than appending a second one', () => {
+    const p = copilotCliInstructionsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const head = '# My instructions\n\nKeep me above.\n\n'
+    const legacyBlock = `${TG_BEGIN}\n## token-goat\n\nPrefer token-goat commands over reading whole files.\n${TG_END}`
+    const tail = '\n\nKeep me below.\n'
+    fs.writeFileSync(p, head + legacyBlock + tail)
+
+    const result = installCopilotCli()
+    expect(result.alreadyInstalled).toBe(false)
+
+    const after = fs.readFileSync(p, 'utf8')
+    // Still exactly one block, upgraded to the new gate wording.
+    expect(after.split(TG_BEGIN).length - 1).toBe(1)
+    expect(after).not.toContain('Prefer token-goat commands over reading whole files.')
+    expect(after).toContain('violation, not an oversight')
+    // Surrounding user content untouched.
+    expect(after).toContain('Keep me above.')
+    expect(after).toContain('Keep me below.')
+  })
+
+  it('uninstall strips the block and leaves surrounding content intact, without deleting the file', () => {
+    const p = copilotCliInstructionsPath()
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const head = '# My instructions\n\nAbove content.\n'
+    const tail = 'Below content.\n'
+    fs.writeFileSync(p, head)
+
+    installCopilotCli()
+    // Append user content after the injected block to prove both sides survive.
+    fs.appendFileSync(p, '\n' + tail)
+    expect(fs.readFileSync(p, 'utf8')).toContain(TG_BEGIN)
+
+    expect(uninstallCopilotCli()).toBe(true)
+
+    const after = fs.readFileSync(p, 'utf8')
+    expect(fs.existsSync(p)).toBe(true)
+    expect(after).not.toContain(TG_BEGIN)
+    expect(after).not.toContain(TG_END)
+    expect(after).toContain('Above content.')
+    expect(after).toContain('Below content.')
+  })
+
+  it('project scope writes the block to <cwd>/.github/copilot-instructions.md', () => {
+    const result = installCopilotCli({ local: true })
+    expect(result.instructionsPath).toBe(path.join(process.cwd(), '.github', 'copilot-instructions.md'))
+    expect(fs.readFileSync(result.instructionsPath, 'utf8')).toContain(TG_BEGIN)
+    expect(isCopilotCliInstalled({ local: true })).toBe(true)
   })
 })
 

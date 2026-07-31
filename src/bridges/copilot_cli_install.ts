@@ -28,8 +28,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { hookCommandFor, writeIfDifferent } from '../util.js'
+import { hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
+import { buildGuidanceBlock } from './guidance_block.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
 export interface CopilotCliScopeOptions {
@@ -79,6 +80,49 @@ export function copilotCliConfigPath(opts: CopilotCliScopeOptions = {}): string 
 
 export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string {
   return path.join(copilotCliHooksDir(opts), 'token-goat-shim.js')
+}
+
+// Copilot CLI reads custom instructions from `~/.copilot/copilot-instructions.md`
+// (user scope) and `<repo>/.github/copilot-instructions.md` (project scope) --
+// the same repository-custom-instructions filename GitHub Copilot uses across
+// its surfaces. The instructions file therefore lives one directory up from the
+// scope's hooks dir: `~/.copilot/hooks` -> `~/.copilot/copilot-instructions.md`,
+// and `<cwd>/.github/hooks` -> `<cwd>/.github/copilot-instructions.md`, so the
+// existing `local` scope selector applies to it unchanged.
+export function copilotCliInstructionsPath(opts: CopilotCliScopeOptions = {}): string {
+  return path.join(path.dirname(copilotCliHooksDir(opts)), 'copilot-instructions.md')
+}
+
+// Same generic markers the base Claude Code install writes into ~/.claude/CLAUDE.md,
+// deliberately NOT a Copilot-specific pair: a real user's hand-written
+// copilot-instructions.md already carries a token-goat block delimited by exactly
+// these markers (copied from the CLAUDE.md convention), and the installer must
+// upgrade that block in place, not append a second one beside it. The file is a
+// separate path from CLAUDE.md, so there is no marker collision.
+const COPILOT_INSTRUCTIONS_BEGIN = '<!-- token-goat-begin -->'
+const COPILOT_INSTRUCTIONS_END = '<!-- token-goat-end -->'
+
+/** The token-goat routing block for Copilot CLI, naming Copilot's own read tools in the conflict clause. */
+function buildCopilotInstructionsBlock(): string {
+  return buildGuidanceBlock({
+    beginMarker: COPILOT_INSTRUCTIONS_BEGIN,
+    endMarker: COPILOT_INSTRUCTIONS_END,
+    fallbackToolClause:
+      "Copilot CLI's own `view`, `grep`, and `glob` tool-preference rules (and `Get-Content`/`Select-String`)",
+  })
+}
+
+/**
+ * Idempotent merge-or-append of the token-goat block into the Copilot
+ * instructions file, preserving every byte outside the markers (the file is
+ * user-owned and hand-edited). Mirrors codex_install.ts's writeAgentsBlock.
+ */
+function writeCopilotInstructionsBlock(p: string): boolean {
+  return upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
+}
+
+function stripCopilotInstructionsBlock(p: string): boolean {
+  return stripDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END)
 }
 
 // Cross-platform 'command' field (vs the also-supported bash/powershell-specific
@@ -152,13 +196,16 @@ function buildConfig(scriptPath: string): CopilotCliConfig {
 export interface CopilotCliInstallResult {
   readonly configPath: string
   readonly scriptPath: string
-  /** True when both the shim script and the hook config were already up to date (no write needed). */
+  /** Path to the copilot-instructions.md that received the token-goat routing block. */
+  readonly instructionsPath: string
+  /** True when the shim script, the hook config, and the instructions block were all already up to date (no write needed). */
   readonly alreadyInstalled: boolean
 }
 
 export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCliInstallResult {
   const configPath = copilotCliConfigPath(opts)
   const scriptPath = copilotCliScriptPath(opts)
+  const instructionsPath = copilotCliInstructionsPath(opts)
 
   // The shim is a generated, never-user-edited file: keep it in sync with the
   // running token-goat version on every install call, independent of whether
@@ -168,12 +215,20 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
   const desiredText = JSON.stringify(buildConfig(scriptPath), null, 2) + '\n'
   const configChanged = writeIfDifferent(configPath, desiredText, true)
 
-  return { configPath, scriptPath, alreadyInstalled: !scriptChanged && !configChanged }
+  const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
+
+  return {
+    configPath,
+    scriptPath,
+    instructionsPath,
+    alreadyInstalled: !scriptChanged && !configChanged && !instructionsChanged,
+  }
 }
 
 function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
   const configPath = copilotCliConfigPath(opts)
   const scriptPath = copilotCliScriptPath(opts)
+  const instructionsPath = copilotCliInstructionsPath(opts)
 
   let removedAny = false
   try {
@@ -187,6 +242,11 @@ function uninstallCopilotCliScope(opts: CopilotCliScopeOptions): boolean {
     removedAny = true
   } catch {
     // Already absent; nothing to remove.
+  }
+  // The instructions file is user-owned: strip only the delimited block and
+  // preserve everything else, never unlink the whole file (mirrors codex uninstall).
+  if (stripCopilotInstructionsBlock(instructionsPath)) {
+    removedAny = true
   }
   return removedAny
 }
@@ -207,5 +267,14 @@ export function uninstallCopilotCli(opts: CopilotCliScopeOptions = {}): boolean 
 }
 
 export function isCopilotCliInstalled(opts: CopilotCliScopeOptions = {}): boolean {
-  return fs.existsSync(copilotCliConfigPath(opts)) && fs.existsSync(copilotCliScriptPath(opts))
+  if (!fs.existsSync(copilotCliConfigPath(opts)) || !fs.existsSync(copilotCliScriptPath(opts))) {
+    return false
+  }
+  let instructions: string
+  try {
+    instructions = fs.readFileSync(copilotCliInstructionsPath(opts), 'utf8')
+  } catch {
+    return false
+  }
+  return instructions.includes(COPILOT_INSTRUCTIONS_BEGIN) && instructions.includes(COPILOT_INSTRUCTIONS_END)
 }
