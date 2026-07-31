@@ -140,6 +140,7 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
   pre_compact: 'PreCompact',
   user_prompt_submit: 'UserPromptSubmit',
   subagent_stop: 'SubagentStop',
+  session_start: 'SessionStart',
 }
 
 /**

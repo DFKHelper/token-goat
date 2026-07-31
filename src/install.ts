@@ -47,6 +47,7 @@ const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['PreCompact', 'pre_compact'],
   ['UserPromptSubmit', 'user_prompt_submit'],
   ['SubagentStop', 'subagent_stop'],
+  ['SessionStart', 'session_start'],
 ]
 
 /** Marker substring identifying a token-goat hook command for idempotency. */
