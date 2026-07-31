@@ -23,6 +23,7 @@ export type { CodexInstallResult } from './codex_install.js'
 export { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 export {
   copilotCliConfigPath,
+  copilotCliInstructionsPath,
   copilotCliProjectHooksDir,
   copilotCliScriptPath,
   copilotCliUserHooksDir,

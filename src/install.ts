@@ -17,6 +17,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { buildGuidanceBlock } from './bridges/guidance_block.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { atomicWriteText, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeJsonSettings } from './util.js'
 
@@ -303,28 +304,11 @@ export function claudeMdPath(): string {
 }
 
 function buildClaudeMdBlock(): string {
-  return [
-    CLAUDE_MD_BEGIN,
-    '## token-goat',
-    '',
-    'Prefer token-goat commands over reading whole files:',
-    '- `token-goat symbol NAME` -- find a function/class/type',
-    '- `token-goat read "file::symbol"` -- one function/method body',
-    '- `token-goat section "file::Heading"` -- one doc or config section',
-    '- `token-goat semantic "description"` -- find code by meaning',
-    '- `token-goat outline file` / `token-goat skeleton file` -- signatures without bodies',
-    '- `token-goat map --compact` -- project overview (low-token summary)',
-    '- `token-goat refs file::symbol --callers` -- find callers of a symbol',
-    '- `token-goat changed --symbol` -- symbols changed since a git ref',
-    '- `token-goat config-get file KEY` -- read one config value',
-    '- `token-goat bash-output` / `token-goat web-output` -- re-inspect cached output by ID',
-    '- `token-goat gdrive-sections <file-id>` -- outline a Google Doc by ID',
-    '',
-    'Use this before a full-file `Read` or wide `Grep`, and before opening a large image',
-    '(token-goat hooks shrink oversized images automatically). token-goat commands return',
-    'narrow slices, typically 85-97% smaller than the full file.',
-    CLAUDE_MD_END,
-  ].join('\n')
+  return buildGuidanceBlock({
+    beginMarker: CLAUDE_MD_BEGIN,
+    endMarker: CLAUDE_MD_END,
+    fallbackToolClause: "Claude Code's own Read, Grep, and Glob preference rules",
+  })
 }
 
 function writeClaudeMdBlock(p: string): boolean {

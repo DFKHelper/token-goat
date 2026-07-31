@@ -479,7 +479,7 @@ async function cmdInstall(opts: {
     if (copilotResult.alreadyInstalled) {
       out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
     } else {
-      out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}`)
+      out(`Installed token-goat Copilot CLI integration → ${copilotResult.configPath}, ${copilotResult.scriptPath}, ${copilotResult.instructionsPath}`)
     }
   }
 
