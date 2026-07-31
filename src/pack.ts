@@ -239,18 +239,24 @@ const HASH_LINE_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 const CSTYLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart'])
 const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua'])
 
-/** Which quote character (if any) is open, tracked as a single running toggle per quote kind. */
+/**
+ * Which quote character (if any) is currently open, tracked as a single mutually-exclusive state
+ * rather than independent per-quote-kind toggles -- a line of code is inside at most one kind of
+ * string at a time, since a `'`/`` ` `` can't open while a `"`-delimited string is already open
+ * (and vice versa). Independent toggles misread e.g. an apostrophe inside a double-quoted string
+ * (`"don't panic"`) as opening a single-quoted string that the double-quote's own closer never
+ * closes, permanently corrupting every subsequent line's quote state (see languages/common.ts's
+ * isInsideStringLiteral, which uses this same single-state approach for the same reason).
+ */
 interface QuoteState {
-  dq: boolean
-  sq: boolean
-  bt: boolean
+  open: '"' | "'" | '`' | null
 }
 
 /**
- * Advances `state` across `text[from, to)`, toggling the appropriate open/closed flag on each
- * unescaped quote character. A backslash is only treated as an escape while immediately followed
- * by another character (mirroring `countUnescapedQuotes`'s consecutive-backslash-parity rule),
- * and is otherwise passed through untouched.
+ * Advances `state` across `text[from, to)`, opening/closing `state.open` on each unescaped quote
+ * character. A backslash is only treated as an escape while immediately followed by another
+ * character (mirroring `countUnescapedQuotes`'s consecutive-backslash-parity rule), and is
+ * otherwise passed through untouched.
  */
 function advanceQuoteState(text: string, from: number, to: number, state: QuoteState): QuoteState {
   let backslashes = 0
@@ -260,10 +266,9 @@ function advanceQuoteState(text: string, from: number, to: number, state: QuoteS
       backslashes++
       continue
     }
-    if (backslashes % 2 === 0) {
-      if (ch === '"') state.dq = !state.dq
-      else if (ch === "'") state.sq = !state.sq
-      else if (ch === '`') state.bt = !state.bt
+    if (backslashes % 2 === 0 && (ch === '"' || ch === "'" || ch === '`')) {
+      if (state.open === null) state.open = ch
+      else if (state.open === ch) state.open = null
     }
     backslashes = 0
   }
@@ -279,8 +284,8 @@ function advanceQuoteState(text: string, from: number, to: number, state: QuoteS
  * actually opened on, since none of that line's own characters include the opening quote.
  */
 function computeLineStartQuoteStates(content: string): QuoteState[] {
-  const states: QuoteState[] = [{ dq: false, sq: false, bt: false }]
-  let state: QuoteState = { dq: false, sq: false, bt: false }
+  const states: QuoteState[] = [{ open: null }]
+  let state: QuoteState = { open: null }
   let lineStart = 0
   for (let i = 0; i < content.length; i++) {
     if (content[i] === '\n') {
@@ -297,17 +302,16 @@ function computeLineStartQuoteStates(content: string): QuoteState[] {
  * state across line boundaries via `lineStates` (see `computeLineStartQuoteStates`) rather than
  * always assuming "not inside a string" at the start of each line - a multi-line string (e.g. a
  * JS template literal or a Python triple-quoted string) that opened on an earlier line is still
- * open on this one. Single, double, and backtick quotes are tracked independently so a
- * comment-like sequence (`//`, `#`, `--`) that only appears inside a string's actual content — a
- * URL such as `https://example.com` or a CSS hex color like `#fff` — is left untouched instead of
- * being misread as a real comment opener.
+ * open on this one. A comment-like sequence (`//`, `#`, `--`) that only appears inside a string's
+ * actual content — a URL such as `https://example.com` or a CSS hex color like `#fff` — is left
+ * untouched instead of being misread as a real comment opener.
  */
 function isInsideStringLiteral(text: string, index: number, lineStates: QuoteState[]): boolean {
   const lineStart = text.lastIndexOf('\n', index - 1) + 1
   const lineNum = text.slice(0, lineStart).split('\n').length - 1
-  const startState = lineStates[lineNum] ?? { dq: false, sq: false, bt: false }
+  const startState = lineStates[lineNum] ?? { open: null }
   const state = advanceQuoteState(text, lineStart, index, { ...startState })
-  return state.dq || state.sq || state.bt
+  return state.open !== null
 }
 
 /** Applies a line-comment regex, skipping any match that starts inside a string literal. */
