@@ -4,7 +4,7 @@
  * pre_tool_use: When an Agent tool (subagent spawn) fires, append a compact
  * project-context briefing to the subagent's prompt field. The briefing includes
  * a one-line project map, a few cached output IDs to hint at re-use opportunities,
- * and a reminder to prefer surgical reads over full-file dumps.
+ * and an imperative gate directing the subagent to check for a token-goat command before its first read.
  *
  * Fails open: if building the briefing fails for any reason, the input is passed
  * through unchanged, never blocking a subagent spawn.
@@ -76,7 +76,7 @@ function buildSubagentBriefing(): string {
     // 3. Surgical-read reminder
     const tail: string[] = []
     tail.push('')
-    tail.push('Prefer surgical reads over full-file dumps: `token-goat symbol <name>` / `token-goat read "file::symbol"` / `token-goat section "file::<heading>"` are cheaper alternatives that are already cached by the hook system.')
+    tail.push('Before your first read of any file, check for a token-goat command that returns just what you need and run it instead of a full-file read or wide grep: `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::<heading>"`. Skipping that check is a violation, not an oversight; the only exemptions are a file under ~200 lines you need whole, a never-indexed file, or an image.')
 
     const withCacheIds = head.join('\n') + cacheIdsBlock + '\n' + tail.join('\n')
     if (estimateTokens(withCacheIds) <= BRIEFING_TARGET_TOKENS) {
