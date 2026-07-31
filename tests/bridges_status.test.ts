@@ -75,13 +75,16 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     }
   })
 
-  it('claudecode and codex wire the identical event set (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix)', () => {
+  it('claudecode and codex wire the identical event set aside from session_start (regression: codex used to be missing pre_compact/user_prompt_submit/subagent_stop -- feature-queue #307 Part B fix; session_start is claudecode-only since Codex CLI has no session-start-equivalent hook)', () => {
     const claudecode = rowFor('claudecode')
     const codex = rowFor('codex')
-    expect([...codex.implemented].sort()).toEqual([...claudecode.implemented].sort())
+    const codexPlusSessionStart = new Set([...codex.implemented, 'session_start' as const])
+    expect([...codexPlusSessionStart].sort()).toEqual([...claudecode.implemented].sort())
     expect(codex.implemented.has('pre_compact')).toBe(true)
     expect(codex.implemented.has('user_prompt_submit')).toBe(true)
     expect(codex.implemented.has('subagent_stop')).toBe(true)
+    expect(codex.implemented.has('session_start')).toBe(false)
+    expect(claudecode.implemented.has('session_start')).toBe(true)
   })
 
   it("notification is implemented by zero rows, matching the codebase-wide absence of any registerHook('notification', ...) call site", () => {
@@ -170,14 +173,16 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 5/7 score for claudecode/codex/qwen, 3/7 for opencode/gemini/openclaw/pi, 6/7 for copilot_cli', () => {
+  it('shows a 6/8 score for claudecode/copilot_cli, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    for (const harness of ['claudecode', 'codex', 'qwen']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/7`))
+    for (const harness of ['claudecode', 'copilot_cli']) {
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s6\\/8`))
     }
-    expect(text).toMatch(/copilot_cli\s+.*\s6\/7/)
+    for (const harness of ['codex', 'grok', 'qwen']) {
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s5\\/8`))
+    }
     for (const harness of ['opencode', 'gemini', 'openclaw', 'pi']) {
-      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/7`))
+      expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s3\\/8`))
     }
   })
 })
