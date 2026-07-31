@@ -114,7 +114,10 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       expect(typeof updatedPrompt).toBe('string')
       expect(updatedPrompt).toContain(prompt) // Original prompt still there
       expect(updatedPrompt).toContain('## Session briefing') // Briefing was appended
-      expect(updatedPrompt).toContain('surgical') // Reminder text
+      // Pin the imperative gate wording (not the old advisory "prefer surgical reads" phrasing).
+      expect(updatedPrompt).toContain('Before your first read of any file')
+      expect(updatedPrompt).toContain('instead of a full-file read or wide grep')
+      expect(updatedPrompt).toContain('is a violation, not an oversight')
     }
   })
 
@@ -235,9 +238,9 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         const updatedPrompt = result.updatedInput['prompt'] as string
         expect(typeof updatedPrompt).toBe('string')
         expect(updatedPrompt).toContain(prompt)
-        // The load-bearing reminder must survive even though the briefing overall had to be
+        // The load-bearing gate reminder must survive even though the briefing overall had to be
         // trimmed to fit budget.
-        expect(updatedPrompt).toContain('Prefer surgical reads over full-file dumps')
+        expect(updatedPrompt).toContain('Before your first read of any file')
         // The nice-to-have cache-ids hint is the sacrificial section, so it's the one dropped.
         expect(updatedPrompt).not.toContain('Cached outputs this session')
       }
