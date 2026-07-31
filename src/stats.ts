@@ -135,6 +135,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   session_slice: SOURCE_READ,
   gdrive_sections: SOURCE_READ,
   pr_slice: SOURCE_READ,
+  compact_doc: SOURCE_READ,
   note_read: SOURCE_READ,
   note_list: SOURCE_READ,
   // note-add is a write (like insert-section/replace, which record no stat at all -- neither
@@ -207,6 +208,7 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   'session-slice': new Set(['session_slice']),
   'gdrive-sections': new Set(['gdrive_sections']),
   'pr-slice': new Set(['pr_slice']),
+  'compact-doc': new Set(['compact_doc']),
   'note-add': new Set(['note_write']),
   'note-get': new Set(['note_read']),
   'note-list': new Set(['note_list']),

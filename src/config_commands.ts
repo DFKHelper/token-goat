@@ -27,6 +27,7 @@ import { normalizePath } from './paths.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { configPath } from './constants.js'
 import { performHttpFetch } from './webfetch.js'
+import { recordStat } from './stats.js'
 
 function emit(text: string): void {
   const payload = colorStdout() ? text : stripAnsi(text)
@@ -521,6 +522,12 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 
 // ── compact-doc ───────────────────────────────────────────────────────────────
 
+// Records a surgical-read stat event for compact-doc, mirroring recordReadStat's convention in read_commands.ts (bytes saved = full on-disk source size minus the emitted text, floored at 1, tokens approximated as bytesSaved/4) -- compact-doc had no live registry entry or recordStat call at all until now, so its usage never showed up in `token-goat stats --full`.
+function recordCompactDocStat(fullSourceBytes: number, emittedText: string, detail: string): void {
+  const bytesSaved = Math.max(1, fullSourceBytes - Buffer.byteLength(emittedText, 'utf8'))
+  recordStat('compact_doc', bytesSaved, Math.round(bytesSaved / 4), undefined, detail)
+}
+
 export function cmdCompactDoc(opts: {
   filePath: string
   heading?: string
@@ -541,11 +548,15 @@ export function cmdCompactDoc(opts: {
       emitErr(`compact-doc: could not read or compact '${resolved}'`)
       throw new Error(`could not compact: ${resolved}`)
     }
+    const legacyFullBytes = fs.statSync(resolved).size
     if (opts.json === true) {
-      emit(JSON.stringify({ path: resolved, compact: result }, null, 2))
+      const jsonText = JSON.stringify({ path: resolved, compact: result }, null, 2)
+      emit(jsonText)
+      recordCompactDocStat(legacyFullBytes, jsonText, resolved)
       return
     }
     emit(result)
+    recordCompactDocStat(legacyFullBytes, result, resolved)
     return
   }
 
@@ -588,13 +599,18 @@ export function cmdCompactDoc(opts: {
     body = existing
   }
 
+  const extractiveFullBytes = fs.statSync(resolved).size
+
   if (opts.json === true) {
-    emit(JSON.stringify({ path: resolved, compactPath, rebuilt, compact: body }, null, 2))
+    const jsonText = JSON.stringify({ path: resolved, compactPath, rebuilt, compact: body }, null, 2)
+    emit(jsonText)
+    recordCompactDocStat(extractiveFullBytes, jsonText, resolved)
     return
   }
 
   if (opts.show === true) {
     emit(body)
+    recordCompactDocStat(extractiveFullBytes, body, resolved)
     return
   }
 
