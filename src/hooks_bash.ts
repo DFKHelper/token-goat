@@ -22,6 +22,7 @@ import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './too
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync, existsSync } from 'node:fs'
+import { isUnderSystemTemp } from './project.js'
 import { runGit } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
@@ -183,14 +184,26 @@ const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind -- git's own record of "the last thing that actually happened to HEAD". None of these three take a pathspec, so there's no ref-vs-path ambiguity to guard against (unlike `reset`, deliberately excluded above); this check exists purely so a no-op invocation of one of these (e.g. `git pull` when already up to date, which creates no new reflog entry) falls back to `HEAD@{1}` instead of replaying a stale `ORIG_HEAD` left over from an earlier, unrelated operation of the same family. Empirically confirmed message shapes: `merge <branch>: Merge made by...`, `rebase (finish): returning to...`, `pull [-q] [--rebase] ...: Merge made by...` / `pull [-q] --rebase ... (finish): returning to...`. */
 const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
 
-/** True when the path is a temp file (not indexed by token-goat). */
+/**
+ * True when the path is a temp file (not indexed by token-goat).
+ *
+ * The literal patterns cover shapes `os.tmpdir()` does not report: the unix `/tmp`, macOS
+ * `/var/folders`, and the Git-Bash/MSYS `/c/Users/...` spelling of a Windows path, none of which
+ * a plain prefix test against `os.tmpdir()` would catch. `isUnderSystemTemp` then covers the
+ * actual system temp directory, whatever it happens to be on this machine -- which the pattern
+ * list alone does not: it assumes the per-user `AppData\Local\Temp` shape, so on a machine (or a
+ * service account) whose temp is `C:\WINDOWS\TEMP`, every temp-path gate here silently stopped
+ * firing. Reusing the canonical helper rather than adding another pattern keeps the two
+ * definitions of "temp" from drifting apart again.
+ */
 function isTempPath(fp: string): boolean {
   const norm = fp.replace(/\\/g, '/')
   return (
     /^\/tmp\//i.test(norm) ||
     /\/var\/folders\//i.test(norm) ||
     /AppData\/Local\/Temp\//i.test(norm) ||
-    (norm.startsWith('/c/Users/') && norm.includes('/AppData/Local/Temp/'))
+    (norm.startsWith('/c/Users/') && norm.includes('/AppData/Local/Temp/')) ||
+    isUnderSystemTemp(fp)
   )
 }
 
