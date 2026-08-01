@@ -52,7 +52,7 @@ function commandsFor(settings: GeminiSettingsShape, event: string): string[] {
 }
 
 let TMP: string
-let originalArgv1: string | undefined
+let originalArgv1: string
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gemini-install-'))

@@ -5,29 +5,24 @@
 // `gdrive-sections --heading` commands both report a clear error when their requested
 // section/heading isn't found. Drive the real run() entry against a real web-output cache
 // entry so this exercises the actual command wiring, not the filter helper in isolation.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { storeWebOutput } from '../src/web_cache.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let stdout: string[]
 let stderr: string[]
-let stdoutSpy: ReturnType<typeof vi.spyOn>
-let stderrSpy: ReturnType<typeof vi.spyOn>
+let stdoutSpy: WriteSpy
+let stderrSpy: WriteSpy
 
 beforeEach(() => {
   clearModuleCaches()
   stdout = []
-  stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdout.push(String(chunk))
-    return true
-  })
+  stdoutSpy = spyOnWrite(process.stdout, stdout)
   stderr = []
-  stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-    stderr.push(String(chunk))
-    return true
-  })
+  stderrSpy = spyOnWrite(process.stderr, stderr)
 })
 
 afterEach(() => {

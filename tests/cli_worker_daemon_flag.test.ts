@@ -15,8 +15,10 @@ vi.mock('../src/worker.js', async (importOriginal) => {
 })
 
 const { run } = await import('../src/cli.js')
+const { spyOnWrite } = await import('./setup/spy-stdio.js')
+type WriteSpy = ReturnType<typeof spyOnWrite>
 
-let stderrSpy: ReturnType<typeof vi.spyOn>
+let stderrSpy: WriteSpy
 
 afterEach(() => {
   stderrSpy?.mockRestore()
@@ -36,7 +38,7 @@ async function runCli(argv: string[]): Promise<number | string | undefined> {
 
 describe('run() — --worker-daemon flag sniffing', () => {
   it('does not enter daemon mode when --worker-daemon appears as a non-first argument of another command', async () => {
-    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    stderrSpy = spyOnWrite(process.stderr, [])
     await runCli(['grep', '--', '--worker-daemon'])
     expect(runDetachedWorkerDaemon).not.toHaveBeenCalled()
   })

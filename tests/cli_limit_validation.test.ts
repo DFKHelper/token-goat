@@ -14,31 +14,26 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let stderr: string[]
 let stdout: string[]
-let writeSpy: ReturnType<typeof vi.spyOn>
-let stdoutSpy: ReturnType<typeof vi.spyOn> | undefined
+let writeSpy: WriteSpy
+let stdoutSpy: WriteSpy | undefined
 
 function captureStderr(): void {
   stderr = []
-  writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-    stderr.push(String(chunk))
-    return true
-  })
+  writeSpy = spyOnWrite(process.stderr, stderr)
 }
 
 function captureStdout(): void {
   stdout = []
-  stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdout.push(String(chunk))
-    return true
-  })
+  stdoutSpy = spyOnWrite(process.stdout, stdout)
 }
 
 afterEach(() => {

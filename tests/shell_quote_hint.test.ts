@@ -4,6 +4,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { invalidateConfigCache, loadConfig } from '../src/config.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { expectHookType } from './helpers/hook-output.js'
 
 function makeBashEvent(command: string): HookEvent {
   return makeHookEvent({
@@ -120,20 +121,20 @@ echo "done"`
   describe('unbalanced single quotes', () => {
     it('emits context hint for unclosed single quote', () => {
       const result = preBashHandler(makeBashEvent("echo 'hello"))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed single quote')
       expect(result.context).toContain('Write tool')
     })
 
     it('emits hint even with other content after unclosed quote', () => {
       const result = preBashHandler(makeBashEvent("echo 'hello && something else"))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed single quote')
     })
 
     it('detects odd number of single quotes in isolation', () => {
       const result = preBashHandler(makeBashEvent("echo ' a ' b '"))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed single quote')
     })
   })
@@ -141,14 +142,14 @@ echo "done"`
   describe('unbalanced double quotes', () => {
     it('emits context hint for unclosed double quote', () => {
       const result = preBashHandler(makeBashEvent('echo "hello'))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed double quote')
       expect(result.context).toContain('Write tool')
     })
 
     it('emits hint for unclosed double quote with escaped content', () => {
       const result = preBashHandler(makeBashEvent('echo "hello \\"world'))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed double quote')
     })
 
@@ -171,7 +172,7 @@ echo "done"`
 line 1
 line 2`
       const result = preBashHandler(makeBashEvent(cmd))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unterminated heredoc')
       expect(result.context).toContain('EOF')
     })
@@ -181,7 +182,7 @@ line 2`
   indented line
   another line`
       const result = preBashHandler(makeBashEvent(cmd))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unterminated heredoc')
     })
 
@@ -190,7 +191,7 @@ line 2`
 content
 eof`
       const result = preBashHandler(makeBashEvent(cmd))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unterminated heredoc')
     })
 
@@ -201,7 +202,7 @@ content
   EOF`
       const result = preBashHandler(makeBashEvent(cmd))
       // This is unterminated because "  EOF" with leading spaces doesn't exactly match "EOF"
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unterminated heredoc')
     })
 
@@ -272,7 +273,7 @@ content
 
     it('detects unmatched quote before comment', () => {
       const result = preBashHandler(makeBashEvent('echo \'hello # comment'))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed single quote')
     })
 
@@ -294,7 +295,7 @@ content
       const cmd = 'node -e "console.log(\'hello'
       const result = preBashHandler(makeBashEvent(cmd))
       // Should have the quote hint
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed double quote')
     })
 
@@ -329,7 +330,7 @@ _END_`
 data
 extra stuff here`
       const result = preBashHandler(makeBashEvent(cmd))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unterminated heredoc')
     })
   })
@@ -337,17 +338,19 @@ extra stuff here`
   describe('message quality', () => {
     it('includes the error description in the hint', () => {
       const result = preBashHandler(makeBashEvent("echo 'hello"))
-      expect(result.hookType).toBe('context')
+      expectHookType(result, 'context')
       expect(result.context).toContain('unclosed single quote')
     })
 
     it('mentions Write tool as an alternative', () => {
       const result = preBashHandler(makeBashEvent('echo "hello'))
+      expectHookType(result, 'context')
       expect(result.context).toContain('Write tool')
     })
 
     it('suggests using Write tool for multi-line strings with special characters', () => {
       const result = preBashHandler(makeBashEvent('echo "multi\nline\'string'))
+      expectHookType(result, 'context')
       expect(result.context).toContain('multi-line string')
       expect(result.context).toContain('Write tool')
     })

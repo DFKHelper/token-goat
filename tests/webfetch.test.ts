@@ -9,6 +9,16 @@ import { tmpdir } from 'os';
 const httpRequestMock = vi.hoisted(() => vi.fn());
 const dnsLookupMock = vi.hoisted(() => vi.fn());
 
+// Fake http.ClientRequest/IncomingMessage stand-ins for httpRequestMock's mocked return value: a plain EventEmitter has none of Node's http-specific members, so these widen it just enough for the request/response fakes built throughout this file to typecheck without pulling in the full real classes.
+type FakeClientRequest = EventEmitter & { destroy?: ReturnType<typeof vi.fn>; end?: ReturnType<typeof vi.fn> };
+type FakeIncomingMessage = EventEmitter & { statusCode?: number; statusMessage?: string; headers?: Record<string, string>; resume?: ReturnType<typeof vi.fn> };
+function makeFakeReq(): FakeClientRequest {
+  return new EventEmitter() as FakeClientRequest;
+}
+function makeFakeRes(): FakeIncomingMessage {
+  return new EventEmitter() as FakeIncomingMessage;
+}
+
 vi.mock('http', async (importOriginal) => {
   const actual = await importOriginal<typeof HttpModule>();
   return { ...actual, request: httpRequestMock };
@@ -290,7 +300,7 @@ describe('webfetch', () => {
     it('is the exact resolver performHttpFetch passes for the real connection (wiring proof)', () => {
       httpRequestMock.mockImplementationOnce((options) => {
         expect(options.lookup).toBe(ssrfPinnedLookup);
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         fakeReq.end = vi.fn();
         return fakeReq;
@@ -413,12 +423,12 @@ describe('webfetch', () => {
 
   describe('performHttpFetch timeout coverage (m7: slow-loris body download)', () => {
     it('bounds a response that sends headers quickly then never sends a body', async () => {
-      const fakeReq = new EventEmitter();
+      const fakeReq = makeFakeReq();
       fakeReq.destroy = vi.fn(() => fakeReq.emit('error', new Error('destroyed')));
       fakeReq.end = vi.fn();
       httpRequestMock.mockImplementationOnce(() => {
         queueMicrotask(() => {
-          const fakeRes = new EventEmitter();
+          const fakeRes = makeFakeRes();
           fakeRes.statusCode = 200;
           fakeRes.statusMessage = 'OK';
           fakeRes.headers = {};
@@ -474,11 +484,11 @@ describe('webfetch', () => {
     it('still allows a public literal IPv4 address through (the fix does not over-block every literal IP)', async () => {
       httpRequestMock.mockClear();
       httpRequestMock.mockImplementationOnce(() => {
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.end = vi.fn();
         fakeReq.destroy = vi.fn();
         queueMicrotask(() => {
-          const fakeRes = new EventEmitter();
+          const fakeRes = makeFakeRes();
           fakeRes.statusCode = 200;
           fakeRes.statusMessage = 'OK';
           fakeRes.headers = {};
@@ -501,13 +511,13 @@ describe('webfetch', () => {
 
   describe('performHttpFetch conditional revalidation (m8)', () => {
     it('forwards If-None-Match/If-Modified-Since onto the real HTTP request', async () => {
-      let capturedHeaders;
+      let capturedHeaders: Record<string, string> | undefined;
       httpRequestMock.mockImplementationOnce((options) => {
         capturedHeaders = options.headers;
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         fakeReq.end = vi.fn(() => {
-          const fakeRes = new EventEmitter();
+          const fakeRes = makeFakeRes();
           fakeRes.statusCode = 304;
           fakeRes.statusMessage = 'Not Modified';
           fakeRes.headers = {};
@@ -525,16 +535,17 @@ describe('webfetch', () => {
         requestHeaders: { 'If-None-Match': '"abc123"', 'If-Modified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT' },
         redirectsLeft: 5,
       });
-      expect(capturedHeaders['If-None-Match']).toBe('"abc123"');
-      expect(capturedHeaders['If-Modified-Since']).toBe('Wed, 21 Oct 2015 07:28:00 GMT');
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders?.['If-None-Match']).toBe('"abc123"');
+      expect(capturedHeaders?.['If-Modified-Since']).toBe('Wed, 21 Oct 2015 07:28:00 GMT');
       expect(result.status).toBe(304);
     });
   });
 
   describe('performHttpFetch cross-origin redirect header stripping (regression: performHttpFetch recursed with {...opts} on redirect, forwarding requestHeaders verbatim to whatever host the Location pointed at, which would leak an Authorization/API-key header cross-origin)', () => {
-    function respondWith(fakeReq: EventEmitter, statusCode: number, headers: Record<string, string>): void {
+    function respondWith(fakeReq: FakeClientRequest, statusCode: number, headers: Record<string, string>): void {
       fakeReq.end = vi.fn(() => {
-        const fakeRes = new EventEmitter();
+        const fakeRes = makeFakeRes();
         fakeRes.statusCode = statusCode;
         fakeRes.statusMessage = statusCode === 200 ? 'OK' : 'Found';
         fakeRes.headers = headers;
@@ -550,14 +561,14 @@ describe('webfetch', () => {
       const capturedHeaders: Record<string, unknown>[] = [];
       httpRequestMock.mockImplementationOnce((options) => {
         capturedHeaders.push(options.headers);
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         respondWith(fakeReq, 302, { location: 'http://other-host.example.test/y' });
         return fakeReq;
       });
       httpRequestMock.mockImplementationOnce((options) => {
         capturedHeaders.push(options.headers);
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         respondWith(fakeReq, 200, {});
         return fakeReq;
@@ -581,14 +592,14 @@ describe('webfetch', () => {
       const capturedHeaders: Record<string, unknown>[] = [];
       httpRequestMock.mockImplementationOnce((options) => {
         capturedHeaders.push(options.headers);
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         respondWith(fakeReq, 302, { location: 'http://same-host.example.test/y' });
         return fakeReq;
       });
       httpRequestMock.mockImplementationOnce((options) => {
         capturedHeaders.push(options.headers);
-        const fakeReq = new EventEmitter();
+        const fakeReq = makeFakeReq();
         fakeReq.destroy = vi.fn();
         respondWith(fakeReq, 200, {});
         return fakeReq;

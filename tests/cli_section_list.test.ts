@@ -7,16 +7,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let tmpDir: string
 let mdFile: string
 let stdout: string[]
 let stderr: string[]
-let stdoutSpy: ReturnType<typeof vi.spyOn>
-let stderrSpy: ReturnType<typeof vi.spyOn>
+let stdoutSpy: WriteSpy
+let stderrSpy: WriteSpy
 
 afterEach(() => {
   stdoutSpy.mockRestore()
@@ -44,15 +45,9 @@ describe('section --list', () => {
     writeFileSync(mdFile, ['## First Heading', 'body a', '', '## Second Heading', 'body b', ''].join('\n'), 'utf-8')
 
     stdout = []
-    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-      stdout.push(String(chunk))
-      return true
-    })
+    stdoutSpy = spyOnWrite(process.stdout, stdout)
     stderr = []
-    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-      stderr.push(String(chunk))
-      return true
-    })
+    stderrSpy = spyOnWrite(process.stderr, stderr)
 
     const code = await runCli(['section', mdFile, '--list'])
 

@@ -13,6 +13,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
+import { captureStdout } from './helpers/capture-stdout.js'
 import { querySymbols, searchSymbolsFts } from '../src/index_reader.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import {
@@ -302,17 +303,9 @@ describe('runScope integration', () => {
     expect(anySymbol).toBeDefined()
     const line = (anySymbol?.lineStart ?? 1) + 1
 
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       runScope({ spec: `src/read_commands.ts:${line}`, json: true })
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
   })
@@ -355,18 +348,10 @@ describe('runScope integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runScope({ spec: `${file}:3`, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((s) => s.name)).toEqual(['method', 'ScopeNestOuter'])
     } finally {
@@ -379,50 +364,26 @@ describe('runScope integration', () => {
 
 describe('runTypes integration', () => {
   it('exits 0 and finds SymbolEntry interface', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runTypes({})
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     expect(captured).toMatch(/SymbolEntry|RefEntry|Language/)
   })
 
   it('exits 0 scoped to a specific file', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runTypes({ file: 'src/parser_types.ts' })
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     expect(captured).toMatch(/SymbolEntry|Language/)
   })
 
   it('returns valid JSON for --json flag', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runTypes({ json: true })
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
     // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter
@@ -450,18 +411,10 @@ describe('runTypes integration', () => {
       indexFileSync(normalizePath(fileA))
       indexFileSync(normalizePath(fileB))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ json: true, limit: 5000 })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string }>
       const idxApple = parsed.findIndex((r) => r.name === 'AppleLocaleFixture')
       const idxBanana = parsed.findIndex((r) => r.name === 'BananaLocaleFixture')
@@ -496,18 +449,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesPyClassFixture')
       expect(parsed.find((r) => r.name === 'TypesPyClassFixture')?.kind).toBe('class')
@@ -530,18 +475,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesRustUnionFixture')
       expect(parsed.find((r) => r.name === 'TypesRustUnionFixture')?.kind).toBe('union')
@@ -565,18 +502,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesSwiftProtocolFixture')
       expect(parsed.find((r) => r.name === 'TypesSwiftProtocolFixture')?.kind).toBe('protocol')
@@ -598,18 +527,10 @@ describe('runTypes integration', () => {
       writeFileSync(file, ['const TypesZigOpaqueFixture = opaque {};', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesZigOpaqueFixture')
       expect(parsed.find((r) => r.name === 'TypesZigOpaqueFixture')?.kind).toBe('opaque')
@@ -630,18 +551,10 @@ describe('runTypes integration', () => {
       writeFileSync(file, ['mixin TypesDartMixinFixture {}', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesDartMixinFixture')
       expect(parsed.find((r) => r.name === 'TypesDartMixinFixture')?.kind).toBe('mixin')
@@ -662,18 +575,10 @@ describe('runTypes integration', () => {
       writeFileSync(file, ['extension TypesDartExtensionFixture on String {}', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesDartExtensionFixture')
       expect(parsed.find((r) => r.name === 'TypesDartExtensionFixture')?.kind).toBe('extension')
@@ -693,18 +598,10 @@ describe('runTypes integration', () => {
       writeFileSync(file, ['actor TypesSwiftActorFixture {}', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesSwiftActorFixture')
       expect(parsed.find((r) => r.name === 'TypesSwiftActorFixture')?.kind).toBe('actor')
@@ -739,18 +636,10 @@ describe('runTypes integration', () => {
         [intfFile, 'TypesApexInterfaceFixture', 'apex_interface'],
         [enumFile, 'TypesApexEnumFixture', 'apex_enum'],
       ] as const) {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           const code = runTypes({ file: normalizePath(file), json: true })
           expect(code).toBe(0)
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
         expect(parsed.map((r) => r.name)).toContain(name)
         expect(parsed.find((r) => r.name === name)?.kind).toBe(kind)
@@ -789,18 +678,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesProtoMessageFixture')
       expect(parsed.find((r) => r.name === 'TypesProtoMessageFixture')?.kind).toBe('proto_message')
@@ -847,18 +728,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       for (const [name, kind] of [
         ['TypesGraphqlTypeFixture', 'graphql_type'],
@@ -896,18 +769,10 @@ describe('runTypes integration', () => {
       indexFileSync(normalizePath(scalaFile))
 
       for (const file of [ktFile, scalaFile]) {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           const code = runTypes({ file: normalizePath(file), json: true })
           expect(code).toBe(0)
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
         const expectedName = file === ktFile ? 'TypesKotlinObjectFixture' : 'TypesScalaObjectFixture'
         expect(parsed.map((r) => r.name)).toContain(expectedName)
@@ -935,18 +800,10 @@ describe('runTypes integration', () => {
       writeFileSync(file, ['scalar TypesGraphqlScalarFixture', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesGraphqlScalarFixture')
       expect(parsed.find((r) => r.name === 'TypesGraphqlScalarFixture')?.kind).toBe('graphql_scalar')
@@ -974,18 +831,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesGraphqlExtendFixture')
       expect(parsed.find((r) => r.name === 'TypesGraphqlExtendFixture')?.kind).toBe('graphql_extend')
@@ -1013,18 +862,10 @@ describe('runTypes integration', () => {
       )
       indexFileSync(normalizePath(file))
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
       expect(parsed.map((r) => r.name)).toContain('TypesSfcClassFixture')
       expect(parsed.find((r) => r.name === 'TypesSfcClassFixture')?.kind).toBe('sfc_script_class')
@@ -1073,18 +914,10 @@ describe('runTypes limit validation', () => {
 
 describe('runCallers integration', () => {
   it('exits 0 for a well-known symbol and returns structured output', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runCallers({ symbol: 'querySymbols' })
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
     // documented plain-text shape (`{caller}\t{file}:{line}`, see runCallers' emit loop) so a
     // regression that dropped the tab separator or the file:line suffix is caught here.
@@ -1097,17 +930,9 @@ describe('runCallers integration', () => {
   })
 
   it('returns valid JSON for --json flag', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       runCallers({ symbol: 'querySymbols', json: true })
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
     const arr = parsed as Array<{ caller: string; kind: string; file: string; line: number }>
@@ -1222,17 +1047,9 @@ describe('runDead integration', () => {
   })
 
   it('returns valid JSON for --json flag with --top 5', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       runDead({ json: true, top: 5 })
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
   })
@@ -1258,17 +1075,9 @@ describe('runDead cross-project scoping', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runDead({ json: true, top: 500 })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string }>
         // rootB's reference to the same-named function must not mask rootA's copy as alive.
         expect(parsed.some((r) => r.name === 'trulyDeadFn9k2')).toBe(true)
@@ -1336,17 +1145,9 @@ describe('runDead same-project name-collision scoping', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runDead({ json: true, top: 500 })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         // fileA's copy is truly dead and must be reported.
         expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normA)).toBe(true)
@@ -1387,17 +1188,9 @@ describe('runDead virtual-dispatch rescue', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         // The override is reachable only via Base's self-dispatch -- must not be flagged dead.
         expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === implFile)).toBe(false)
@@ -1450,17 +1243,9 @@ describe('runDead virtual-dispatch rescue', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === factoryFile)).toBe(false)
         expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === factoryFile)).toBe(true)
@@ -1477,18 +1262,10 @@ describe('runDead virtual-dispatch rescue', () => {
 
 describe('runDeps integration', () => {
   it('returns internal and external deps for a known file', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runDeps({ file: 'src/read_commands.ts' })
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     expect(captured).toMatch(/internal:|external:|node:|\.\//)
   })
 
@@ -1498,17 +1275,9 @@ describe('runDeps integration', () => {
   })
 
   it('returns valid JSON for --json flag', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       runDeps({ file: 'src/read_commands.ts', json: true })
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed = JSON.parse(captured) as { file: string; internal: string[]; external: string[] }
     expect(typeof parsed.file).toBe('string')
     expect(Array.isArray(parsed.internal)).toBe(true)
@@ -1520,18 +1289,10 @@ describe('runDeps integration', () => {
     try {
       const file = join(dir, 'mod.py')
       writeFileSync(file, ['from . import foo', 'from ..pkg import bar', 'import os', ''].join('\n'))
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
       expect(parsed.internal).toContain('.')
       expect(parsed.internal).toContain('..pkg')
@@ -1556,18 +1317,10 @@ describe('runDeps integration', () => {
       writeFileSync(depFile, 'export const helper = 1\n')
       const entryFile = join(dir, 'entry.ts')
       writeFileSync(entryFile, "import { helper } from './helper.js'\n")
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file: entryFile, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[] }
       expect(parsed.internal).toContain(depFile)
     } finally {
@@ -1584,18 +1337,10 @@ describe('runDeps integration', () => {
       writeFileSync(indexFile, 'export function foo() { return 1 }\n')
       const entryFile = join(dir, 'entry.ts')
       writeFileSync(entryFile, "import { foo } from './utils'\n")
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file: entryFile, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[] }
       expect(parsed.internal).toContain(indexFile)
       expect(parsed.internal).not.toContain('./utils')
@@ -1611,18 +1356,10 @@ describe('runDeps integration', () => {
       writeFileSync(depFile, 'export const config = 1\n')
       const entryFile = join(dir, 'entry.ts')
       writeFileSync(entryFile, "import { config } from './config'\n")
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file: entryFile, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[] }
       expect(parsed.internal).toContain(depFile)
     } finally {
@@ -1641,18 +1378,10 @@ describe('runDeps integration', () => {
     try {
       const file = join(dir, 'Makefile')
       writeFileSync(file, 'include config.mk\n-include optional.mk\n\nall:\n\techo build\n')
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
       expect([...parsed.internal, ...parsed.external]).toEqual(expect.arrayContaining(['config.mk', 'optional.mk']))
     } finally {
@@ -1674,18 +1403,10 @@ describe('runDeps integration', () => {
       writeFileSync(indexTs, 'export function foo() { return 1 }\n')
       const entryFile = join(dir, 'entry.ts')
       writeFileSync(entryFile, "import { foo } from './utils'\n")
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runDeps({ file: entryFile, json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as { internal: string[] }
       expect(parsed.internal).toContain(indexTs)
     } finally {
@@ -1703,17 +1424,9 @@ describe('runCallChain integration', () => {
   })
 
   it('returns valid JSON for --json flag', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       runCallChain({ symbol: 'runRead', json: true, depth: 2 })
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     const parsed = JSON.parse(captured) as { chains: string[][] }
     expect(Array.isArray(parsed.chains)).toBe(true)
   })
@@ -1739,17 +1452,9 @@ describe('runCallChain cross-project scoping', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runCallChain({ symbol: 'chainScopedFn9k2' })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the
         // single-node chain (the symbol itself has no callers within rootA).
         expect(captured).not.toContain('caller')
@@ -1804,18 +1509,10 @@ describe('runCallChain file-symbol cache hoisting', () => {
 
 describe('runImpact integration', () => {
   it('exits 0 with non-empty output for querySymbols', () => {
-    let captured = ''
-    const origWrite = process.stdout.write.bind(process.stdout)
-    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-      if (typeof chunk === 'string') captured += chunk
-      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-    }
-    try {
+    const captured = captureStdout(() => {
       const code = runImpact({ symbol: 'querySymbols', top: 5 })
       expect(code).toBe(0)
-    } finally {
-      process.stdout.write = origWrite
-    }
+    })
     // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
     // documented plain-text shape (`{symbol}\t(hops: {n})`, see runImpact's emit loop) so a
     // regression that dropped the tab separator or the "hops:" suffix is caught here.
@@ -1917,18 +1614,10 @@ describe('runImpact module-scope refs', () => {
       ].join('\n'))
       indexFileSync(filePath)
 
-      let captured = ''
-      const origWrite = process.stdout.write.bind(process.stdout)
-      process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-        if (typeof chunk === 'string') captured += chunk
-        return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-      }
-      try {
+      const captured = captureStdout(() => {
         const code = runImpact({ symbol: 'moduleScopeTargetFn9k2', json: true })
         expect(code).toBe(0)
-      } finally {
-        process.stdout.write = origWrite
-      }
+      })
       const parsed = JSON.parse(captured) as Array<{ symbol: string; hops: number }>
       const moduleScopeEntry = parsed.find((e) => e.symbol.includes('(module scope)') && e.symbol.includes(filePath))
       expect(moduleScopeEntry).toBeDefined()
@@ -2485,17 +2174,9 @@ describe('runCoverageGaps subdirectory scoping', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(subdir)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runCoverageGaps({ json: true, top: 5000 })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string }>
         // Pre-fix: rootDir === subdir, so `lib/outside.ts` (a sibling of subdir, not a
         // descendant) falls outside the `<subdir>/%` LIKE scope and is silently excluded from
@@ -2626,17 +2307,9 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runContextFor({ task: 'ftsScopeSharedTerm9k2', json: true, top: 50 })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ symbol: string }>
         expect(parsed.some((r) => r.symbol === 'ftsScopeFnA9k2')).toBe(true)
         // rootB's symbol shares the same searchable docstring term but must not leak into
@@ -2666,17 +2339,9 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
       const origBackendEnv = process.env.TOKEN_GOAT_ASK_BACKEND
       delete process.env.TOKEN_GOAT_ASK_BACKEND
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runAsk({ question: 'ftsAskSharedTerm9k2', json: true, top: 50 })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as { context: Array<{ symbol: string }> }
         expect(parsed.context.some((r) => r.symbol === 'ftsAskFnA9k2')).toBe(true)
         expect(parsed.context.some((r) => r.symbol === 'ftsAskFnB9k2')).toBe(false)
@@ -2707,17 +2372,9 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
       try {
-        let captured = ''
-        const origWrite = process.stdout.write.bind(process.stdout)
-        process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
-          if (typeof chunk === 'string') captured += chunk
-          return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
-        }
-        try {
+        const captured = captureStdout(() => {
           runSimilar({ spec: `${normalizePath(fileA)}::ftsSimilarAnchor9k2`, top: 50, json: true })
-        } finally {
-          process.stdout.write = origWrite
-        }
+        })
         const parsed = JSON.parse(captured) as Array<{ name: string }>
         expect(parsed.some((r) => r.name === 'ftsSimilarOther9k2')).toBe(false)
       } finally {

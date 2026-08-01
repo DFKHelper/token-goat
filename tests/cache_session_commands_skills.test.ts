@@ -13,16 +13,17 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { cmdCleanCache, cmdPruneCache } from '../src/cache_session_commands.js'
 import { storeOutput, setSkillOutputsDirForTesting, getAllCachedSkills, SKILLS_OUTPUT_SUBDIR } from '../src/skill_cache.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let tmpHome: string
 let tmpSkillsDir: string
 let prevHome: string | undefined
 let stdoutLines: string[]
-let writeSpy: ReturnType<typeof vi.spyOn>
+let writeSpy: WriteSpy
 
 beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
@@ -33,10 +34,7 @@ beforeEach(() => {
   setSkillOutputsDirForTesting(tmpSkillsDir)
 
   stdoutLines = []
-  writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdoutLines.push(String(chunk))
-    return true
-  })
+  writeSpy = spyOnWrite(process.stdout, stdoutLines)
 })
 
 afterEach(() => {

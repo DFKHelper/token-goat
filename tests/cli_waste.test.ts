@@ -53,7 +53,7 @@ function writeTranscript(transcriptPath: string, count: number): void {
 
 describe('runWasteCommand', () => {
   let tempDir: string
-  let origExitCode: number | string | undefined
+  let origExitCode: number | string | null | undefined
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-waste-test-'))

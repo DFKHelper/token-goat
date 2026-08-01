@@ -4,6 +4,7 @@ import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { expectHookType } from './helpers/hook-output.js'
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp
 // file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
@@ -533,13 +534,13 @@ describe('preBashHandler — cat source file recall', () => {
 
   it('denies cat of a local.env file', () => {
     const result = preBashHandler(makeBashEvent('cat C:/Projects/myapp/local.env'))
-    expect(result.hookType).toBe('deny')
+    expectHookType(result, 'deny')
     expect(result.message).toContain('config-get')
   })
 
   it('denies cat of a .env.local file', () => {
     const result = preBashHandler(makeBashEvent('cat /app/.env.local'))
-    expect(result.hookType).toBe('deny')
+    expectHookType(result, 'deny')
     expect(result.message).toContain('config-get')
   })
 
@@ -2673,13 +2674,13 @@ describe('postBashHandler — gh api advisory hints', () => {
   it('emits a scope hint when the response carries a permission-error phrase', async () => {
     const body = '{"message": "Resource not accessible by integration", "documentation_url": "https://docs"}'
     const result = await postBashHandler(ghEvent('gh api /repos/o/r/security_advisories', body))
-    expect(result.hookType).toBe('context')
+    expectHookType(result, 'context')
     expect(result.context).toContain('gh auth refresh -s security_events')
   })
 
   it('emits a large-response hint when a gh api JSON object has 15+ keys', async () => {
     const result = await postBashHandler(ghEvent('gh api /user', wideJson(15)))
-    expect(result.hookType).toBe('context')
+    expectHookType(result, 'context')
     expect(result.context).toContain('Large API response (15 keys)')
     expect(result.context).toContain("--jq '.key1,.key2'")
   })
@@ -2688,7 +2689,7 @@ describe('postBashHandler — gh api advisory hints', () => {
     const obj: Record<string, string> = { message: 'Must have push access' }
     for (let i = 0; i < 20; i++) obj['k' + i] = String(i)
     const result = await postBashHandler(ghEvent('gh api /repos/o/r/advisories', JSON.stringify(obj)))
-    expect(result.hookType).toBe('context')
+    expectHookType(result, 'context')
     expect(result.context).toContain('gh auth refresh -s security_events')
     expect(result.context).toContain('Large API response (21 keys)')
   })
@@ -2702,7 +2703,7 @@ describe('postBashHandler — gh api advisory hints', () => {
     const result = await postBashHandler(
       ghEvent('gh api /repos/o/r/security_advisories', { output: '{"message": "Not Found"}', exit_code: 1 }),
     )
-    expect(result.hookType).toBe('context')
+    expectHookType(result, 'context')
     expect(result.context).toContain('gh auth refresh -s security_events')
   })
 
@@ -2711,7 +2712,7 @@ describe('postBashHandler — gh api advisory hints', () => {
     const result = await postBashHandler(
       ghEvent('gh api /repos/o/r/advisories', 'gh: Resource not accessible by integration (HTTP 403)'),
     )
-    expect(result.hookType).toBe('context')
+    expectHookType(result, 'context')
     expect(result.context).toContain('gh auth refresh -s security_events')
   })
 
