@@ -1677,4 +1677,10 @@ describe('isParseSkipEligible', () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
+
+  it('skips known generated coverage-report basenames regardless of size or skip_dirs (coverage.json/coverage-final.json land at arbitrary depth, not just under a coverage/ dir)', () => {
+    expect(isParseSkipEligible('/repo/coverage.json', cfg)).toBe(true)
+    expect(isParseSkipEligible('/repo/sub/coverage-final.json', cfg)).toBe(true)
+    expect(isParseSkipEligible('/repo/src/coverage.ts', cfg)).toBe(false)
+  })
 })
