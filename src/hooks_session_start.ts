@@ -26,6 +26,7 @@ import { passOutput, contextOutput, getCwd } from './hooks_common.js'
 import { loadConfig } from './config.js'
 import { countSymbols } from './index_reader.js'
 import { globalDbPath } from './constants.js'
+import { checkSymbolBodySize } from './cli_doctor.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
 const GENERIC_REMINDER =
@@ -52,7 +53,16 @@ function buildReminder(cwd: string | undefined): string {
 export function sessionStartHandler(event: HookEvent): HookOutput {
   try {
     if (!loadConfig().hints.session_start_reminder) return passOutput()
-    return contextOutput(buildReminder(getCwd(event)))
+    let context = buildReminder(getCwd(event))
+    try {
+      const dbHealth = checkSymbolBodySize(globalDbPath())
+      if (dbHealth.status === 'warn') {
+        context += ` token-goat: ${dbHealth.message}`
+      }
+    } catch {
+      // dodgy DB health check must never block the base reminder
+    }
+    return contextOutput(context)
   } catch {
     return passOutput()
   }

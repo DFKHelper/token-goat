@@ -115,6 +115,34 @@ describe('sessionStartHandler', () => {
     expect(result).toEqual({ hookType: 'pass' })
   })
 
+  it('appends a DB-health warning to the context when a stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+    const db = getDb(_testDbPath)
+    const oversized = 'x'.repeat(200 * 1024)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('/some/generated.js', 'bloated', 'function', 1, 2, oversized, '')
+
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('above the')
+      expect(result.context).toContain('reclaim-index')
+    }
+  })
+
+  it('does not add DB-health noise when no stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+    const db = getDb(_testDbPath)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('/some/normal.js', 'small', 'function', 1, 2, 'return 1', '')
+
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('reclaim-index')
+    }
+  })
+
   it('fails soft (pass) when the underlying DB lookup throws', () => {
     // Point at a path that can never be a valid sqlite file (a directory), so getDb()/countSymbols()
     // throws inside buildReminder() and the handler's own try/catch must still return cleanly.
