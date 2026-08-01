@@ -15,7 +15,13 @@ import { loadSessionState, saveSessionState } from '../src/session_store.js'
 // over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
 // as a whole exceeds budget" test below) is actually exercised -- this real repo's own compact
 // project map is far too small to trip BRIEFING_TARGET_TOKENS on its own.
+// Fixed-size project maps (not derived from this repo's own live index) so both the
+// over-budget path and the cache-ids-block regression path are exercised deterministically,
+// regardless of the host machine's index state or repo size -- see cycle 121: a test that reads
+// buildProjectMap()'s live output for this repo passes or fails depending on ambient index
+// staleness, not on the actual budget-vs-reminder-size coupling being tested.
 let _hugeProjectMapOverride = false
+let _realisticProjectMapOverride = false
 vi.mock('../src/baseline.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -25,7 +31,30 @@ vi.mock('../src/baseline.js', async (importOriginal) => {
         // Sized so map+reminder alone fits BRIEFING_TARGET_TOKENS but map+cache-ids+reminder
         // does not -- exercises the "drop cache-ids first, keep the reminder" path specifically,
         // not the further last-resort tail-trim fallback for a still-oversized map alone.
-        return 'huge-project-map-line '.repeat(26)
+        return 'huge-project-map-line '.repeat(38)
+      }
+      if (_realisticProjectMapOverride) {
+        // A fixed, realistic mid-size project's compact map (measured ~140 tokens): together with
+        // the current reminder text this lands right at the old 300-token budget's edge -- the
+        // exact shape of the cycle 121 regression, where the cache-ids block silently vanished on
+        // essentially every real indexed project, not just huge outliers.
+        return [
+          '# Project map: example-app',
+          'Files: 640',
+          'Languages: typescript 480, markdown 60, json 40, yaml 20, python 20, css 12, html 8',
+          '',
+          '## Top symbols',
+          '- UserService (class)',
+          '- OrderController (class)',
+          '- PaymentGateway (class)',
+          '- AuthMiddleware (class)',
+          '- InventoryManager (class)',
+          '- NotificationQueue (class)',
+          '- ReportGenerator (class)',
+          '- CacheLayer (class)',
+          '- ApiClient (class)',
+          '- SchemaValidator (class)',
+        ].join('\n')
       }
       return (original['formatProjectMap'] as (...a: unknown[]) => string)(...args)
     },
@@ -169,6 +198,31 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       const updatedPrompt = result.updatedInput['prompt']
       expect(typeof updatedPrompt).toBe('string')
       expect(updatedPrompt).toContain('token-goat bash-output') // Cached output hint
+    }
+  })
+
+  it('includes the cache-ids block against a realistic mid-size project map, independent of the host repo\'s own index state (regression test for cycle 121: BRIEFING_TARGET_TOKENS left near-zero headroom once the reminder grew, so a modest map + 1 cached id silently dropped the cache-ids block on essentially every real spawn)', async () => {
+    _realisticProjectMapOverride = true
+    try {
+      const outputId = await storeBashOutput('echo test', 'test output', 0)
+      recordBashOutput('hash1', outputId)
+
+      const prompt = 'Check the previous build output.'
+      const payload = {
+        tool_name: 'Agent',
+        tool_input: { prompt },
+        session_id: sessionId,
+      }
+      const result = await runHook(buildEvent('pre_tool_use', payload))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        const updatedPrompt = result.updatedInput['prompt']
+        expect(typeof updatedPrompt).toBe('string')
+        expect(updatedPrompt).toContain('token-goat bash-output')
+        expect(updatedPrompt).toContain('Cached outputs this session')
+      }
+    } finally {
+      _realisticProjectMapOverride = false
     }
   })
 
