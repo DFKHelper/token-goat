@@ -24,7 +24,7 @@
     "test:watch": "vitest",
     "lint": "eslint src tests",
     "dev": "tsx src/main.ts",
-    "prepare": "lefthook install"
+    "prepare": "node scripts/install-git-hooks.mjs"
   },
   "contributors": [
     {
