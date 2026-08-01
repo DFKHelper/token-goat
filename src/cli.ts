@@ -2522,7 +2522,7 @@ export function buildProgram(): Command {
   program
     .command('read <spec>')
     .description(
-      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol)",
+      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; comma-separated file::a,b for a merged multi-symbol view)",
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')

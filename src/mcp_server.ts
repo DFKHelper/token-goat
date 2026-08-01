@@ -158,9 +158,11 @@ export function createMcpServer(): McpServer {
   server.registerTool(
     'read',
     {
-      description: "Read one symbol's full body, given a spec of the form file::symbol, or a line range file@N-M / file@N, or a bare file path.",
+      description:
+        "Read one symbol's full body, given a spec of the form file::symbol, or a line range file@N-M / file@N, or a bare file path. " +
+        'Pass a comma-separated spec (file::a,b) to fetch several symbols\' bodies from one file in a single call.',
       inputSchema: {
-        spec: z.string().describe('file::symbol, file@N-M, file@N, or a bare file path'),
+        spec: z.string().describe('file::symbol, file@N-M, file@N, a bare file path, or comma-separated file::a,b for a merged multi-symbol view'),
         json: z.boolean().optional().describe('output as JSON'),
         forceRefresh: z.boolean().optional().describe('reparse file from disk before querying (ignore stale index)'),
         projectRoot: projectRootField,

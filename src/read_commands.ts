@@ -398,6 +398,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 // ---- read (symbol body) -----------------------------------------------------
 
 export interface ReadOptions {
+  /**
+   * `file::symbol`, `file@N-M` / `file@N` (line range), a bare file path, or -- new -- a
+   * comma-separated symbol list (`file::a,b,c`) to fetch several symbol bodies in one call,
+   * mirroring `refs`'s multi-symbol grammar. See {@link runReadMulti}.
+   */
   spec: string
   json?: boolean
   contextLines?: number
@@ -410,6 +415,14 @@ export interface ReadOptions {
    * or an ambiguous symbol name can match a same-named definition in an unrelated project.
    */
   projectRoot?: string
+  /**
+   * Internal only -- set by {@link runReadMulti} on each per-symbol recursive `runRead` call so
+   * the single-symbol path skips its own `recordReadStat`. Without this, N symbols from the
+   * same file would each record a stat against the full file size, inflating the recorded
+   * token-savings by a factor of N for what is really one read. `runReadMulti` records the stat
+   * itself, once, for the whole multi-symbol call. Not a CLI/MCP-facing option.
+   */
+  suppressStat?: boolean
 }
 
 function parseReadSpec(spec: string): { file: string; symbol?: string } {
@@ -686,6 +699,16 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 
   const { file, symbol } = parseReadSpec(opts.spec)
 
+  // Multi-symbol form: `file::a,b,c`. Guarded against the numeric line-range spec `file::N,M`
+  // (parseColonLineRange, consulted a few lines below on a resolution miss) so a comma there is
+  // never misread as two symbol names -- `parseColonLineRange(symbol) === null` fails fast for
+  // the numeric form and falls straight through to the existing single-symbol path, which still
+  // reaches the `::N,M` fallback later exactly as before.
+  if (symbol !== undefined && symbol !== '' && symbol.includes(',') && parseColonLineRange(symbol) === null) {
+    const multiSymbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    if (multiSymbols.length > 1) return runReadMulti(file, multiSymbols, opts)
+  }
+
   if (symbol === undefined || symbol === '') {
     const text = readFileText(file)
     if (text === null) {
@@ -733,7 +756,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // output shape with no honest signal that the text is available elsewhere -- the text form
     // below already resolves it.
     const text = JSON.stringify({ ...match, body: resolveBody(match) }, null, 2)
-    recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+    if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
   }
 
@@ -746,8 +769,49 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   ]
   const warning = staleWarning(match.filePath)
   const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol')
-  recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+  if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
   return { text, code: 0 }
+}
+
+/**
+ * Handle ``token-goat read "file::a,b,c"`` -- fetch several symbol bodies from one file in a
+ * single call, mirroring `refs`'s comma-separated multi-symbol grammar (see
+ * {@link parseMultiRefsSpec}). Delegates each symbol to a recursive {@link runRead} call
+ * (`suppressStat: true`) rather than reimplementing resolution, so ambiguity handling,
+ * not-found + did-you-mean, and JSON shape all come from the exact same code path the
+ * single-symbol form already exercises -- a failure to resolve one symbol is reported inline
+ * instead of aborting the whole call, same as `runRefs`'s per-symbol handling.
+ */
+function runReadMulti(file: string, symbols: string[], opts: ReadOptions): { text: string; code: number } {
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+
+  for (const sym of symbols) {
+    const sub = runRead({ ...opts, spec: `${file}::${sym}`, suppressStat: true })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) {
+      // Parse the sub-call's JSON string back into an object so the multi envelope nests real
+      // JSON per symbol, never an embedded string -- a failed sub-call has no JSON body of its
+      // own, so it is represented by its plain-text error instead.
+      jsonOut[sym] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      continue
+    }
+    textBlocks.push(`${sym}:\n${sub.text}`)
+  }
+
+  // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol --
+  // each sub-call already skipped its own recordReadStat via suppressStat for exactly this
+  // reason (see ReadOptions.suppressStat).
+  if (anyFound) {
+    const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
+    const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+    recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
+    return { text, code: 0 }
+  }
+
+  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  return { text, code: 1 }
 }
 
 // ---- section ----------------------------------------------------------------

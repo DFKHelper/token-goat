@@ -916,6 +916,77 @@ describe('read_commands', () => {
         expect(stdout).toContain('real symbol body')
       })
     })
+
+    // ---- multi-symbol read (file::a,b) -------------------------------------
+    describe('multi-symbol read (file::a,b)', () => {
+      function poolMock(pool: MockSymbol[]): void {
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = pool
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+      }
+
+      const symA: MockSymbol = { name: 'alphaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'alphaFn body', docstring: '' }
+      const symB: MockSymbol = { name: 'betaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 5, body: 'betaFn body', docstring: '' }
+
+      it('returns both symbol bodies in text mode', () => {
+        poolMock([symA, symB])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,betaFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('alphaFn')
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('betaFn')
+        expect(stdout).toContain('betaFn body')
+      })
+
+      it('returns an object keyed by both symbol names in JSON mode, each a real nested object', () => {
+        poolMock([symA, symB])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,betaFn', json: true })
+        expect(code).toBe(0)
+        const payload = JSON.parse(stdout) as Record<string, { name: string; body: string }>
+        expect(payload.alphaFn?.name).toBe('alphaFn')
+        expect(payload.alphaFn?.body).toBe('alphaFn body')
+        expect(payload.betaFn?.name).toBe('betaFn')
+        expect(payload.betaFn?.body).toBe('betaFn body')
+      })
+
+      it('REGRESSION: file::120,140 still serves the numeric line range, not two symbols', () => {
+        const f = path.join(tempDir, 'colon-range-multi.txt')
+        fs.writeFileSync(f, Array.from({ length: 5 }, (_, i) => `line${i + 1}`).join('\n') + '\n')
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${f}::2,4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('line2\nline3\nline4')
+        expect(stdout).not.toContain('line1')
+        expect(stdout).not.toContain('line5')
+      })
+
+      it('one existing + one missing symbol: existing body returned, missing one reported inline, exit code 0', () => {
+        poolMock([symA])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,missingFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('missingFn')
+        expect(stdout).toContain('not found')
+      })
+
+      it('returns exit code 1 when no symbol in the list resolves', () => {
+        poolMock([])
+        const { code } = runRead({ spec: 'src/foo.ts::missingA,missingB' })
+        expect(code).toBe(1)
+      })
+
+      it('single-symbol read output is byte-identical to before (no comma path regression)', () => {
+        poolMock([symA])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('alphaFn body')
+        // No multi-symbol heading/merge artifacts leak into the single-symbol path.
+        expect(stdout).not.toContain('alphaFn:\n')
+      })
+    })
   })
 
   // ---- runSection ---------------------------------------------------------
