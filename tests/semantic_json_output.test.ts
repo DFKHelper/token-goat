@@ -28,11 +28,19 @@ describe('runSemantic --json', () => {
       try {
         const { text, code } = await runSemantic('semJsonSharedTerm9k2', { json: true })
         expect(code).toBe(0)
-        const payload = JSON.parse(text) as { source: string; items: Array<{ filePath: string; preview: string }> }
+        const payload = JSON.parse(text) as {
+          source: string
+          items: Array<{ filePath: string; preview: string; distance: number | null }>
+          truncated: boolean
+          totalCount: number
+        }
         expect(payload.source).toBe('fts')
         expect(payload.items.length).toBeGreaterThan(0)
         expect(payload.items[0]?.filePath).toContain('a.ts')
         expect(payload.items[0]?.preview).toContain('semJsonFn9k2')
+        expect(payload.items[0]?.distance).toBeNull()
+        expect(payload.truncated).toBe(false)
+        expect(payload.totalCount).toBe(payload.items.length)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -48,8 +56,10 @@ describe('runSemantic --json', () => {
       try {
         const { text, code } = await runSemantic('noSuchSymbolAtAllZz9k2', { json: true })
         expect(code).toBe(1)
-        const payload = JSON.parse(text) as { source: string; items: unknown[] }
+        const payload = JSON.parse(text) as { source: string; items: unknown[]; truncated: boolean; totalCount: number }
         expect(payload.items).toEqual([])
+        expect(payload.truncated).toBe(false)
+        expect(payload.totalCount).toBe(0)
       } finally {
         cwdSpy.mockRestore()
       }

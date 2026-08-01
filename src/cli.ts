@@ -232,7 +232,9 @@ function requirePositiveInt(flag: string, raw: string): number {
 async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   const { text, code } = await runSemantic(query, { limit, ...(opts.json === true ? { json: true } : {}) })
-  ;(code === 0 ? out : err)(text)
+  // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only
+  // the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
+  ;(opts.json === true || code === 0 ? out : err)(text)
   process.exitCode = code
 }
 

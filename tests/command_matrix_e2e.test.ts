@@ -183,7 +183,20 @@ const cases: Record<string, () => void | Promise<void>> = {
   // proof - a meaning-only natural-language query finding a symbol whose name/body never uses
   // the query's words, with a control run showing the same query genuinely misses under FTS
   // alone - lives in tests/semantic_embeddings_e2e.test.ts.
-  semantic: () => expectRead(['semantic', 'alphamarker'], 'alphaSym'),
+  semantic: () => {
+    expectRead(['semantic', 'alphamarker'], 'alphaSym')
+    // --json against the real built bundle: proves the JSON envelope (guardJsonRows'
+    // {items, truncated, totalCount}) actually reaches stdout through the shipped CLI, not just
+    // through the in-process runSemantic() unit tests.
+    const r = run(['semantic', 'alphamarker', '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const payload = JSON.parse(r.stdout) as { source: string; items: unknown[]; truncated: boolean; totalCount: number }
+    expect(['embeddings', 'fts']).toContain(payload.source)
+    expect(Array.isArray(payload.items)).toBe(true)
+    expect(payload.items.length).toBeGreaterThan(0)
+    expect(typeof payload.truncated).toBe('boolean')
+    expect(typeof payload.totalCount).toBe('number')
+  },
   skeleton: () => {
     expectRead(['skeleton', 'src/mod.ts'], 'alphaSym')
     const r = run(['skeleton', 'src/mod.ts', '--stats'])
