@@ -31,6 +31,21 @@ vi.mock('../src/util.js', async (importOriginal) => {
 import { execFileSync } from 'node:child_process';
 import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS, isUnderSystemTemp } from '../src/project.js';
 import { lowercaseDriveLetter } from '../src/paths.js';
+import { foldPath } from '../src/util.js';
+
+/**
+ * Assert two paths name the same location, compared the way the product compares them.
+ *
+ * These tests mix two sources of spelling for one directory: `os.tmpdir()` reports the
+ * environment's (`C:\WINDOWS\TEMP`), while `git rev-parse --show-toplevel` reports the on-disk
+ * one (`C:/Windows/Temp`). Both are correct and both name the same folder, so a case-sensitive
+ * `toBe` fails on a distinction the filesystem itself does not make. foldPath is the product's
+ * own path-comparison function, so asserting through it pins the invariant that actually holds
+ * rather than an incidental property of whichever tool produced the string.
+ */
+function expectSamePath(actual: string, expected: string): void {
+  expect(foldPath(actual)).toBe(foldPath(expected));
+}
 import { runGit } from '../src/util.js';
 
 describe('project', () => {
@@ -516,7 +531,7 @@ describe('project', () => {
 
       const root = resolveProjectRoot({ project: subdir });
 
-      expect(root).toBe(canonicalize(tmpDir));
+      expectSamePath(root, canonicalize(tmpDir));
     });
 
     it('falls back to findProject when the base directory is not inside a git repo but has a marker file', () => {
@@ -564,7 +579,7 @@ describe('project', () => {
 
       const root = resolveProjectRoot();
 
-      expect(root).toBe(canonicalize(tmpDir));
+      expectSamePath(root, canonicalize(tmpDir));
     });
 
     it('an explicit project param overrides process.cwd() as the resolution base', () => {
@@ -575,8 +590,8 @@ describe('project', () => {
 
         const root = resolveProjectRoot({ project: tmpDir });
 
-        expect(root).toBe(canonicalize(tmpDir));
-        expect(root).not.toBe(canonicalize(otherDir));
+        expectSamePath(root, canonicalize(tmpDir));
+        expect(foldPath(root)).not.toBe(foldPath(canonicalize(otherDir)));
       } finally {
         // Windows can't remove a directory that is the current working directory; chdir away
         // first (afterEach also restores cwd, but that runs after this finally block).
