@@ -19,10 +19,10 @@ import { homedir } from 'os'
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
-import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
+import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
 import { formatLocalTimestamp, recordStat } from './stats.js'
 import { getTrackedFiles } from './repomap.js'
-import { collectWalkIndexFiles } from './walk_index.js'
+import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { indexFileSync, indexFileEmbeddings, isEmbedFresh, isParseSkipEligible } from './parser.js'
@@ -171,6 +171,7 @@ import { findProject } from './project.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
 import { runDepDocs } from './dep_docs.js'
 import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
+import { cmdReclaimIndex } from './index_reclaim.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
 import { runMemoryCommand } from './cli_memory.js'
@@ -237,7 +238,7 @@ async function cmdSemantic(query: string, opts: { limit?: string }): Promise<voi
 
 export async function cmdIndex(
   pathArg?: string,
-  opts: { walk?: boolean; dbPath?: string; force?: boolean } = {},
+  opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean } = {},
 ): Promise<void> {
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
@@ -251,7 +252,14 @@ export async function cmdIndex(
       )
     }
     // Opt-in non-git fallback: a bounded directory walk, guarded against over-broad roots / oversized trees and stripped of .env / generated files.
-    files = collectWalkIndexFiles(root)
+    files = collectWalkIndexFiles(root, { force: opts.forceWalk === true })
+    if (opts.forceWalk === true) {
+      process.stderr.write(
+        `token-goat: --force-walk raised the walk cap to ${MAX_FILES_SCANNED_FORCED} files; ` +
+          `indexing ${files.length} files may take a long time and produce a large index. ` +
+          `Run 'token-goat doctor' afterwards to check index size.\n`,
+      )
+    }
   }
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
@@ -2621,6 +2629,7 @@ export function buildProgram(): Command {
     .description('parse all git-tracked files and (re)build the symbol index')
     .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
     .option('--force', 'bypass the SHA-freshness cache and reindex every tracked file, even byte-identical ones (e.g. after a parser upgrade changes what gets extracted)')
+    .option('--force-walk', `with --walk, raise the ${MAX_FILES_SCANNED} source-file refusal to ${MAX_FILES_SCANNED_FORCED} for a folder you know is genuinely that large (slow; produces a large index)`)
     .action(guard(cmdIndex))
 
   program
@@ -3233,6 +3242,17 @@ export function buildProgram(): Command {
     .option('-l, --limit <n>', 'max results (default: 30)')
     .option('-j, --json', 'output as JSON')
     .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdMcpHistory(opts))())
+
+  program
+    .command('reclaim-index')
+    .description('shrink an oversized symbol index: VACUUM, or --rebuild to drop derived rows so the next index run re-derives them')
+    .option('--rebuild', 'also drop all derived rows (files/symbols/refs/chunks) so the next `token-goat index` reparses from scratch under current parser rules')
+    .option('--db-path <path>', 'index database to reclaim (default: the global index)')
+    .option('--force', 'proceed even if the worker daemon appears to be running')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { rebuild?: boolean; dbPath?: string; json?: boolean; force?: boolean }) =>
+      guard(() => cmdReclaimIndex(opts))(),
+    )
 
   program
     .command('clean-cache')

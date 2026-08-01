@@ -1642,6 +1642,39 @@ const cases: Record<string, () => void | Promise<void>> = {
     const arr = JSON.parse(rj.stdout) as unknown[]
     expect(Array.isArray(arr)).toBe(true)
   },
+  'reclaim-index': () => {
+    // Runs against its own isolated data dir, never `dataBase`: --rebuild drops every derived
+    // row, which would wipe the shared index the rest of this suite reads from.
+    const isolated = mkIsolated('tg-reclaim-')
+    const env = { ...tgEnv(isolated) }
+    const rIdx = run(['index'], { env })
+    expect(rIdx.status, rIdx.stderr).toBe(0)
+
+    const rj = run(['reclaim-index', '--rebuild', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as {
+      rebuilt: boolean
+      dropped: Record<string, number>
+      beforeBytes: number
+      afterBytes: number
+    }
+    expect(p.rebuilt).toBe(true)
+    // The fixture repo really was indexed above, so the rebuild must report dropping real rows
+    // -- a 0 here would mean the delete ran against an empty or wrong database.
+    expect(p.dropped['symbols']).toBeGreaterThan(0)
+    expect(p.afterBytes).toBeGreaterThan(0)
+
+    // Derived rows are genuinely gone, not merely reported as gone.
+    const rSym = run(['symbol', 'alphaSym'], { env })
+    expect(rSym.stdout).not.toContain('src/mod.ts')
+
+    // Vacuum-only form: valid, and must not silently drop anything.
+    const r2 = run(['reclaim-index', '--json'], { env })
+    expect(r2.status, r2.stderr).toBe(0)
+    const p2 = JSON.parse(r2.stdout) as { rebuilt: boolean; dropped: Record<string, number> }
+    expect(p2.rebuilt).toBe(false)
+    expect(Object.keys(p2.dropped)).toHaveLength(0)
+  },
   'clean-cache': () => {
     // Isolated home; nothing to prune; must exit 0 and report 0 removed total.
     const cacheDir = mkIsolated('tg-clean-')

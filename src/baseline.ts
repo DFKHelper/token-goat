@@ -75,7 +75,7 @@ export interface WalkResult {
  */
 export function walkProject(
   rootDir: string,
-  opts: { excludeTests?: boolean; includeEmbeddableDocuments?: boolean } = {},
+  opts: { excludeTests?: boolean; includeEmbeddableDocuments?: boolean; maxFiles?: number } = {},
 ): WalkResult {
   const files: string[] = []
   const languages: Record<string, number> = {}
@@ -91,8 +91,12 @@ export function walkProject(
   // generated directories can be excluded from a non-git walk the same way they already are
   // from a git-tracked `index` run (see isUnderSkipDir in parser.ts).
   const extraSkipDirs = loadConfig().indexing.skip_dirs
+  // Callers that have explicitly opted past the default ceiling (`index --walk --force`, see
+  // walk_index.ts) raise it here. Still a finite bound, never unlimited: an unbounded walk is
+  // how a mistyped root turns into a whole-drive scan.
+  const maxFiles = opts.maxFiles ?? MAX_FILES_SCANNED
 
-  while (stack.length > 0 && files.length < MAX_FILES_SCANNED) {
+  while (stack.length > 0 && files.length < maxFiles) {
     const dir = stack.pop()
     if (dir === undefined) break
 
@@ -118,7 +122,7 @@ export function walkProject(
         if (excludeTests && isTestFile(full)) continue
         files.push(full)
         languages[lang] = (languages[lang] ?? 0) + 1
-        if (files.length >= MAX_FILES_SCANNED) break
+        if (files.length >= maxFiles) break
       }
     }
   }
