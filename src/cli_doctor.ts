@@ -128,21 +128,30 @@ export function checkSymbolBodySize(dbPath: string): DoctorResult {
   }
   try {
     const db = getDb(dbPath)
-    const row = db.prepare('SELECT MAX(LENGTH(body)) as maxLen FROM symbols').get() as { maxLen: number | null }
-    const maxLen = row?.maxLen ?? 0
-    if (maxLen > MAX_SYMBOL_BODY_CHARS) {
+    // Bounded early-exit scan instead of `SELECT MAX(LENGTH(body))`, which is a full table scan
+    // with no index able to serve it (symbols is only indexed on name/file_path, see db.ts). On a
+    // real 391 MB / 239,976-row damaged index this form measured 6.9 ms vs 54-62 ms for MAX() --
+    // it stops at the first offending row instead of scanning every row to find the largest.
+    // Selecting file_path alongside the length also gives the message an actionable target
+    // instead of a bare number.
+    const row = db
+      .prepare('SELECT LENGTH(body) as len, file_path as filePath FROM symbols WHERE LENGTH(body) > ? LIMIT 1')
+      .get(MAX_SYMBOL_BODY_CHARS) as { len: number; filePath: string } | undefined
+    if (row !== undefined) {
       return {
         name: 'Symbol body size',
         status: 'warn',
         message:
-          `a stored symbol body is ${maxLen} chars, above the ${MAX_SYMBOL_BODY_CHARS}-char cap enforced by ` +
-          `boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
-          `Try 'token-goat reclaim-index' first (a plain VACUUM, cheap); if the oversized rows remain, ` +
-          `'token-goat reclaim-index --rebuild' clears them but reparses and re-embeds every indexed file ` +
-          `across every project and can take a long time on a large multi-project index`,
+          `a stored symbol body in ${row.filePath} is ${row.len} chars, above the ${MAX_SYMBOL_BODY_CHARS}-char cap ` +
+          `enforced by boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
+          `A plain 'token-goat reclaim-index' (VACUUM only) CANNOT remove these rows -- it only reclaims freed ` +
+          `pages, it never deletes row content. Only 'token-goat reclaim-index --rebuild' drops and re-derives ` +
+          `them under the cap (stop the worker first with 'token-goat worker stop', since reclaim-index refuses ` +
+          `to run while it's live); --rebuild reparses and re-embeds every indexed file across every project and ` +
+          `can take a long time on a large multi-project index`,
       }
     }
-    return { name: 'Symbol body size', status: 'ok', message: `largest stored symbol body is ${maxLen} chars` }
+    return { name: 'Symbol body size', status: 'ok', message: 'no stored symbol body exceeds the cap' }
   } catch (err) {
     return {
       name: 'Symbol body size',
