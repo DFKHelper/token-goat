@@ -28,6 +28,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'test-session-123',
+      agentId: undefined,
       raw: {
         tool_response: largeResponse,
       },
@@ -57,6 +58,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'test-session-123',
+      agentId: undefined,
       raw: {
         tool_response: smallResponse,
       },
@@ -78,6 +80,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: '', // Empty session ID
+      agentId: undefined,
       raw: {
         tool_response: largeResponse,
       },
@@ -130,6 +133,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url: 'https://example.com/never' },
       sessionId: 'test-session-cold',
+      agentId: undefined,
       raw: {},
     } as HookEvent)
     expect(result.hookType).toBe('pass')
@@ -146,6 +150,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url, prompt },
       sessionId: 'session-process-1',
+      agentId: undefined,
       raw: { tool_response: largeResponse },
     } as HookEvent)
 
@@ -160,6 +165,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url, prompt },
       sessionId: 'session-process-2',
+      agentId: undefined,
       raw: {},
     } as HookEvent)
 

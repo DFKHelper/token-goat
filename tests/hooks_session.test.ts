@@ -60,6 +60,7 @@ describe('hooks_session', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         prompt: 'k',
         cwd: '/tmp',
@@ -77,6 +78,7 @@ describe('hooks_session', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         prompt: 'this is a longer test prompt that should pass the length check',
         cwd: '/tmp/repo',
@@ -93,6 +95,7 @@ describe('hooks_session', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: '',
+      agentId: undefined,
       raw: { cwd: '/tmp/repo' },
     };
     const result = subagentStopHandler(event);
@@ -106,6 +109,7 @@ describe('hooks_session', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {},
     };
     const result = subagentStopHandler(event);
@@ -128,6 +132,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'Searched the codebase and found the relevant function at line 42',
@@ -154,6 +159,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'Fixed the bug in auth.ts and committed the change',
@@ -180,6 +186,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'Implemented the feature, committed, and pushed to origin',
@@ -206,6 +213,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'I have implemented the new feature for user profiles',
@@ -234,6 +242,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'Fixed the bug in the auth module',
@@ -260,6 +269,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           last_assistant_message: 'Examined the architecture and explained how it works',
@@ -286,6 +296,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           cwd: '/tmp/repo',
           transcript_path: '/tmp/transcript.jsonl',
@@ -314,6 +325,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
       };
 
@@ -338,6 +350,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: { cwd: '/tmp/repo' },
       };
 
@@ -357,6 +370,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: 12345 },
       };
 
@@ -371,6 +385,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: 'test-session',
+        agentId: undefined,
         raw: { cwd: 12345 },
       };
 
@@ -391,6 +406,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId,
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check', cwd: '/tmp/repo' },
       };
 
@@ -412,6 +428,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId,
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
@@ -430,6 +447,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId,
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
@@ -448,6 +466,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId: nonce(),
+        agentId: undefined,
         raw: { prompt: 'this is a long enough prompt to pass the length check' },
       };
 
@@ -471,6 +490,7 @@ describe('hooks_session', () => {
         toolName: undefined,
         toolInput: {},
         sessionId,
+        agentId: undefined,
         raw: { prompt: 'ok', cwd: '/tmp/repo' },
       };
 

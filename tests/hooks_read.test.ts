@@ -382,6 +382,7 @@ describe('preReadHandler', () => {
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content },
       }
       postReadHandler(postEvent)
@@ -424,6 +425,7 @@ describe('preReadHandler', () => {
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content },
       }
       postReadHandler(postEvent)
@@ -547,6 +549,7 @@ describe('preReadHandler', () => {
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content },
       }
       postReadHandler(postEvent)
@@ -615,6 +618,7 @@ describe('preReadHandler', () => {
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content + ' [Truncated: file too large, showing first 33K tokens]' },
       }
       postReadHandler(postEvent)
@@ -683,6 +687,7 @@ describe('preReadHandler', () => {
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
       }
       postReadHandler(postEvent)
@@ -1310,6 +1315,7 @@ describe('preReadHandler', () => {
       toolName: 'Read',
       toolInput: { path: '/project/node_modules/package/file.js' },
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     }
     const result = preReadHandler(event)
@@ -1323,6 +1329,7 @@ describe('preReadHandler', () => {
       toolName: 'Grep',
       toolInput: { path: dir, pattern },
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     })
 
@@ -1348,6 +1355,7 @@ describe('preReadHandler', () => {
       toolName: 'Grep',
       toolInput: { path: p, pattern: 'needle' },
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     }
 
@@ -2033,6 +2041,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
     }
     postReadHandler(postEvent)
@@ -2066,6 +2075,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: 'first chunk Truncated: PARTIAL view of file' },
     }
     postReadHandler(postEvent)
@@ -2089,6 +2099,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: 'complete content with no truncation marker' },
     }
     postReadHandler(postEvent)
@@ -2177,6 +2188,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
     postReadHandler(postEvent)
@@ -2293,6 +2305,7 @@ Some content that makes the file large enough`
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content1 },
       }
       postReadHandler(postEvent)
@@ -2327,6 +2340,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
     postReadHandler(postEvent)
@@ -2356,6 +2370,7 @@ Some content that makes the file large enough`
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content1 },
       }
       postReadHandler(postEvent)
@@ -2388,6 +2403,7 @@ Some content that makes the file large enough`
         toolName: 'Read',
         toolInput: { file_path: p },
         sessionId: 'test',
+        agentId: undefined,
         raw: { tool_response: content1 },
       }
       postReadHandler(postEvent)
@@ -2418,6 +2434,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
     // postReadHandler should complete without throwing
@@ -2477,6 +2494,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     })
     recordFileRead(normalizePath(p))
@@ -2600,6 +2618,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
 
@@ -2620,6 +2639,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
 
@@ -2635,6 +2655,7 @@ Some content that makes the file large enough`
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
 
@@ -2719,6 +2740,7 @@ describe('preReadHandler — session artifact re-read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content },
     }
     postReadHandler(postEvent)
@@ -2745,6 +2767,7 @@ describe('preReadHandler — session artifact re-read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: p },
       sessionId: 'test',
+      agentId: undefined,
       raw: { tool_response: content1 },
     }
     postReadHandler(postEvent)

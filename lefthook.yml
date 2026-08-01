@@ -12,6 +12,10 @@ pre-commit:
       priority: 2
       run: npm run typecheck
       glob: "**/*.ts"
+    ts-typecheck-tests:
+      priority: 2
+      run: npm run typecheck:tests
+      glob: "**/*.ts"
     fast-guards:
       priority: 3
       run: npm run test:guards

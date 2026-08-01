@@ -12,7 +12,7 @@ import { storeOutput, setSkillOutputsDirForTesting } from '../src/skill_cache.js
 // resume.ts makes goes through this mock so no test depends on the real repo's working-tree
 // state. Default: no diff output, matching the pre-existing tests' expectations (that section
 // absent) unless a test overrides the mock.
-const runGitMock = vi.fn(() => ({ exitCode: 1, stdout: '', stderr: '' }))
+const runGitMock = vi.fn((..._args: unknown[]) => ({ exitCode: 1, stdout: '', stderr: '' }))
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, runGit: (...args: unknown[]) => runGitMock(...(args as [string[], unknown])) }
