@@ -20,6 +20,7 @@ const _testDbPath = path.join(os.tmpdir(), `tg-hooks-session-start-db-${process.
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
+import * as cliDoctor from '../src/cli_doctor.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { getDb } from '../src/db.js'
@@ -141,6 +142,20 @@ describe('sessionStartHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).not.toContain('reclaim-index')
     }
+  })
+
+  // Regression: the assertion above (`.not.toContain('reclaim-index')`) is tautological on its
+  // own -- the base reminder never contains that substring, so it still passes even if the
+  // entire health-check block (the try/catch wrapping checkSymbolBodySize) were deleted from the
+  // hook outright. This test proves the block actually runs by spying on checkSymbolBodySize
+  // itself: deleting the block makes this spy assertion fail regardless of DB content, closing
+  // the gap the negative-content assertion above cannot cover on its own.
+  it('actually invokes checkSymbolBodySize while building context', () => {
+    const spy = vi.spyOn(cliDoctor, 'checkSymbolBodySize')
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(spy).toHaveBeenCalledWith(_testDbPath)
+    expect(result.hookType).toBe('context')
+    spy.mockRestore()
   })
 
   it('fails soft (pass) when the underlying DB lookup throws', () => {
