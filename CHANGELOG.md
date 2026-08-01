@@ -4,6 +4,13 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.21] - 2026-07-31
+
+### Added
+- **`semantic --json`.** Machine-readable output for `semantic`, the last surgical-read command that lacked one. Emits `{source, items, truncated, totalCount}`, with every item carrying the same keys across both the embeddings and full-text paths (`null` for the ones that don't apply to that source), so a caller never has to branch on `source` to know which keys exist. Goes to stdout on every exit code, including a no-match, so piping to `jq` works. See [src/read_commands.ts](src/read_commands.ts), [src/cli.ts](src/cli.ts).
+- **`doctor` now checks stored symbol body size.** The existing check only warned once `global.db` passed 1 GB, which a damaged index can sit well under: a real 478 MB index reported healthy while holding a 1.3 million-character symbol body left behind by the since-fixed extractor bug. The new check compares against the parser's own `MAX_SYMBOL_BODY_CHARS` cap — any stored body above it can only predate the fix — and names the file responsible. See [src/cli_doctor.ts](src/cli_doctor.ts).
+- **The SessionStart hook surfaces that warning once per session**, so a damaged index is noticed instead of waiting for someone to run `doctor` by hand. Silent on a healthy index. See [src/hooks_session_start.ts](src/hooks_session_start.ts).
+
 ## [2.6.20] - 2026-07-31
 
 ### Changed
