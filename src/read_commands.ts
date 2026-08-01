@@ -726,7 +726,13 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
-    const text = JSON.stringify(match, null, 2)
+    // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols
+    // an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS
+    // (deliberately elided so it can be re-derived here rather than stored truncated). Emitting
+    // the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one
+    // output shape with no honest signal that the text is available elsewhere -- the text form
+    // below already resolves it.
+    const text = JSON.stringify({ ...match, body: resolveBody(match) }, null, 2)
     recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
   }
