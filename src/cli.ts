@@ -229,9 +229,9 @@ function requirePositiveInt(flag: string, raw: string): number {
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string, opts: { limit?: string }): Promise<void> {
+async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  const { text, code } = await runSemantic(query, { limit })
+  const { text, code } = await runSemantic(query, { limit, ...(opts.json === true ? { json: true } : {}) })
   ;(code === 0 ? out : err)(text)
   process.exitCode = code
 }
@@ -2560,6 +2560,7 @@ export function buildProgram(): Command {
     .command('semantic <query>')
     .description('semantic search (falls back to full-text search)')
     .option('-l, --limit <n>', 'max results')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdSemantic))
 
   program
