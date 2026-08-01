@@ -104,6 +104,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: { tool_response: largeResponse },
     } as HookEvent)
 
@@ -118,6 +119,7 @@ describe('WebFetch hook persistence', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: {},
     } as HookEvent)
     expect(result.hookType).toBe('deny')

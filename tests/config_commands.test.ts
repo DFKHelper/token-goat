@@ -76,6 +76,7 @@ import { invalidateConfigCache, loadConfig, loadPersistedConfig, saveConfig, def
 import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from '../src/web_cache.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 // ── Setup/teardown ──────────────────────────────────────────────────────────
 
@@ -83,8 +84,8 @@ let tmpHome: string
 let prevHome: string | undefined
 let stdoutLines: string[]
 let stderrLines: string[]
-let writeSpy: ReturnType<typeof vi.spyOn>
-let errSpy: ReturnType<typeof vi.spyOn>
+let writeSpy: WriteSpy
+let errSpy: WriteSpy
 
 beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
@@ -92,14 +93,8 @@ beforeEach(() => {
   process.env['TOKEN_GOAT_HOME'] = tmpHome
   stdoutLines = []
   stderrLines = []
-  writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdoutLines.push(String(chunk))
-    return true
-  })
-  errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-    stderrLines.push(String(chunk))
-    return true
-  })
+  writeSpy = spyOnWrite(process.stdout, stdoutLines)
+  errSpy = spyOnWrite(process.stderr, stderrLines)
   invalidateConfigCache()
   try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
 })

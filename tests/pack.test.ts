@@ -15,7 +15,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     statSync: ((p: fs.PathLike, opts?: unknown) => {
-      const real = actual.statSync(p as fs.PathOrFileDescriptor, opts as never)
+      const real = actual.statSync(p, opts as never)
       if (toctouMismatchPath.value !== null && p === toctouMismatchPath.value) {
         return { ...real, dev: real.dev + 1, ino: real.ino + 1 } as fs.Stats
       }

@@ -23,19 +23,20 @@ import {
   CLOUD_FILTERS,
 } from '../src/tool_filters/cloud.js'
 import { selectFilter } from '../src/tool_filters/dispatch.js'
+import type { ToolFilter, CompressedOutput } from '../src/tool_filters/base.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function apply(
-  filter: { apply: (...args: unknown[]) => { text: string; compressedBytes: number } },
+  filter: ToolFilter,
   stdout: string,
   stderr: string,
   exitCode: number,
   argv: string[],
-): { text: string; compressedBytes: number } {
-  return filter.apply(stdout, stderr, exitCode, argv) as { text: string; compressedBytes: number }
+): CompressedOutput {
+  return filter.apply(stdout, stderr, exitCode, argv)
 }
 
 // ---------------------------------------------------------------------------

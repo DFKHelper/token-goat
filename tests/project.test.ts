@@ -3,7 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as NodeFs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { runGit as runGitType } from '../src/util.js';
+import type { runGit as runGitForType } from '../src/util.js';
+type runGitType = typeof runGitForType;
 
 // vi.mock is hoisted — wrap readdirSync (still delegating to the real implementation by default)
 // so the #M26 test below can simulate a Node < 20.1 Dirent (no `.path` property) without touching

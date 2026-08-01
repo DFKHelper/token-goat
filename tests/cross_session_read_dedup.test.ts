@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { preReadHandler, postReadHandler, relPathWithinRoot } from '../src/hooks_read'
-import type { HookEvent } from '../src/hook_registry'
-import { loadConfig } from '../src/config'
-import { getSessionId } from '../src/session'
-import { makeProjectAt } from '../src/project'
-import { readAllSessionManifests, writeSessionManifest } from '../src/compact'
-import { dataDir } from '../src/constants'
+import { preReadHandler, postReadHandler, relPathWithinRoot } from '../src/hooks_read.js'
+import type { HookEvent } from '../src/hook_registry.js'
+import { loadConfig } from '../src/config.js'
+import { getSessionId } from '../src/session.js'
+import { makeProjectAt } from '../src/project.js'
+import { readAllSessionManifests, writeSessionManifest } from '../src/compact.js'
+import { dataDir } from '../src/constants.js'
+import { expectHookType } from './helpers/hook-output.js'
 import os from 'node:os'
 
 function makeRepo(): string {
@@ -59,6 +60,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
 
@@ -70,6 +72,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir, output: 'test output' },
     }
 
@@ -89,6 +92,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: {},
     }
 
@@ -108,6 +112,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: {},
     }
 
@@ -119,6 +124,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { output: 'test output' },
     }
 
@@ -143,12 +149,13 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
 
     const result = preReadHandler(event)
-    expect(result.hookType).toBe('context')
-    expect(String(result.context ?? '')).toMatch(/already been read by another agent/)
+    expectHookType(result, 'context')
+    expect(result.context).toMatch(/already been read by another agent/)
   })
 
   it('ignores a sibling manifest entry with hit_count 0', () => {
@@ -168,6 +175,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
 
@@ -196,6 +204,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
 
@@ -222,6 +231,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
 
@@ -241,6 +251,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir },
     }
     preReadHandler(preEvent)
@@ -250,6 +261,7 @@ describe('Cross-session read dedup', () => {
       toolName: 'Read',
       toolInput: { file_path: filePath },
       sessionId: getSessionId(),
+      agentId: undefined,
       raw: { cwd: repoDir, output: 'content' },
     }
     postReadHandler(postEvent)
@@ -365,12 +377,13 @@ describe('Cross-session read dedup', () => {
         toolName: 'Read',
         toolInput: { file_path: filePath },
         sessionId: getSessionId(),
+        agentId: undefined,
         raw: { cwd: repoDir },
       }
 
       const result = preReadHandler(event)
-      expect(result.hookType).toBe('context')
-      expect(String(result.context ?? '')).toMatch(/already been read by another agent/)
+      expectHookType(result, 'context')
+      expect(result.context).toMatch(/already been read by another agent/)
     })
 
     it('control: case-sensitive FS mode does not match a case-only rel_path variant', () => {
@@ -391,6 +404,7 @@ describe('Cross-session read dedup', () => {
         toolName: 'Read',
         toolInput: { file_path: filePath },
         sessionId: getSessionId(),
+        agentId: undefined,
         raw: { cwd: repoDir },
       }
 

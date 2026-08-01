@@ -83,6 +83,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: { tool_response: 'x'.repeat(2000) },
     });
     expect(postResult.hookType).toBe('pass');
@@ -92,6 +93,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: {},
     });
 
@@ -115,6 +117,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: { tool_response: body },
     });
     expect(postResult.hookType).toBe('pass');
@@ -126,6 +129,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId,
+      agentId: undefined,
       raw: {},
     });
     expect(result.hookType).toBe('deny');
@@ -149,6 +153,7 @@ describe('preFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId,
+        agentId: undefined,
         raw: { tool_response: 'x'.repeat(2000) },
       });
       expect(postResult.hookType).toBe('pass');
@@ -158,6 +163,7 @@ describe('preFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId,
+        agentId: undefined,
         raw: {},
       });
 
@@ -182,6 +188,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url, prompt: 'What is the pricing?' },
       sessionId,
+      agentId: undefined,
       raw: { tool_response: 'x'.repeat(2000) },
     });
     expect(postResult.hookType).toBe('pass');
@@ -193,6 +200,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url, prompt: 'What is the refund policy?' },
       sessionId,
+      agentId: undefined,
       raw: {},
     });
 

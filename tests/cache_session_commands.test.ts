@@ -47,12 +47,13 @@ import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCa
 import { dataDir } from '../src/constants.js'
 import { buildResumePacket, MAX_RESUME_CHARS } from '../src/resume.js'
 import { loadConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let tmpHome: string
 let prevHome: string | undefined
 let prevHarnessOverride: string | undefined
 let stdoutLines: string[]
-let writeSpy: ReturnType<typeof vi.spyOn>
+let writeSpy: WriteSpy
 let consoleLogSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
@@ -69,10 +70,7 @@ beforeEach(() => {
   prevHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
   stdoutLines = []
-  writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdoutLines.push(String(chunk))
-    return true
-  })
+  writeSpy = spyOnWrite(process.stdout, stdoutLines)
   // Some command paths (e.g. renderShortStats's zero-events branch) emit via console.log rather
   // than process.stdout.write directly; Vitest's worker pool intercepts console.* separately from
   // process.stdout, so capturedOutput() would silently miss that text without this second spy.
@@ -618,7 +616,7 @@ describe('listBlobs mutation-verify anchor', () => {
     cmdBashHistory({ json: true })
     const before = JSON.parse(capturedOutput()) as unknown[]
     expect(before).toHaveLength(1)
-    stdoutLines = []
+    stdoutLines.length = 0 // capturedWrite's mock closes over this array by reference, so it must be mutated in place, not reassigned
     // Simulate what happens when the .json filter is broken: rename the blob to .json.BROKEN.
     const blobDir = path.join(tmpHome, BASH_OUTPUT_SUBDIR)
     const origPath = path.join(blobDir, 'mv1.json')
@@ -631,7 +629,7 @@ describe('listBlobs mutation-verify anchor', () => {
     // Restore.
     fs.renameSync(renamedPath, origPath)
     // And confirm it is visible again.
-    stdoutLines = []
+    stdoutLines.length = 0
     cmdBashHistory({ json: true })
     const restored = JSON.parse(capturedOutput()) as unknown[]
     expect(restored).toHaveLength(1)
@@ -861,7 +859,7 @@ describe('cmdBaseline', () => {
   it('compact variant is terser than full output', () => {
     cmdBaseline({ subagent: true })
     const compact = capturedOutput()
-    stdoutLines = []
+    stdoutLines.length = 0
     cmdBaseline({})
     const full = capturedOutput()
     expect(compact.length).toBeLessThanOrEqual(full.length)

@@ -22,13 +22,14 @@ import {
   BUILD_FILTERS,
 } from '../src/tool_filters/build.js'
 import { selectFilter } from '../src/tool_filters/dispatch.js'
+import type { ToolFilter } from '../src/tool_filters/base.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function apply(
-  filter: { apply: (...args: unknown[]) => { text: string } },
+  filter: ToolFilter,
   stdout: string,
   stderr: string,
   exitCode: number,

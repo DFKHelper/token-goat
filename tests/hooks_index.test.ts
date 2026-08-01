@@ -25,7 +25,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 })
 
 vi.mock('../src/util.js', async (importOriginal) => {
-  const actual = await importOriginal()
+  const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
     atomicWriteBytes: vi.fn(actual.atomicWriteBytes),
@@ -138,6 +138,7 @@ describe('preCompactIndexHandler', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     })
 
@@ -156,6 +157,7 @@ describe('preCompactIndexHandler', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     })
     expect(result.hookType).toBe('pass')
@@ -176,6 +178,7 @@ describe('preCompactIndexHandler', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     })
 
@@ -203,6 +206,7 @@ describe('preCompactIndexHandler', () => {
       toolName: undefined,
       toolInput: {},
       sessionId: 'test',
+      agentId: undefined,
       raw: {},
     })
 

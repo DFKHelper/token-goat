@@ -9,16 +9,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
 import { setSkillOutputsDirForTesting, storeOutput } from '../src/skill_cache.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let outputsDir: string
 let sourceDir: string
 let skillFile: string
 let stdout: string[]
-let writeSpy: ReturnType<typeof vi.spyOn>
+let writeSpy: WriteSpy
 
 beforeEach(() => {
   outputsDir = mkdtempSync(join(tmpdir(), 'tg-skillsection-'))
@@ -27,10 +28,7 @@ beforeEach(() => {
   skillFile = join(sourceDir, 'SKILL.md')
   writeFileSync(skillFile, ['# Doc', '', '## Usage', 'usage body text', ''].join('\n'), 'utf-8')
   stdout = []
-  writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
-    stdout.push(String(chunk))
-    return true
-  })
+  writeSpy = spyOnWrite(process.stdout, stdout)
 })
 
 afterEach(() => {

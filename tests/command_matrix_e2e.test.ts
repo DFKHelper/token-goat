@@ -542,7 +542,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     const syncRoot = path.join(home, 'OneDrive - Contoso')
     fs.mkdirSync(path.join(syncRoot, 'Documents', 'Reports'), { recursive: true })
     fs.writeFileSync(path.join(syncRoot, 'Documents', 'Reports', 'budget.xlsx'), '')
-    const envFound = { ...tgEnv(dataBase), HOME: home, USERPROFILE: home }
+    const envFound: NodeJS.ProcessEnv = { ...tgEnv(dataBase), HOME: home, USERPROFILE: home }
     delete envFound.OneDriveCommercial
     delete envFound.OneDrive
     const rFound = run(
@@ -553,7 +553,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rFound.stdout).toContain(path.join(syncRoot, 'Documents', 'Reports', 'budget.xlsx'))
 
     const emptyHome = mkIsolated('tg-matrix-spempty-')
-    const envEmpty = { ...tgEnv(dataBase), HOME: emptyHome, USERPROFILE: emptyHome }
+    const envEmpty: NodeJS.ProcessEnv = { ...tgEnv(dataBase), HOME: emptyHome, USERPROFILE: emptyHome }
     delete envEmpty.OneDriveCommercial
     delete envEmpty.OneDrive
     const rMissing = run(['sharepoint-resolve', 'https://contoso.sharepoint.com/sites/OtherTeam/Shared%20Documents/missing.docx'], {

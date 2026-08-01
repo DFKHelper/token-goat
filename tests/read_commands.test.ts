@@ -101,6 +101,8 @@ import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
+// The real querySymbols() takes an optional opts param; mockImplementation callbacks below narrow it to a required object (never actually called with none/undefined by read_commands.ts) so their bodies can access opts.name/opts.filePath directly.
+type QuerySymbolsOpts = NonNullable<Parameters<typeof querySymbols>[0]>
 const mockCountSymbols = vi.mocked(countSymbols)
 const mockAppendDirtyPath = vi.mocked(enqueueDirtyPathSafe)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
@@ -455,7 +457,7 @@ describe('read_commands', () => {
 
     it('resolves a literal dotted symbol name via exact match before falling back to Class.method splitting (e.g. a TOML section)', () => {
       const tomlSection: MockSymbol = { name: 'tool.poetry', kind: 'section', filePath: 'pyproject.toml', lineStart: 4, lineEnd: 4, body: '[tool.poetry]', docstring: '' }
-      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.name === 'tool.poetry') return [tomlSection] as unknown as ReturnType<typeof mockQuerySymbols>
         return []
       })
@@ -467,7 +469,7 @@ describe('read_commands', () => {
       // 'src/myutils.ts'.endsWith('utils.ts') is true, but requesting `utils.ts` must not
       // resolve to a completely different file that merely happens to share a suffix.
       const wrongMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/myutils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
-      mockQuerySymbols.mockImplementation((opts: { filePath?: string }) => {
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.filePath !== undefined) return []
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [wrongMatch as any]
@@ -478,7 +480,7 @@ describe('read_commands', () => {
 
     it('does match a real path-segment boundary in the partial-path fallback (M34)', () => {
       const rightMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/utils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
-      mockQuerySymbols.mockImplementation((opts: { filePath?: string }) => {
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.filePath !== undefined) return []
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [rightMatch as any]
@@ -493,7 +495,7 @@ describe('read_commands', () => {
       const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: 'src/comp.ts', lineStart: 20, lineEnd: 30, body: 'class ClassB {}', docstring: '' }
       const renderInA: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 3, lineEnd: 5, body: 'ClassA.render body', docstring: '' }
       const renderInB: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 22, lineEnd: 24, body: 'ClassB.render body', docstring: '' }
-      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.name === 'render') return [renderInA, renderInB] as unknown as ReturnType<typeof mockQuerySymbols>
         if (opts.name === 'ClassB') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
         return []
@@ -514,7 +516,7 @@ describe('read_commands', () => {
       const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '' }
       const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A' }
       const fooInB: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 12, lineEnd: 14, body: 'B.foo body', docstring: 'B' }
-      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.name === 'foo') return [fooInA, fooInB] as unknown as ReturnType<typeof mockQuerySymbols>
         if (opts.name === 'B') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
         if (opts.name === 'A') return [classA] as unknown as ReturnType<typeof mockQuerySymbols>
@@ -531,7 +533,7 @@ describe('read_commands', () => {
       // spec resolved through the ambiguity path and then fed back in via a suggested retry
       // both go through the exact same filtering logic.
       function poolMock(pool: MockSymbol[]): void {
-        mockQuerySymbols.mockImplementation((opts: { name?: string; filePath?: string }) => {
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
           let rows = pool
           if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
           if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)

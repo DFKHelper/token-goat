@@ -2532,9 +2532,8 @@ Some content that makes the file large enough`
         fs.writeFileSync(p, bigSource(555)) // one line changed -- tiny real savings
 
         const result = preReadHandler(readEvent(p))
-        // Same fixture that serves a diff at the default/zero floor above must NOT serve one
-        // once the floor is set far above what this tiny change actually saves.
-        expect(result.message ?? '').not.toContain('```diff')
+        // Same fixture that serves a diff at the default/zero floor above must NOT serve one once the floor is set far above what this tiny change actually saves. Diffs are always packaged in a 'deny' hookType's message (see the deny-path assertions above), so any non-deny result trivially satisfies "no diff served".
+        if (result.hookType === 'deny') expect(result.message).not.toContain('```diff')
       })
     })
   })
@@ -2564,8 +2563,8 @@ Some content that makes the file large enough`
       fs.writeFileSync(p, bigSource(555))
 
       const result = preReadHandler(readEvent(p))
-      // No diff is ever served when the flag is off — this is the key default-unchanged regression.
-      expect(result.message ?? '').not.toContain('```diff')
+      // No diff is ever served when the flag is off — this is the key default-unchanged regression. Diffs are always packaged in a 'deny' hookType's message, so any non-deny result trivially satisfies "no diff served".
+      if (result.hookType === 'deny') expect(result.message).not.toContain('```diff')
     })
   })
 
@@ -2580,8 +2579,8 @@ Some content that makes the file large enough`
       fs.writeFileSync(p, content2)
 
       const result = preReadHandler(readEvent(p))
-      // Single-line file: the "diff" is ~2x the file, exceeding the 0.6 savings cap, so no diff is served.
-      expect(result.message ?? '').not.toContain('```diff')
+      // Single-line file: the "diff" is ~2x the file, exceeding the 0.6 savings cap, so no diff is served. Diffs are always packaged in a 'deny' hookType's message, so any non-deny result trivially satisfies "no diff served".
+      if (result.hookType === 'deny') expect(result.message).not.toContain('```diff')
     })
   })
 

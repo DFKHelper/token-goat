@@ -7,37 +7,5 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["tests/**/*", "src/html-to-text.d.ts"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "tests/cache_session_commands.test.ts",
-    "tests/cache_session_commands_skills.test.ts",
-    "tests/cli_limit_validation.test.ts",
-    "tests/cli_output_section_notfound.test.ts",
-    "tests/cli_section_list.test.ts",
-    "tests/cli_skill_section.test.ts",
-    "tests/cli_waste.test.ts",
-    "tests/cli_worker_daemon_flag.test.ts",
-    "tests/command_matrix_e2e.test.ts",
-    "tests/config_commands.test.ts",
-    "tests/cross_session_read_dedup.test.ts",
-    "tests/embeddings.test.ts",
-    "tests/graph_commands.test.ts",
-    "tests/hooks_bash.test.ts",
-    "tests/hooks_fetch.test.ts",
-    "tests/hooks_fetch_persistence.test.ts",
-    "tests/hooks_index.test.ts",
-    "tests/hooks_read.test.ts",
-    "tests/install_gemini.test.ts",
-    "tests/install_qwen.test.ts",
-    "tests/pack.test.ts",
-    "tests/parser.test.ts",
-    "tests/project.test.ts",
-    "tests/read_commands.test.ts",
-    "tests/shell_quote_hint.test.ts",
-    "tests/tool_filters_build.test.ts",
-    "tests/tool_filters_cloud.test.ts",
-    "tests/tool_filters_containers.test.ts",
-    "tests/webfetch.test.ts"
-  ]
+  "exclude": ["node_modules", "dist"]
 }

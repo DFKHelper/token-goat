@@ -295,7 +295,7 @@ describe('embeddings module', () => {
       const boundaries: embeddings.ChunkBoundary[] = contentLines.map((_, i) => ({
         start: i + 1,
         end: i + 1,
-        kind: 'const',
+        kind: 'symbol',
       }))
 
       const chunks = embeddings.chunkFile('barrel.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
@@ -307,7 +307,7 @@ describe('embeddings module', () => {
       // Must actually take the boundary-merging path (single-line start===end boundaries kept,
       // not silently filtered out and falling back to plain window splitting - a fallback would
       // still satisfy the loose assertions above without proving boundary merging ran at all).
-      expect(chunks.every((c) => c.kind === 'const')).toBe(true)
+      expect(chunks.every((c) => c.kind === 'symbol')).toBe(true)
     })
 
     it('does not silently drop short lines that precede a single line long enough alone to trip the size-based flush (regression: splitRangeIntoChunks discarded a below-MIN_CHUNK_CHARS flushed chunk and recomputed its overlap window purely from currentLine, which can land after that dropped chunk\'s own start when the dropped chunk spans more lines than the overlap window covers -- those lines then appeared in NO emitted chunk, silently absent from the semantic index)', () => {
@@ -390,8 +390,8 @@ describe('embeddings module', () => {
         .map((_, i) => `line ${i + 1} padding text to make each range clearly distinguishable`)
       const content = contentLines.join('\n')
       const boundaries: embeddings.ChunkBoundary[] = [
-        { start: 1, end: 20, kind: 'class' }, // outer boundary, e.g. a class
-        { start: 1, end: 5, kind: 'method' }, // inner boundary starting on the same line, e.g. a same-line method
+        { start: 1, end: 20, kind: 'symbol' }, // outer boundary, e.g. a class
+        { start: 1, end: 5, kind: 'section' }, // inner boundary starting on the same line, e.g. a same-line method
       ]
 
       const chunks = embeddings.chunkFile('samestart.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
@@ -399,7 +399,7 @@ describe('embeddings module', () => {
       // The inner boundary is fully nested in the outer one and must be dropped entirely,
       // leaving exactly one chunk covering the whole outer range tagged with the outer kind.
       expect(chunks.length).toBe(1)
-      expect(chunks[0].kind).toBe('class')
+      expect(chunks[0].kind).toBe('symbol')
       expect(chunks[0].startLine).toBe(1)
       expect(chunks[0].endLine).toBe(20)
     })
@@ -410,15 +410,15 @@ describe('embeddings module', () => {
       const contentLines = [...linesA, ...linesB]
       const content = contentLines.join('\n')
       const boundaries: embeddings.ChunkBoundary[] = [
-        { start: 1, end: 5, kind: 'A' },
-        { start: 6, end: contentLines.length, kind: 'B' }, // oversized, gets sub-split with overlap
+        { start: 1, end: 5, kind: 'symbol' },
+        { start: 6, end: contentLines.length, kind: 'section' }, // oversized, gets sub-split with overlap
       ]
 
       const chunks = embeddings.chunkFile('overlapclamp.ts', content, 100, 200, boundaries)
 
       for (const c of chunks) {
-        if (c.kind === 'B') {
-          expect(c.startLine).toBeGreaterThanOrEqual(6) // never dips back into A's lines (1-5)
+        if (c.kind === 'section') {
+          expect(c.startLine).toBeGreaterThanOrEqual(6) // never dips back into the 'symbol' boundary's lines (1-5)
           expect(c.text).not.toContain('AAAA')
         }
       }
