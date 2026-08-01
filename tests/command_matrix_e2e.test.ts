@@ -173,7 +173,17 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/Indexed \d+ files/)
   },
   symbol: () => expectRead(['symbol', 'alphaSym'], 'alphaSym'),
-  read: () => expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1'),
+  read: () => {
+    expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
+    // Comma-separated multi-symbol form against the real built bundle -- proves the shipping
+    // CLI path, not just the in-process unit tests.
+    const multi = run(['read', 'src/mod.ts::alphaSym,betaSym'])
+    expect(multi.status, multi.stderr).toBe(0)
+    expect(multi.stdout).toContain('alphaSym')
+    expect(multi.stdout).toContain('return 1')
+    expect(multi.stdout).toContain('betaSym')
+    expect(multi.stdout).toContain('return 2')
+  },
   section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this
   // shared fixture is indexed with embeddings disabled (isolate-home.ts sets
