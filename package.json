@@ -18,6 +18,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "test:guards": "vitest run tests/guards",
     "test:matrix": "vitest run tests/command_matrix_e2e.test.ts",

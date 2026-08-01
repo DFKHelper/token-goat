@@ -30,6 +30,7 @@ describe('preFetchHandler', () => {
       toolName: 'SomeOtherTool',
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {},
     };
     expect(preFetchHandler(event).hookType).toBe('pass');
@@ -41,6 +42,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {},
     };
     expect(preFetchHandler(event).hookType).toBe('pass');
@@ -52,6 +54,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url: 'https://example.com/no-session' },
       sessionId: '',
+      agentId: undefined,
       raw: {},
     };
     expect(preFetchHandler(event).hookType).toBe('pass');
@@ -63,6 +66,7 @@ describe('preFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url: 'https://example.com/never-fetched' },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {},
     };
     expect(preFetchHandler(event).hookType).toBe('pass');
@@ -203,6 +207,7 @@ describe('postFetchHandler', () => {
       toolName: 'SomeOtherTool',
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         tool_response: 'test response',
       },
@@ -216,6 +221,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url: 'https://example.com/small' },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         tool_response: 'small',
       },
@@ -229,6 +235,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url: 'https://example.com/no-session-large' },
       sessionId: '',
+      agentId: undefined,
       raw: {
         tool_response: 'x'.repeat(2000),
       },
@@ -246,6 +253,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'html-extract-session',
+      agentId: undefined,
       raw: { tool_response: html },
     });
     expect(result.hookType).toBe('pass');
@@ -256,6 +264,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'html-extract-session',
+      agentId: undefined,
       raw: {},
     });
     expect(denyResult.hookType).toBe('deny');
@@ -281,6 +290,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'plain-body-session',
+      agentId: undefined,
       raw: { tool_response: body },
     });
 
@@ -289,6 +299,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'plain-body-session',
+      agentId: undefined,
       raw: {},
     });
     expect(denyResult.hookType).toBe('deny');
@@ -307,6 +318,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'injection-small-session',
+      agentId: undefined,
       raw: { tool_response: body },
     });
 
@@ -333,6 +345,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'injection-large-session',
+      agentId: undefined,
       raw: { tool_response: body },
     });
 
@@ -346,6 +359,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'injection-large-session',
+      agentId: undefined,
       raw: {},
     });
     expect(denyResult.hookType).toBe('deny');
@@ -374,6 +388,7 @@ describe('postFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId: 'injection-large-html-session',
+        agentId: undefined,
         raw: { tool_response: html },
       });
 
@@ -388,6 +403,7 @@ describe('postFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId: 'injection-large-html-session',
+        agentId: undefined,
         raw: {},
       });
       expect(denyResult.hookType).toBe('deny');
@@ -409,6 +425,7 @@ describe('postFetchHandler', () => {
       toolName: 'WebFetch',
       toolInput: { url },
       sessionId: 'ordinary-session',
+      agentId: undefined,
       raw: { tool_response: body },
     });
 
@@ -430,6 +447,7 @@ describe('postFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId: '',
+        agentId: undefined,
         raw: { tool_response: body },
       });
 
@@ -456,6 +474,7 @@ describe('postFetchHandler', () => {
         toolName: 'WebFetch',
         toolInput: { url },
         sessionId: 'injection-disabled-session',
+        agentId: undefined,
         raw: { tool_response: body },
       });
 

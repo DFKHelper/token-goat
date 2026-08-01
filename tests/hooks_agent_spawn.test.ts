@@ -184,7 +184,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     // Store a bash output in this session
     const outputId = await storeBashOutput('echo test', 'test output', 0)
     // Record it in the session state
-    recordBashOutput('hash1', outputId)
+    recordBashOutput('hash1', outputId, Buffer.byteLength('test output', 'utf-8'))
 
     const prompt = 'Check the previous build output.'
     const payload = {
@@ -205,7 +205,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     _realisticProjectMapOverride = true
     try {
       const outputId = await storeBashOutput('echo test', 'test output', 0)
-      recordBashOutput('hash1', outputId)
+      recordBashOutput('hash1', outputId, Buffer.byteLength('test output', 'utf-8'))
 
       const prompt = 'Check the previous build output.'
       const payload = {
@@ -278,7 +278,7 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     _hugeProjectMapOverride = true
     try {
       const outputId = await storeBashOutput('echo test', 'test output', 0)
-      recordBashOutput('hash1', outputId)
+      recordBashOutput('hash1', outputId, Buffer.byteLength('test output', 'utf-8'))
 
       const prompt = 'Investigate the large refactor.'
       const payload = {

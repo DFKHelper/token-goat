@@ -97,6 +97,7 @@ describe('postSkillHandler — caches the loaded body under the real skill name'
       toolName: 'WebFetch',
       toolInput: { skill: 'ollama' },
       sessionId: 'sess-1',
+      agentId: undefined,
       raw: { tool_response: 'irrelevant body <!-- COMPACT_END -->' },
     };
     const result = await postSkillHandler(event);
@@ -110,6 +111,7 @@ describe('postSkillHandler — caches the loaded body under the real skill name'
       toolName: 'Skill',
       toolInput: {},
       sessionId: 'sess-1',
+      agentId: undefined,
       raw: { tool_response: 'body <!-- COMPACT_END -->' },
     };
     const result = await postSkillHandler(event);
@@ -171,6 +173,7 @@ describe('preSkillHandler — duplicate-load advisory', () => {
       toolName: 'WebFetch',
       toolInput: {},
       sessionId: 'sess-1',
+      agentId: undefined,
       raw: {},
     });
     expect(out.hookType).toBe('pass');

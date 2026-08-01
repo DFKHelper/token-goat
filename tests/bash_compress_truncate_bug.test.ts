@@ -21,9 +21,8 @@ describe('truncateLine output length constraint regression', () => {
 
     // All lines in output must respect maxLineLength
     for (const line of lines) {
-      expect(line.length).toBeLessThanOrEqual(
+      expect(line.length, `Line exceeds maxLineLength: ${line.length} > ${maxLineLength}`).toBeLessThanOrEqual(
         maxLineLength,
-        `Line exceeds maxLineLength: ${line.length} > ${maxLineLength}`,
       )
     }
 

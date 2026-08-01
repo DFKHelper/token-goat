@@ -218,8 +218,8 @@ describe('store eviction behavior', () => {
       // No OTHER files should have been deleted
       expect(otherFilesAfter.size).toBe(otherFilesBefore.size)
       for (const file of otherFilesBefore) {
-        expect(otherFilesAfter.has(file))
-          .toBe(true, `File ${file} was evicted when updating an existing key`)
+        expect(otherFilesAfter.has(file), `File ${file} was evicted when updating an existing key`)
+          .toBe(true)
       }
     } finally {
       if (prevHome === undefined) delete process.env.TOKEN_GOAT_HOME

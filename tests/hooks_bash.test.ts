@@ -54,6 +54,7 @@ function makePostBashEvent(command: string, output: string, cwd?: string): HookE
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'test-session',
+    agentId: undefined,
     raw: {
       tool_name: 'Bash',
       tool_input: { command },
@@ -74,6 +75,7 @@ describe('postBashHandler', () => {
       toolName: 'Bash',
       toolInput: {},
       sessionId: 'test-session',
+      agentId: undefined,
       raw: { tool_response: 'some output' },
     }
     const result = await postBashHandler(event)
@@ -131,6 +133,7 @@ describe('postBashHandler', () => {
       toolName: 'Bash',
       toolInput: { command: cmd },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         tool_name: 'Bash',
         tool_input: { command: cmd },
@@ -175,6 +178,7 @@ describe('postBashHandler', () => {
       toolName: 'Bash',
       toolInput: { command: 'pytest tests/' },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         tool_name: 'Bash',
         tool_input: { command: 'pytest tests/' },
@@ -206,6 +210,7 @@ describe('postBashHandler', () => {
       toolName: 'Bash',
       toolInput: { command: 'pytest tests/' },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: { tool_response: null as unknown as string },
     }
     await expect(postBashHandler(event)).resolves.toMatchObject({ hookType: 'pass' })
@@ -270,6 +275,7 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'test-session',
+    agentId: undefined,
     raw: cwd !== undefined ? { cwd } : {},
   })
 }
@@ -425,6 +431,7 @@ describe('preBashHandler — cat source file recall', () => {
       toolName: 'Bash',
       toolInput: { command: cmd },
       sessionId: 's',
+      agentId: undefined,
       raw: { tool_response: largeOutput },
     })
 
@@ -434,6 +441,7 @@ describe('preBashHandler — cat source file recall', () => {
       toolName: 'Bash',
       toolInput: { command: cmd },
       sessionId: 's',
+      agentId: undefined,
       raw: {},
     })
 
@@ -449,6 +457,7 @@ describe('preBashHandler — cat source file recall', () => {
       toolName: 'Bash',
       toolInput: { command: 'echo hello' },
       sessionId: 's',
+      agentId: undefined,
       raw: {},
     })
     expect(result.hookType).toBe('pass')
@@ -2112,6 +2121,7 @@ describe('preBashHandler — curl download dedup', () => {
         toolName: 'Bash',
         toolInput: { command: cmd },
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           tool_name: 'Bash',
           tool_input: { command: cmd },
@@ -2172,6 +2182,7 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
       toolName: 'Bash',
       toolInput: { command: cmd },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: {
         tool_name: 'Bash',
         tool_input: { command: cmd },
@@ -2647,6 +2658,7 @@ describe('postBashHandler — gh api advisory hints', () => {
       toolName: 'Bash',
       toolInput: { command },
       sessionId: 'test-session',
+      agentId: undefined,
       raw: { tool_name: 'Bash', tool_input: { command }, tool_response: response },
     }
   }
@@ -3308,6 +3320,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
         toolName: 'Bash',
         toolInput: { command: 'git checkout nonexistent-branch' },
         sessionId: 'test-session',
+        agentId: undefined,
         raw: {
           tool_name: 'Bash',
           tool_input: { command: 'git checkout nonexistent-branch' },

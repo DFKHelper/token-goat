@@ -50,6 +50,7 @@ const compactEvent: HookEvent = {
   toolName: undefined,
   toolInput: {},
   sessionId: 'test',
+  agentId: undefined,
   raw: {},
 }
 
