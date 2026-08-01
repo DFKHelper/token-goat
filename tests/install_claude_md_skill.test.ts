@@ -55,6 +55,11 @@ describe('installClaudeMd', () => {
     expect(content).toContain('answer one question first')
     expect(content).toContain('violation, not an oversight')
     expect(content).toContain('Read, Grep, and Glob')
+    expect(content).toContain('Fallback clauses may name native tools')
+    expect(content).toContain('shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`')
+    expect(content).toContain(
+      'Fallback clauses may name native tools (`Read`, `Grep`, `Glob`, `shell`, `apply_patch`, `view_image`, `edit`, `create`) or PowerShell helpers (`Get-Content`, `Select-String`); shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are commands, not tool identifiers.',
+    )
     expect(content).toContain('`map --compact`')
   })
 
@@ -150,6 +155,11 @@ describe('installSkill', () => {
     expect(content).toContain('per file')
     // Names Claude Code's own read tools in the conflict-resolution clause.
     expect(content).toContain('Read, Grep, and Glob')
+    expect(content).toContain('allowed-tools:')
+    expect(content).toContain('  - read')
+    expect(content).toContain('  - section')
+    expect(content).toContain('Fallback clauses may name native tools')
+    expect(content).toContain('shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`')
     // The old advisory list phrasing is gone.
     expect(content).not.toContain('Prefer token-goat commands over reading whole files')
   })

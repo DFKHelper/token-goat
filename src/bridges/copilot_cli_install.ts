@@ -104,12 +104,20 @@ const COPILOT_INSTRUCTIONS_END = '<!-- token-goat-end -->'
 
 /** The token-goat routing block for Copilot CLI, naming Copilot's own read tools in the conflict clause. */
 function buildCopilotInstructionsBlock(): string {
-  return buildGuidanceBlock({
-    beginMarker: COPILOT_INSTRUCTIONS_BEGIN,
-    endMarker: COPILOT_INSTRUCTIONS_END,
-    fallbackToolClause:
-      "Copilot CLI's own `view`, `grep`, and `glob` tool-preference rules (and `Get-Content`/`Select-String`)",
-  })
+  // Copilot's fallback parser can infer tool names from backtick-quoted prose when no
+  // `allowed-tools` frontmatter exists, so keep this surface free of inline code spans.
+  return stripInlineCodeSpans(
+    buildGuidanceBlock({
+      beginMarker: COPILOT_INSTRUCTIONS_BEGIN,
+      endMarker: COPILOT_INSTRUCTIONS_END,
+      fallbackToolClause:
+        "Copilot CLI's native `view`, `grep`, and `glob` tools (with PowerShell commands `Get-Content`/`Select-String` as search fallbacks)",
+    }),
+  )
+}
+
+function stripInlineCodeSpans(text: string): string {
+  return text.replace(/`([^`]+)`/g, '$1')
 }
 
 /**

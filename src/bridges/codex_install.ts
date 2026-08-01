@@ -384,7 +384,8 @@ function buildAgentsBlock(): string {
   return buildGuidanceBlock({
     beginMarker: AGENTS_BEGIN,
     endMarker: AGENTS_END,
-    fallbackToolClause: "Codex's own `shell` (cat/type), `apply_patch` preview, and `view_image` preferences",
+    fallbackToolClause:
+      "Codex's native `shell`, `apply_patch`, and `view_image` tools (shell commands like `cat`/`type` run inside `shell`)",
   })
 }
 
