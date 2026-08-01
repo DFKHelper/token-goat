@@ -245,12 +245,13 @@ export async function cmdIndex(
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true
+  const useWalk = opts.walk === true || opts.forceWalk === true
   let files = getTrackedFiles(root)
   if (files.length === 0) {
-    if (opts.walk !== true) {
+    if (!useWalk) {
       throw new CliError(
         `no tracked files found under '${root}' (is it a git repo?). ` +
-          `Pass --walk to index a non-git folder.`,
+          `Pass --walk or --force-walk to index a non-git folder.`,
       )
     }
     // Opt-in non-git fallback: a bounded directory walk, guarded against over-broad roots / oversized trees and stripped of .env / generated files.
@@ -2640,7 +2641,7 @@ export function buildProgram(): Command {
     .description('parse all git-tracked files and (re)build the symbol index')
     .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
     .option('--force', 'bypass the SHA-freshness cache and reindex every tracked file, even byte-identical ones (e.g. after a parser upgrade changes what gets extracted)')
-    .option('--force-walk', `with --walk, raise the ${MAX_FILES_SCANNED} source-file refusal to ${MAX_FILES_SCANNED_FORCED} for a folder you know is genuinely that large (slow; produces a large index)`)
+    .option('--force-walk', `index a non-git folder via --walk and raise its ${MAX_FILES_SCANNED} source-file refusal to ${MAX_FILES_SCANNED_FORCED} (slow; produces a large index)`)
     .action(guard(cmdIndex))
 
   program
