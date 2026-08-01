@@ -23,9 +23,15 @@ import { recordStat } from './stats.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder).
- * Roughly 300 tokens, leaving room for the actual prompt and other context.
+ * Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's
+ * compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the current
+ * imperative reminder (136 tokens, grown from a one-liner in c574b1f6) and a 1-3 entry cache-ids
+ * block (26-50 tokens): worst-case realistic total lands around 300-370 tokens. 300 left ~zero
+ * headroom, so the cache-ids block was silently dropped on essentially every real spawn (cycle
+ * 121 regression). 450 leaves a real margin above that; revisit this number again if the reminder
+ * text grows further.
  */
-const BRIEFING_TARGET_TOKENS = 300
+const BRIEFING_TARGET_TOKENS = 450
 
 /**
  * Build a compact subagent briefing block.
