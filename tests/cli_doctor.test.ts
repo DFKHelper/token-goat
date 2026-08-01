@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, checkCopilotCli, checkSymbolCount, checkSymbolBodySize, checkDirtyQueueHealth, checkTsCompiler, runDoctor, runDoctorAndExit } from '../src/cli_doctor.js'
 import { dirtyQueuePathFor, drainHeartbeatPathFor, workerPidPath } from '../src/worker.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_refs.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { normalizePath } from '../src/paths.js'
+import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -199,6 +200,81 @@ describe('cli_doctor', () => {
       const result = checkSymbolCount(dbPath, brokenRoot)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('0 symbols extracted')
+    })
+  })
+
+  // Regression: total DB size (checkDbExists' DB_SIZE_WARN_BYTES) is a lagging proxy for the
+  // MAX_SYMBOL_BODY_CHARS pathology -- a healthy-but-large multi-project index can stay well
+  // under the 1 GB line while still containing genuinely oversized bodies from a pre-fix
+  // minified/generated-file leftover. checkSymbolBodySize goes straight at the direct signal.
+  describe('checkSymbolBodySize', () => {
+    it('returns ok (no database yet) when global.db does not exist', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no database yet')
+    })
+
+    it('returns ok when the largest stored body is within MAX_SYMBOL_BODY_CHARS', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('src/main.ts', 'main', 'function', 1, 2, 'return 1', '')
+
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('no stored symbol body exceeds the cap')
+    })
+
+    it('warns when a stored body exceeds MAX_SYMBOL_BODY_CHARS (pre-fix leftover)', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const oversized = 'x'.repeat(200 * 1024)
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('src/generated.js', 'bloated', 'function', 1, 2, oversized, '')
+
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('above the')
+      expect(result.message).toContain('src/generated.js')
+      expect(result.message).toContain('CANNOT remove')
+      expect(result.message).toContain('reclaim-index --rebuild')
+      expect(result.message).toContain('worker stop')
+    })
+
+    it('is ok when a body is exactly MAX_SYMBOL_BODY_CHARS chars (boundary)', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const exact = 'x'.repeat(MAX_SYMBOL_BODY_CHARS)
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('src/exact.js', 'exact', 'function', 1, 2, exact, '')
+
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('ok')
+    })
+
+    it('warns when a body is MAX_SYMBOL_BODY_CHARS + 1 chars (boundary)', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      const overByOne = 'x'.repeat(MAX_SYMBOL_BODY_CHARS + 1)
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('src/overbyone.js', 'overbyone', 'function', 1, 2, overByOne, '')
+
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('warn')
+    })
+
+    it('does not fail the whole doctor run when the DB is unreadable', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      fs.mkdirSync(dbPath) // a directory where a file is expected, so getDb() throws
+
+      const result = checkSymbolBodySize(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('could not query symbol body size')
     })
   })
 
@@ -395,6 +471,12 @@ describe('cli_doctor', () => {
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
       const db = results.find((r) => r.name === 'Database')
       expect(db).toBeDefined()
+    })
+
+    it('includes symbol body size check', () => {
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+      const bodySize = results.find((r) => r.name === 'Symbol body size')
+      expect(bodySize).toBeDefined()
     })
 
     it('includes config check', () => {
