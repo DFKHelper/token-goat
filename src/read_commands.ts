@@ -3798,6 +3798,8 @@ interface SemanticOptions {
    * (or the whole machine-wide index yields nothing under it).
    */
   projectRoot?: string
+  /** Emit machine-readable JSON instead of the human-formatted preview blocks, matching every other surgical-read command's --json convention (symbol, skeleton, outline, refs). */
+  json?: boolean
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -3849,6 +3851,18 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
+    if (opts.json === true) {
+      const items = hits.map((h) => ({
+        filePath: h.filePath,
+        startLine: h.startLine,
+        endLine: h.endLine,
+        distance: h.distance,
+        preview: previewLines(h.text, 3),
+      }))
+      const text = JSON.stringify({ source: 'embeddings', items }, null, 2)
+      recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
+      return { text, code: 0 }
+    }
     const blocks = hits.map(
       (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
     )
@@ -3862,7 +3876,24 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // distance threshold.
   const results = searchSymbolsFts(query, n, undefined, rootDir)
   if (results.length === 0) {
+    if (opts.json === true) {
+      const text = JSON.stringify({ source: 'fts', items: [] }, null, 2)
+      return { text, code: 1 }
+    }
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
+  }
+  if (opts.json === true) {
+    const items = results.map((s) => ({
+      filePath: s.filePath,
+      name: s.name,
+      kind: s.kind,
+      startLine: s.lineStart,
+      endLine: s.lineEnd,
+      preview: previewLines(s.body, 3),
+    }))
+    const text = JSON.stringify({ source: 'fts', items }, null, 2)
+    recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
+    return { text, code: 0 }
   }
   const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
   const text = guardText(blocks.join('\n\n'), 'semantic')
