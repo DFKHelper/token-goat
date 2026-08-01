@@ -33,6 +33,20 @@ import { resolveIndexPath } from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
+import { foldPath } from '../src/util.js'
+
+/**
+ * The dirty queue, case-folded for comparison.
+ *
+ * The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling,
+ * `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk
+ * spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails
+ * on a distinction the filesystem does not make. foldPath is the product's own path-comparison
+ * function, so folding both sides asserts the invariant that actually holds.
+ */
+function foldedDirtyPaths(): string[] {
+  return getDirtyPaths().map(foldPath)
+}
 
 function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
   return makeHookEvent({
@@ -3159,9 +3173,9 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent('git checkout feature', '', dir))
 
-      const dirty = getDirtyPaths()
+      const dirty = foldedDirtyPaths()
       const expected = resolveIndexPath('a.txt', dir)
-      expect(dirty).toContain(expected)
+      expect(dirty).toContain(foldPath(expected))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -3180,9 +3194,9 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent(`git reset --hard ${firstSha}`, '', dir))
 
-      const dirty = getDirtyPaths()
+      const dirty = foldedDirtyPaths()
       const expected = resolveIndexPath('a.txt', dir)
-      expect(dirty).toContain(expected)
+      expect(dirty).toContain(foldPath(expected))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -3212,12 +3226,12 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session.
       await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
 
-      const dirty = getDirtyPaths()
+      const dirty = foldedDirtyPaths()
       // git diff --name-only reports 'sub/nested.txt' relative to the repo TOP-LEVEL (dir), not relative to the subdirectory cwd it was invoked from.
       const expected = resolveIndexPath('sub/nested.txt', dir)
-      expect(dirty).toContain(expected)
+      expect(dirty).toContain(foldPath(expected))
       // The old, buggy behavior resolved that same 'sub/nested.txt' string onto the subdirectory cwd instead of the repo root, producing a nonexistent 'sub/sub/nested.txt' path -- guard against that regressing back.
-      expect(dirty).not.toContain(resolveIndexPath('sub/nested.txt', sub))
+      expect(dirty).not.toContain(foldPath(resolveIndexPath('sub/nested.txt', sub)))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -3255,9 +3269,9 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent('git rebase ' + originalBranch, '', dir))
 
-      const dirty = getDirtyPaths()
+      const dirty = foldedDirtyPaths()
       // mainline.txt is the only file whose final working-tree content actually differs from before the rebase (first.txt/second.txt already existed with identical content on feature pre-rebase) -- this is the correct enqueue set, not an incidental one.
-      expect(dirty).toContain(resolveIndexPath('mainline.txt', dir))
+      expect(dirty).toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -3345,11 +3359,11 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       expect(execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()).not.toBe(rebaseOrigHead)
       expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()).toBe(preResetTip)
-      const dirty = getDirtyPaths()
+      const dirty = foldedDirtyPaths()
       // third.txt is what this reset actually reverted -- the correct, narrow enqueue.
-      expect(dirty).toContain(resolveIndexPath('third.txt', dir))
+      expect(dirty).toContain(foldPath(resolveIndexPath('third.txt', dir)))
       // mainline.txt only shows up if the reset had somehow used the rebase's stale, far-back ORIG_HEAD instead of its own immediately-prior state.
-      expect(dirty).not.toContain(resolveIndexPath('mainline.txt', dir))
+      expect(dirty).not.toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
