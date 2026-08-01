@@ -3810,7 +3810,11 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // Same reasoning as runSymbol above: a limit of 0 (or negative) would silently query for
   // zero results instead of surfacing a clear "you asked for nothing" error.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+    const message = `--limit must be a positive number, got: ${opts.limit}`
+    if (opts.json === true) {
+      return { text: JSON.stringify({ error: message }, null, 2), code: 1 }
+    }
+    return { text: message, code: 1 }
   }
 
   const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
@@ -3822,10 +3826,11 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // for doesn't exist. Fail loudly instead of silently widening/losing scope.
   if (opts.projectRoot !== undefined) {
     if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
-      return {
-        text: `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`,
-        code: 1,
+      const message = `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`
+      if (opts.json === true) {
+        return { text: JSON.stringify({ error: message }, null, 2), code: 1 }
       }
+      return { text: message, code: 1 }
     }
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
@@ -3854,12 +3859,20 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     if (opts.json === true) {
       const items = hits.map((h) => ({
         filePath: h.filePath,
+        name: null,
+        kind: null,
         startLine: h.startLine,
         endLine: h.endLine,
         distance: h.distance,
         preview: previewLines(h.text, 3),
       }))
-      const text = JSON.stringify({ source: 'embeddings', items }, null, 2)
+      // Same {items, truncated, totalCount} envelope guardJsonRows returns for symbol/refs/
+      // skeleton/outline's --json mode (see the comment at the grep --json call site) -- a bare
+      // {source, items} payload would silently hand a JSON consumer fewer hits than actually
+      // matched with no way to tell "capped by the overflow guard" apart from "there just
+      // weren't more", and would let `--limit 500 --json` emit an unbounded payload.
+      const capped = guardJsonRows(items)
+      const text = JSON.stringify({ source: 'embeddings', ...capped }, null, 2)
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
@@ -3877,7 +3890,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   const results = searchSymbolsFts(query, n, undefined, rootDir)
   if (results.length === 0) {
     if (opts.json === true) {
-      const text = JSON.stringify({ source: 'fts', items: [] }, null, 2)
+      const text = JSON.stringify({ source: 'fts', items: [], truncated: false, totalCount: 0 }, null, 2)
       return { text, code: 1 }
     }
     return { text: `token-goat: no matches for '${query}'`, code: 1 }
@@ -3889,9 +3902,11 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       kind: s.kind,
       startLine: s.lineStart,
       endLine: s.lineEnd,
+      distance: null,
       preview: previewLines(s.body, 3),
     }))
-    const text = JSON.stringify({ source: 'fts', items }, null, 2)
+    const capped = guardJsonRows(items)
+    const text = JSON.stringify({ source: 'fts', ...capped }, null, 2)
     recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
     return { text, code: 0 }
   }
