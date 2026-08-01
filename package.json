@@ -1,6 +1,6 @@
 {
   "name": "token-goat",
-  "version": "2.6.20",
+  "version": "2.6.21",
   "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
   "type": "module",
   "main": "./dist/token-goat.mjs",
@@ -24,7 +24,7 @@
     "test:watch": "vitest",
     "lint": "eslint src tests",
     "dev": "tsx src/main.ts",
-    "prepare": "lefthook install"
+    "prepare": "node scripts/install-git-hooks.mjs"
   },
   "contributors": [
     {

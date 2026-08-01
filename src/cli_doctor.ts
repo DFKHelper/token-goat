@@ -18,6 +18,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath } from './bridges/copilot_cli_install.js'
 import { findStrayClaudeMdBlocks } from './install.js'
 import { isAvailable as tsRefsAvailable, loadError as tsRefsLoadError } from './ts_refs.js'
+import { MAX_SYMBOL_BODY_CHARS } from './parser.js'
 
 /**
  * Result of a single doctor check.
@@ -96,13 +97,67 @@ export function checkDbExists(dataDir: string): DoctorResult {
       message:
         `global.db is ${Math.round(sizeBytes / (1024 * 1024))} MB at ${dbPath} — far larger than a healthy index. ` +
         `Large writes against it can exceed the 15s busy_timeout and appear as "database is locked". ` +
-        `Reclaim with: token-goat reclaim-index --rebuild (then re-run token-goat index)`,
+        `Try 'token-goat reclaim-index' first (a plain VACUUM, cheap, can recover a useful amount on its own); ` +
+        `only reach for 'token-goat reclaim-index --rebuild' if that isn't enough, since --rebuild reparses and ` +
+        `re-embeds every indexed file across every project and can take a long time on a large multi-project index`,
     }
   }
   return {
     name: 'Database',
     status: 'ok',
     message: `global.db exists (${toKB(sizeBytes)} KB)`,
+  }
+}
+
+/**
+ * Check the largest stored symbol body against parser.ts's own `MAX_SYMBOL_BODY_CHARS` cap.
+ *
+ * Total DB size (see {@link DB_SIZE_WARN_BYTES}) is a lagging proxy for the pathology this
+ * project actually cares about: an extractor storing far more per symbol than it should. On a
+ * large multi-project global index a big total is often legitimate (many symbols, plus embedding
+ * vectors), so it can stay comfortably under the size-warn line while still containing genuine
+ * damage -- a handful of oversized bodies from a minified/generated file that predate the fix in
+ * `boundSymbolBody` (parser.ts). Since every symbol written *after* that fix is capped at
+ * `MAX_SYMBOL_BODY_CHARS`, any stored body larger than the cap can only be a pre-fix leftover, so
+ * this check goes straight at the direct signal instead of waiting for the total to grow large
+ * enough to trip.
+ */
+export function checkSymbolBodySize(dbPath: string): DoctorResult {
+  if (!fs.existsSync(dbPath)) {
+    return { name: 'Symbol body size', status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const db = getDb(dbPath)
+    // Bounded early-exit scan instead of `SELECT MAX(LENGTH(body))`, which is a full table scan
+    // with no index able to serve it (symbols is only indexed on name/file_path, see db.ts). On a
+    // real 391 MB / 239,976-row damaged index this form measured 6.9 ms vs 54-62 ms for MAX() --
+    // it stops at the first offending row instead of scanning every row to find the largest.
+    // Selecting file_path alongside the length also gives the message an actionable target
+    // instead of a bare number.
+    const row = db
+      .prepare('SELECT LENGTH(body) as len, file_path as filePath FROM symbols WHERE LENGTH(body) > ? LIMIT 1')
+      .get(MAX_SYMBOL_BODY_CHARS) as { len: number; filePath: string } | undefined
+    if (row !== undefined) {
+      return {
+        name: 'Symbol body size',
+        status: 'warn',
+        message:
+          `a stored symbol body in ${row.filePath} is ${row.len} chars, above the ${MAX_SYMBOL_BODY_CHARS}-char cap ` +
+          `enforced by boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
+          `A plain 'token-goat reclaim-index' (VACUUM only) CANNOT remove these rows -- it only reclaims freed ` +
+          `pages, it never deletes row content. Only 'token-goat reclaim-index --rebuild' drops and re-derives ` +
+          `them under the cap (stop the worker first with 'token-goat worker stop', since reclaim-index refuses ` +
+          `to run while it's live); --rebuild reparses and re-embeds every indexed file across every project and ` +
+          `can take a long time on a large multi-project index`,
+      }
+    }
+    return { name: 'Symbol body size', status: 'ok', message: 'no stored symbol body exceeds the cap' }
+  } catch (err) {
+    return {
+      name: 'Symbol body size',
+      status: 'warn',
+      message: `could not query symbol body size: ${extractErrorMessage(err)}`,
+    }
   }
 }
 
@@ -490,6 +545,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   // File checks
   results.push(checkDbExists(actualDataDir))
+  results.push(checkSymbolBodySize(path.join(actualDataDir, 'global.db')))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
 

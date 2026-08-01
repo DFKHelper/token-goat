@@ -20,6 +20,7 @@ const _testDbPath = path.join(os.tmpdir(), `tg-hooks-session-start-db-${process.
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
+import * as cliDoctor from '../src/cli_doctor.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { getDb } from '../src/db.js'
@@ -119,6 +120,48 @@ describe('sessionStartHandler', () => {
 
     const result = sessionStartHandler(makeEvent(undefined))
     expect(result).toEqual({ hookType: 'pass' })
+  })
+
+  it('appends a DB-health warning to the context when a stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+    const db = getDb(_testDbPath)
+    const oversized = 'x'.repeat(200 * 1024)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('/some/generated.js', 'bloated', 'function', 1, 2, oversized, '')
+
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('above the')
+      expect(result.context).toContain('reclaim-index')
+    }
+  })
+
+  it('does not add DB-health noise when no stored symbol body exceeds MAX_SYMBOL_BODY_CHARS', () => {
+    const db = getDb(_testDbPath)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('/some/normal.js', 'small', 'function', 1, 2, 'return 1', '')
+
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('reclaim-index')
+    }
+  })
+
+  // Regression: the assertion above (`.not.toContain('reclaim-index')`) is tautological on its
+  // own -- the base reminder never contains that substring, so it still passes even if the
+  // entire health-check block (the try/catch wrapping checkSymbolBodySize) were deleted from the
+  // hook outright. This test proves the block actually runs by spying on checkSymbolBodySize
+  // itself: deleting the block makes this spy assertion fail regardless of DB content, closing
+  // the gap the negative-content assertion above cannot cover on its own.
+  it('actually invokes checkSymbolBodySize while building context', () => {
+    const spy = vi.spyOn(cliDoctor, 'checkSymbolBodySize')
+    const result = sessionStartHandler(makeEvent(undefined))
+    expect(spy).toHaveBeenCalledWith(_testDbPath)
+    expect(result.hookType).toBe('context')
+    spy.mockRestore()
   })
 
   it('fails soft (pass) when the underlying DB lookup throws', () => {
