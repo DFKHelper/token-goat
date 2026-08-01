@@ -158,6 +158,44 @@ describe('indexing.skip_dirs', () => {
   })
 })
 
+describe('indexing.skip_files', () => {
+  it('excludes a coverage.json basename from cmdIndex by default (unchanged pre-existing behavior)', async () => {
+    fs.writeFileSync(path.join(TMP, 'kept.ts'), 'export function keptSymbol(): number {\n  return 1\n}\n')
+    fs.writeFileSync(path.join(TMP, 'coverage.json'), '{"total":{"lines":{"pct":100}}}')
+
+    await cmdIndex(TMP, {walk: true, dbPath})
+
+    expect(querySymbols({name: 'keptSymbol', limit: 10}, dbPath).length).toBeGreaterThan(0)
+    expect(getFileEntry(resolveIndexPath(path.join(TMP, 'coverage.json')), dbPath)).toBeNull()
+  })
+
+  it('re-includes coverage.json once skip_files is overridden to an empty list (opt-out of the default)', async () => {
+    fs.writeFileSync(path.join(TMP, 'coverage.json'), '{"total":{"lines":{"pct":100}}}')
+
+    const cfg = defaultConfig()
+    cfg.indexing.skip_files = []
+    saveConfig(cfg)
+
+    await cmdIndex(TMP, {walk: true, dbPath})
+
+    expect(getFileEntry(resolveIndexPath(path.join(TMP, 'coverage.json')), dbPath)).not.toBeNull()
+  })
+
+  it('excludes a custom generated-file basename the default list never covered (opt-in for a project-specific artifact)', async () => {
+    fs.writeFileSync(path.join(TMP, 'kept.ts'), 'export function keptSymbol(): number {\n  return 1\n}\n')
+    fs.writeFileSync(path.join(TMP, 'lcov.json'), '{"lines":100}')
+
+    const cfg = defaultConfig()
+    cfg.indexing.skip_files = ['lcov.json']
+    saveConfig(cfg)
+
+    await cmdIndex(TMP, {walk: true, dbPath})
+
+    expect(querySymbols({name: 'keptSymbol', limit: 10}, dbPath).length).toBeGreaterThan(0)
+    expect(getFileEntry(resolveIndexPath(path.join(TMP, 'lcov.json')), dbPath)).toBeNull()
+  })
+})
+
 describe('indexing.large_file_skip_kb', () => {
   it('skips a file larger than the configured cap instead of fully indexing it', async () => {
     const cfg = defaultConfig()

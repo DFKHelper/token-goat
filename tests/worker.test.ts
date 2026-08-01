@@ -72,7 +72,7 @@ beforeEach(() => {
   // indexFileEmbeddings' size gates.
   vi.mocked(loadConfig).mockReturnValue({
     worker: { blocked_roots: [] },
-    indexing: { skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
+    indexing: { skip_dirs: [], skip_files: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
   } as unknown as ReturnType<typeof loadConfig>)
 })
 
@@ -859,7 +859,7 @@ describe('drainOnce', () => {
       )
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+        indexing: { skip_dirs: [], skip_files: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
@@ -911,7 +911,7 @@ describe('drainOnce', () => {
       // the gap this test targets.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { skip_dirs: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
+        indexing: { skip_dirs: [], skip_files: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
@@ -1448,7 +1448,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 
     vi.mocked(loadConfig).mockReturnValue({
       worker: { blocked_roots: [] },
-      indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
+      indexing: { embeddings_enabled: false, skip_dirs: [], skip_files: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
     } as unknown as ReturnType<typeof loadConfig>)
 
     const embedSpy = vi.spyOn(parserModule, 'indexFileEmbeddings')
@@ -1492,7 +1492,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       // First drain with embeddings disabled: only the disabled-marker embed_sha gets stamped.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: false, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
+        indexing: { embeddings_enabled: false, skip_dirs: [], skip_files: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       expect(drainOnce(DIR)).toBe(1)
@@ -1512,7 +1512,7 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
       // indexFileEmbeddings must be invoked again so the file actually gets embedded.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
-        indexing: { embeddings_enabled: true, skip_dirs: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
+        indexing: { embeddings_enabled: true, skip_dirs: [], skip_files: [], large_file_skip_kb: 1048576, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
       writeQueue(DIR, [norm])
       drainOnce(DIR)

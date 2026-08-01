@@ -2326,25 +2326,18 @@ export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): b
   return segments.slice(0, -1).some((seg) => skipDirs.includes(seg))
 }
 
-// Well-known generated coverage-report filenames that land at an arbitrary depth (not just
-// under a `coverage/` directory already caught by SKIP_DIRS in baseline.ts) -- e.g. `coverage
-// json` (pytest-cov/coverage.py's default `coverage json` output name) or Istanbul's
-// `coverage-final.json` written to a repo root. These are single-line minified JSON blobs with
-// no source value: indexing them produces multi-hundred-KB "property" symbols (one per
-// top-level key) that bloat the index and trip the oversized-symbol doctor check for zero
-// benefit, since the content is never something a `symbol`/`read` lookup would usefully target.
-const SKIP_FILE_BASENAMES: ReadonlySet<string> = new Set(['coverage.json', 'coverage-final.json'])
-
 /**
  * True when `filePath` is excluded from the syntactic parse entirely by `indexing.skip_dirs`,
- * a known generated-report basename ({@link SKIP_FILE_BASENAMES}), or `indexing.large_file_skip_kb`.
- * Must be evaluated UNCONDITIONALLY (independent of any sha/parseUnchanged gate) because a file
- * that becomes skip-eligible via a config change alone must still have its stale rows purged. A
- * stat failure is treated as "not skip-eligible".
+ * a generated-report basename configured via `indexing.skip_files` (defaults to
+ * coverage.json / coverage-final.json -- single-line minified JSON blobs whose indexed
+ * "property" symbols bloat the index and trip the oversized-symbol doctor check for zero
+ * benefit), or `indexing.large_file_skip_kb`. Must be evaluated UNCONDITIONALLY (independent of
+ * any sha/parseUnchanged gate) because a file that becomes skip-eligible via a config change
+ * alone must still have its stale rows purged. A stat failure is treated as "not skip-eligible".
  */
 export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): boolean {
   if (isUnderSkipDir(filePath, cfg.skip_dirs)) return true
-  if (SKIP_FILE_BASENAMES.has(path.basename(filePath))) return true
+  if (cfg.skip_files.includes(path.basename(filePath))) return true
   try {
     const stat = fs.statSync(filePath)
     if (stat.size > cfg.large_file_skip_kb * 1024) return true
