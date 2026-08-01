@@ -76,6 +76,8 @@ describe('sessionStartHandler', () => {
       if (result.hookType === 'context') {
         expect(result.context).toContain('indexed (2 symbols)')
         expect(result.context).toContain('symbol')
+        expect(result.context).toContain('Read/Grep tool call')
+        expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
       }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })
@@ -91,6 +93,8 @@ describe('sessionStartHandler', () => {
       if (result.hookType === 'context') {
         expect(result.context).toContain('token-goat index .')
         expect(result.context).not.toContain('is indexed')
+        expect(result.context).toContain('Read/Grep tools')
+        expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
       }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })
@@ -102,6 +106,8 @@ describe('sessionStartHandler', () => {
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat index .')
+      expect(result.context).toContain('Read/Grep tools')
+      expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
     }
   })
 
@@ -126,6 +132,8 @@ describe('sessionStartHandler', () => {
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).toContain('token-goat index .')
+        expect(result.context).toContain('Read/Grep tools')
+        expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
       }
     } finally {
       fs.rmSync(_testDbPath, { recursive: true, force: true })

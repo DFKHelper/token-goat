@@ -321,10 +321,12 @@ describe('copilot-instructions.md routing block', () => {
     expect(text).toContain('violation, not an oversight')
     expect(text).toContain('per file')
     expect(text).toContain('~200 lines')
-    // Names Copilot CLI's own read tools in the conflict-resolution clause.
-    expect(text).toContain('`view`')
-    expect(text).toContain('`grep`')
-    expect(text).toContain('`glob`')
+    // The Copilot instructions surface is sanitized so the body contains no backtick-quoted
+    // command names for the fallback parser to misclassify.
+    expect(text).not.toContain('`')
+    expect(text).toContain('Fallback clauses may name native tools')
+    expect(text).toContain("Copilot CLI's native view, grep, and glob tools")
+    expect(text).toContain('PowerShell commands Get-Content/Select-String as search fallbacks')
     expect(text).toContain('Get-Content')
     expect(text).toContain('Select-String')
     // Carries the sub-agent instruction and the stats self-check.

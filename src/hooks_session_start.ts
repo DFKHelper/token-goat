@@ -6,7 +6,7 @@
  * ~/.claude/CLAUDE.md at install time, and `token-goat install` also drops a
  * SKILL.md -- but neither is reinforced again during a session. Over a long
  * session that one-time prose competes against a strong base-training prior
- * toward Read/Grep with zero reinforcement, and the reactive PreToolUse hints
+ * toward the Read/Grep tools with zero reinforcement, and the reactive PreToolUse hints
  * (hooks_read.ts etc.) only fire after the model has already reached for the
  * wrong tool. This hook re-surfaces the highest-leverage commands at every
  * SessionStart source Claude Code fires (startup, resume, clear, compact).
@@ -29,7 +29,7 @@ import { globalDbPath } from './constants.js'
 
 /** Generic reminder used when the cwd is missing, unresolvable, or not indexed. */
 const GENERIC_REMINDER =
-  'token-goat: prefer surgical reads over Read/Grep on this codebase -- `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::Heading"`, `token-goat semantic "description"`, `token-goat outline <file>`. Run `token-goat index .` if this project is not indexed yet.'
+  'token-goat: prefer surgical reads over the Read/Grep tools on this codebase; shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are just commands, not tool names -- `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::Heading"`, `token-goat semantic "description"`, `token-goat outline <file>`. Run `token-goat index .` if this project is not indexed yet.'
 
 /** Build the reminder string for `cwd`, naming a concrete indexed symbol count when available. */
 function buildReminder(cwd: string | undefined): string {
@@ -44,7 +44,7 @@ function buildReminder(cwd: string | undefined): string {
   return (
     `token-goat: this project is indexed (${symbolCount} symbols). Prefer \`symbol <name>\`, ` +
     `\`read "file::symbol"\`, \`section "file::Heading"\`, \`semantic "description"\`, or \`outline <file>\` ` +
-    `over a full Read/Grep.`
+    `over a full Read/Grep tool call; shell commands like \`rg\`, \`grep\`, \`fd\`, \`sed\`, \`cat\`, \`find\`, and \`ls\` are still just commands.`
   )
 }
 
