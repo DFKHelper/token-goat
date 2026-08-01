@@ -128,6 +128,176 @@ function loadParserCtor(): TsParserCtor | null {
 // dropping or mis-scoping symbols/refs, exactly the same failure mode `useTsx` below guards against.
 const CPP_HEADER_SNIFF_RE = /\bclass\s+\w|\bnamespace\s+\w|\btemplate\s*<|::\s*\w|\b(?:public|private|protected)\s*:/
 
+/**
+ * Hard ceiling on the source text stored in `symbols.body`, in characters.
+ *
+ * `symbols.body` is written once per symbol and mirrored again into the
+ * `symbols_fts` full-text index, so an extractor that emits an oversized body
+ * costs roughly double on disk and is tokenized by FTS on every reindex. Any
+ * extractor bug that makes body size scale with *file* size rather than with
+ * *symbol* size therefore inflates the index quadratically, which is what
+ * {@link extractJsonSymbols} used to do for minified JSON (see the comment
+ * there). A DB bloated that way makes a reindex of the affected file long
+ * enough to hold SQLite's single writer lock past db.ts's 15s `busy_timeout`,
+ * which surfaces to a concurrent writer (worker daemon vs. CLI/hook) as
+ * "database is locked", and stalls `token-goat index` while FTS re-tokenizes
+ * gigabytes of duplicated text.
+ *
+ * This cap is enforced at the single write path ({@link writeParseResult})
+ * rather than in each extractor, so it bounds every current and future
+ * language extractor, not just the one that regressed. 128 KB is far above any
+ * realistic single function/class body (~32k tokens) while still bounding the
+ * pathological case.
+ */
+export const MAX_SYMBOL_BODY_CHARS = 128 * 1024
+
+/**
+ * Bound what gets *stored* for a symbol body, without losing what gets *read*.
+ *
+ * An over-cap body is stored as the empty string rather than as a truncated
+ * copy. That distinction is the whole point: read_commands.ts's `resolveBody`
+ * — the shared accessor behind `read`, `symbol`, `brief`, and frame resolution
+ * — already re-slices an empty body from the source file using the symbol's
+ * line range, so an elided body is served back complete and correct from disk.
+ * Storing a *truncated* body instead would defeat that fallback and make every
+ * one of those commands silently return partial source while presenting it as
+ * the full symbol, with `line_end` still advertising the complete range.
+ *
+ * The cost of eliding is confined to what genuinely needs the text resident in
+ * the DB: FTS body matching for that one oversized symbol. Losing full-text
+ * hits on a >128 KB body is a fair trade against unbounded index growth, and
+ * against `read` lying about what it returned.
+ */
+export function boundSymbolBody(body: string): string {
+  return body.length > MAX_SYMBOL_BODY_CHARS ? '' : body
+}
+
+/**
+ * Ceiling on a stored `symbols.docstring`. Smaller than the body cap because a docstring is a
+ * summary: past a few KB it has stopped being one, and nothing displays it in full.
+ */
+export const MAX_SYMBOL_DOCSTRING_CHARS = 16 * 1024
+
+/** Marker appended to a docstring cut at {@link MAX_SYMBOL_DOCSTRING_CHARS}. */
+const DOCSTRING_TRUNCATION_MARKER = '\n[... docstring truncated by token-goat ...]'
+
+/**
+ * Bound a stored docstring, **truncating** rather than eliding it.
+ *
+ * This is deliberately the opposite of {@link boundSymbolBody}, for a reason specific to the
+ * column. An over-cap *body* is stored empty because read_commands.ts's resolveBody can rebuild
+ * it exactly from `[line_start, line_end]` -- eliding costs nothing. No such range is recorded
+ * for a docstring, so eliding one destroys it: `outline`'s documented/undocumented flag would
+ * flip to "undocumented" for the most heavily documented symbols in a file, which is worse than
+ * a visibly-cut docstring. Nothing treats this column as complete source the way `read` treats
+ * `body` -- consumers display its first line (read_commands.ts), test it for emptiness, or split
+ * it into words (graph_commands.ts) -- so a marked truncation is honest and lossless enough.
+ *
+ * No extractor populates `docstring` today (every one sets `''`). This exists because the column
+ * is derived from a *region near* a symbol, which is precisely the shared-region shape that made
+ * `body` grow quadratically: a file-level doc comment attributed to every symbol in the file
+ * reproduces that bug exactly. Bounding it at the same choke point closes the hole before a
+ * future extractor opens it.
+ */
+export function boundSymbolDocstring(docstring: string): string {
+  if (docstring.length <= MAX_SYMBOL_DOCSTRING_CHARS) return docstring
+  // Budget the marker inside the cap, not on top of it: appending it to a full-length slice
+  // would make the stored value exceed the very bound this constant declares, which quietly
+  // turns a hard storage limit into an approximate one.
+  let end = MAX_SYMBOL_DOCSTRING_CHARS - DOCSTRING_TRUNCATION_MARKER.length
+  // Never cut between the halves of a surrogate pair -- that stores a lone surrogate, which is
+  // not valid text and can surface as a replacement character or upset consumers downstream.
+  const cutsSurrogatePair =
+    end > 0 && docstring.charCodeAt(end - 1) >= 0xd800 && docstring.charCodeAt(end - 1) <= 0xdbff
+  if (cutsSurrogatePair) end -= 1
+  return docstring.slice(0, Math.max(0, end)) + DOCSTRING_TRUNCATION_MARKER
+}
+
+/**
+ * Return the offset one past the end of the JSON value starting at `start`.
+ *
+ * Handles the three value shapes separately: a quoted string (walk to the
+ * matching close quote, honoring backslash escapes), a container (`{`/`[` —
+ * walk to the matching close brace/bracket, skipping over string contents so a
+ * brace inside a string cannot unbalance the count), and a primitive (number /
+ * `true` / `false` / `null` — ends at the first delimiter). Each walk is linear
+ * in the length of the value it scans, so scanning every top-level value of a
+ * document costs O(document), not O(keys × document).
+ *
+ * An unterminated value (malformed/truncated JSON) yields `content.length`
+ * rather than throwing; the caller already treats extraction as best-effort.
+ */
+function scanJsonValueEnd(content: string, start: number): number {
+  const first = content[start]
+  if (first === undefined) return content.length
+
+  if (first === '"') {
+    let escaping = false
+    for (let j = start + 1; j < content.length; j++) {
+      const c = content[j]
+      if (escaping) {
+        escaping = false
+        continue
+      }
+      if (c === '\\') {
+        escaping = true
+        continue
+      }
+      if (c === '"') return j + 1
+    }
+    return content.length
+  }
+
+  if (first === '{' || first === '[') {
+    // Track the open delimiters themselves, not just a depth counter: matching `}` against `[`
+    // lets malformed input (`{"a":[1}`) close a container it never opened, which would hand the
+    // caller a body running past the value's real end. On a mismatch, stop at the offending
+    // character rather than consuming forward to EOF.
+    const stack: string[] = []
+    let inStr = false
+    let escaping = false
+    for (let j = start; j < content.length; j++) {
+      const c = content[j]
+      if (inStr) {
+        if (escaping) {
+          escaping = false
+          continue
+        }
+        if (c === '\\') {
+          escaping = true
+          continue
+        }
+        if (c === '"') inStr = false
+        continue
+      }
+      if (c === '"') {
+        inStr = true
+        continue
+      }
+      if (c === '{' || c === '[') stack.push(c)
+      else if (c === '}' || c === ']') {
+        const open = stack.pop()
+        if (open !== (c === '}' ? '{' : '[')) return j
+        if (stack.length === 0) return j + 1
+      }
+    }
+    return content.length
+  }
+
+  for (let j = start; j < content.length; j++) {
+    const c = content[j]
+    if (c === ',' || c === '}' || c === ']' || c === '\n' || c === '\r') return j
+  }
+  return content.length
+}
+
+/** Count `\n` occurrences in `s` (used to derive a span's end line from its start line). */
+function countNewlines(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) if (s[i] === '\n') n++
+  return n
+}
+
 // `tree-sitter-typescript` ships two distinct grammars from one package: `typescript` (plain .ts/.mts/.cts — rejects JSX syntax) and `tsx` (a superset that also parses JSX). Both share the `Language` value 'typescript', so the caller's file path — not the Language — is what distinguishes them. Parsing a .tsx file with the `typescript` grammar still "succeeds" (tree-sitter's error recovery doesn't throw) but produces ERROR nodes around JSX, silently dropping or mis-scoping symbols/refs.
 function loadGrammar(lang: Language, filePath?: string, content?: string): Grammar | null {
   const useTsx = lang === 'typescript' && filePath !== undefined && path.extname(filePath).toLowerCase() === '.tsx'
@@ -1420,12 +1590,12 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   try {
-    const lines = content.split(/\r?\n/)
     let depth = 0
     let inString = false
     let escaping = false
     let strChars: string[] = []
     let strStartLine = 1
+    let strStartOffset = 0
     let depthWhenStringOpened = 0
     let line = 1
 
@@ -1447,47 +1617,41 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
           inString = true
           strChars = []
           strStartLine = line
+          strStartOffset = i
           depthWhenStringOpened = depth
         } else {
           inString = false
           // A string is a top-level key iff it opened at object depth 1 and its next non-whitespace char is ':'. This rule is layout-independent, so it captures keys in single-line/minified JSON and keys that share a line with '{', which the previous line-oriented scan missed (it emitted zero symbols for minified JSON).
           let k = i + 1
-          let keyToColonNewlines = 0
           while (k < content.length && /\s/.test(content[k] ?? '')) {
-            if (content[k] === '\n') keyToColonNewlines++
             k++
           }
           if (content[k] === ':' && depthWhenStringOpened === 1) {
-            // lineEnd/body defaulted to the key's own line for every value kind. When the value is itself a string that contains an embedded literal newline, that undersells the span: scan forward past the colon and, if the value opens with a quote, walk to its matching closing quote (respecting escapes) to find the value's real end line, then widen body to cover every line in between. Non-string values (numbers, booleans, objects, arrays) keep the original single-line behavior.
+            // body/lineEnd are derived from the key's and value's own character offsets, never
+            // from whole source lines.
+            //
+            // The previous implementation defaulted body to `lines[strStartLine - 1]` -- the
+            // key's entire source line -- widening it only for string values with embedded
+            // newlines. On minified JSON that default is catastrophic: every top-level key sits
+            // on line 1, so every key stored a copy of the *whole file*. An N-key, S-byte
+            // minified document wrote N x S bytes into `symbols.body`, mirrored again into
+            // `symbols_fts`. One real 1.5 MB, 1142-key file grew global.db by 1.6 GB by itself,
+            // which made each reindex transaction long enough to blow past db.ts's 15s
+            // busy_timeout -- surfacing as "database is locked" and as long freezes during
+            // `token-goat index`.
+            //
+            // Walking the value's true extent instead makes the stored bytes scale with the
+            // value, so a whole document's bodies now sum to roughly the document's own size.
+            // It also fixes a real correctness gap: an object/array value previously recorded
+            // lineEnd as the key's line and a body of just `"key": {`, so `read file::key`
+            // returned the opening brace rather than the value.
             let v = k + 1
-            let gapNewlines = 0
             while (v < content.length && /\s/.test(content[v] ?? '')) {
-              if (content[v] === '\n') gapNewlines++
               v++
             }
-            let lineEnd = strStartLine
-            let body = (lines[strStartLine - 1] ?? '').trim()
-            if (content[v] === '"') {
-              let valueLine = line + keyToColonNewlines + gapNewlines
-              let valueEscaping = false
-              for (let j = v + 1; j < content.length; j++) {
-                const vch = content[j]
-                if (vch === '\n') valueLine++
-                if (valueEscaping) {
-                  valueEscaping = false
-                  continue
-                }
-                if (vch === '\\') {
-                  valueEscaping = true
-                  continue
-                }
-                if (vch === '"') break
-              }
-              lineEnd = valueLine
-              if (lineEnd > strStartLine) {
-                body = lines.slice(strStartLine - 1, lineEnd).join('\n').trim()
-              }
-            }
+            const valueEnd = scanJsonValueEnd(content, v)
+            const body = content.slice(strStartOffset, valueEnd)
+            const lineEnd = strStartLine + countNewlines(body)
             out.push({
               filePath,
               name: strChars.join(''),
@@ -2213,7 +2377,12 @@ function writeParseResult(
     )
     for (const s of result.symbols) {
       if (s.name === '' || s.kind === '') continue
-      insSym.run(s.filePath, s.name, s.kind, s.lineStart, s.lineEnd, s.body, s.docstring)
+      // Bound every stored body regardless of which extractor produced it -- see
+      // MAX_SYMBOL_BODY_CHARS / boundSymbolBody. This is the single choke point through which
+      // all parsed symbols reach the DB, so capping here makes an unbounded-body bug in any one
+      // language extractor incapable of bloating global.db. An over-cap body is stored empty,
+      // not truncated, so resolveBody still serves the complete symbol from source on read.
+      insSym.run(s.filePath, s.name, s.kind, s.lineStart, s.lineEnd, boundSymbolBody(s.body), boundSymbolDocstring(s.docstring))
     }
 
     const insRef = db.prepare(

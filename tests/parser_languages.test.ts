@@ -141,6 +141,112 @@ Some content here
 
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
+
+    it('bounds each key body by its own value, not the whole line, on minified json', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const jsonFile = path.join(tmpDir, 'minified_wide.json')
+
+      // A single-line document with many top-level keys, each holding a sizeable object. The
+      // regression this pins: body used to default to the key's whole source LINE, which on
+      // minified JSON is the entire file -- so every key stored a full copy of the document and
+      // total stored bytes grew as keys x filesize. A 1.5 MB, 1142-key real-world file inflated
+      // global.db by 1.6 GB that way, which stretched reindex transactions past db.ts's 15s
+      // busy_timeout and surfaced to users as "database is locked".
+      const keyCount = 60
+      const filler = 'x'.repeat(400)
+      const entries = Array.from(
+        { length: keyCount },
+        (_, i) => `"key${i}":{"filler":"${filler}","n":${i}}`,
+      )
+      const content = `{${entries.join(',')}}`
+      fs.writeFileSync(jsonFile, content)
+      const result = await parseFile(jsonFile)
+
+      expect(result.symbols).toHaveLength(keyCount)
+
+      // The invariant, stated as the property that actually failed: total stored body bytes
+      // must scale with the document, not with keys x document. Asserting a per-key size cap
+      // alone would not catch a regression that merely lowered the multiplier.
+      const totalBody = result.symbols.reduce((n, s) => n + s.body.length, 0)
+      expect(totalBody).toBeLessThan(content.length * 2)
+
+      // Each body is the key plus its own value -- neither the whole file nor a bare fragment.
+      const first = result.symbols.find((s) => s.name === 'key0')
+      expect(first).toBeDefined()
+      expect(first?.body).toContain('"key0"')
+      expect(first?.body).toContain('"n":0')
+      expect(first?.body).not.toContain('"key1"')
+      expect(first?.body.length).toBeLessThan(content.length)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('gives an object value a body and lineEnd covering the value, not just the key line', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const jsonFile = path.join(tmpDir, 'object_value.json')
+
+      const content = ['{', '  "deps": {', '    "a": 1,', '    "b": 2', '  }', '}', ''].join('\n')
+      fs.writeFileSync(jsonFile, content)
+      const result = await parseFile(jsonFile)
+
+      const deps = result.symbols.find((s) => s.name === 'deps')
+      expect(deps).toBeDefined()
+      expect(deps?.lineStart).toBe(2)
+      // Previously lineEnd was the key's own line (2) and body was just `"deps": {`, so
+      // `read file::deps` returned an opening brace instead of the value.
+      expect(deps?.lineEnd).toBe(5)
+      expect(deps?.body).toContain('"b": 2')
+      expect(deps?.body.trimEnd().endsWith('}')).toBe(true)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('handles adversarial json without over-consuming or dropping top-level keys', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+
+      const parse = async (name: string, content: string) => {
+        const f = path.join(tmpDir, name)
+        fs.writeFileSync(f, content)
+        return await parseFile(f)
+      }
+
+      // Escaped quotes and escaped backslashes inside both key and value. An off-by-one in the
+      // escape handling would either swallow the following key or split this one. Names come
+      // back unescaped (`\"` -> `"`), which is the correct JSON reading of the key.
+      const esc = await parse('escapes.json', '{"a\\"b":"v\\"x","tail\\\\":"end","z":1}')
+      expect(esc.symbols.map((s) => s.name)).toEqual(['a"b', 'tail\\', 'z'])
+
+      // A key whose value ends in an EVEN run of backslashes: the final quote is real, not
+      // escaped, so the next key must still be seen.
+      const evenSlash = await parse('even.json', '{"k":"ends\\\\\\\\","next":2}')
+      expect(evenSlash.symbols.map((s) => s.name)).toContain('next')
+
+      // CRLF line endings: lineEnd is derived by counting '\n', which CRLF still contains.
+      const crlf = await parse('crlf.json', '{\r\n  "obj": {\r\n    "n": 1\r\n  }\r\n}\r\n')
+      const obj = crlf.symbols.find((s) => s.name === 'obj')
+      expect(obj?.lineStart).toBe(2)
+      expect(obj?.lineEnd).toBe(4)
+
+      // Mismatched closer: `[` must not be closed by `}`. The value body has to stop at the
+      // offending character instead of running to EOF and swallowing the rest of the document.
+      const mismatch = await parse('mismatch.json', '{"bad":[1,2}, "after":3}')
+      const bad = mismatch.symbols.find((s) => s.name === 'bad')
+      expect(bad).toBeDefined()
+      expect(bad?.body).not.toContain('"after"')
+
+      // Truncated container and truncated string: bounded, no throw, no hang.
+      const truncObj = await parse('trunc_obj.json', '{"open": {"a": 1')
+      expect(truncObj.symbols.map((s) => s.name)).toContain('open')
+      const truncStr = await parse('trunc_str.json', '{"s": "never closed')
+      expect(truncStr.symbols.map((s) => s.name)).toContain('s')
+
+      // Deep nesting must not recurse -- the scanner is iterative, so this must not overflow.
+      const depth = 5000
+      const deep = await parse('deep.json', `{"d":${'['.repeat(depth)}${']'.repeat(depth)}}`)
+      expect(deep.symbols.map((s) => s.name)).toEqual(['d'])
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe('yaml symbols', () => {

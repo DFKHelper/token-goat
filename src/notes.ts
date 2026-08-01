@@ -17,6 +17,7 @@
  * still worth keeping.
  */
 
+import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintContent } from './fingerprint.js'
@@ -85,6 +86,16 @@ function pickEarliest(matches: readonly SymbolEntry[]): SymbolEntry {
  * Resolve `symbolName` against the symbols currently indexed for `filePath`.
  * Returns `null` when no match exists -- the caller decides what that means
  * (a hard error at note-add time; unconditional staleness at note-list time).
+ *
+ * A match whose stored `body` is empty gets it filled in from the source file
+ * over the symbol's line range, mirroring read_commands.ts's `resolveBody`.
+ * Both consumers of this function fingerprint `match.body` to detect that the
+ * code under a note has changed, and an empty body fingerprints to the same
+ * constant for every such symbol -- so without this fallback a note attached to
+ * one would never go stale. Bodies are legitimately empty for symbols an
+ * extractor emits without text, and for any symbol over parser.ts's
+ * MAX_SYMBOL_BODY_CHARS, which is stored elided precisely so readers re-derive
+ * it from source.
  */
 export function resolveSymbolMatch(
   filePath: string,
@@ -92,7 +103,23 @@ export function resolveSymbolMatch(
   dbPath: string = globalDbPath(),
 ): SymbolEntry | null {
   const matches = querySymbols({ filePath, name: symbolName }, dbPath)
-  return matches.length === 0 ? null : pickEarliest(matches)
+  if (matches.length === 0) return null
+  const match = pickEarliest(matches)
+  if (match.body !== '') return match
+  return { ...match, body: bodyFromSource(match) }
+}
+
+/** Source text over `entry`'s line range, or '' when the file is unreadable (deleted, permissions). */
+function bodyFromSource(entry: SymbolEntry): string {
+  try {
+    return fs
+      .readFileSync(entry.filePath, 'utf8')
+      .split(/\r?\n/)
+      .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
+      .join('\n')
+  } catch {
+    return ''
+  }
 }
 
 /** Every distinct symbol name currently indexed for `filePath`, sorted -- used to build a "did you mean" list when `--symbol` doesn't resolve to anything. */

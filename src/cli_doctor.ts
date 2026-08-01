@@ -40,6 +40,16 @@ export function checkWorkerRunning(dataDir?: string): boolean {
 }
 
 /**
+ * Size at which the index DB stops being merely large and starts being a
+ * functional problem: write transactions scale with it, and once one outlasts
+ * db.ts's 15s `busy_timeout` the failure reaches the user as "database is
+ * locked" rather than as anything mentioning size. A healthy index for a large
+ * multi-project tree is tens of MB, so 1 GB is well clear of normal use and
+ * still catches the pathology early.
+ */
+const DB_SIZE_WARN_BYTES = 1024 * 1024 * 1024
+
+/**
  * Check if the data directory and database files exist.
  */
 export function checkDbExists(dataDir: string): DoctorResult {
@@ -71,6 +81,22 @@ export function checkDbExists(dataDir: string): DoctorResult {
       name: 'Database',
       status: 'fail',
       message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt`,
+    }
+  }
+  // An index that has grown into the gigabytes is not merely a disk-space matter: every reindex
+  // transaction scales with it, and once a write outlasts db.ts's 15s busy_timeout the failure
+  // presents to the user as an unexplained "database is locked" plus long stalls during
+  // `token-goat index`. Surface the size directly, because the symptom points nowhere near the
+  // cause. A healthy index is tens of MB; 1 GB means something is storing far more per symbol
+  // than it should (see MAX_SYMBOL_BODY_CHARS in parser.ts).
+  if (sizeBytes > DB_SIZE_WARN_BYTES) {
+    return {
+      name: 'Database',
+      status: 'warn',
+      message:
+        `global.db is ${Math.round(sizeBytes / (1024 * 1024))} MB at ${dbPath} — far larger than a healthy index. ` +
+        `Large writes against it can exceed the 15s busy_timeout and appear as "database is locked". ` +
+        `Reclaim with: token-goat reclaim-index --rebuild (then re-run token-goat index)`,
     }
   }
   return {
