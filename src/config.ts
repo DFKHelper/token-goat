@@ -176,6 +176,12 @@ export interface IndexingConfig {
   large_file_symbol_only_kb: number
   large_file_skip_kb: number
   skip_dirs: string[]
+  // Basenames (not paths) excluded from the syntactic parse regardless of directory depth --
+  // e.g. generated coverage reports. Defaults to the previously-hardcoded coverage.json /
+  // coverage-final.json so existing behavior is unchanged; users can add their own generated
+  // artifacts (lcov.json, stats.json, ...) or override this list to re-include a legitimately
+  // named file. See isParseSkipEligible in parser.ts.
+  skip_files: string[]
   // Whether indexing (token-goat index and the worker's incremental drain) also chunks and
   // embeds file content for `token-goat semantic`, in addition to the always-on syntactic
   // symbols/refs parse. Defaults to true to match the feature's advertised behavior; set
@@ -385,6 +391,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     large_file_symbol_only_kb: 500,
     large_file_skip_kb: 2048,
     skip_dirs: [],
+    skip_files: ['coverage.json', 'coverage-final.json'],
     embeddings_enabled: true,
   },
   compression: {
@@ -1251,6 +1258,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // symbol_only_kb so it never exceeds skip_kb.
   ix.large_file_symbol_only_kb = Math.min(ix.large_file_symbol_only_kb, ix.large_file_skip_kb)
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
+  ix.skip_files = validatedStrList(ix_raw['skip_files'], ix.skip_files)
   ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
   ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
 
@@ -1492,6 +1500,7 @@ export function saveConfig(config: Config): void {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
       large_file_skip_kb: config.indexing.large_file_skip_kb,
       skip_dirs: config.indexing.skip_dirs,
+      skip_files: config.indexing.skip_files,
       embeddings_enabled: config.indexing.embeddings_enabled,
     },
     compression: {

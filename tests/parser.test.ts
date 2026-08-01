@@ -1663,7 +1663,12 @@ describe('isUnderSkipDir', () => {
 })
 
 describe('isParseSkipEligible', () => {
-  const cfg = { skip_dirs: [], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576 }
+  const cfg = {
+    skip_dirs: [],
+    skip_files: ['coverage.json', 'coverage-final.json'],
+    large_file_skip_kb: 1,
+    large_file_symbol_only_kb: 1048576,
+  }
 
   it('does not skip a file whose size sits exactly at the cap (mutation-testing gap: the boundary check must be strictly greater-than, not greater-than-or-equal)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
@@ -1682,5 +1687,14 @@ describe('isParseSkipEligible', () => {
     expect(isParseSkipEligible('/repo/coverage.json', cfg)).toBe(true)
     expect(isParseSkipEligible('/repo/sub/coverage-final.json', cfg)).toBe(true)
     expect(isParseSkipEligible('/repo/src/coverage.ts', cfg)).toBe(false)
+  })
+
+  it('honors indexing.skip_files as configurable, not hardcoded: an empty list re-includes coverage.json (opt-out), and a custom basename excludes a file the default list never covered (opt-in)', () => {
+    const optedOut = {skip_dirs: [], skip_files: [], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576}
+    expect(isParseSkipEligible('/repo/coverage.json', optedOut)).toBe(false)
+
+    const optedIn = {skip_dirs: [], skip_files: ['lcov.json'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1048576}
+    expect(isParseSkipEligible('/repo/lcov.json', optedIn)).toBe(true)
+    expect(isParseSkipEligible('/repo/coverage.json', optedIn)).toBe(false)
   })
 })
