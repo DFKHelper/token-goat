@@ -3327,6 +3327,15 @@ export function runExports(opts: ImportsExportsOptions): number {
   const ext = path.extname(opts.file).toLowerCase()
   // Source scan: catches tree-sitter languages whose body omits the modifier.
   const text = readFileText(opts.file)
+  // A file that is neither readable from disk nor present in the index is a bad path (typo,
+  // wrong cwd), not a file that legitimately has zero exports -- report it the same way
+  // imports/deps already do. A file indexed but since deleted from disk must NOT hit this
+  // branch: `symbols` still has rows for it, so the command falls through and reports from the
+  // index instead of erroring.
+  if (text === null && symbols.length === 0) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
   if (text !== null) {
     if (ext === '.go') {
       for (const s of symbols) if (/^[A-Z]/.test(s.name) && !names.includes(s.name)) names.push(s.name)

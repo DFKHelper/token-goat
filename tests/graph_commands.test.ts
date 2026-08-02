@@ -2020,9 +2020,12 @@ describe('runContextFor', () => {
 // ---- runTestFor (integration) -----------------------------------------------
 
 describe('runTestFor', () => {
-  it('exits 0 for a file with no indexed symbols', () => {
-    const code = runTestFor({ file: 'src/__nonexistent_file_xyz__.ts' })
-    expect(code).toBe(0)
+  it('exits 1 and reports "Could not read" for a path that is neither readable from disk nor indexed', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runTestFor({ file: 'src/__nonexistent_file_xyz__.ts' })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).toContain('Could not read: src/__nonexistent_file_xyz__.ts')
   })
 
   it('exits 0 and lists test files covering a well-tested source file', () => {
@@ -2037,6 +2040,46 @@ describe('runTestFor', () => {
     }
     expect(code).toBe(0)
     expect(captured).toMatch(/test/)
+  })
+
+  it('reports the empty-result message with the current exit code for a real file with genuinely no referencing tests (pinned exit code)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-empty-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-empty-fixture"}\n')
+      const srcFile = normalizePath(join(dir, 'untestedTarget.ts'))
+      writeFileSync(srcFile, 'export function __untestedTargetFn_7c3d9a() {\n  return 1\n}\n', 'utf-8')
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      try {
+        indexFileSync(srcFile)
+        const captured = captureStdout(() => {
+          const code = runTestFor({ file: srcFile })
+          expect(code).toBe(0)
+        })
+        expect(captured).toContain(`No test files found referencing symbols in '${srcFile}'`)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still reports from the index when the file is indexed but has since been deleted from disk (no error)', () => {
+    // The path is never written to disk in this test -- fs.existsSync() naturally returns false
+    // for it, so this exercises the "indexed but absent from disk" side of the conjunction.
+    const gonePath = normalizePath(resolve('src/__gone_but_indexed_testfor__.ts'))
+    const syms: SymbolEntry[] = [
+      {
+        name: '__goneButIndexedFn__', kind: 'function', filePath: gonePath,
+        lineStart: 1, lineEnd: 3, body: 'export function __goneButIndexedFn__() {}', docstring: '', parent: '',
+      },
+    ]
+    vi.mocked(querySymbols).mockReturnValueOnce(syms)
+    const errCaptured = captureStderr(() => {
+      const code = runTestFor({ file: gonePath })
+      expect(code).toBe(0)
+    })
+    expect(errCaptured).not.toContain('Could not read')
   })
 
   it('narrows testFunctions to only the test symbols that actually reference the target file (not every test-prefixed symbol in the test file)', () => {

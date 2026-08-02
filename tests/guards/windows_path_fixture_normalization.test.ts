@@ -36,8 +36,26 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..', '..')
 const TESTS_DIR = path.join(ROOT, 'tests')
 
+/**
+ * `fs.readdirSync` that treats a directory which no longer exists as empty rather than
+ * throwing. Other test files create and remove scratch directories under `tests/` via
+ * mkdtemp while the suite runs in parallel, so one of them can vanish between this walk
+ * listing it as an entry and descending into it -- an ENOENT that failed this guard for a
+ * reason unrelated to what it checks. A directory that disappeared mid-walk holds no
+ * committed `.test.ts` file for the guard to inspect, so skipping it is correct rather than
+ * merely tolerant. Any other error still propagates.
+ */
+export function readdirIfPresent(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+}
+
 function walkTestFiles(dir: string, out: string[] = []): string[] {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of readdirIfPresent(dir)) {
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       walkTestFiles(full, out)
@@ -61,6 +79,24 @@ function importsNormalizePath(src: string): boolean {
 }
 
 describe('no hand-rolled Windows path normalization in test fixtures', () => {
+  // Regression: the walk used a bare readdirSync, so a scratch directory another test
+  // removed between this walk listing it and descending into it threw ENOENT and failed
+  // the guard for a reason unrelated to path normalization.
+  it('treats a directory that vanished mid-walk as empty instead of throwing', () => {
+    const gone = path.join(TESTS_DIR, 'tmp_guard_never_created_9f2a')
+    expect(fs.existsSync(gone)).toBe(false)
+    expect(readdirIfPresent(gone)).toEqual([])
+  })
+
+  it('still propagates a non-ENOENT readdir failure instead of swallowing it as empty', () => {
+    // Only ENOENT means "vanished mid-walk". Pointing at a real file yields ENOTDIR, which
+    // must still throw -- otherwise the helper would mask a genuinely broken walk as a clean
+    // empty result and the guard would silently stop inspecting anything.
+    const notADir = fileURLToPath(import.meta.url)
+    expect(fs.existsSync(notADir)).toBe(true)
+    expect(() => readdirIfPresent(notADir)).toThrow(/ENOTDIR/)
+  })
+
   it('every test file that flips backslashes to slashes for a path fixture and also lowercases it imports normalizePath from src/paths.ts instead of reimplementing it', () => {
     const offenders: string[] = []
     for (const file of walkTestFiles(TESTS_DIR)) {

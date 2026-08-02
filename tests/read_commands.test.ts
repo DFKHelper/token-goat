@@ -3063,13 +3063,19 @@ describe('read_commands', () => {
   // ---- runExports ---------------------------------------------------------
 
   describe('runExports', () => {
-    it('reports no exported symbols', () => {
+    it('reports no exported symbols for a real file with genuinely nothing to export (pinned exit code)', () => {
+      // 'a.ts' is not readable from disk here, so this also proves the empty-result branch is
+      // reached only because `symbols` is non-empty (indexed) -- not because the disk check was
+      // skipped entirely.
       const syms: MockSymbol[] = [
         { name: 'internal', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'function internal() {}', docstring: '' },
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
-      const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
+      const { stdout } = capture(() => {
+        const code = runExports({ file: 'a.ts' })
+        expect(code).toBe(0)
+      })
       expect(stdout).toContain('No exported')
     })
 
@@ -3081,6 +3087,32 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
       expect(stdout).toContain('pubFn')
+    })
+
+    it('errors on a path that is neither readable from disk nor indexed, instead of reporting the empty-result message', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stdout, stderr } = capture(() => {
+        const code = runExports({ file: 'src/__nonexistent_exports_target__.ts' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain('Could not read: src/__nonexistent_exports_target__.ts')
+      expect(stdout).not.toContain('No exported')
+    })
+
+    it('still reports from the index when the file is indexed but has since been deleted from disk (no error)', () => {
+      // The path is never written to disk in this test -- readFileText() naturally returns null
+      // for it, so this exercises the "indexed but absent from disk" side of the conjunction.
+      const syms: MockSymbol[] = [
+        { name: 'pubFn', kind: 'function', filePath: 'gone.ts', lineStart: 1, lineEnd: 5, body: 'export function pubFn() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout, stderr } = capture(() => {
+        const code = runExports({ file: 'gone.ts' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('pubFn')
+      expect(stderr).not.toContain('Could not read')
     })
   })
 
