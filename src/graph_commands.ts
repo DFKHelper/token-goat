@@ -1119,6 +1119,16 @@ export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveIndexPath(opts.file)
   const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
+  // A file that is neither readable from disk nor present in the index is a bad path (typo,
+  // wrong cwd), not a file that legitimately has no referencing tests -- report it the same way
+  // imports/deps already do. A file indexed but since deleted from disk must NOT hit this
+  // branch: `symbols` still has rows for it, so the command falls through and reports from the
+  // index instead of erroring.
+  if (!fs.existsSync(opts.file) && symbols.length === 0) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope each ref lookup to the current project root so a same-named symbol's
   // test reference in an unrelated project on the same machine isn't returned here.
