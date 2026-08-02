@@ -55,10 +55,10 @@ describe('installClaudeMd', () => {
     expect(content).toContain('answer one question first')
     expect(content).toContain('violation, not an oversight')
     expect(content).toContain('Read, Grep, and Glob')
-    expect(content).toContain('Fallback clauses may name native tools')
-    expect(content).toContain('shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`')
+    expect(content).toContain('Fallback clauses may name')
+    expect(content).toContain('never tool identifiers')
     expect(content).toContain(
-      'Fallback clauses may name native tools (`Read`, `Grep`, `Glob`, `shell`, `apply_patch`, `view_image`, `edit`, `create`) or PowerShell helpers (`Get-Content`, `Select-String`); shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are commands, not tool identifiers.',
+      "Fallback clauses may name your harness's own native read, search, and edit tools, or its shell helpers. Shell binaries and editor programs are commands invoked through the shell tool, never tool identifiers, and must never appear in an agent's tools frontmatter or an allowed-tools list. This paragraph deliberately names no specific tool or binary: instruction-file loaders harvest such names into a tool allowlist and then warn that every one of them is unknown.",
     )
     expect(content).toContain('`map --compact`')
   })
@@ -156,10 +156,14 @@ describe('installSkill', () => {
     // Names Claude Code's own read tools in the conflict-resolution clause.
     expect(content).toContain('Read, Grep, and Glob')
     expect(content).toContain('allowed-tools:')
-    expect(content).toContain('  - read')
-    expect(content).toContain('  - section')
-    expect(content).toContain('Fallback clauses may name native tools')
-    expect(content).toContain('shell/editor commands like `rg`, `grep`, `fd`, `sed`, `cat`')
+    // Real harness tool identifiers, NOT token-goat subcommands: loaders validate
+    // every entry against their tool registry and warn on each miss.
+    expect(content).toContain('  - Bash')
+    expect(content).toContain('  - Read')
+    expect(content).not.toContain('  - section')
+    expect(content).not.toContain('  - gdrive-sections')
+    expect(content).toContain('Fallback clauses may name')
+    expect(content).toContain('never tool identifiers')
     // The old advisory list phrasing is gone.
     expect(content).not.toContain('Prefer token-goat commands over reading whole files')
   })
