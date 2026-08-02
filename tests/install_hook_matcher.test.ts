@@ -15,10 +15,13 @@
  * no `toolName` at all and match dynamic `mcp__*` names by regex, so omitting
  * them would silently disable MCP dedup rather than fail loudly.
  *
- * PostToolUse deliberately stays on the catch-all: hint_stats.ts registers an
- * advisory handler there that must observe every tool call for hint-expiry
- * accounting. toolMatcherFor reports that as "not narrowable" rather than
- * quietly excluding it -- which is the property these tests pin.
+ * The safety rule is that an unfiltered handler forces the catch-all, since
+ * narrowing would silently stop firing it. hint_stats.ts's advisory PostToolUse
+ * handler opts out of that rule explicitly (`followsMatcher`) after weighing the
+ * consequence: its hint-expiry window then counts observed tool calls rather than
+ * all of them. These tests pin both halves -- that the opt-in narrows PostToolUse,
+ * and that a handler which merely forgets a filter still forces the catch-all, so
+ * the mechanism cannot fail open.
  *
  * These tests import `relay.js` for its side effects, exactly as `cli.ts` does,
  * so the registry is populated the way it is on the real install path. Asserting
@@ -32,7 +35,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { toolMatcherFor } from '../src/hook_registry.js'
+import { registerHook, toolMatcherFor } from '../src/hook_registry.js'
 import { installHooks } from '../src/install.js'
 
 // Side-effect import: registers every hook handler, mirroring cli.ts's own
@@ -109,12 +112,24 @@ describe('toolMatcherFor', () => {
     }
   })
 
-  it('declines to narrow post_tool_use while a handler needs every tool call', () => {
-    // hint_stats.ts registers an advisory post_tool_use handler with no tool filter
-    // on purpose: hint-expiry counts one unit of window per tool call, including
-    // tools token-goat has no other handler for. Narrowing would silently change
-    // that accounting, so toolMatcherFor must report "not narrowable" instead.
-    expect(toolMatcherFor('post_tool_use')).toBeNull()
+  it('narrows post_tool_use to the handled tool set', () => {
+    const post = toolMatcherFor('post_tool_use')
+    expect(post).not.toBeNull()
+
+    const parts = (post ?? '').split('|')
+    for (const tool of ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'BashOutput', 'TaskOutput']) {
+      expect(parts, `post_tool_use must match ${tool}`).toContain(`^${tool}$`)
+    }
+    expect(parts).toContain('^mcp__')
+  })
+
+  it('still refuses to narrow when an unfiltered handler has not opted in', () => {
+    // The safety rule itself must stay live: hint_stats opts out explicitly via
+    // followsMatcher, and that opt-out is what makes post_tool_use narrowable. A
+    // handler that simply forgets a tool filter must still force the catch-all,
+    // otherwise this whole mechanism fails open.
+    registerHook('notification', () => ({ hookType: 'pass' }))
+    expect(toolMatcherFor('notification')).toBeNull()
   })
 
   it('returns null for events that carry no tool name', () => {
@@ -135,20 +150,23 @@ describe('toolMatcherFor', () => {
 })
 
 describe('installHooks matcher narrowing', () => {
-  it('writes the narrowed matcher for PreToolUse', () => {
+  it('writes the narrowed matcher for both tool events', () => {
     const result = installHooks('project')
-    const group = tokenGoatGroup(result.settingsPath, 'PreToolUse')
 
-    expect(group.matcher, 'PreToolUse must not use the catch-all matcher').not.toBe('')
-    expect(group.matcher).toBe(toolMatcherFor('pre_tool_use'))
+    for (const [eventKey, event] of [
+      ['PreToolUse', 'pre_tool_use'],
+      ['PostToolUse', 'post_tool_use'],
+    ] as const) {
+      const group = tokenGoatGroup(result.settingsPath, eventKey)
+      expect(group.matcher, `${eventKey} must not use the catch-all matcher`).not.toBe('')
+      expect(group.matcher).toBe(toolMatcherFor(event))
+    }
   })
 
-  it('leaves the catch-all wherever narrowing would drop a handler', () => {
+  it('leaves the catch-all on events that carry no tool name', () => {
     const result = installHooks('project')
 
-    // PostToolUse: an unfiltered advisory handler still needs every tool call.
-    // The rest carry no tool name at all.
-    for (const eventKey of ['PostToolUse', 'PreCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart']) {
+    for (const eventKey of ['PreCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart']) {
       const group = tokenGoatGroup(result.settingsPath, eventKey)
       expect(group.matcher, `${eventKey} must stay on the catch-all matcher`).toBe('')
     }

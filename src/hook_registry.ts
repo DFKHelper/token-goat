@@ -57,6 +57,11 @@ interface Registration {
   // the handler's own check. It exists so installHooks can narrow the settings.json
   // matcher without a hand-written list going stale -- see toolMatcherFor.
   readonly toolPattern: string | undefined
+  // An unfiltered handler that nonetheless accepts whatever matcher its event already
+  // needs, instead of forcing the catch-all. Set only where seeing strictly fewer tool
+  // calls is a documented, accepted behaviour change for that handler -- it is a
+  // deliberate opt-out of the safety rule below, not a default.
+  readonly followsMatcher: boolean
   // Advisory handlers are never authoritative for their event: a non-pass result from
   // one is remembered as a fallback but never short-circuits runHook, so later
   // (non-advisory) handlers for the same event still always run. This lets a
@@ -91,7 +96,7 @@ const _handlers = new Map<HookEventName, Registration[]>()
 export function registerHook(
   eventName: HookEventName,
   handler: HookHandler,
-  opts?: { toolName?: string; toolPattern?: string; advisory?: boolean },
+  opts?: { toolName?: string; toolPattern?: string; advisory?: boolean; followsMatcher?: boolean },
 ): void {
   let list = _handlers.get(eventName)
   if (list === undefined) {
@@ -103,6 +108,7 @@ export function registerHook(
     toolName: opts?.toolName,
     toolPattern: opts?.toolPattern,
     advisory: opts?.advisory === true,
+    followsMatcher: opts?.followsMatcher === true,
   })
 }
 
@@ -121,7 +127,8 @@ export function registerHook(
  *  - the event has no registrations, or none carry a tool filter (non-tool events
  *    like pre_compact, which never receive a tool name at all);
  *  - some registration declares neither `toolName` nor `toolPattern`, i.e. it really
- *    does want every tool. Narrowing then would silently stop firing it.
+ *    does want every tool. Narrowing then would silently stop firing it. A handler
+ *    that has weighed that and accepted it opts out with `followsMatcher: true`.
  *
  * The result is a `|`-joined alternation. Claude Code treats a matcher containing
  * only `[a-zA-Z0-9_-]`, spaces, commas and pipes as a list of exact names, and
@@ -133,7 +140,9 @@ export function toolMatcherFor(eventName: HookEventName): string | null {
   if (list === undefined || list.length === 0) return null
 
   const parts: string[] = []
-  for (const { toolName, toolPattern } of list) {
+  for (const { toolName, toolPattern, followsMatcher } of list) {
+    // Opted out of widening: contributes no fragment and does not block narrowing.
+    if (followsMatcher) continue
     // Neither filter: this handler wants every tool, so no narrowing is safe.
     if (toolName === undefined && toolPattern === undefined) return null
     // Anchor exact names. Claude Code evaluates this matcher as an *unanchored*
