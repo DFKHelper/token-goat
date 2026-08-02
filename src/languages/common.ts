@@ -8,6 +8,7 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import { escapeRegExp } from '../util.js'
+import { precedingDocComment, type DocCommentStyle } from '../doc_comment.js'
 
 // ---------------------------------------------------------------------------
 // Line-index helpers
@@ -989,13 +990,23 @@ export interface AdapterSpan {
   readonly body: string
 }
 
-/** Build a SymbolEntry from a resolved multi-line span. */
+/**
+ * Build a SymbolEntry from a resolved multi-line span.
+ *
+ * `parent` (formerly named `docstring` and stored in that field -- several callers pass a
+ * container/object name here, e.g. apex.ts's trigger `objectName`) now lives in its own
+ * `parent` column, separate from `docstring`. `lines`/`style`, when both given, recover a real
+ * doc comment immediately above the span's start line via {@link precedingDocComment}; omitted
+ * (or a language whose comment syntax doesn't fit `'c'`/`'hash'`), `docstring` stays `''`.
+ */
 export function makeSpanSymbol(
   filePath: string,
   name: string,
   kind: string,
   span: AdapterSpan,
-  docstring = '',
+  parent = '',
+  lines?: readonly string[],
+  style?: DocCommentStyle,
 ): SymbolEntry {
   return {
     filePath,
@@ -1004,14 +1015,19 @@ export function makeSpanSymbol(
     lineStart: span.startLine,
     lineEnd: span.endLine,
     body: span.body,
-    docstring,
+    docstring: lines !== undefined && style !== undefined ? precedingDocComment(lines, span.startLine, style) : '',
+    parent,
   }
 }
 
 /**
- * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`
- * and `parent` becomes `docstring` — the "parent lives in the docstring field" convention
- * several regex adapters share for single-line symbols that don't have a real docstring.
+ * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`.
+ *
+ * `parent` now lives in its own `parent` field rather than being stored in `docstring` (the
+ * "parent lives in the docstring field" convention this adapter family used to share, before the
+ * `parent` column existed -- see db.ts's SCHEMA_SQL comment for the full history). `lines`/`style`,
+ * when both given, recover a real doc comment immediately above `line` via
+ * {@link precedingDocComment}; omitted, `docstring` stays `''`.
  */
 export function makeLineSymbol(
   filePath: string,
@@ -1020,6 +1036,8 @@ export function makeLineSymbol(
   line: number,
   sig?: string,
   parent?: string,
+  lines?: readonly string[],
+  style?: DocCommentStyle,
 ): SymbolEntry {
   return {
     filePath,
@@ -1028,7 +1046,8 @@ export function makeLineSymbol(
     lineStart: line,
     lineEnd: line,
     body: sig ?? '',
-    docstring: parent ?? '',
+    docstring: lines !== undefined && style !== undefined ? precedingDocComment(lines, line, style) : '',
+    parent: parent ?? '',
   }
 }
 
@@ -1063,6 +1082,7 @@ export function makeSymbolEmitter(
       lineEnd: line,
       body: '',
       docstring: '',
+      parent: '',
     })
     sections.push({ heading: name, level: 1, line, endLine: line })
   }

@@ -16,6 +16,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
 import { extractWithRegex, parseFile, precedingDocComment } from '../src/parser.js'
+import { extractKotlin } from '../src/languages/kotlin.js'
+import { extractPhp } from '../src/languages/php.js'
+import { extractSwift } from '../src/languages/swift.js'
+import { extractScala } from '../src/languages/scala.js'
+import { extractCsharp } from '../src/languages/csharp.js'
+import { extractDart } from '../src/languages/dart.js'
+import { extractZig } from '../src/languages/zig.js'
+import { extractApex } from '../src/languages/apex.js'
+import { extractR } from '../src/languages/r.js'
+import { extractElixir } from '../src/languages/elixir.js'
+import { extractPowershell } from '../src/languages/powershell_idx.js'
+import { extractBash } from '../src/languages/bash_idx.js'
+import { extractLua } from '../src/languages/lua.js'
 
 let TMP: string
 
@@ -434,6 +447,207 @@ describe('extractWithRegex (fallback) docstring population', () => {
     const symbols = extractWithRegex(content, 'irrelevant.path')
     const sym = symbols.find((s) => s.name === 'noDoc')
     expect(sym?.docstring).toBe('')
+  })
+})
+
+describe('regex-adapter docstring population (wired via lines+style, parent separated out)', () => {
+  // These adapters previously stored the enclosing container name in `docstring` (see
+  // db.ts's SCHEMA_SQL v8 -> v9 comment). They now populate `parent` with that container name
+  // and `docstring` with the real preceding /** */ or # comment, via precedingDocComment.
+
+  it('Kotlin: a method with a /** */ doc comment reports it in docstring, and parent holds the class name', () => {
+    const content = [
+      'class Widget {',
+      '    /**',
+      '     * Renders the widget.',
+      '     */',
+      '    fun render(): String {',
+      '        return ""',
+      '    }',
+      '',
+      '    fun undocumented(): Unit {}',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractKotlin(content, 'Widget.kt')
+    const render = symbols.find((s) => s.name === 'render')
+    const undocumented = symbols.find((s) => s.name === 'undocumented')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+    expect(undocumented?.parent).toBe('Widget')
+    expect(undocumented?.docstring).toBe('')
+  })
+
+  it('PHP: a method with a /** */ doc comment reports it in docstring, and parent holds the class name', () => {
+    const content = [
+      '<?php',
+      'class Widget {',
+      '  /**',
+      '   * Renders the widget.',
+      '   */',
+      '  public function render(): string {',
+      '    return "";',
+      '  }',
+      '',
+      '  public function undocumented(): void {}',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractPhp(content, 'Widget.php')
+    const render = symbols.find((s) => s.name === 'render')
+    const undocumented = symbols.find((s) => s.name === 'undocumented')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+    expect(undocumented?.parent).toBe('Widget')
+    expect(undocumented?.docstring).toBe('')
+  })
+
+  it('Swift: a method with a /// doc comment reports it in docstring, and parent holds the class name', () => {
+    const content = [
+      'class Widget {',
+      '    /// Renders the widget.',
+      '    func render() -> String {',
+      '        return ""',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractSwift(content, 'Widget.swift')
+    const render = symbols.find((s) => s.name === 'render')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+  })
+
+  it('Scala: a method with a /** */ doc comment reports it in docstring, and parent holds the enclosing object name', () => {
+    const content = [
+      'object Widget {',
+      '  /**',
+      '   * Renders the widget.',
+      '   */',
+      '  def render(): String = ""',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractScala(content, 'Widget.scala')
+    const render = symbols.find((s) => s.name === 'render')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+  })
+
+  it('C#: a method with a /// doc comment reports it in docstring, and parent holds the class name', () => {
+    const content = [
+      'class Widget {',
+      '    /// Renders the widget.',
+      '    public string Render() {',
+      '        return "";',
+      '    }',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractCsharp(content, 'Widget.cs')
+    const render = symbols.find((s) => s.name === 'Render')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+  })
+
+  it('Zig: a container method with a /// doc comment reports it in docstring, and parent holds the container name', () => {
+    const content = [
+      'const Point = struct {',
+      '    x: i32,',
+      '',
+      '    /// Creates a new point.',
+      '    pub fn init(x: i32) Point {',
+      '        return Point{ .x = x };',
+      '    }',
+      '};',
+      '',
+    ].join('\n')
+    const { symbols } = extractZig(content, 'main.zig')
+    const init = symbols.find((s) => s.name === 'init')
+    expect(init?.parent).toBe('Point')
+    expect(init?.docstring).toContain('Creates a new point.')
+  })
+
+  it('R: a function with a leading # comment reports it in docstring', () => {
+    const content = ['# Greets a person.', 'greet <- function(name) {', '  paste("Hello", name)', '}', ''].join('\n')
+    const { symbols } = extractR(content, 'main.R')
+    const greet = symbols.find((s) => s.name === 'greet')
+    expect(greet?.docstring).toContain('Greets a person.')
+  })
+
+  it('Elixir: a function with a leading # comment reports it in docstring, and parent holds the module name', () => {
+    const content = [
+      'defmodule User do',
+      '  # Creates a new user.',
+      '  def new(name) do',
+      '    %User{name: name}',
+      '  end',
+      'end',
+      '',
+    ].join('\n')
+    const { symbols } = extractElixir(content, 'user.ex')
+    const newFn = symbols.find((s) => s.name === 'new')
+    expect(newFn?.parent).toBe('User')
+    expect(newFn?.docstring).toContain('Creates a new user.')
+  })
+
+  it('PowerShell: a function with a leading # comment reports it in docstring', () => {
+    const content = ['# Gets a foo.', 'function Get-Foo {', '    return "foo"', '}', ''].join('\n')
+    const { symbols } = extractPowershell(content, 'script.ps1')
+    const getFoo = symbols.find((s) => s.name === 'Get-Foo')
+    expect(getFoo?.docstring).toContain('Gets a foo.')
+  })
+
+  it('Bash: a function with a leading # comment reports it in docstring', () => {
+    const content = ['# Deploys the app.', 'deploy() {', '  echo "deploying"', '}', ''].join('\n')
+    const symbols = extractBash(content, 'deploy.sh')
+    const deploy = symbols.find((s) => s.name === 'deploy')
+    expect(deploy?.docstring).toContain('Deploys the app.')
+  })
+
+  it('Apex: a method with a /** */ doc comment reports it in docstring', () => {
+    const content = [
+      'public class Widget {',
+      '  /**',
+      '   * Renders the widget.',
+      '   */',
+      '  public String render() {',
+      '    return \'\';',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractApex(content, 'Widget.cls')
+    const render = symbols.find((s) => s.name === 'render')
+    // apex_method emit() calls don't pass a parent (pre-existing, unrelated to this change --
+    // only apex_trigger's objectName flows through emit's parent arg); the class itself does.
+    expect(symbols.find((s) => s.name === 'Widget' && s.kind === 'apex_class')?.parent).toBe('')
+    expect(render?.docstring).toContain('Renders the widget.')
+  })
+
+  it('Dart: a class is still extracted and does not fold a doc comment into docstring incorrectly (dart wired for lines+style)', () => {
+    const content = [
+      'class Widget {',
+      '  /// Renders the widget.',
+      '  String render() {',
+      '    return "";',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const { symbols } = extractDart(content, 'main.dart')
+    const render = symbols.find((s) => s.name === 'render')
+    expect(render?.parent).toBe('Widget')
+    expect(render?.docstring).toContain('Renders the widget.')
+  })
+
+  it('Lua: deliberately left unwired -- docstring stays empty even with a leading -- comment, but parent is still populated', () => {
+    const content = ['local Widget = {}', '', '-- Renders the widget.', 'function Widget.render(self)', '  return ""', 'end', ''].join(
+      '\n',
+    )
+    const { symbols } = extractLua(content, 'widget.lua')
+    const render = symbols.find((s) => s.name === 'render' || s.name === 'Widget.render')
+    expect(render?.docstring).toBe('')
   })
 })
 

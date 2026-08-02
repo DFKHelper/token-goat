@@ -95,7 +95,7 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (fname && symbols.length < MAX_SYMBOLS) {
-          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
         }
         if (fname) {
           if (stripped.includes('{')) {
@@ -119,7 +119,7 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
         if (varMatch) {
           const vname = varMatch[1] ?? ''
           if (vname && symbols.length < MAX_SYMBOLS) {
-            symbols.push(makeLineSymbol(filePath, vname, 'variable', lineNum, stripped.slice(0, 200)))
+            symbols.push(makeLineSymbol(filePath, vname, 'variable', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
           }
         }
       }

@@ -936,3 +936,87 @@ describe('docstring column population (indexer critical path)', () => {
     }
   })
 })
+
+// symbols.parent (indexer critical path): regex-based adapters (Kotlin, PHP, ...) used to
+// overload `docstring` to carry the enclosing class/type name for a single-line-span symbol
+// (see db.ts's SCHEMA_SQL comment for the full history). This proves the real cmdIndex path now
+// writes that name into its own `parent` column AND, separately, a real `/** ... */` doc comment
+// into `docstring` -- the new capability this column split enables.
+describe('symbols.parent population for regex-adapter languages (indexer critical path)', () => {
+  it('populates both symbols.parent and symbols.docstring for a documented Kotlin method via the real cmdIndex path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-parent-kotlin-e2e-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(
+      path.join(dir, 'Widget.kt'),
+      [
+        'class Widget {',
+        '  /** Kotlin doc. */',
+        '  fun documentedMethod(): Int {',
+        '    return 1',
+        '  }',
+        '',
+        '  fun undocumentedMethod(): Int {',
+        '    return 2',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    await cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const documented = db
+      .prepare('SELECT parent, docstring FROM symbols WHERE name = ?')
+      .get('documentedMethod') as { parent: string; docstring: string } | undefined
+    expect(documented?.parent).toBe('Widget')
+    expect(documented?.docstring).toBe('Kotlin doc.')
+    const undocumented = db
+      .prepare('SELECT parent, docstring FROM symbols WHERE name = ?')
+      .get('undocumentedMethod') as { parent: string; docstring: string } | undefined
+    expect(undocumented?.parent).toBe('Widget')
+    expect(undocumented?.docstring).toBe('')
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+
+  it('populates both symbols.parent and symbols.docstring for a documented PHP method via the real cmdIndex path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-parent-php-e2e-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(
+      path.join(dir, 'Widget.php'),
+      [
+        '<?php',
+        'class Widget {',
+        '  /** PHP doc. */',
+        '  public function documentedMethod() {',
+        '    return 1;',
+        '  }',
+        '',
+        '  public function undocumentedMethod() {',
+        '    return 2;',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    await cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const documented = db
+      .prepare('SELECT parent, docstring FROM symbols WHERE name = ?')
+      .get('documentedMethod') as { parent: string; docstring: string } | undefined
+    expect(documented?.parent).toBe('Widget')
+    expect(documented?.docstring).toBe('PHP doc.')
+    const undocumented = db
+      .prepare('SELECT parent, docstring FROM symbols WHERE name = ?')
+      .get('undocumentedMethod') as { parent: string; docstring: string } | undefined
+    expect(undocumented?.parent).toBe('Widget')
+    expect(undocumented?.docstring).toBe('')
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+})

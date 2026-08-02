@@ -76,7 +76,7 @@ export function extractLiquid(
         if (name) {
           const line = offsetToLine(lineIndex, m.index ?? 0)
           const endLine = offsetToLine(lineIndex, (m.index ?? 0) + (m[0]?.length ?? 0))
-          symbols.push({ filePath, name, kind: 'liquid_schema', lineStart: line, lineEnd: endLine, body: '', docstring: '' })
+          symbols.push({ filePath, name, kind: 'liquid_schema', lineStart: line, lineEnd: endLine, body: '', docstring: '', parent: '' })
         }
       }
     } catch {
@@ -89,7 +89,7 @@ export function extractLiquid(
   const relPosix = resolvedRel.replace(/\\/g, '/')
   if (relPosix.startsWith('sections/') || relPosix.includes('/sections/')) {
     const stem = path.basename(resolvedRel, path.extname(resolvedRel))
-    symbols.push({ filePath, name: stem, kind: 'liquid_section_file', lineStart: 1, lineEnd: 1, body: '', docstring: '' })
+    symbols.push({ filePath, name: stem, kind: 'liquid_section_file', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' })
   }
 
   // HTML headings

@@ -30,6 +30,8 @@ import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
+import { precedingDocComment } from './doc_comment.js'
+import type { DocCommentStyle } from './doc_comment.js'
 import { querySymbols } from './index_reader.js'
 import { extractMarkdownHeadings } from './hints/markdown_hints.js'
 import { extractCsharp } from './languages/csharp.js'
@@ -214,100 +216,10 @@ export function boundSymbolDocstring(docstring: string): string {
   return docstring.slice(0, Math.max(0, end)) + DOCSTRING_TRUNCATION_MARKER
 }
 
-/** Comment-syntax family {@link precedingDocComment} recognizes: `'c'` for `//`- and block-comment languages, `'hash'` for `#`-line-comment languages. */
-export type DocCommentStyle = 'c' | 'hash'
-
-/**
- * Derive a docstring from the comment block immediately above `lineStart` (1-indexed).
- *
- * Works off plain source lines rather than a syntax tree, so it applies equally to a tree-sitter
- * adapter (TS/JS, Rust) and the regex fallback -- both already have `lines` + a 1-indexed start
- * line and nothing else.
- *
- * ADJACENCY GUARD: the block must sit on the line *directly* above `lineStart` -- a blank line
- * between them, or a non-comment line, returns `''` rather than scanning further up. This is the
- * reason `docstring` was left unpopulated for every non-Python extractor in the first place (see
- * {@link boundSymbolDocstring}'s doc comment): without the guard, a file-level doc comment would
- * get attributed to every symbol beneath it -- the same shared-region blowup that once made `body`
- * grow quadratically -- and a comment block could get attached to more than one symbol (the next
- * symbol down would walk back through the same lines). Never scan past a blank line; never widen
- * the block once a non-comment line is hit.
- *
- * Callers that fold a leading decorator/attribute into a symbol's range (TS `@decorator`, Rust
- * `#[attr]`) pass the *already-widened* `lineStart` (the decorator/attribute's own line), so the
- * walk naturally looks above the decorator/attribute for the doc comment rather than between it
- * and the symbol.
- */
-export function precedingDocComment(
-  lines: readonly string[],
-  lineStart: number,
-  style: DocCommentStyle,
-): string {
-  // lineStart is 1-indexed; the line directly above it is lines[lineStart - 2].
-  const aboveIdx = lineStart - 2
-  if (aboveIdx < 0 || aboveIdx >= lines.length) return ''
-  const aboveLine = lines[aboveIdx]
-  if (aboveLine === undefined) return ''
-  const aboveTrimmed = aboveLine.trim()
-
-  if (style === 'hash') {
-    if (!aboveTrimmed.startsWith('#')) return ''
-    const collected: string[] = []
-    let i = aboveIdx
-    while (i >= 0) {
-      const line = lines[i]
-      if (line === undefined) break
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('#')) break
-      collected.unshift(trimmed.replace(/^#+\s?/, ''))
-      i--
-    }
-    return collected.join('\n').trim()
-  }
-
-  // 'c' style: either a contiguous run of `//` (incl. `///`, `//!`) line comments, or a single
-  // `/* ... */` / `/** ... */` block comment, immediately above.
-  if (aboveTrimmed.endsWith('*/')) {
-    let blockStart = aboveIdx
-    while (blockStart >= 0) {
-      const l = lines[blockStart]
-      if (l === undefined) break
-      if (l.trim().startsWith('/*')) break
-      blockStart--
-    }
-    if (blockStart < 0) return ''
-    const opener = lines[blockStart]
-    if (opener === undefined || !opener.trim().startsWith('/*')) return ''
-    return lines
-      .slice(blockStart, aboveIdx + 1)
-      .map((l) =>
-        l
-          .trim()
-          .replace(/^\/\*+/, '')
-          .replace(/\*+\/$/, '')
-          .replace(/^\*\s?/, '')
-          .trim(),
-      )
-      .filter((l) => l !== '')
-      .join('\n')
-  }
-
-  if (aboveTrimmed.startsWith('//')) {
-    const collected: string[] = []
-    let i = aboveIdx
-    while (i >= 0) {
-      const line = lines[i]
-      if (line === undefined) break
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('//')) break
-      collected.unshift(trimmed.replace(/^\/\/[/!]?\s?/, ''))
-      i--
-    }
-    return collected.join('\n').trim()
-  }
-
-  return ''
-}
+// precedingDocComment / DocCommentStyle live in doc_comment.ts (shared with languages/common.ts,
+// which parser.ts itself imports from -- defining them here would create an import cycle). See
+// that module's doc comment. Re-exported here so existing importers of `parser.js` keep working.
+export { precedingDocComment, type DocCommentStyle } from './doc_comment.js'
 
 /**
  * Return the offset one past the end of the JSON value starting at `start`.
@@ -541,6 +453,7 @@ function makeSymbol(
     body: node.text,
     docstring:
       lines !== undefined && style !== undefined ? precedingDocComment(lines, lineStart, style) : '',
+      parent: '',
   }
 }
 
@@ -595,6 +508,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly stri
             lineEnd: node.endPosition.row + 1,
             body: [...decorators, node].map((n) => n.text).join('\n'),
             docstring: precedingDocComment(lines, lineStart, 'c'),
+            parent: '',
           })
         }
       }
@@ -930,6 +844,7 @@ function extractRustSymbols(root: TsNode, filePath: string, lines: readonly stri
             lineEnd: node.endPosition.row + 1,
             body: [...attrs, node].map((n) => n.text).join('\n'),
             docstring: precedingDocComment(lines, lineStart, 'c'),
+            parent: '',
           })
         }
       }
@@ -1700,6 +1615,7 @@ function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[
           lineEnd: i + 1,
           body: line.trim(),
           docstring: '',
+          parent: '',
         })
       }
     }
@@ -1782,6 +1698,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
               lineEnd,
               body,
               docstring: '',
+              parent: '',
             })
           }
         }
@@ -1867,6 +1784,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
         lineEnd: i + 1,
         body: line.trim(),
         docstring: '',
+        parent: '',
       })
       openQuote = yamlOpenQuoteAfter(line, match[0].length)
     }
@@ -1927,6 +1845,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
         lineEnd: lineNum + 1,
         body: line.trim(),
         docstring: '',
+        parent: '',
       })
     }
 
@@ -1940,6 +1859,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
         lineEnd: lineNum + 1,
         body: line.trim(),
         docstring: '',
+        parent: '',
       })
     }
   }
@@ -2035,6 +1955,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
           lineEnd: p.line,
           body: p.body,
           docstring: '',
+          parent: '',
         })
       }
       pending = []
@@ -2055,6 +1976,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
             lineEnd: i + 1,
             body: line.trim(),
             docstring: '',
+            parent: '',
           })
         }
       }
@@ -2072,6 +1994,7 @@ function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
           lineEnd: p.line,
           body: p.body,
           docstring: '',
+          parent: '',
         })
       }
       pending = []
@@ -2137,6 +2060,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
         lineEnd: i + 1,
         body: line.trim(),
         docstring: '',
+        parent: '',
       })
     }
 
@@ -2213,6 +2137,7 @@ export function extractWithRegex(content: string, filePath: string): SymbolEntry
           lineEnd: i + 1,
           body: line.trim(),
           docstring: precedingDocComment(lines, i + 1, style),
+          parent: '',
         })
         break // one symbol per line
       }
@@ -2353,6 +2278,7 @@ function sectionsToHeadingSymbols(
     lineEnd: s.endLine,
     body: '',
     docstring: '',
+    parent: '',
   }))
 }
 
@@ -2512,8 +2438,8 @@ function writeParseResult(
     ).run(filePath, sha, mtime, result.language, now)
 
     const insSym = db.prepare(
-      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
     for (const s of result.symbols) {
       if (s.name === '' || s.kind === '') continue
@@ -2522,7 +2448,16 @@ function writeParseResult(
       // all parsed symbols reach the DB, so capping here makes an unbounded-body bug in any one
       // language extractor incapable of bloating global.db. An over-cap body is stored empty,
       // not truncated, so resolveBody still serves the complete symbol from source on read.
-      insSym.run(s.filePath, s.name, s.kind, s.lineStart, s.lineEnd, boundSymbolBody(s.body), boundSymbolDocstring(s.docstring))
+      insSym.run(
+        s.filePath,
+        s.name,
+        s.kind,
+        s.lineStart,
+        s.lineEnd,
+        boundSymbolBody(s.body),
+        boundSymbolDocstring(s.docstring),
+        s.parent,
+      )
     }
 
     const insRef = db.prepare(

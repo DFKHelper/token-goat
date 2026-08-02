@@ -138,10 +138,15 @@ describe('Salesforce DX worker default path', () => {
       // name to the wrong file or duplicated/dropped an entry is caught too.
       expect(querySymbols({ name: 'accountCard' }, dbPath)).toMatchObject([{ kind: 'lwc_bundle' }])
       expect(querySymbols({ name: 'recordId' }, dbPath)).toMatchObject([{ kind: 'lwc_api_property' }])
-      expect(querySymbols({ name: 'refresh' }, dbPath)).toMatchObject([
-        { kind: 'lwc_api_method' },
-        { kind: 'method' },
-      ])
+      // Both symbols share the exact same (file_path, line_start) -- the JS tree-sitter extractor
+      // and salesforce_frontend.ts's @api regex scan both attribute `refresh` to its leading
+      // `@api` decorator's line. querySymbols' `ORDER BY file_path, line_start` has no tiebreak
+      // for that case, so which of the two comes back first is an unspecified SQLite tie order
+      // (observed to flip after an unrelated schema change added a column) -- assert both are
+      // present regardless of order rather than pinning a sequence SQLite never promised.
+      expect(querySymbols({ name: 'refresh' }, dbPath).map((s) => s.kind).sort()).toEqual(
+        ['lwc_api_method', 'method'].sort(),
+      )
       expect(querySymbols({ name: 'refreshButton' }, dbPath)).toMatchObject([{ kind: 'lwc_ref' }])
       expect(querySymbols({ name: 'variant' }, dbPath)).toMatchObject([{ kind: 'sf_lwc_property' }])
 

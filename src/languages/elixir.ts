@@ -97,7 +97,7 @@ export function extractElixir(
     const modM = MODULE_RE.exec(stripped)
     if (modM) {
       const modName = modM[1] ?? ''
-      symbols.push(makeLineSymbol(filePath, modName, 'class', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, modName, 'class', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       moduleStack.push({ name: modName, endKeywordNeeded: true, isBlock: false })
       continue
     }
@@ -107,7 +107,7 @@ export function extractElixir(
     const protoM = PROTOCOL_RE.exec(stripped)
     if (protoM) {
       const protoName = protoM[1] ?? ''
-      symbols.push(makeLineSymbol(filePath, protoName, 'protocol', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, protoName, 'protocol', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       moduleStack.push({ name: protoName, endKeywordNeeded: true, isBlock: false })
       continue
     }
@@ -122,10 +122,10 @@ export function extractElixir(
       const fname = fm[1] ?? ''
       const parent = nearestDefName(moduleStack)
       if (parent !== undefined) {
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent, lines, 'hash'))
       } else {
         // Top-level function (not inside a module) — still index it
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
       if (opensDoBlock) {
         moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
@@ -139,9 +139,9 @@ export function extractElixir(
       const fname = pfm[1] ?? ''
       const parent = nearestDefName(moduleStack)
       if (parent !== undefined) {
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), parent, lines, 'hash'))
       } else {
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
       if (opensDoBlock) {
         moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false })
@@ -153,7 +153,7 @@ export function extractElixir(
     if (STRUCT_RE.test(stripped)) {
       const parent = nearestDefName(moduleStack)
       if (parent !== undefined) {
-        symbols.push(makeLineSymbol(filePath, '__struct__', 'var', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, '__struct__', 'var', lineNum, stripped.slice(0, 200), parent, lines, 'hash'))
       }
       continue
     }

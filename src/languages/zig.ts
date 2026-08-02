@@ -95,7 +95,7 @@ export function extractZig(
         const skind = sm[2] ?? 'struct'
         if (sname) {
           const parent = outerFrame !== null ? outerFrame.name : undefined
-          symbols.push(makeLineSymbol(filePath, sname, skind, lineNum, stripped.slice(0, 200), parent))
+          symbols.push(makeLineSymbol(filePath, sname, skind, lineNum, stripped.slice(0, 200), parent, lines, 'c'))
           scopeStack.push({ name: sname, startDepth: braceDepth, bodyEntered: false })
           matched = true
         }
@@ -108,7 +108,7 @@ export function extractZig(
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         const fname = fm[2] ?? ''
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
     } else if (!matched && frame !== null) {
@@ -120,7 +120,7 @@ export function extractZig(
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
           const fname = fm[2] ?? ''
-          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
       }
@@ -130,14 +130,14 @@ export function extractZig(
     if (!matched && !isIndented) {
       const cm = CONST_RE.exec(stripped)
       if (cm) {
-        symbols.push(makeLineSymbol(filePath, cm[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, cm[1] ?? '', 'const', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
 
       if (!matched) {
         const vm = VAR_RE.exec(stripped)
         if (vm) {
-          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'var', lineNum, stripped.slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         }
       }
     }

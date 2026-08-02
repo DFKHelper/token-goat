@@ -141,7 +141,7 @@ export function extractScala(
     if (cm) {
       const cname = cm[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
       // A `case class` is idiomatically bodyless (`case class Foo(x: Int)`, optionally with
       // `extends`/`with` clauses, but never a `{...}` body). If this line has no `{` at all, no
@@ -160,7 +160,7 @@ export function extractScala(
     if (om) {
       const oname = om[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false })
       // Same bodyless-one-liner leak as `case class` above, but for `case object Foo` (the
       // idiomatic zero-argument ADT variant, e.g. Scala 3 enum-alternative style).
@@ -174,7 +174,7 @@ export function extractScala(
     if (tm) {
       const tname = tm[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
       matched = true
     }
@@ -183,7 +183,7 @@ export function extractScala(
     if (enm) {
       const enname = enm[1] ?? ''
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false })
       matched = true
     }
@@ -197,20 +197,20 @@ export function extractScala(
       if (depthInType === 1) {
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
-          symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
 
         const vm = !matched ? VAL_RE.exec(stripped) : null
         if (vm) {
-          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           matched = true
         }
 
         if (!matched) {
           const varm = VAR_RE.exec(stripped)
           if (varm) {
-            symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+            symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           }
         }
       }
@@ -220,20 +220,20 @@ export function extractScala(
       // both TOP_FUN_RE and CONST_RE, rather than only the function regex.
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
-        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
 
       const vm = !matched ? VAL_RE.exec(stripped) : null
       if (vm) {
-        symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, vm[1] ?? '', 'val', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         matched = true
       }
 
       if (!matched) {
         const varm = VAR_RE.exec(stripped)
         if (varm) {
-          symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, varm[1] ?? '', 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         }
       }
     }

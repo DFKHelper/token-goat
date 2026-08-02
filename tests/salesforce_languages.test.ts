@@ -223,12 +223,15 @@ public class MyTestClass {
 
     const { symbols } = extractApex(content, 'ExampleTrigger.trigger')
     expect(symbols).toHaveLength(1)
+    // The target object is a container/context label, not a doc comment -- it now lives in
+    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     expect(symbols[0]).toMatchObject({
       name: 'ExampleTrigger',
       kind: 'apex_trigger',
       lineStart: 1,
       lineEnd: 3,
-      docstring: 'Example_Object__c',
+      docstring: '',
+      parent: 'Example_Object__c',
     })
   })
 
@@ -408,8 +411,10 @@ describe('salesforce metadata adapter', () => {
 </ValidationRule>
 `
 
+    // The owning object is a container/context label, not a doc comment -- it now lives in
+    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     const symbols = extractSalesforceMetadata(content, file).symbols
-    expect(symbols.map((s) => [s.name, s.kind, s.docstring])).toEqual([
+    expect(symbols.map((s) => [s.name, s.kind, s.parent])).toEqual([
       ['Example_Rule', 'sf_validation_rule', 'Example_Object__c'],
       ['Example_Object__c.Example_Rule', 'sf_validation_rule', 'Example_Object__c'],
     ])
@@ -440,7 +445,9 @@ describe('salesforce metadata adapter', () => {
       ['Set_Value', 'sf_flow_assignment'],
       ['Check_Value', 'sf_flow_decision'],
     ])
-    expect(symbols.find((s) => s.name === 'Do_Action')?.docstring).toBe('Example_Flow')
+    // The owning flow is a container/context label, not a doc comment -- it now lives in
+    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
+    expect(symbols.find((s) => s.name === 'Do_Action')?.parent).toBe('Example_Flow')
   })
 
   it('extracts a distinct ref for each of two same-named <field> filters inside one recordLookups block (regression-coverage gap: the running-cursor fix documented at this callsite -- guarding against a plain indexOf always resolving to the first occurrence and silently dropping the second, same-named field ref as a duplicate -- had no test)', () => {
@@ -506,8 +513,10 @@ describe('salesforce metadata adapter', () => {
 </RecordType>
 `
 
+    // The owning object is a container/context label, not a doc comment -- it now lives in
+    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     const symbols = extractSalesforceMetadata(content, file).symbols
-    expect(symbols.map((s) => [s.name, s.kind, s.docstring])).toEqual([
+    expect(symbols.map((s) => [s.name, s.kind, s.parent])).toEqual([
       ['Example_Object__c.Example_Type', 'sf_record_type', 'Example_Object__c'],
     ])
   })

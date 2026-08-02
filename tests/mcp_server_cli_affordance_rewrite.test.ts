@@ -28,7 +28,18 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
 const { createMcpServer } = await import('../src/mcp_server.js')
 
 function candidate(filePath: string, lineStart: number, lineEnd: number): SymbolEntry {
-  return { filePath, name: 'refresh', kind: 'method', lineStart, lineEnd, body: 'refresh() {}', docstring: 'Session' }
+  // docstring (not parent) deliberately holds 'Session' here -- exercises findParentName's
+  // backward-compat fallback for a pre-`parent`-column row (parent: '').
+  return {
+    filePath,
+    name: 'refresh',
+    kind: 'method',
+    lineStart,
+    lineEnd,
+    body: 'refresh() {}',
+    docstring: 'Session',
+    parent: '',
+  }
 }
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {

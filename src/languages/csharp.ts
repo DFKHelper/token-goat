@@ -157,7 +157,7 @@ export function extractCsharp(
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
     }
 
     // delegate. Matched against stripLeadingAttributes(stripped), same as CLASS_HEADER_RE below --
@@ -173,7 +173,7 @@ export function extractCsharp(
     const delM = DELEGATE_RE.exec(stripLeadingAttributes(stripped))
     if (delM) {
       const delegateParent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200), delegateParent))
+      symbols.push(makeLineSymbol(filePath, delM[1] ?? '', 'interface', lineNum, stripped.slice(0, 200), delegateParent, lines, 'c'))
     }
 
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
@@ -191,7 +191,7 @@ export function extractCsharp(
         : keyword === 'enum' ? 'enum'
         : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
     }
 
@@ -205,14 +205,14 @@ export function extractCsharp(
         if (ctorM && ctorM[1] === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-          symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
         }
         // property
         let isPropertyLine = false
         const propM = PROPERTY_RE.exec(lineNoAttr)
         if (propM) {
           isPropertyLine = true
-          symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else {
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
           // following lines rather than trailing the header line, so PROPERTY_RE (which
@@ -223,7 +223,7 @@ export function extractCsharp(
             const accessorLine = (lines[i + 2] ?? '').trim()
             if (braceLineNext === '{' && (ALLMAN_ACCESSOR_RE.test(accessorLine) || ALLMAN_ACCESSOR_BODY_RE.test(accessorLine))) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+              symbols.push(makeLineSymbol(filePath, headerM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
             }
           } else {
             // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
@@ -231,7 +231,7 @@ export function extractCsharp(
             const arrowM = PROPERTY_ARROW_RE.exec(lineNoAttr)
             if (arrowM) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+              symbols.push(makeLineSymbol(filePath, arrowM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
             }
           }
         }
@@ -243,7 +243,7 @@ export function extractCsharp(
           if (mname && mname !== frame.name) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name))
+            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
           }
         }
       }

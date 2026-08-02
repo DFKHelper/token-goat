@@ -223,6 +223,55 @@ describe('getDb schema version', () => {
     expect(row.one).toBe(1)
   })
 
+  it('migrates a v8 DB (symbols table without the parent column) up to SCHEMA_VERSION, adding symbols.parent', () => {
+    const p = tmpDbPath()
+
+    // Simulate a real pre-v9 on-disk database: a symbols table shaped exactly like v8's
+    // SCHEMA_SQL (no `parent` column), stamped user_version = 8. Built directly against the raw
+    // file, bypassing token-goat's getDb/initConnection, so this doesn't depend on the current
+    // (post-fix) SCHEMA_SQL to construct the "before" state.
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE symbols (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT,
+        name TEXT,
+        kind TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        body TEXT,
+        docstring TEXT
+      );
+    `)
+    raw.prepare(
+      `INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('a.kt', 'ktFn', 'function', 1, 1, 'fun ktFn() {}', 'Widget')
+    raw.pragma('user_version = 8')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+
+    // Pre-existing row survives the ALTER TABLE with parent defaulted to '', and the table
+    // remains usable for new inserts that populate parent explicitly.
+    const existing = db.prepare('SELECT docstring, parent FROM symbols WHERE name = ?').get('ktFn') as {
+      docstring: string
+      parent: string
+    }
+    expect(existing.docstring).toBe('Widget')
+    expect(existing.parent).toBe('')
+
+    db.prepare(
+      `INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('b.kt', 'ktFn2', 'function', 1, 1, 'fun ktFn2() {}', '/** doc */', 'Widget')
+    const inserted = db.prepare('SELECT docstring, parent FROM symbols WHERE name = ?').get('ktFn2') as {
+      docstring: string
+      parent: string
+    }
+    expect(inserted.docstring).toBe('/** doc */')
+    expect(inserted.parent).toBe('Widget')
+  })
+
   it('refuses to open a DB whose user_version is newer than this build supports', () => {
     const p = tmpDbPath()
     getDb(p)

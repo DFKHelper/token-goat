@@ -139,6 +139,7 @@ interface TopSymbolRow {
   readonly line_end: number
   readonly body: string | null
   readonly docstring: string | null
+  readonly parent: string | null
 }
 
 /**
@@ -157,7 +158,7 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
     const { clause, param } = projectScopeClause('file_path')
     const rows = db
       .prepare(
-        `SELECT file_path, name, kind, line_start, line_end, body, docstring
+        `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent
          FROM symbols
          WHERE kind IN ('class', 'function', 'interface') AND ${clause}
          ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
@@ -173,6 +174,7 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
       lineEnd: r.line_end,
       body: r.body ?? '',
       docstring: r.docstring ?? '',
+      parent: r.parent ?? '',
     }))
   } catch {
     return []

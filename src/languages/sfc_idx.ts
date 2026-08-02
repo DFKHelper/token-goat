@@ -238,7 +238,7 @@ function maskSpans(content: string, spans: ReadonlyArray<readonly [number, numbe
 }
 
 function componentSymbol(filePath: string, name: string, kind: string, totalLines: number): SymbolEntry {
-  return { filePath, name, kind, lineStart: 1, lineEnd: totalLines, body: '', docstring: '' }
+  return { filePath, name, kind, lineStart: 1, lineEnd: totalLines, body: '', docstring: '', parent: '' }
 }
 
 // ---------------------------------------------------------------------------

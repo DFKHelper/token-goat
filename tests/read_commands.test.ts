@@ -146,6 +146,7 @@ type MockSymbol = {
   lineEnd: number
   body: string
   docstring: string
+  parent?: string
 }
 
 describe('read_commands', () => {
@@ -516,6 +517,29 @@ describe('read_commands', () => {
       const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '' }
       const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A' }
       const fooInB: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 12, lineEnd: 14, body: 'B.foo body', docstring: 'B' }
+      mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+        if (opts.name === 'foo') return [fooInA, fooInB] as unknown as ReturnType<typeof mockQuerySymbols>
+        if (opts.name === 'B') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
+        if (opts.name === 'A') return [classA] as unknown as ReturnType<typeof mockQuerySymbols>
+        return []
+      })
+      const { text: stdout } = runRead({ spec: 'src/widget.php::B.foo' })
+      expect(stdout).toContain('B.foo body')
+      expect(stdout).not.toContain('A.foo body')
+    })
+
+    it('backward-compat: rows with parent === "" (schema v8, not yet reindexed since the v8->v9 parent-column migration) still resolve via the docstring-as-parent fallback', () => {
+      // Explicit regression coverage for the migration's compatibility contract: a symbol
+      // written before this change (parent column defaulted to '' by the ALTER TABLE) but
+      // whose docstring still holds the old overloaded parent-name convention must keep
+      // resolving correctly until the file is reindexed and a real `parent` is populated.
+      // (M35b above exercises the same fallback implicitly via MockSymbol objects that omit
+      // `parent` entirely -- TypeScript's optional field defaults it to undefined, not the
+      // real schema's '', so this test pins the exact post-migration on-disk shape.)
+      const classA: MockSymbol = { name: 'A', kind: 'class', filePath: 'src/widget.php', lineStart: 1, lineEnd: 1, body: 'class A {', docstring: '', parent: '' }
+      const classB: MockSymbol = { name: 'B', kind: 'class', filePath: 'src/widget.php', lineStart: 10, lineEnd: 10, body: 'class B {', docstring: '', parent: '' }
+      const fooInA: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 3, lineEnd: 5, body: 'A.foo body', docstring: 'A', parent: '' }
+      const fooInB: MockSymbol = { name: 'foo', kind: 'method', filePath: 'src/widget.php', lineStart: 12, lineEnd: 14, body: 'B.foo body', docstring: 'B', parent: '' }
       mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.name === 'foo') return [fooInA, fooInB] as unknown as ReturnType<typeof mockQuerySymbols>
         if (opts.name === 'B') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
@@ -4447,7 +4471,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
     fs.writeFileSync(callerB, callerBSrc)
 
     mockQuerySymbols.mockReturnValue([
-      { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'method', filePath: fileA, lineStart: 2, lineEnd: 4, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
     mockQueryRefs.mockReturnValue([
       // col 0 mirrors the real indexer's column semantics for `foo.run()` -- parser.ts's
@@ -4468,8 +4492,8 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
 
   it('falls back to unfiltered name-based results when the definition is ambiguous (querySymbols finds 2+ matches)', () => {
     mockQuerySymbols.mockReturnValue([
-      { name: 'run', kind: 'method', filePath: 'src/a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
-      { name: 'run', kind: 'method', filePath: 'src/b.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'method', filePath: 'src/a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'method', filePath: 'src/b.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
     mockQueryRefs.mockReturnValue([
       { filePath: 'src/x.ts', name: 'run', line: 1, col: 0, context: '' },
@@ -4485,7 +4509,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
 
   it('falls back to unfiltered name-based results when the definition is not a TypeScript file', () => {
     mockQuerySymbols.mockReturnValue([
-      { name: 'run', kind: 'function', filePath: 'src/legacy.py', lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'function', filePath: 'src/legacy.py', lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
     mockQueryRefs.mockReturnValue([
       { filePath: 'src/x.py', name: 'run', line: 1, col: 0, context: '' },
@@ -4501,7 +4525,7 @@ describe('runRefs — type-resolved tier disambiguates same-named symbols (ts_re
 
   it('never crashes/hangs when the definition file does not actually exist on disk', () => {
     mockQuerySymbols.mockReturnValue([
-      { name: 'run', kind: 'function', filePath: path.join(dir, 'missing.ts'), lineStart: 1, lineEnd: 3, body: '', docstring: '' } satisfies SymbolEntry,
+      { name: 'run', kind: 'function', filePath: path.join(dir, 'missing.ts'), lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' } satisfies SymbolEntry,
     ])
     mockQueryRefs.mockReturnValue([
       { filePath: path.join(dir, 'caller.ts'), name: 'run', line: 1, col: 0, context: '' },

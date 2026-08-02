@@ -115,7 +115,7 @@ export function extractPhp(
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       continue
     }
 
@@ -165,7 +165,7 @@ export function extractPhp(
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
       const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
-      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
+      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined, lines, 'c'))
       contextStack.push([name, braceDepth - openB + closeB, false])
       if (openB > 0 && openB === closeB) {
         // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration
@@ -193,7 +193,7 @@ export function extractPhp(
       const kind = parent ? 'method' : 'function'
       const sigEnd = stripped.indexOf(')')
       const sig = sigEnd >= 0 ? stripped.slice(0, sigEnd + 1) : stripped
-      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, sig.slice(0, 200), parent ?? undefined))
+      symbols.push(makeLineSymbol(filePath, name, kind, lineNum, sig.slice(0, 200), parent ?? undefined, lines, 'c'))
       continue
     }
 
@@ -208,7 +208,7 @@ export function extractPhp(
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
       if (topFrame !== undefined && preLineDepth === topFrame[1] + 1) {
-        symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), topFrame[0]))
+        symbols.push(makeLineSymbol(filePath, name, 'var', lineNum, stripped.slice(0, 200), topFrame[0], lines, 'c'))
       }
       continue
     }
@@ -224,14 +224,14 @@ export function extractPhp(
       const preLineDepth = braceDepth - openB + closeB
       const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
       const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : undefined
-      symbols.push(makeLineSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, name, 'const', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       continue
     }
 
     // global define()
     const defineM = DEFINE_RE.exec(stripped)
     if (defineM) {
-      symbols.push(makeLineSymbol(filePath, defineM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeLineSymbol(filePath, defineM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
     }
   }
 

@@ -13,6 +13,12 @@ import { stripMultilineStringSpan, type MultilineStringState } from '../src/lang
 // `stripMultilineStringSpan` masking, such a brace desynced the regex adapters'
 // brace-depth counters, mis-parenting or dropping every symbol declared after the
 // string closed.
+//
+// Every `?.docstring).toBe('Before'|'After')` assertion below was updated to `?.parent` when
+// the `symbols.parent` column was added: the containing class name these regex adapters recover
+// for a method now lives in its own `parent` field, not overloaded into `docstring` (see
+// db.ts's SCHEMA_SQL comment for the full history). What each assertion actually verifies --
+// that scope tracking survived the multi-line string without desyncing -- is unchanged.
 // ---------------------------------------------------------------------------
 
 describe('PHP heredoc/nowdoc multi-line masking', () => {
@@ -38,10 +44,10 @@ class After {
     const { symbols } = extractPhp(content, 'heredoc.php')
     const before = symbols.find((s) => s.name === 'beforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
     // The class declarations themselves must also still resolve correctly.
     expect(symbols.find((s) => s.name === 'Before')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'After')?.kind).toBe('class')
@@ -69,10 +75,10 @@ class After {
     const { symbols } = extractPhp(content, 'nowdoc.php')
     const before = symbols.find((s) => s.name === 'beforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('recognizes a PHP 7.3+ indented heredoc closing marker', () => {
@@ -99,7 +105,7 @@ class After {
     const { symbols } = extractPhp(content, 'indented_heredoc.php')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 })
 
@@ -125,10 +131,10 @@ class After {
     const { symbols } = extractKotlin(content, 'raw_string.kt')
     const before = symbols.find((s) => s.name === 'beforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('does not treat a """ appearing inside an already-open single-line string literal as a raw-string opener (mirrors the PHP heredoc-inside-string guard)', () => {
@@ -170,7 +176,7 @@ class After {
     const { symbols } = extractKotlin(content, 'raw_string_oneline.kt')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 })
 
@@ -194,7 +200,7 @@ function AfterFunction {
     const { symbols } = extractPowershell(content, 'here_string.ps1')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterFunction')
     expect(after?.kind).toBe('function')
   })
@@ -218,7 +224,7 @@ function AfterFunction {
     const { symbols } = extractPowershell(content, 'here_string_single.ps1')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterFunction')
     expect(after?.kind).toBe('function')
   })
@@ -246,10 +252,10 @@ public class After {
     const { symbols } = extractCsharp(content, 'verbatim.cs')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('treats a doubled "" inside a verbatim string as an escaped quote, not a closer', () => {
@@ -270,7 +276,7 @@ public class After {
     const { symbols } = extractCsharp(content, 'verbatim_escaped_quote.cs')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('registers a genuine second verbatim-string opener after a first verbatim string closes mid-line, even when the closed string\'s own content contains an http:// URL (fail-on-buggy: lineCommentStartIndex scanned from index 0 instead of from `from`, so the closed string\'s http:// looked like a real // line comment)', () => {
@@ -320,10 +326,10 @@ public class After {
     const { symbols } = extractCsharp(content, 'raw_string.cs')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('does not treat a """ appearing inside an already-open single-line string literal as a raw-string opener', () => {
@@ -353,10 +359,10 @@ public class After {
     const { symbols } = extractCsharp(content, 'raw_string_4quote.cs')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('recognizes a C# 11+ 5-quote raw string delimiter', () => {
@@ -379,10 +385,10 @@ public class After {
     const { symbols } = extractCsharp(content, 'raw_string_5quote.cs')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('masks a same-line 4-quote raw string (with a 3-quote run embedded as content) and resumes normal code after it', () => {
@@ -421,10 +427,10 @@ public class After {
     const { symbols } = extractCsharp(content, 'raw_string_closer_longer_than_opener.cs')
     const before = symbols.find((s) => s.name === 'BeforeMethod')
     expect(before?.kind).toBe('method')
-    expect(before?.docstring).toBe('Before')
+    expect(before?.parent).toBe('Before')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 })
 
@@ -518,7 +524,7 @@ class After {
     const { symbols } = extractPhp(content, 'commented_heredoc.php')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('Kotlin: does not open a raw string from opener-shaped text inside a // comment', () => {
@@ -538,7 +544,7 @@ class After {
     const { symbols } = extractKotlin(content, 'commented_raw_string.kt')
     const after = symbols.find((s) => s.name === 'afterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('C#: does not open a raw string from opener-shaped text inside a // comment', () => {
@@ -558,7 +564,7 @@ class After {
     const { symbols } = extractCsharp(content, 'commented_raw_string.cs')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('C#: does not open a verbatim string from opener-shaped text inside a // comment', () => {
@@ -578,7 +584,7 @@ class After {
     const { symbols } = extractCsharp(content, 'commented_verbatim_string.cs')
     const after = symbols.find((s) => s.name === 'AfterMethod')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('After')
+    expect(after?.parent).toBe('After')
   })
 
   it('PowerShell: does not open a here-string from opener-shaped text inside a # comment', () => {
