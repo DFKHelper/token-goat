@@ -4,6 +4,24 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.22] - 2026-08-02
+
+### Added
+- **Doc comments are now indexed for every supported language, not just Python.** A `/** ... */`, `///`, `//`, or `#` comment sitting directly above a declaration is now stored as that symbol's docstring, so `skeleton --stats`, `outline --stats`, and `read --stats` report real doc coverage instead of calling everything undocumented. Previously only Python's in-body docstrings were captured, which meant token-goat misreported coverage on its own TypeScript source. Covers the tree-sitter languages plus 12 regex-based ones (Kotlin, PHP, Swift, Scala, C#, Dart, Zig, Apex, R, Elixir, PowerShell, Bash). Lua, INI and Vue SFC are deliberately left out rather than guessed at. See [src/doc_comment.ts](src/doc_comment.ts), [src/parser.ts](src/parser.ts), [src/languages/common.ts](src/languages/common.ts).
+- **Multi-symbol `read`.** `token-goat read "file.ts::alpha,beta"` returns several symbol bodies from one file in a single call, matching the comma syntax `refs` already had. The existing line-range form (`file.ts::120,140`) still means a line range and is unaffected. See [src/read_commands.ts](src/read_commands.ts).
+- **`read --stats`.** Adds each symbol's reference count and whether it has a doc comment, matching the flag `skeleton` and `outline` already had. See [src/read_commands.ts](src/read_commands.ts).
+- **`indexing.skip_files` config key.** The list of generated files skipped during indexing is now configurable by basename, the same way `skip_dirs` already was. See [src/config.ts](src/config.ts).
+
+### Changed
+- **Installed hook matchers now list only the tools token-goat handles.** `token-goat install` wrote a catch-all matcher for `PreToolUse` and `PostToolUse`, so Claude Code started a hook process for every tool call — including ones token-goat has no handler for. Most of a hook's cost is process startup rather than the hook's own work (measured 308 ms to load the bundle versus 333 ms to also do the work), so those calls were paying full price for nothing. The matcher is generated from the live hook registry instead of a fixed list, so it stays correct as handlers change, and re-running `install` upgrades an existing catch-all entry in place. Hook groups you have added your own commands to are left alone. Measured against a real 2,316-call session: 906 of 4,632 hook process spawns (19.6%) no longer happen. See [src/hook_registry.ts](src/hook_registry.ts), [src/install.ts](src/install.ts).
+
+### Fixed
+- Symbols in regex-parsed languages reported their parent class name as if it were a doc comment, so an undocumented method inside a class showed up as documented. The parent name now has its own database column. See [src/languages/common.ts](src/languages/common.ts), [src/db.ts](src/db.ts).
+- Generated coverage reports (`coverage.json`, `coverage-final.json`) are no longer indexed. See [src/parser.ts](src/parser.ts).
+
+### Internal
+- `tests/` is now type-checked with no exclusions via a dedicated `tsconfig.tests.json`, closing a gap where lint covered test files but `typecheck` did not. See [tsconfig.tests.json](tsconfig.tests.json).
+
 ## [2.6.21] - 2026-07-31
 
 ### Added
