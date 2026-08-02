@@ -2526,8 +2526,16 @@ export function buildProgram(): Command {
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
-    .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean }) =>
-      runExitText(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}), ...(opts.forceRefresh === true ? { forceRefresh: true } : {}) })),
+    .option('--stats', 'add per-symbol reference count and doc-coverage flag')
+    .action((spec: string, opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean }) =>
+      runExitText(() =>
+        runRead({
+          spec,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+          ...(opts.stats === true ? { stats: true } : {}),
+        }),
+      ),
     )
 
   program

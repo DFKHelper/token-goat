@@ -407,6 +407,8 @@ export interface ReadOptions {
   json?: boolean
   contextLines?: number
   forceRefresh?: boolean
+  /** Add per-symbol reference count and doc-coverage flag, same as `skeleton`/`outline`'s `--stats`. */
+  stats?: boolean
   /**
    * Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name
    * as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g.
@@ -748,6 +750,14 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const match = resolution.entry
   const fullSourceBytes = sumFileSizes([match.filePath])
 
+  // Only queried when --stats is actually requested -- an extra DB round trip the common
+  // (non-stats) path shouldn't pay for. Same call shape as prepareSymbolListing's ref-count
+  // lookup for skeleton/outline.
+  const refCounts =
+    opts.stats === true
+      ? queryRefCounts([match.name], globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
+      : undefined
+
   if (opts.json === true) {
     // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols
     // an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS
@@ -755,7 +765,15 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one
     // output shape with no honest signal that the text is available elsewhere -- the text form
     // below already resolves it.
-    const text = JSON.stringify({ ...match, body: resolveBody(match) }, null, 2)
+    const text = JSON.stringify(
+      {
+        ...match,
+        body: resolveBody(match),
+        ...(refCounts !== undefined ? { refCount: refCounts.get(match.name) ?? 0 } : {}),
+      },
+      null,
+      2,
+    )
     if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
   }
@@ -763,8 +781,9 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const body = resolveBody(match)
 
   const bodyLen = match.lineEnd - match.lineStart + 1
+  const statsStr = formatStatsSuffix(refCounts, match)
   const lines: string[] = [
-    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
+    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
     body,
   ]
   const warning = staleWarning(match.filePath)
@@ -1193,6 +1212,17 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 const SKELETON_SYMBOL_CAP = 5000
 
 /**
+ * Render the trailing `--stats` annotation (`  [N refs, documented|undocumented]`) shared by
+ * `skeleton`, `outline`, and `read`'s text output. Returns `''` when `refCounts` is `undefined`
+ * (i.e. `--stats` wasn't requested), so callers can always append the result unconditionally.
+ */
+function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
+  return refCounts !== undefined
+    ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
+    : ''
+}
+
+/**
  * Shared prologue for `skeleton`/`outline`: resolve the file, optionally reparse it, fetch its
  * indexed symbols, and (on a non-empty result) apply the `--min-lines` filter and optional
  * `--stats` ref-count lookup. Both commands share this exact sequence verbatim; only their JSON
@@ -1276,10 +1306,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   const lines: string[] = [`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`]
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
-    const statsStr =
-      refCounts !== undefined
-        ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
-        : ''
+    const statsStr = formatStatsSuffix(refCounts, sym)
     lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
   const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')
@@ -1338,10 +1365,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const kindStr = sym.kind.padEnd(14)
     const bodyLen = sym.lineEnd - sym.lineStart + 1
     const docFirst = sym.docstring ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
-    const statsStr =
-      refCounts !== undefined
-        ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
-        : ''
+    const statsStr = formatStatsSuffix(refCounts, sym)
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
   const text = guardText(staleWarning(resolved) + lines.join('\n'), 'symbol')

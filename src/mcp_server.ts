@@ -165,16 +165,18 @@ export function createMcpServer(): McpServer {
         spec: z.string().describe('file::symbol, file@N-M, file@N, a bare file path, or comma-separated file::a,b for a merged multi-symbol view'),
         json: z.boolean().optional().describe('output as JSON'),
         forceRefresh: z.boolean().optional().describe('reparse file from disk before querying (ignore stale index)'),
+        stats: z.boolean().optional().describe('add per-symbol reference count and doc-coverage flag'),
         projectRoot: projectRootField,
       },
     },
     (args) => {
-      const { spec, json, forceRefresh, projectRoot } = args
+      const { spec, json, forceRefresh, stats, projectRoot } = args
       return toCallToolResult(
         runRead({
           spec,
           ...(json === true ? { json: true } : {}),
           ...(forceRefresh === true ? { forceRefresh: true } : {}),
+          ...(stats === true ? { stats: true } : {}),
           ...(projectRoot !== undefined ? { projectRoot } : {}),
         }),
       )

@@ -986,6 +986,56 @@ describe('read_commands', () => {
         // No multi-symbol heading/merge artifacts leak into the single-symbol path.
         expect(stdout).not.toContain('alphaFn:\n')
       })
+
+      it('--stats: each symbol in a multi-symbol read carries its own ref count', () => {
+        poolMock([symA, symB])
+        mockQueryRefCounts.mockReturnValue(new Map([['alphaFn', 3], ['betaFn', 0]]))
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,betaFn', stats: true })
+        expect(code).toBe(0)
+        expect(stdout).toContain('3 refs')
+        expect(stdout).toContain('0 refs')
+      })
+    })
+
+    describe('--stats', () => {
+      it('text mode: header line carries the ref count and documented flag', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: 'does a thing' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 7]]))
+        const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn', stats: true })
+        expect(stdout).toContain('7 refs')
+        expect(stdout).toContain('documented')
+      })
+
+      it('text mode: an undocumented symbol renders "undocumented", not just the documented case', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 0]]))
+        const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn', stats: true })
+        expect(stdout).toContain('0 refs')
+        expect(stdout).toContain('undocumented')
+      })
+
+      it('JSON mode: refCount is present with the right number', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 5]]))
+        const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn', stats: true, json: true })
+        const parsed = JSON.parse(stdout) as { refCount?: number }
+        expect(parsed.refCount).toBe(5)
+      })
+
+      it('without --stats: output is byte-identical to the pre-existing expectation, and queryRefCounts is not called', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
+        expect(stdout).toContain('# 1 lines (~5 tok)\nfunction myFn() {}')
+        expect(mockQueryRefCounts).not.toHaveBeenCalled()
+      })
     })
   })
 
