@@ -14,12 +14,18 @@
  * conservative floor. Numbers are logged so a maintainer can see the real ratios
  * when a regression trips the floor.
  *
- * Floor rationale: measured savings across these fixtures today run ~76-93%. A
- * floor of 0% would never fail (defeats the purpose); a floor at today's measured
- * number would flake on any incidental formatting byte. SAVINGS_FLOOR_PERCENT=60
- * leaves real headroom below every measured command (>=16 points) while still
- * catching a genuine regression, e.g. a command silently degrading into a
- * near-full-file dump.
+ * Floor rationale: measured savings across these fixtures today run ~76-93%, with
+ * one documented exception below. A floor of 0% would never fail (defeats the
+ * purpose); a floor at today's measured number would flake on any incidental
+ * formatting byte. SAVINGS_FLOOR_PERCENT=60 leaves real headroom below every
+ * measured command (>=16 points) while still catching a genuine regression, e.g. a
+ * command silently degrading into a near-full-file dump.
+ *
+ * A case may override the shared floor via `floorPercent`, but only where a lower
+ * number is a understood consequence of a deliberate change rather than a
+ * regression. Lowering the SHARED floor to accommodate one case would silently
+ * relax the guard for every other case too, which is the opposite of what this
+ * test is for -- so the exception is scoped to the case that earned it.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -79,13 +85,25 @@ interface Measurement {
   readonly label: string
   readonly command: readonly string[]
   readonly fixtureFile: string
+  /**
+   * Per-case override of {@link SAVINGS_FLOOR_PERCENT}. Only set this where a lower
+   * ratio is an understood consequence of a deliberate change; an unexplained drop is
+   * exactly the regression this benchmark exists to catch, and belongs in the code
+   * under test rather than here.
+   */
+  readonly floorPercent?: number
 }
 
 const MEASUREMENTS: readonly Measurement[] = [
   { label: 'symbol fetchUser (service.ts)', command: ['symbol', 'fetchUser'], fixtureFile: 'service.ts' },
   { label: 'read service.ts::fetchUser', command: ['read', 'service.ts::fetchUser'], fixtureFile: 'service.ts' },
   { label: 'read report.py::calculate_total', command: ['read', 'report.py::calculate_total'], fixtureFile: 'report.py' },
-  { label: 'outline inventory.go', command: ['outline', 'inventory.go'], fixtureFile: 'inventory.go' },
+  // Go's outline now surfaces each declaration's leading `//` doc comment, which the
+  // parser previously dropped on the floor for every non-Python language. The output is
+  // correspondingly larger -- that is the fix working, not a command degrading toward a
+  // full-file dump, and this fixture is densely doc-commented so it feels it most. Kept
+  // as a scoped exception with real headroom rather than by relaxing the shared floor.
+  { label: 'outline inventory.go', command: ['outline', 'inventory.go'], fixtureFile: 'inventory.go', floorPercent: 50 },
   { label: 'section guide.md::Configuration', command: ['section', 'guide.md::Configuration'], fixtureFile: 'guide.md' },
 ]
 
@@ -105,7 +123,7 @@ describe('token savings regression benchmark', () => {
     expect(indexed.status, indexed.stderr).toBe(0)
     expect(indexed.stdout).toMatch(/Indexed \d+ files/)
 
-    const results: Array<{ label: string; fullBytes: number; outputBytes: number; percent: number }> = []
+    const results: Array<{ label: string; fullBytes: number; outputBytes: number; percent: number; floor: number }> = []
 
     for (const measurement of MEASUREMENTS) {
       const result = runBundle(repo, dataBase, measurement.command)
@@ -115,7 +133,13 @@ describe('token savings regression benchmark', () => {
       const fullBytes = fs.statSync(path.join(repo, measurement.fixtureFile)).size
       const outputBytes = Buffer.byteLength(result.stdout, 'utf8')
       const percent = savingsPercent(fullBytes, outputBytes)
-      results.push({ label: measurement.label, fullBytes, outputBytes, percent })
+      results.push({
+        label: measurement.label,
+        fullBytes,
+        outputBytes,
+        percent,
+        floor: measurement.floorPercent ?? SAVINGS_FLOOR_PERCENT,
+      })
     }
 
     // Print the real measured numbers so a maintainer can see the actual ratios,
@@ -131,8 +155,8 @@ describe('token savings regression benchmark', () => {
     )
 
     for (const r of results) {
-      expect(r.percent, `${r.label}: only ${r.percent.toFixed(1)}% smaller than the full file (floor ${SAVINGS_FLOOR_PERCENT}%)`).toBeGreaterThanOrEqual(
-        SAVINGS_FLOOR_PERCENT,
+      expect(r.percent, `${r.label}: only ${r.percent.toFixed(1)}% smaller than the full file (floor ${r.floor}%)`).toBeGreaterThanOrEqual(
+        r.floor,
       )
     }
 
