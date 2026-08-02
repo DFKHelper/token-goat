@@ -550,10 +550,11 @@ describe('built bundle non-git walk-index (--walk)', () => {
       expect(noFlag.status).toBe(1)
       expect(noFlag.stderr).toMatch(/--walk/)
 
-      // With --walk the walker indexes thing.ts (1 file); .env is excluded.
-      const idx = runBundle(['index', '--walk', walkDir])
+      // --force-walk implies --walk, raises the cap, and still excludes .env.
+      const idx = runBundle(['index', '--force-walk', walkDir])
       expect(idx.status).toBe(0)
       expect(idx.stdout).toMatch(/Indexed 1 files/)
+      expect(idx.stderr).toMatch(/--force-walk raised the walk cap/)
 
       const sym = runBundle(['symbol', 'walkE2ESymbol'])
       expect(sym.status).toBe(0)

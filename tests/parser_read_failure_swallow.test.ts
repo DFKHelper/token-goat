@@ -28,14 +28,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // patch node:fs (its namespace exports are non-configurable), so a module mock with hoisted
 // flags is the portable way to inject this, matching the pattern already used in
 // parser_sha_race.test.ts.
-const mockState = vi.hoisted(() => ({ target: '', errorCode: '', skipCalls: 0, callCount: 0 }))
+const mockState = vi.hoisted(() => ({
+  target: '',
+  extraTargets: [] as string[],
+  errorCode: '',
+  skipCalls: 0,
+  callCount: 0,
+}))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedReadFileSync = (
     target: fs.PathOrFileDescriptor,
     options?: { encoding?: BufferEncoding | null; flag?: string } | BufferEncoding | null,
   ): string | Buffer => {
-    if (typeof target === 'string' && target === mockState.target && mockState.errorCode) {
+    if (
+      typeof target === 'string' &&
+      (target === mockState.target || mockState.extraTargets.includes(target)) &&
+      mockState.errorCode
+    ) {
       const shouldThrow = mockState.callCount >= mockState.skipCalls
       mockState.callCount++
       if (shouldThrow) {
@@ -72,6 +82,7 @@ describe('indexFileSync read-failure handling (regression)', () => {
     TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-parser-read-failure-'))
     dbPath = path.join(TMP, 'index.db')
     mockState.target = ''
+    mockState.extraTargets = []
     mockState.errorCode = ''
     mockState.skipCalls = 0
     mockState.callCount = 0
@@ -79,6 +90,7 @@ describe('indexFileSync read-failure handling (regression)', () => {
 
   afterEach(() => {
     mockState.target = ''
+    mockState.extraTargets = []
     mockState.errorCode = ''
     mockState.skipCalls = 0
     mockState.callCount = 0
@@ -171,6 +183,7 @@ describe('cmdIndex per-file failure handling (regression)', () => {
 
   afterEach(() => {
     mockState.target = ''
+    mockState.extraTargets = []
     mockState.errorCode = ''
     mockState.skipCalls = 0
     mockState.callCount = 0
@@ -201,6 +214,7 @@ describe('cmdIndex per-file failure handling (regression)', () => {
       stdoutChunks.push(String(chunk))
       return true
     })
+
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
       stderrChunks.push(String(chunk))
       return true
@@ -223,6 +237,32 @@ describe('cmdIndex per-file failure handling (regression)', () => {
     expect(stderrChunks.join('')).toContain(path.basename(bad))
     expect(stderrChunks.join('')).toContain('EBUSY')
     expect(stdoutChunks.join('')).toMatch(/failed to index 1 file/i)
+  })
+
+  it('aggregates repeated foreground read failures by error message', async () => {
+    const badA = path.join(TMP, 'bad-a.ts')
+    const badB = path.join(TMP, 'bad-b.ts')
+    fs.writeFileSync(badA, 'export function neverIndexedA(): number {\n  return 1\n}\n')
+    fs.writeFileSync(badB, 'export function neverIndexedB(): number {\n  return 2\n}\n')
+
+    mockState.target = resolveIndexPath(badA)
+    mockState.extraTargets = [resolveIndexPath(badB)]
+    mockState.errorCode = 'UNKNOWN'
+
+    const stderrChunks: string[] = []
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrChunks.push(String(chunk))
+      return true
+    })
+    try {
+      await cmdIndex(TMP, { walk: true, dbPath })
+    } finally {
+      stderrSpy.mockRestore()
+    }
+
+    const output = stderrChunks.join('')
+    expect(output.match(/failed to index/g)).toHaveLength(1)
+    expect(output).toContain('and 1 other file(s)')
   })
 
   // Regression: cmdIndex's per-file loop counted failures but never set process.exitCode, so a

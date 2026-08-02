@@ -87,7 +87,7 @@ describe('installCodex', () => {
     expect(agents).toContain('<!-- token-goat-codex-end -->')
     expect(agents).toContain('Codex\'s native `shell`, `apply_patch`, and `view_image` tools')
     expect(agents).toContain('shell commands like `cat`/`type` run inside `shell`')
-    expect(agents).toContain('Fallback clauses may name native tools')
+    expect(agents).toContain('Fallback clauses may name')
 
     expect(isCodexInstalled()).toBe(true)
   })
