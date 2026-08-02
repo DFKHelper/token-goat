@@ -193,11 +193,12 @@ const DOCSTRING_TRUNCATION_MARKER = '\n[... docstring truncated by token-goat ..
  * `body` -- consumers display its first line (read_commands.ts), test it for emptiness, or split
  * it into words (graph_commands.ts) -- so a marked truncation is honest and lossless enough.
  *
- * No extractor populates `docstring` today (every one sets `''`). This exists because the column
- * is derived from a *region near* a symbol, which is precisely the shared-region shape that made
- * `body` grow quadratically: a file-level doc comment attributed to every symbol in the file
- * reproduces that bug exactly. Bounding it at the same choke point closes the hole before a
- * future extractor opens it.
+ * Python's extractor (`pythonDocstring`) and {@link precedingDocComment}'s callers (TS/JS, Rust,
+ * Go, Ruby, Java, C/C++, and the regex fallback) are the only ones that populate `docstring` --
+ * every other extractor still sets `''`. The column is derived from a *region near* a symbol, which is precisely the
+ * shared-region shape that made `body` grow quadratically: a file-level doc comment attributed to
+ * every symbol in the file reproduces that bug exactly. Bounding it at the same choke point closes
+ * the hole before a future extractor opens it.
  */
 export function boundSymbolDocstring(docstring: string): string {
   if (docstring.length <= MAX_SYMBOL_DOCSTRING_CHARS) return docstring
@@ -211,6 +212,101 @@ export function boundSymbolDocstring(docstring: string): string {
     end > 0 && docstring.charCodeAt(end - 1) >= 0xd800 && docstring.charCodeAt(end - 1) <= 0xdbff
   if (cutsSurrogatePair) end -= 1
   return docstring.slice(0, Math.max(0, end)) + DOCSTRING_TRUNCATION_MARKER
+}
+
+/** Comment-syntax family {@link precedingDocComment} recognizes: `'c'` for `//`- and block-comment languages, `'hash'` for `#`-line-comment languages. */
+export type DocCommentStyle = 'c' | 'hash'
+
+/**
+ * Derive a docstring from the comment block immediately above `lineStart` (1-indexed).
+ *
+ * Works off plain source lines rather than a syntax tree, so it applies equally to a tree-sitter
+ * adapter (TS/JS, Rust) and the regex fallback -- both already have `lines` + a 1-indexed start
+ * line and nothing else.
+ *
+ * ADJACENCY GUARD: the block must sit on the line *directly* above `lineStart` -- a blank line
+ * between them, or a non-comment line, returns `''` rather than scanning further up. This is the
+ * reason `docstring` was left unpopulated for every non-Python extractor in the first place (see
+ * {@link boundSymbolDocstring}'s doc comment): without the guard, a file-level doc comment would
+ * get attributed to every symbol beneath it -- the same shared-region blowup that once made `body`
+ * grow quadratically -- and a comment block could get attached to more than one symbol (the next
+ * symbol down would walk back through the same lines). Never scan past a blank line; never widen
+ * the block once a non-comment line is hit.
+ *
+ * Callers that fold a leading decorator/attribute into a symbol's range (TS `@decorator`, Rust
+ * `#[attr]`) pass the *already-widened* `lineStart` (the decorator/attribute's own line), so the
+ * walk naturally looks above the decorator/attribute for the doc comment rather than between it
+ * and the symbol.
+ */
+export function precedingDocComment(
+  lines: readonly string[],
+  lineStart: number,
+  style: DocCommentStyle,
+): string {
+  // lineStart is 1-indexed; the line directly above it is lines[lineStart - 2].
+  const aboveIdx = lineStart - 2
+  if (aboveIdx < 0 || aboveIdx >= lines.length) return ''
+  const aboveLine = lines[aboveIdx]
+  if (aboveLine === undefined) return ''
+  const aboveTrimmed = aboveLine.trim()
+
+  if (style === 'hash') {
+    if (!aboveTrimmed.startsWith('#')) return ''
+    const collected: string[] = []
+    let i = aboveIdx
+    while (i >= 0) {
+      const line = lines[i]
+      if (line === undefined) break
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('#')) break
+      collected.unshift(trimmed.replace(/^#+\s?/, ''))
+      i--
+    }
+    return collected.join('\n').trim()
+  }
+
+  // 'c' style: either a contiguous run of `//` (incl. `///`, `//!`) line comments, or a single
+  // `/* ... */` / `/** ... */` block comment, immediately above.
+  if (aboveTrimmed.endsWith('*/')) {
+    let blockStart = aboveIdx
+    while (blockStart >= 0) {
+      const l = lines[blockStart]
+      if (l === undefined) break
+      if (l.trim().startsWith('/*')) break
+      blockStart--
+    }
+    if (blockStart < 0) return ''
+    const opener = lines[blockStart]
+    if (opener === undefined || !opener.trim().startsWith('/*')) return ''
+    return lines
+      .slice(blockStart, aboveIdx + 1)
+      .map((l) =>
+        l
+          .trim()
+          .replace(/^\/\*+/, '')
+          .replace(/\*+\/$/, '')
+          .replace(/^\*\s?/, '')
+          .trim(),
+      )
+      .filter((l) => l !== '')
+      .join('\n')
+  }
+
+  if (aboveTrimmed.startsWith('//')) {
+    const collected: string[] = []
+    let i = aboveIdx
+    while (i >= 0) {
+      const line = lines[i]
+      if (line === undefined) break
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('//')) break
+      collected.unshift(trimmed.replace(/^\/\/[/!]?\s?/, ''))
+      i--
+    }
+    return collected.join('\n').trim()
+  }
+
+  return ''
 }
 
 /**
@@ -424,15 +520,27 @@ function nodeName(node: TsNode): string | null {
   return null
 }
 
-function makeSymbol(filePath: string, name: string, kind: string, node: TsNode): SymbolEntry {
+// `lines`/`style` are optional so a future extractor with no doc-comment support wired yet can
+// keep calling makeSymbol exactly as before and get `docstring: ''`, matching every extractor's
+// behavior prior to this change.
+function makeSymbol(
+  filePath: string,
+  name: string,
+  kind: string,
+  node: TsNode,
+  lines?: readonly string[],
+  style?: DocCommentStyle,
+): SymbolEntry {
+  const lineStart = node.startPosition.row + 1
   return {
     filePath,
     name,
     kind,
-    lineStart: node.startPosition.row + 1,
+    lineStart,
     lineEnd: node.endPosition.row + 1,
     body: node.text,
-    docstring: '',
+    docstring:
+      lines !== undefined && style !== undefined ? precedingDocComment(lines, lineStart, style) : '',
   }
 }
 
@@ -462,7 +570,7 @@ const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
  * `export function f` is captured) and class bodies (for methods), and unwraps
  * `const`/`let`/`var` declarators whose initializer is a function/arrow.
  */
-function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+function extractTsJsSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   const visit = (node: TsNode, insideFunction: boolean): void => {
@@ -474,16 +582,19 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       if (name !== null && name !== '') {
         const decorators = leadingTsDecorators(node)
         if (decorators.length === 0) {
-          out.push(makeSymbol(filePath, name, kind, node))
+          out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
         } else {
+          // The doc comment (if any) sits above the leading decorator, not above the decorated
+          // node itself -- look up from the same widened lineStart used for the range below.
+          const lineStart = decorators[0]!.startPosition.row + 1
           out.push({
             filePath,
             name,
             kind,
-            lineStart: decorators[0]!.startPosition.row + 1,
+            lineStart,
             lineEnd: node.endPosition.row + 1,
             body: [...decorators, node].map((n) => n.text).join('\n'),
-            docstring: '',
+            docstring: precedingDocComment(lines, lineStart, 'c'),
           })
         }
       }
@@ -508,11 +619,11 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
             (value.type === 'arrow_function' ||
               value.type === 'function_expression' ||
               value.type === 'function')
-          out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child))
+          out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child, lines, 'c'))
         } else {
           // Destructuring pattern: emit one variable symbol per bound identifier (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
           for (const bound of collectPatternBindings(name)) {
-            out.push(makeSymbol(filePath, bound, 'variable', child))
+            out.push(makeSymbol(filePath, bound, 'variable', child, lines, 'c'))
           }
         }
       }
@@ -528,7 +639,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
           value.type === 'function_expression' ||
           value.type === 'function')
       ) {
-        out.push(makeSymbol(filePath, fieldName.text, 'method', node))
+        out.push(makeSymbol(filePath, fieldName.text, 'method', node, lines, 'c'))
       }
     }
 
@@ -675,7 +786,7 @@ const GO_LOCAL_KINDS: ReadonlySet<string> = new Set([
   'method_elem',
 ])
 
-function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+function extractGoSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   const visit = (node: TsNode, insideFunction: boolean): void => {
@@ -683,7 +794,7 @@ function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
     if (kind !== undefined && !(insideFunction && GO_LOCAL_KINDS.has(node.type))) {
       const name = nodeName(node)
       if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
+        out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
       }
     }
 
@@ -790,7 +901,7 @@ function leadingRustAttributes(node: TsNode): TsNode[] {
   return attrs
 }
 
-function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+function extractRustSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
   const visit = (node: TsNode, insideFunction: boolean): void => {
@@ -806,16 +917,19 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       if (name !== null && name !== '') {
         const attrs = leadingRustAttributes(node)
         if (attrs.length === 0) {
-          out.push(makeSymbol(filePath, name, kind, node))
+          out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
         } else {
+          // The doc comment (if any) sits above the leading attribute, not above the annotated
+          // item itself -- look up from the same widened lineStart used for the range below.
+          const lineStart = attrs[0]!.startPosition.row + 1
           out.push({
             filePath,
             name,
             kind,
-            lineStart: attrs[0]!.startPosition.row + 1,
+            lineStart,
             lineEnd: node.endPosition.row + 1,
             body: [...attrs, node].map((n) => n.text).join('\n'),
-            docstring: '',
+            docstring: precedingDocComment(lines, lineStart, 'c'),
           })
         }
       }
@@ -838,11 +952,13 @@ const RUBY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['module', 'module'],
 ])
 
-// Shared walk for languages whose symbol extraction needs no function-local-scope tracking (unlike Go/Rust, which thread `insideFunction` to exclude locals). `nameFor` defaults to the common `name`-field lookup; callers with an irregular name location (e.g. C/C++ function declarators) override it.
+// Shared walk for languages whose symbol extraction needs no function-local-scope tracking (unlike Go/Rust, which thread `insideFunction` to exclude locals). `nameFor` defaults to the common `name`-field lookup; callers with an irregular name location (e.g. C/C++ function declarators) override it. `style` is threaded through to `makeSymbol` rather than hardcoded here because callers disagree on comment syntax (Ruby's `#` vs Java/C/C++'s `//`/`/** */`).
 function extractSimpleSymbols(
   root: TsNode,
   filePath: string,
   kindByType: ReadonlyMap<string, string>,
+  lines: readonly string[],
+  style: DocCommentStyle,
   nameFor: (node: TsNode) => string | null = nodeName,
 ): SymbolEntry[] {
   const out: SymbolEntry[] = []
@@ -852,7 +968,7 @@ function extractSimpleSymbols(
     if (kind !== undefined) {
       const name = nameFor(node)
       if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node))
+        out.push(makeSymbol(filePath, name, kind, node, lines, style))
       }
     }
 
@@ -865,8 +981,8 @@ function extractSimpleSymbols(
   return out
 }
 
-function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
-  return extractSimpleSymbols(root, filePath, RUBY_KIND_BY_TYPE)
+function extractRubySymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
+  return extractSimpleSymbols(root, filePath, RUBY_KIND_BY_TYPE, lines, 'hash')
 }
 
 const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
@@ -889,8 +1005,8 @@ const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['annotation_type_element_declaration', 'method'],
 ])
 
-function extractJavaSymbols(root: TsNode, filePath: string): SymbolEntry[] {
-  return extractSimpleSymbols(root, filePath, JAVA_KIND_BY_TYPE)
+function extractJavaSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
+  return extractSimpleSymbols(root, filePath, JAVA_KIND_BY_TYPE, lines, 'c')
 }
 
 const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
@@ -942,16 +1058,22 @@ const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['declaration', 'function'],
 ])
 
-function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+function extractCppSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   // C/C++ function and typedef-alias names live in a nested `declarator` chain, not a `name` field, so descend it; other specifiers (class/struct/enum/union) do expose a `name` field.
-  return extractSimpleSymbols(root, filePath, CPP_KIND_BY_TYPE, (node) =>
-    node.type === 'function_definition'
-      ? cFunctionName(node)
-      : node.type === 'type_definition'
-        ? cTypedefAliasName(node)
-        : node.type === 'declaration'
-          ? cFunctionPrototypeName(node)
-          : nodeName(node),
+  return extractSimpleSymbols(
+    root,
+    filePath,
+    CPP_KIND_BY_TYPE,
+    lines,
+    'c',
+    (node) =>
+      node.type === 'function_definition'
+        ? cFunctionName(node)
+        : node.type === 'type_definition'
+          ? cTypedefAliasName(node)
+          : node.type === 'declaration'
+            ? cFunctionPrototypeName(node)
+            : nodeName(node),
   )
 }
 
@@ -2026,31 +2148,38 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
 
 // --- Regex fallback ---------------------------------------------------------
 
-// Top-level function/class patterns for the languages we lack a grammar for (and as a safety net when a native grammar fails to load mid-run).
-const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string }> = [
+// Top-level function/class patterns for the languages we lack a grammar for (and as a safety net
+// when a native grammar fails to load mid-run). Each pattern also carries the comment `style` of
+// the language it targets -- unlike the tree-sitter extractors, this fallback has no reliably
+// detected `Language` to key off (it commonly runs against an 'unknown' extension), but the
+// *pattern that matched* always knows its own source language, so the style travels with it.
+const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string; style: DocCommentStyle }> = [
   // Python
-  { re: /^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)/, kind: 'function' },
-  { re: /^[ \t]*class\s+([A-Za-z_]\w*)/, kind: 'class' },
+  { re: /^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)/, kind: 'function', style: 'hash' },
+  { re: /^[ \t]*class\s+([A-Za-z_]\w*)/, kind: 'class', style: 'hash' },
   // TS/JS function & class declarations (optionally exported/async)
   {
     re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/,
     kind: 'function',
+    style: 'c',
   },
   {
     re: /^[ \t]*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/,
     kind: 'class',
+    style: 'c',
   },
-  { re: /^[ \t]*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/, kind: 'interface' },
-  { re: /^[ \t]*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/, kind: 'type' },
+  { re: /^[ \t]*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/, kind: 'interface', style: 'c' },
+  { re: /^[ \t]*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/, kind: 'type', style: 'c' },
   // const/let/var bound to an arrow or function expression
   {
     re: /^[ \t]*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
     kind: 'function',
+    style: 'c',
   },
   // Rust / Go function & struct/type patterns
-  { re: /^[ \t]*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/, kind: 'function' },
-  { re: /^[ \t]*(?:pub\s+)?struct\s+([A-Za-z_]\w*)/, kind: 'struct' },
-  { re: /^[ \t]*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/, kind: 'function' },
+  { re: /^[ \t]*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/, kind: 'function', style: 'c' },
+  { re: /^[ \t]*(?:pub\s+)?struct\s+([A-Za-z_]\w*)/, kind: 'struct', style: 'c' },
+  { re: /^[ \t]*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/, kind: 'function', style: 'c' },
 ]
 
 /**
@@ -2060,13 +2189,20 @@ const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string }> = [
  * numbers are 1-based. This is intentionally shallow: it recovers names for
  * `symbol`/`skeleton` lookups without full-body spans.
  */
-function extractWithRegex(content: string, filePath: string): SymbolEntry[] {
+// Exported for tests only. This fires in production for an unrecognized filename/extension (the
+// `language === 'unknown'` early return upstream never actually reaches it for that case -- see
+// extractSymbolsNoTreeSitter) and, more meaningfully, as the mid-parse safety net when a
+// tree-sitter grammar throws on real source for a language that HAS one (still routed through
+// `extractNoTreeSitter` -> `extractSymbolsNoTreeSitter` with that language's own real filePath
+// extension). Neither path is practical to reach deterministically via `parseFile` in a unit
+// test, so tests call this directly rather than asserting on unreachable-in-practice behavior.
+export function extractWithRegex(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
-    for (const { re, kind } of FALLBACK_PATTERNS) {
+    for (const { re, kind, style } of FALLBACK_PATTERNS) {
       const m = re.exec(line)
       if (m !== null && m[1] !== undefined) {
         out.push({
@@ -2076,7 +2212,7 @@ function extractWithRegex(content: string, filePath: string): SymbolEntry[] {
           lineStart: i + 1,
           lineEnd: i + 1,
           body: line.trim(),
-          docstring: '',
+          docstring: precedingDocComment(lines, i + 1, style),
         })
         break // one symbol per line
       }
@@ -2171,17 +2307,17 @@ function parseContent(content: string, filePath: string, language: Language): Pa
         if (language === 'python') {
           symbols = extractPythonSymbols(root, filePath)
         } else if (language === 'go') {
-          symbols = extractGoSymbols(root, filePath)
+          symbols = extractGoSymbols(root, filePath, content.split(/\r?\n/))
         } else if (language === 'rust') {
-          symbols = extractRustSymbols(root, filePath)
+          symbols = extractRustSymbols(root, filePath, content.split(/\r?\n/))
         } else if (language === 'ruby') {
-          symbols = extractRubySymbols(root, filePath)
+          symbols = extractRubySymbols(root, filePath, content.split(/\r?\n/))
         } else if (language === 'java') {
-          symbols = extractJavaSymbols(root, filePath)
+          symbols = extractJavaSymbols(root, filePath, content.split(/\r?\n/))
         } else if (language === 'cpp' || language === 'c') {
-          symbols = extractCppSymbols(root, filePath)
+          symbols = extractCppSymbols(root, filePath, content.split(/\r?\n/))
         } else {
-          symbols = extractTsJsSymbols(root, filePath)
+          symbols = extractTsJsSymbols(root, filePath, content.split(/\r?\n/))
         }
         const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
         const parsed = { symbols, refs }

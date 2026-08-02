@@ -240,6 +240,17 @@ beforeAll(() => {
     path.join(repo, 'swift_submodule_fixture.swift'),
     ['import class UIKit.UIView', '', 'func bundleSwiftSubmoduleFn() {}', ''].join('\n'),
   )
+  // A TS function with a leading `/** ... */` doc comment -- same tree-shaking concern as every
+  // fixture above, but for `precedingDocComment`/`makeSymbol`'s new docstring wiring: TS/JS was
+  // previously one of 14 extractors that always stored `docstring: ''`, so `symbol --stats` always
+  // reported "undocumented" for it even against a heavily-docblocked file. Resolves from the
+  // shipped binary here, not just from source.
+  fs.writeFileSync(
+    path.join(repo, 'doc_fixture.ts'),
+    ['/**', ' * Doc comment for the bundle docstring regression.', ' */', 'export function bundleDocstringSymbol(): number {', '  return 1', '}', ''].join(
+      '\n',
+    ),
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -271,6 +282,17 @@ describe('built bundle end-to-end indexing', () => {
     const sym = runBundle(['symbol', 'knownBundleSymbol'])
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('knownBundleSymbol')
+  }, 60000)
+
+  it('index then skeleton --stats reports a TS function with a leading doc comment as documented from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const sk = runBundle(['skeleton', path.join(repo, 'doc_fixture.ts'), '--stats'])
+    expect(sk.status).toBe(0)
+    expect(sk.stdout).toContain('bundleDocstringSymbol')
+    expect(sk.stdout).not.toContain('undocumented')
+    expect(sk.stdout).toContain('documented')
   }, 60000)
 
   it('index then symbol resolves a Rust macro_rules! definition from the built bundle', () => {
@@ -809,6 +831,104 @@ describe('cmdIndex honors worker.blocked_roots (shipping path)', () => {
     expect(count('keepSym')).toBe(1)
     expect(count('blockedSym')).toBe(0)
 
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+})
+
+// Drives the real default cmdIndex path (walk -> parseFile -> DB write), not an injected/mocked
+// callback -- CLAUDE.md's critical-path rule for indexer changes: a mock-callback unit test does
+// not count as coverage for this path (see the worker default-callback regression it documents).
+describe('docstring column population (indexer critical path)', () => {
+  it('populates symbols.docstring for a TS function with a leading /** */ block via the real cmdIndex path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-e2e-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(
+      path.join(dir, 'doc.ts'),
+      [
+        '/**',
+        ' * Adds two numbers.',
+        ' */',
+        'export function docFnSymbol(a: number, b: number): number {',
+        '  return a + b',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    await cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const row = db
+      .prepare('SELECT docstring FROM symbols WHERE name = ?')
+      .get('docFnSymbol') as { docstring: string } | undefined
+    expect(row?.docstring).toBeTruthy()
+    expect(row?.docstring).toContain('Adds two numbers.')
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+
+  // ADJACENCY GUARD regression: a file-header comment separated from the first symbol by a blank
+  // line must NOT be attributed to that symbol -- this is precedingDocComment's whole reason for
+  // existing (see its own doc comment / boundSymbolDocstring's), reproducing the shared-region
+  // blowup `body` once had if it were ever skipped.
+  it('does not attach a file-header comment to a symbol separated from it by a blank line', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-adjacency-e2e-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(
+      path.join(dir, 'header.ts'),
+      [
+        '/**',
+        ' * File header, not this function\'s doc comment.',
+        ' */',
+        '',
+        'export function noHeaderDocSymbol(): number {',
+        '  return 1',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    await cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const row = db
+      .prepare('SELECT docstring FROM symbols WHERE name = ?')
+      .get('noHeaderDocSymbol') as { docstring: string } | undefined
+    expect(row?.docstring).toBe('')
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+
+  // Go was one of the extractors still calling makeSymbol without lines/style, so its symbols
+  // always stored docstring: '' -- this proves the real cmdIndex path now populates it.
+  it('populates symbols.docstring for a Go func with a leading // doc-comment run via the real cmdIndex path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-go-e2e-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(
+      path.join(dir, 'doc.go'),
+      [
+        'package main',
+        '',
+        '// AddGoDocFnSymbol adds two numbers.',
+        'func AddGoDocFnSymbol(a, b int) int {',
+        '\treturn a + b',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    await cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const row = db
+      .prepare('SELECT docstring FROM symbols WHERE name = ?')
+      .get('AddGoDocFnSymbol') as { docstring: string } | undefined
+    expect(row?.docstring).toBeTruthy()
+    expect(row?.docstring).toContain('AddGoDocFnSymbol adds two numbers.')
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {
