@@ -269,6 +269,7 @@ export async function cmdIndex(
   let indexed = 0
   let failed = 0
   let skipped = 0
+  const failureGroups = new Map<string, { example: string; count: number }>()
   for (const f of files) {
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
@@ -306,7 +307,13 @@ export async function cmdIndex(
       } catch (e) {
         // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and rethrows everything else so callers can report it -- worker.ts's makeIndexer already catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop had no try/catch at all, so the same rethrow aborted the whole command uncaught.
         failed += 1
-        err(`token-goat: index: failed to index '${key}': ${extractErrorMessage(e)}`)
+        const message = extractErrorMessage(e)
+        const group = failureGroups.get(message)
+        if (group !== undefined) {
+          group.count += 1
+        } else {
+          failureGroups.set(message, { example: key, count: 1 })
+        }
         continue
       }
     }
@@ -315,6 +322,12 @@ export async function cmdIndex(
       await indexFileEmbeddings(key, dbPath, sha ?? undefined)
     }
     indexed += 1
+  }
+  for (const [message, group] of failureGroups) {
+    err(
+      `token-goat: index: failed to index '${group.example}': ${message}` +
+        (group.count > 1 ? ` (and ${group.count - 1} other file(s))` : ''),
+    )
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
   out(
