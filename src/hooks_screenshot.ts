@@ -78,4 +78,6 @@ function preScreenshotHandler(event: HookEvent): HookOutput {
   )
 }
 
-registerHook('pre_tool_use', preScreenshotHandler)
+// SCREENSHOT_TOOL_RE is anchored at `^mcp__`, so that prefix is a safe (wider)
+// matcher fragment for installHooks -- the handler's own regex still decides.
+registerHook('pre_tool_use', preScreenshotHandler, { toolPattern: '^mcp__' })

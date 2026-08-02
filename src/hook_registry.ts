@@ -51,6 +51,12 @@ export type HookHandler = (event: HookEvent) => HookOutput | Promise<HookOutput>
 interface Registration {
   readonly handler: HookHandler
   readonly toolName: string | undefined
+  // Matcher fragment for a handler that filters tools itself rather than via
+  // `toolName` (MCP dedup, browser image shrink, screenshot redirect all match
+  // dynamic `mcp__*` names by regex). Purely declarative: runHook still relies on
+  // the handler's own check. It exists so installHooks can narrow the settings.json
+  // matcher without a hand-written list going stale -- see toolMatcherFor.
+  readonly toolPattern: string | undefined
   // Advisory handlers are never authoritative for their event: a non-pass result from
   // one is remembered as a fallback but never short-circuits runHook, so later
   // (non-advisory) handlers for the same event still always run. This lets a
@@ -76,18 +82,71 @@ const _handlers = new Map<HookEventName, Registration[]>()
  * `toolName` matches exactly (case-sensitive — names are normalized to
  * canonical PascalCase upstream by the bridge layer). Handlers without a
  * `toolName` filter fire for every event of that name.
+ *
+ * A handler that does its own tool filtering (a regex over dynamic `mcp__*`
+ * names, say) should declare `opts.toolPattern` so {@link toolMatcherFor} can
+ * still narrow the installed matcher. `toolPattern` does not affect dispatch —
+ * the handler's own check remains authoritative.
  */
 export function registerHook(
   eventName: HookEventName,
   handler: HookHandler,
-  opts?: { toolName?: string; advisory?: boolean },
+  opts?: { toolName?: string; toolPattern?: string; advisory?: boolean },
 ): void {
   let list = _handlers.get(eventName)
   if (list === undefined) {
     list = []
     _handlers.set(eventName, list)
   }
-  list.push({ handler, toolName: opts?.toolName, advisory: opts?.advisory === true })
+  list.push({
+    handler,
+    toolName: opts?.toolName,
+    toolPattern: opts?.toolPattern,
+    advisory: opts?.advisory === true,
+  })
+}
+
+/**
+ * Build the Claude Code `matcher` string listing every tool `eventName` can fire for,
+ * or `null` when the event cannot safely be narrowed.
+ *
+ * Claude Code spawns a fresh process per matcher hit, and ~90% of that cost is Node
+ * startup plus bundle evaluation rather than the hook's own work — so a catch-all
+ * matcher pays full price for every tool token-goat has no handler for. Deriving the
+ * list from the live registry (instead of hardcoding it at the install site) is what
+ * keeps it from going stale as handlers are added.
+ *
+ * Returns `null` — meaning "use the catch-all" — in the two cases where narrowing
+ * would be wrong or unsafe:
+ *  - the event has no registrations, or none carry a tool filter (non-tool events
+ *    like pre_compact, which never receive a tool name at all);
+ *  - some registration declares neither `toolName` nor `toolPattern`, i.e. it really
+ *    does want every tool. Narrowing then would silently stop firing it.
+ *
+ * The result is a `|`-joined alternation. Claude Code treats a matcher containing
+ * only `[a-zA-Z0-9_-]`, spaces, commas and pipes as a list of exact names, and
+ * anything else as an unanchored regex — so a `^mcp__`-style pattern makes the whole
+ * matcher regex-evaluated, which is exactly what prefix matching needs.
+ */
+export function toolMatcherFor(eventName: HookEventName): string | null {
+  const list = _handlers.get(eventName)
+  if (list === undefined || list.length === 0) return null
+
+  const parts: string[] = []
+  for (const { toolName, toolPattern } of list) {
+    // Neither filter: this handler wants every tool, so no narrowing is safe.
+    if (toolName === undefined && toolPattern === undefined) return null
+    // Anchor exact names. Claude Code evaluates this matcher as an *unanchored*
+    // regex (the `^mcp__` fragment guarantees regex mode), so a bare `Write`
+    // alternative would also match `TodoWrite` and spawn a process for a tool with
+    // no handler -- the exact waste this narrowing exists to remove. Patterns are
+    // used verbatim: they carry their own anchoring.
+    for (const part of [toolName === undefined ? undefined : `^${toolName}$`, toolPattern]) {
+      if (part !== undefined && part !== '' && !parts.includes(part)) parts.push(part)
+    }
+  }
+  if (parts.length === 0) return null
+  return parts.join('|')
 }
 
 /**

@@ -109,5 +109,8 @@ function postMcpHandler(event: HookEvent): HookOutput {
   return passOutput()
 }
 
-registerHook('pre_tool_use', preMcpHandler)
-registerHook('post_tool_use', postMcpHandler)
+// Both handlers no-op unless the tool name starts with `mcp__` (preMcpHandler via
+// isMcpReadOnly, postMcpHandler via its own startsWith check), so declaring that
+// prefix lets installHooks narrow the settings.json matcher without losing them.
+registerHook('pre_tool_use', preMcpHandler, { toolPattern: '^mcp__' })
+registerHook('post_tool_use', postMcpHandler, { toolPattern: '^mcp__' })
