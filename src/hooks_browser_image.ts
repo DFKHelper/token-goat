@@ -128,4 +128,6 @@ export async function postBrowserImageHandler(event: HookEvent): Promise<HookOut
   }
 }
 
-registerHook('post_tool_use', postBrowserImageHandler)
+// BROWSER_TOOL_RE is anchored at `^mcp__`, so that prefix is a safe (wider)
+// matcher fragment for installHooks -- the handler's own regex still decides.
+registerHook('post_tool_use', postBrowserImageHandler, { toolPattern: '^mcp__' })

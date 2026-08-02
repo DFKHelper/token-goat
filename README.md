@@ -763,7 +763,7 @@ Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol
 
 | Path | What |
 |------|------|
-| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch, Skill), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
+| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch, Skill), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change.<br><br>The `PreToolUse` matcher is narrowed to exactly the tools token-goat handles (plus `^mcp__`), generated from the live hook registry rather than a fixed list, so it can't fall out of date as handlers change. Claude Code starts a new process per matcher hit and most of that cost is process startup, so a catch-all matcher would make every unrelated tool call — `TodoWrite`, `TaskUpdate`, and friends — pay for a hook that has nothing to do. `PostToolUse` deliberately keeps the catch-all: one handler there tracks hint efficacy and has to see every tool call. |
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 
