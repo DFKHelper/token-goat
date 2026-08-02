@@ -448,24 +448,19 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 // consistency with the body below -- doing so degrades skill-loading recall for
 // no benefit. Only the body (rendered from the shared builder) is the gate.
 // The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the
-// skill prose and mistaking quoted command names for implicit tool identifiers.
+// skill prose and mistaking quoted command names for implicit tool identifiers. It
+// MUST list real harness tool identifiers, not token-goat subcommands: loaders
+// validate every entry against their tool registry and warn on each miss, so a
+// subcommand list here produces one "Unknown tool name in the tool allowlist"
+// warning per entry. token-goat itself runs through the shell tool.
 const SKILL_MD_FRONTMATTER = `---
 name: token-goat
 description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output, gdrive-sections) return narrow slices of code and docs at a fraction of the token cost.
 allowed-tools:
-  - symbol
-  - read
-  - section
-  - semantic
-  - outline
-  - skeleton
-  - map
-  - refs
-  - changed
-  - config-get
-  - bash-output
-  - web-output
-  - gdrive-sections
+  - Bash
+  - Read
+  - Grep
+  - Glob
 ---`
 
 // The body is the single shared gate (buildGuidanceBody), the same wording
