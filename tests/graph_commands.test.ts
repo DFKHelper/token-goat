@@ -1432,6 +1432,112 @@ describe('runCallChain integration', () => {
   })
 })
 
+// ---- runCallChain nonexistent-symbol / dead-branch / depth<=0 (regression) ---
+
+describe('runCallChain error handling and no-callers branch', () => {
+  // Regression: runCallChain never checked the symbol was indexed before running BFS, so a
+  // nonexistent symbol fell straight through to bfsCallChains and came back as `[[symbol]]` --
+  // a fabricated "root entry point" result indistinguishable from a real caller-less symbol.
+  it('rejects a nonexistent symbol with exit 1 and no chain output', () => {
+    let code = -1
+    const captured = captureStdout(() => {
+      code = runCallChain({ symbol: 'zzqxNopeDoesNotExist' })
+    })
+    const errCaptured = captureStderr(() => {
+      code = runCallChain({ symbol: 'zzqxNopeDoesNotExist' })
+    })
+    expect(code).toBe(1)
+    expect(captured).toBe('')
+    expect(errCaptured).toContain('Symbol not found: zzqxNopeDoesNotExist')
+  })
+
+  // Same nonexistent-symbol check must run before the --json branch, so a machine-consuming
+  // caller never sees a fabricated `{ chains: [...] }` payload for a symbol that isn't indexed.
+  it('rejects a nonexistent symbol under --json with exit 1 and no chains payload', () => {
+    let code = -1
+    const captured = captureStdout(() => {
+      code = runCallChain({ symbol: 'zzqxNopeDoesNotExist', json: true })
+    })
+    expect(code).toBe(1)
+    expect(captured).not.toContain('chains')
+  })
+
+  // Regression: bfsCallChains can never return an empty array (a caller-less tip still pushes
+  // its one-node chain via `complete.push(chain)`), so the old `chains.length === 0` guard for
+  // the "(no callers)" message was unreachable dead code. This proves the message now actually
+  // prints for a genuinely caller-less indexed symbol.
+  it('prints "(no callers)" for an indexed symbol with zero callers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-chain-nocallers-'))
+    try {
+      const file = join(dir, 'lonely.ts')
+      writeFileSync(file, 'export function chainLonelyFn7x1() { return 1 }\n')
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      try {
+        const captured = captureStdout(() => {
+          const code = runCallChain({ symbol: 'chainLonelyFn7x1' })
+          expect(code).toBe(0)
+        })
+        expect(captured.trim()).toBe('chainLonelyFn7x1  (no callers)')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // A symbol that DOES have callers must still produce its normal chain output, unchanged by
+  // either the existence check or the corrected no-callers condition.
+  it('still produces normal chain output for a symbol with callers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-chain-haswoncallers-'))
+    try {
+      const file = join(dir, 'linked.ts')
+      writeFileSync(file, [
+        'export function chainCalleeFn3q8() { return 1 }',
+        'export function chainCallerFn3q8() { return chainCalleeFn3q8() }',
+        '',
+      ].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(dir)
+      try {
+        const captured = captureStdout(() => {
+          const code = runCallChain({ symbol: 'chainCalleeFn3q8' })
+          expect(code).toBe(0)
+        })
+        expect(captured).not.toContain('(no callers)')
+        expect(captured).toContain('chainCalleeFn3q8 -> chainCallerFn3q8')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Edge case: bfsCallChains also returns `[[start]]` when maxDepth <= 0 (its own first-line
+  // short-circuit), for a symbol that may well have real callers. Rejecting non-positive --depth
+  // up front (matching runCallers'/runSimilar's own --limit/--top <= 0 convention) means this
+  // never has a chance to be misread as "(no callers)".
+  it('rejects --depth 0 with exit 1', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runCallChain({ symbol: 'runRead', depth: 0 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('depth')
+  })
+
+  it('rejects --depth -1 with exit 1', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runCallChain({ symbol: 'runRead', depth: -1 })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured.toLowerCase()).toContain('depth')
+  })
+})
+
 // ---- runCallChain cross-project scoping (regression) -------------------------
 
 describe('runCallChain cross-project scoping', () => {
@@ -1456,9 +1562,11 @@ describe('runCallChain cross-project scoping', () => {
           runCallChain({ symbol: 'chainScopedFn9k2' })
         })
         // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the
-        // single-node chain (the symbol itself has no callers within rootA).
-        expect(captured).not.toContain('caller')
-        expect(captured.trim()).toBe('chainScopedFn9k2')
+        // single-node chain (the symbol itself has no callers within rootA), which now renders
+        // via the "(no callers)" branch instead of a bare name (defect 2 fix). The "(no callers)"
+        // message itself contains the word "caller", so assert on the exact rendered line instead
+        // of a substring-absence check.
+        expect(captured.trim()).toBe('chainScopedFn9k2  (no callers)')
       } finally {
         cwdSpy.mockRestore()
       }

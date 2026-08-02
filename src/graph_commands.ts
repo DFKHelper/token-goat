@@ -277,11 +277,30 @@ export interface CallChainOptions {
 }
 
 export function runCallChain(opts: CallChainOptions): number {
+  // A depth of 0 (or negative) makes bfsCallChains short-circuit to `[[start]]` for ANY symbol,
+  // indistinguishable from a genuine no-callers result -- reject it explicitly instead of letting
+  // it silently masquerade as "no callers", matching runCallers'/runSimilar's own limit/top
+  // validation convention.
+  if (opts.depth !== undefined && opts.depth <= 0) {
+    emitErr(`--depth must be a positive number, got: ${opts.depth}`)
+    return 1
+  }
   const maxDepth = opts.depth ?? 8
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
   // an unrelated project on the same machine doesn't leak into this project's call chains.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
+
+  // Verify the symbol is actually indexed before doing any BFS work -- otherwise a nonexistent
+  // symbol falls straight through to bfsCallChains, which has no way to distinguish "no callers"
+  // from "no such symbol" and returns `[[symbol]]` either way, fabricating a false "root entry
+  // point" result (and, with --json, a machine-consumable one). Every sibling command
+  // (similar/blame/refs/callers) already errors on an unknown symbol; this makes call-chain match.
+  if (querySymbols({ name: opts.symbol, rootDir, limit: 1 }).length === 0) {
+    emitErr(`Symbol not found: ${opts.symbol}`)
+    return 1
+  }
+
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
@@ -304,7 +323,11 @@ export function runCallChain(opts: CallChainOptions): number {
     return 0
   }
 
-  if (chains.length === 0) {
+  // bfsCallChains can never return an empty array -- a caller-less tip still pushes its chain
+  // via `complete.push(chain)`, so `[[symbol]]` (one chain, one element) is the actual "no
+  // callers" signal, not `chains.length === 0`. The depth<=0 rejection above rules out the only
+  // other way bfsCallChains produces this exact shape (its own `maxDepth <= 0` short-circuit).
+  if (chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === opts.symbol) {
     emit(`${opts.symbol}  (no callers)`)
     return 0
   }
