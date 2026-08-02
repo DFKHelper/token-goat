@@ -81,9 +81,13 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
     try {
       const result = await client.callTool({ name: 'symbol', arguments: { name: 'Foo', projectRoot: scratchRoot } })
       expect(result.isError).toBe(true) // no matches from the mock -- we only care about the call args
-      expect(querySymbolsMock).toHaveBeenCalledTimes(1)
+      // A miss now triggers a second querySymbols call for the "Did you mean" near-name scan
+      // (runSymbol, src/read_commands.ts); both calls must stay scoped to projectRoot.
+      expect(querySymbolsMock).toHaveBeenCalledTimes(2)
       const call = querySymbolsMock.mock.calls[0]?.[0] as { rootDir?: string }
       expect(call.rootDir).toBe(scratchRoot)
+      const nearNameCall = querySymbolsMock.mock.calls[1]?.[0] as { rootDir?: string }
+      expect(nearNameCall.rootDir).toBe(scratchRoot)
     } finally {
       await close()
     }

@@ -178,6 +178,71 @@ describe('read_commands', () => {
       expect(stderr).toContain('missing')
     })
 
+    it('appends a Did you mean block with near-name candidates on a miss', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name !== undefined) return [] // the primary lookup misses
+        // the near-name scan (no `name` filter) sees the full indexed set
+        return [
+          { name: 'runSymbol', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' },
+          { name: 'unrelated', kind: 'function', filePath: 'src/other.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' },
+        ]
+      })
+      const { text, code } = runSymbol({ name: 'runSymbo' })
+      expect(code).toBe(1)
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('runSymbol')
+      expect(text).not.toContain('unrelated')
+    })
+
+    it('excludes 1-2 char indexed names from the reverse-containment match and ranks the closest-length candidate first (regression: unfloored reverse containment let `b`/`n`/etc. bury the real match)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name !== undefined) return []
+        // `b`, `n`, `mb` are all substrings of 'runSymbo' and would previously match via
+        // reverse containment (query.includes(shortSymbol)), crowding out the real answer.
+        return [
+          { name: 'b', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+          { name: 'n', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '', parent: '' },
+          { name: 'mb', kind: 'function', filePath: 'a.ts', lineStart: 3, lineEnd: 3, body: '', docstring: '', parent: '' },
+          { name: 'run', kind: 'function', filePath: 'a.ts', lineStart: 4, lineEnd: 4, body: '', docstring: '', parent: '' },
+          { name: 'runSymbol', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' },
+        ]
+      })
+      const { text, code } = runSymbol({ name: 'runSymbo' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('  - b')
+      expect(text).not.toContain('  - n')
+      expect(text).not.toContain('  - mb')
+      // 'runSymbol' (9 chars) is closer in length to the 8-char query than 'run' (3 chars),
+      // so it must be listed first even though `run` also qualifies via forward containment.
+      const lines = text.split('\n')
+      const runSymbolIdx = lines.indexOf('  - runSymbol')
+      const runIdx = lines.indexOf('  - run')
+      expect(runSymbolIdx).toBeGreaterThan(-1)
+      expect(runIdx).toBeGreaterThan(-1)
+      expect(runSymbolIdx).toBeLessThan(runIdx)
+    })
+
+    it('points at semantic search when a miss has no near-name candidates', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runSymbol({ name: 'zzz_totally_gibberish' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('Did you mean:')
+      expect(text).toContain('token-goat semantic "zzz_totally_gibberish"')
+    })
+
+    it('leaves --json output on a miss unchanged by the Did you mean suggestion', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name !== undefined) return []
+        return [{ name: 'runSymbol', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '', parent: '' }]
+      })
+      const { text, code } = runSymbol({ name: 'runSymbo', json: true })
+      expect(code).toBe(1)
+      expect(text).toBe(`No matches for 'runSymbo'`)
+    })
+
     it('returns 0 and prints symbols when found', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'src/foo.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       mockQuerySymbols.mockReturnValue([sym as Parameters<typeof mockQuerySymbols>[0] extends infer _O ? never : never] as unknown as ReturnType<typeof mockQuerySymbols>)
