@@ -60,6 +60,7 @@ import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 // ---- constants --------------------------------------------------------------
 
 const DIDYOUMEAN_LIMIT = 5
+const MIN_REVERSE_MATCH_LEN = 3 // reverse ("query contains symbol") containment only -- below this, short indexed names like `b`/`n` match nearly any query
 const GREP_MAX_LINES = 200
 // Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
 // this tool's own index (thousands of symbols) without paging.
@@ -363,7 +364,42 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const results = querySymbols(queryOpts)
 
   if (results.length === 0) {
-    return { text: `No matches for '${opts.name ?? '*'}'`, code: 1 }
+    let text = `No matches for '${opts.name ?? '*'}'`
+    // --json callers parse this string as an error message, not human-facing prose -- keep it
+    // byte-identical to before and only append the suggestion in text mode.
+    if (opts.name !== undefined && opts.json !== true) {
+      // Same near-name mechanism as `find`: scan the index and match by case-insensitive
+      // substring in either direction, so a typo'd or partial name still gets a cheap next
+      // step instead of dead-ending into a full-file Read or a wide Grep.
+      const nameLower = opts.name.toLowerCase()
+      const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+      const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
+      const candidates = [
+        ...new Set(
+          rawSymbols
+            .filter((s) => {
+              const symLower = s.name.toLowerCase()
+              return (
+                symLower.includes(nameLower) ||
+                (symLower.length >= MIN_REVERSE_MATCH_LEN && nameLower.includes(symLower))
+              )
+            })
+            .map((s) => s.name),
+        ),
+      ]
+        // Closest length to the query first (didYouMean only keeps the first DIDYOUMEAN_LIMIT,
+        // so ordering decides what survives). Ordinal (not locale-aware) tiebreak -- an
+        // unlocaled localeCompare() sorts differently across Node's small-icu vs full-icu builds
+        // and different system default locales, making this truncation-affecting ranking
+        // nondeterministic across machines/CI runners.
+        .sort((a, b) => {
+          const diff = Math.abs(a.length - nameLower.length) - Math.abs(b.length - nameLower.length)
+          if (diff !== 0) return diff
+          return a < b ? -1 : a > b ? 1 : 0
+        })
+      text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : `\nTry: token-goat semantic "${opts.name}"`
+    }
+    return { text, code: 1 }
   }
 
   const fullSourceBytes = sumFileSizes(results.map((s) => s.filePath))
