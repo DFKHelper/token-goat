@@ -183,6 +183,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('return 1')
     expect(multi.stdout).toContain('betaSym')
     expect(multi.stdout).toContain('return 2')
+    // --stats against the real built bundle -- proves the flag reaches the shipping CLI, not
+    // just the in-process unit tests.
+    const stats = run(['read', 'src/mod.ts::alphaSym', '--stats'])
+    expect(stats.status, stats.stderr).toBe(0)
+    expect(stats.stdout).toMatch(/\[\d+ refs, (un)?documented\]/)
   },
   section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this
