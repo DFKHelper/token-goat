@@ -28,7 +28,7 @@ function lwcTagAlias(name: string): string {
 }
 
 function symbol(filePath: string, name: string, kind: string, lineStart: number, lineEnd = lineStart): SymbolEntry {
-  return { filePath, name, kind, lineStart, lineEnd, body: '', docstring: '' }
+  return { filePath, name, kind, lineStart, lineEnd, body: '', docstring: '', parent: '' }
 }
 
 function ref(filePath: string, name: string, line: number, col: number, context: string): RefEntry {

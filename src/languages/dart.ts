@@ -108,7 +108,7 @@ export function extractDart(
       if (cm) {
         const cname = cm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-        symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
@@ -117,7 +117,7 @@ export function extractDart(
       if (em) {
         const ename = em[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-        symbols.push(makeLineSymbol(filePath, ename, 'enum', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, ename, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: ename, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
@@ -126,7 +126,7 @@ export function extractDart(
       if (mm) {
         const mname = mm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-        symbols.push(makeLineSymbol(filePath, mname, 'mixin', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, mname, 'mixin', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: mname, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
@@ -139,7 +139,7 @@ export function extractDart(
       if (etm) {
         const etname = etm[1] ?? ''
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-        symbols.push(makeLineSymbol(filePath, etname, 'extension_type', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, etname, 'extension_type', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: etname, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
@@ -148,7 +148,7 @@ export function extractDart(
       if (extm) {
         const extname = extm[1] ?? 'extension'
         const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-        symbols.push(makeLineSymbol(filePath, extname, 'extension', lineNum, stripped.slice(0, 200), parent))
+        symbols.push(makeLineSymbol(filePath, extname, 'extension', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
         typeStack.push({ name: extname, startDepth: braceDepth, bodyEntered: false })
         matched = true
       }
@@ -164,7 +164,7 @@ export function extractDart(
           let fname = fm[1] ?? ''
           // Normalize `operator +` to `+`
           fname = fname.replace(/^operator\s+/, '')
-          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         }
 
         // Properties/fields in a class (var/final/etc)
@@ -177,7 +177,7 @@ export function extractDart(
       if (fm) {
         let fname = fm[1] ?? ''
         fname = fname.replace(/^operator\s+/, '')
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       }
     }
 

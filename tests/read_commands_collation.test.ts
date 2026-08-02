@@ -38,6 +38,7 @@ const SEEDED_SYMBOL = {
   lineEnd: 3,
   body: 'function login() {}',
   docstring: '',
+  parent: '',
 }
 
 describe('runRead path-collation handling', () => {

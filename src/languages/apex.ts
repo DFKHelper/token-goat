@@ -188,13 +188,17 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
   // dropping the whole annotation fold, the very failure mode the multi-line-annotation fix above
   // already covers for the no-parens case) or over/under-folding into unrelated lines.
   const codeLines = code.split(/\r?\n/)
+  // Doc-comment lookup needs the ORIGINAL source lines (comments intact) -- `codeLines` above has
+  // had every comment blanked out for the paren-depth walk, so precedingDocComment (called via
+  // makeSpanSymbol's lines/style params below) would never see a `/** ... */` block against it.
+  const rawLines = content.split(/\r?\n/)
 
-  const emit = (name: string, kind: string, span: AdapterSpan, docstring = ''): void => {
+  const emit = (name: string, kind: string, span: AdapterSpan, parent = ''): void => {
     if (!name || symbols.length >= MAX_SYMBOLS) return
     const key = `${name}\0${kind}\0${span.startLine}`
     if (seen.has(key)) return
     seen.add(key)
-    symbols.push(makeSpanSymbol(filePath, name, kind, span, docstring))
+    symbols.push(makeSpanSymbol(filePath, name, kind, span, parent, rawLines, 'c'))
   }
 
   for (const match of code.matchAll(TRIGGER_RE)) {

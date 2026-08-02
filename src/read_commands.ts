@@ -537,6 +537,18 @@ function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string 
     }
   }
   if (best !== null) return best.name
+  // Prefer the real `parent` column (populated by the regex adapters via makeLineSymbol/
+  // makeSpanSymbol -- see db.ts's SCHEMA_SQL comment for the full history of why this needed its
+  // own column). KEEP the docstring-as-parent fallback below: a row indexed by an older binary
+  // (or not yet reindexed since the migration) has `parent: ''` but may still carry the old
+  // overloaded value in `docstring`, and dropping the fallback would break qualified lookup for
+  // those pre-existing rows until the next reindex.
+  // Defensive `?? ''`: SymbolEntry.parent is a required field for every real indexed row (see
+  // index_reader.ts's `row.parent ?? ''` coalesce at the DB boundary), but a caller constructing
+  // a SymbolEntry-shaped object by hand (a test double, an older SDK/plugin caller) may still omit
+  // it -- treat that the same as an empty parent rather than throwing.
+  const parent = (entry.parent ?? '').trim()
+  if (parent !== '') return parent
   const doc = entry.docstring.trim()
   if (doc !== '' && PARENT_IDENTIFIER_RE.test(doc)) return doc
   return null
@@ -673,14 +685,18 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
     // Regex-parsed languages (php.ts, csharp.ts, kotlin.ts, powershell_idx.ts) store a method's
     // class symbol with lineEnd === lineStart (single-line span at the class header, not the
     // full body), so the line-containment check below always misses for them -- they instead
-    // record the parent class name directly in the method symbol's `docstring` field (see
-    // makeSymbol in each of those files). Match on either signal so both regex adapters
-    // (docstring) and tree-sitter/flat-emitter adapters (line-containment) disambiguate
+    // record the parent class name directly in the method symbol's `parent` column (see
+    // makeLineSymbol/makeSpanSymbol in languages/common.ts). Fall back to `docstring` for a row
+    // indexed before the `parent` column existed (or not yet reindexed since) -- see the same
+    // reasoning in findParentName above. Match on either signal so both regex adapters
+    // (parent/docstring) and tree-sitter/flat-emitter adapters (line-containment) disambiguate
     // correctly instead of silently falling through to candidates[0] (the first same-named
     // method, regardless of which class was actually requested).
     const symBaseLower = symBase.toLowerCase()
     const scoped = candidates.filter((c) => {
-      if (c.docstring.toLowerCase() === symBaseLower) return true
+      const cParent = c.parent ?? ''
+      if (cParent.toLowerCase() === symBaseLower) return true
+      if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
       return containers.some(
         (cls) => cls.filePath === c.filePath && c.lineStart >= cls.lineStart && c.lineEnd <= cls.lineEnd,
       )

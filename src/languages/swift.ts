@@ -175,7 +175,7 @@ export function extractSwift(
         : keyword === 'actor' ? 'actor'
         : 'class'
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, tname, kind, lineNum, stripped.slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, tname, kind, lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false })
     }
 
@@ -192,17 +192,17 @@ export function extractSwift(
         const subscriptM = SUBSCRIPT_RE.exec(lineNoAttr)
         const fm = FUNC_RE.exec(lineNoAttr)
         if (initM) {
-          symbols.push(makeLineSymbol(filePath, initM[1] ?? 'init', 'method', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, initM[1] ?? 'init', 'method', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else if (deinitM) {
-          symbols.push(makeLineSymbol(filePath, 'deinit', 'method', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, 'deinit', 'method', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else if (subscriptM) {
-          symbols.push(makeLineSymbol(filePath, subscriptM[1] ?? 'subscript', 'method', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, subscriptM[1] ?? 'subscript', 'method', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else if (fm) {
-          symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'method', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'method', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         } else {
           const propM = PROPERTY_RE.exec(lineNoAttr)
           if (propM) {
-            symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name))
+            symbols.push(makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           }
         }
       }
@@ -212,7 +212,7 @@ export function extractSwift(
       const lineNoAttr = stripLeadingAttributes(line)
       const fm = FUNC_RE.exec(lineNoAttr)
       if (fm) {
-        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       }
     }
 

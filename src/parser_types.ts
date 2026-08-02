@@ -21,6 +21,16 @@ export interface SymbolEntry {
   readonly lineEnd: number
   readonly body: string
   readonly docstring: string
+  /**
+   * The symbol's containing type/class name, as recovered by the regex adapters
+   * (`makeLineSymbol`/`makeSpanSymbol`/`makeSymbolEmitter` in languages/common.ts) that emit a
+   * single-line class-header span too short to contain a method body for line-containment to work.
+   * Separate from `docstring`, which those same adapters used to overload with this value before
+   * this field existed -- see the `parent` column comment in db.ts's SCHEMA_SQL for the full
+   * history. `''` for symbols that don't need a recovered parent (tree-sitter extractors, or any
+   * top-level symbol).
+   */
+  readonly parent: string
 }
 
 /** One reference/usage of a name, with the surrounding line for context. */

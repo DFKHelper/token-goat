@@ -116,7 +116,7 @@ export function extractHtml(
       const key = `${idVal}\0${line}`
       if (!seenId.has(key)) {
         seenId.add(key)
-        symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '' })
+        symbols.push({ filePath, name: idVal, kind: 'html_id', lineStart: line, lineEnd: line, body: '', docstring: '', parent: '' })
       }
     }
   }
@@ -133,7 +133,7 @@ export function extractHtml(
           const key = `${cls}\0${line}`
           if (!seenClass.has(key)) {
             seenClass.add(key)
-            symbols.push({ filePath, name: cls, kind: 'html_class', lineStart: line, lineEnd: line, body: '', docstring: '' })
+            symbols.push({ filePath, name: cls, kind: 'html_class', lineStart: line, lineEnd: line, body: '', docstring: '', parent: '' })
           }
         }
       }

@@ -195,7 +195,7 @@ export function extractKotlin(
     if (companionM) {
       const cname = companionM[1] ?? 'Companion'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, 'object', lineNum, line.trimEnd().slice(0, 200), parent, lines, 'c'))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     } else if (cm) {
       const ckeyword = cm[1] ?? 'class'
@@ -206,7 +206,7 @@ export function extractKotlin(
       // top-level `object Foo { ... }` singleton is not a class in the index's kind vocabulary.
       const ckind = ckeyword === 'interface' ? 'interface' : ckeyword === 'object' ? 'object' : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, ckind, lineNum, line.trimEnd().slice(0, 200), parent))
+      symbols.push(makeLineSymbol(filePath, cname, ckind, lineNum, line.trimEnd().slice(0, 200), parent, lines, 'c'))
       classStack.push({ name: cname, braceDepth, bodyEntered: false, parenBalance: 0, pendingPop: false })
     }
 
@@ -224,11 +224,11 @@ export function extractKotlin(
           const fname = fm[1] ?? ''
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
-          symbols.push(makeLineSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, fname, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
         }
         const constM = CONST_RE.exec(lineNoAnn)
         if (constM) {
-          symbols.push(makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name))
+          symbols.push(makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
         }
       }
     } else if (!isIndented) {
@@ -238,12 +238,12 @@ export function extractKotlin(
         const fname = tfm[1] ?? ''
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
-        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200), undefined, lines, 'c'))
       }
       // Top-level SCREAMING_SNAKE const/val declarations (no parent class).
       const topConstM = CONST_RE.exec(lineNoAnn)
       if (topConstM) {
-        symbols.push(makeLineSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
       }
     }
 

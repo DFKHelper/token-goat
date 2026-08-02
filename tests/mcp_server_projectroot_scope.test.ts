@@ -48,7 +48,7 @@ vi.mock('../src/section_reader.js', async (importOriginal) => {
 const { createMcpServer } = await import('../src/mcp_server.js')
 
 function fakeSymbol(filePath: string): SymbolEntry {
-  return { filePath, name: 'Foo', kind: 'function', lineStart: 1, lineEnd: 3, body: 'function Foo() {}', docstring: '' }
+  return { filePath, name: 'Foo', kind: 'function', lineStart: 1, lineEnd: 3, body: 'function Foo() {}', docstring: '', parent: '' }
 }
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {

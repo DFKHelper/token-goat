@@ -27,6 +27,7 @@ interface SymbolRow {
   readonly line_end: number
   readonly body: string | null
   readonly docstring: string | null
+  readonly parent: string | null
 }
 
 /** Raw `refs` row. */
@@ -57,6 +58,7 @@ function toSymbolEntry(row: SymbolRow): SymbolEntry {
     lineEnd: row.line_end,
     body: row.body ?? '',
     docstring: row.docstring ?? '',
+    parent: row.parent ?? '',
   }
 }
 
@@ -131,7 +133,7 @@ export function querySymbols(
   const { clause, params } = buildSymbolWhere(opts)
   const limit = opts.limit ?? 100
   const sql =
-    `SELECT file_path, name, kind, line_start, line_end, body, docstring ` +
+    `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent ` +
     `FROM symbols ${clause} ORDER BY file_path, line_start LIMIT ?`
 
   const db = getDb(dbPath)
@@ -315,7 +317,7 @@ function runFtsQuery(
 ): SymbolEntry[] {
   // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
-    `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
+    `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent ` +
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
     `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} ORDER BY bm25(symbols_fts) LIMIT ?`
   const params: (string | number)[] = [match]

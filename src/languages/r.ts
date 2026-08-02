@@ -56,21 +56,21 @@ export function extractR(
     if (!isIndented) {
       const fm = FUNC_ASSIGN_RE.exec(stripped)
       if (fm) {
-        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, fm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
         continue
       }
 
       // S4 class definition
       const cm = SETCLASS_RE.exec(stripped)
       if (cm) {
-        symbols.push(makeLineSymbol(filePath, cm[1] ?? '', 'class', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, cm[1] ?? '', 'class', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
         continue
       }
 
       // S4 method definition (less common, but worth capturing)
       const mm = SETMETHOD_RE.exec(stripped)
       if (mm) {
-        symbols.push(makeLineSymbol(filePath, mm[1] ?? '', 'function', lineNum, stripped.slice(0, 200)))
+        symbols.push(makeLineSymbol(filePath, mm[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
     }
   }

@@ -72,7 +72,7 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
 // ---- helpers ----------------------------------------------------------------
 
 function makeSymbol(name: string, lineStart: number, lineEnd: number, kind = 'function'): SymbolEntry {
-  return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '' }
+  return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '', parent: '' }
 }
 
 // Establish the precondition this suite's header assumes: the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state.
@@ -2492,6 +2492,7 @@ describe('runContextFor / runAsk (#248 regression)', () => {
       lineEnd: 1,
       body: 'x'.repeat(3000),
       docstring: '',
+      parent: '',
     }
     const fits: SymbolEntry = {
       filePath: 'small.ts',
@@ -2501,6 +2502,7 @@ describe('runContextFor / runAsk (#248 regression)', () => {
       lineEnd: 1,
       body: 'y'.repeat(30),
       docstring: '',
+      parent: '',
     }
     // Ranked with the oversized hit FIRST -- a `break` on the first hit exceeding budget would
     // stop the loop immediately and never even consider the smaller hit ranked below it.

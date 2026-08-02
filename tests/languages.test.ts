@@ -25,6 +25,12 @@ import { extractDart } from '../src/languages/dart.js'
 import { extractZig } from '../src/languages/zig.js'
 import { extractR } from '../src/languages/r.js'
 
+// Every `?.docstring).toBe('SomeClassName' | '')` assertion in this file was updated to `?.parent`
+// when the `symbols.parent` column was added: the containing class/type name these regex
+// adapters recover for a method/property now lives in its own `parent` field, not overloaded
+// into `docstring` (see db.ts's SCHEMA_SQL comment for the full history). What each assertion
+// actually verifies -- correct parent recovery for a single-line-span symbol -- is unchanged.
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -135,7 +141,7 @@ public class OtherHolder {
     const { symbols } = extractCsharp(content, 'Handler.cs')
     const delegates = symbols.filter((s) => s.name === 'MyHandler' && s.kind === 'interface')
     expect(delegates).toHaveLength(2)
-    expect(delegates.map((s) => s.docstring).sort()).toEqual(['EventArgsHolder', 'OtherHolder'])
+    expect(delegates.map((s) => s.parent).sort()).toEqual(['EventArgsHolder', 'OtherHolder'])
   })
 
   it('indexes a readonly struct and its members, plus ref struct and file class (regression: CLASS_HEADER_RE\'s modifier alternation only recognized public/protected/private/internal/abstract/sealed/static/partial, so readonly, ref, unsafe, and file -- all legal C# type-declaration modifiers -- caused the whole header line to fail to match, silently dropping the type and misattributing every member inside it)', () => {
@@ -157,7 +163,7 @@ public class OtherHolder {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Point')
     expect(names).toContain('Sum')
-    expect(symbols.find((s) => s.name === 'Sum')?.docstring).toBe('Point')
+    expect(symbols.find((s) => s.name === 'Sum')?.parent).toBe('Point')
     expect(names).toContain('Span')
     expect(names).toContain('Helper')
   })
@@ -224,7 +230,7 @@ public class Widget {
     const { symbols } = extractCsharp(content, 'Calc.cs')
     const countProp = symbols.find((s) => s.name === 'Count')
     expect(countProp?.kind).toBe('var')
-    expect(countProp?.docstring).toBe('Calc')
+    expect(countProp?.parent).toBe('Calc')
     const labelProp = symbols.find((s) => s.name === 'Label')
     expect(labelProp?.kind).toBe('var')
     // Regression: an expression-bodied METHOD (parens between name and `=>`) must still be
@@ -251,7 +257,7 @@ public class Widget {
     const { symbols } = extractCsharp(content, 'Foo.cs')
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('ignores braces inside a /* */ block comment when tracking scope depth', () => {
@@ -276,10 +282,10 @@ public class Bar {
     // toward braceDepth - otherwise depthInClass drifts and Real is never detected as a method.
     const real = symbols.find((s) => s.name === 'Real')
     expect(real?.kind).toBe('method')
-    expect(real?.docstring).toBe('Foo')
+    expect(real?.parent).toBe('Foo')
     const other = symbols.find((s) => s.name === 'Other')
     expect(other?.kind).toBe('method')
-    expect(other?.docstring).toBe('Bar')
+    expect(other?.parent).toBe('Bar')
   })
 
   it('does not leave a brace-less positional record "stuck" as the current class for later declarations', () => {
@@ -296,7 +302,7 @@ public class Foo {
     // top-level class/member is mis-parented under the record forever.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('does not leave a brace-less positional record "stuck" underneath a later class when the declaration line carries a trailing // comment (regression: stripped was computed from a line that never had its trailing line comment removed, so stripped.endsWith(\';\') was false and the pop check never fired -- the record frame stayed on classStack beneath Foo\'s frame, surviving Foo\'s own close and mis-parenting Baz\'s members under Point instead of Baz once Foo popped)', () => {
@@ -317,18 +323,18 @@ public class Baz {
     // enclosing class -- the stuck record frame previously caused exactly this misparent.
     const foo = symbols.find((s) => s.name === 'Foo')
     expect(foo?.kind).toBe('class')
-    expect(foo?.docstring).toBe('')
+    expect(foo?.parent).toBe('')
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
     // Baz is declared after Foo's closing brace pops Foo off the stack, which previously
     // exposed the still-stuck Point frame underneath it.
     const baz = symbols.find((s) => s.name === 'Baz')
     expect(baz?.kind).toBe('class')
-    expect(baz?.docstring).toBe('')
+    expect(baz?.parent).toBe('')
     const qux = symbols.find((s) => s.name === 'Qux')
     expect(qux?.kind).toBe('method')
-    expect(qux?.docstring).toBe('Baz')
+    expect(qux?.parent).toBe('Baz')
   })
 
   it('does not leave a fully single-line class "stuck" as the current class for later declarations', () => {
@@ -344,7 +350,7 @@ public class Foo {
     // classStartDepth, so currentClass must be cleared right after it too.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('does not let braces inside a // line comment desync scope depth', () => {
@@ -361,7 +367,7 @@ public class Foo {
     // toward braceDepth - otherwise depthInClass drifts and After is never detected.
     const after = symbols.find((s) => s.name === 'After')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('Foo')
+    expect(after?.parent).toBe('Foo')
   })
 
   it('detects .cs language via parseFile', async () => {
@@ -383,7 +389,7 @@ public class Foo {
     // Foo's real closing brace, mis-parenting everything declared afterward.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('captures a nested class and parents its member to the nested class, not the outer class', () => {
@@ -403,13 +409,13 @@ public class Foo {
     // matching the depthInClass === 1 gate), so they were silently dropped from the index.
     const inner = symbols.find((s) => s.name === 'Inner')
     expect(inner?.kind).toBe('class')
-    expect(inner?.docstring).toBe('Outer')
+    expect(inner?.parent).toBe('Outer')
     const innerMethod = symbols.find((s) => s.name === 'InnerMethod')
     expect(innerMethod?.kind).toBe('method')
-    expect(innerMethod?.docstring).toBe('Inner')
+    expect(innerMethod?.parent).toBe('Inner')
     const outerMethod = symbols.find((s) => s.name === 'OuterMethod')
     expect(outerMethod?.kind).toBe('method')
-    expect(outerMethod?.docstring).toBe('Outer')
+    expect(outerMethod?.parent).toBe('Outer')
   })
 
   it('extracts constructors with no explicit access modifier', () => {
@@ -419,7 +425,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Box.cs')
-    const constructors = symbols.filter((s) => s.kind === 'method' && s.docstring === 'Box')
+    const constructors = symbols.filter((s) => s.kind === 'method' && s.parent === 'Box')
     // Both constructors should be indexed: the no-modifier one and the public one
     expect(constructors).toHaveLength(2)
     expect(constructors.map((c) => c.name)).toEqual(['Box', 'Box'])
@@ -439,7 +445,7 @@ public class Foo {
     // Foo's scope one method early - After was mis-parented as top-level, not Foo's member.
     const after = symbols.find((s) => s.name === 'After')
     expect(after?.kind).toBe('method')
-    expect(after?.docstring).toBe('Foo')
+    expect(after?.parent).toBe('Foo')
   })
 
   it('does not let a nested quote inside an interpolation hole desync scope depth', () => {
@@ -460,8 +466,8 @@ public class Foo {
     const { symbols } = extractCsharp(content, 'Formatter.cs')
     const names = symbols.map((s) => s.name)
     expect(names).toEqual(['Formatter', 'clean', 'after', 'after2'])
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
-    expect(symbols.find((s) => s.name === 'after2')?.docstring).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after2')?.parent).toBe('Formatter')
   })
 
   it('does not let a nested quote inside a verbatim interpolated string ($@"...") hole desync scope depth', () => {
@@ -483,7 +489,7 @@ public class Foo {
     const { symbols } = extractCsharp(content, 'Foo.cs')
     const names = symbols.map((s) => s.name)
     expect(names).toEqual(['Foo', 'Bar', 'Baz'])
-    expect(symbols.find((s) => s.name === 'Baz')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'Baz')?.parent).toBe('Foo')
   })
 
   it('does not let a C# `{{` escaped literal brace inside an interpolated string open a hole', () => {
@@ -505,8 +511,8 @@ public class Foo {
     const { symbols } = extractCsharp(content, 'Alpha.cs')
     const names = symbols.map((s) => s.name)
     expect(names).toEqual(['Alpha', 'First', 'Second', 'Third'])
-    expect(symbols.find((s) => s.name === 'Second')?.docstring).toBe('Alpha')
-    expect(symbols.find((s) => s.name === 'Third')?.docstring).toBe('Alpha')
+    expect(symbols.find((s) => s.name === 'Second')?.parent).toBe('Alpha')
+    expect(symbols.find((s) => s.name === 'Third')?.parent).toBe('Alpha')
   })
 
   it('detects an Allman-style auto-property with get/set on their own line', () => {
@@ -525,7 +531,7 @@ public class Foo {
     // mis-parented, just absent.
     const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
     expect(bar).toBeDefined()
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('detects an Allman-style property with an explicit (non-shorthand) accessor body', () => {
@@ -546,7 +552,7 @@ public class Foo {
     // name) - the property was silently dropped from the index entirely.
     const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
     expect(bar).toBeDefined()
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('does not phantom-capture a nested generic type argument as the method name', () => {
@@ -641,8 +647,8 @@ public class Account
 }
 `
     const { symbols } = extractCsharp(content, 'Test.cs')
-    expect(symbols.find((s) => s.name === 'Account')?.docstring).toBe('')
-    expect(symbols.find((s) => s.name === 'Deposit')?.docstring).toBe('Account')
+    expect(symbols.find((s) => s.name === 'Account')?.parent).toBe('')
+    expect(symbols.find((s) => s.name === 'Deposit')?.parent).toBe('Account')
   })
 })
 
@@ -708,7 +714,7 @@ final readonly class Point2 {
     expect(names).toContain('Point')
     expect(names).toContain('Point2')
     expect(symbols.find((s) => s.name === '__construct')?.kind).toBe('method')
-    expect(symbols.find((s) => s.name === '__construct')?.docstring).toBe('Point')
+    expect(symbols.find((s) => s.name === '__construct')?.parent).toBe('Point')
   })
 
   it('expands a group-use declaration (use App\\{Foo, Bar};), including renames (regression: [\\w\\\\]+ stopped at "{", so USE_RE never matched at all and the whole line was silently dropped, not merely truncated)', () => {
@@ -795,19 +801,19 @@ class Bar {
     expect(baz).toBeDefined()
     // baz is declared after Foo's closing brace, so it is a top-level function with no parent class.
     expect(baz?.kind).toBe('function')
-    expect(baz?.docstring).toBe('')
+    expect(baz?.parent).toBe('')
     // Bar is a second top-level class declared after Foo closed; its parent must be empty, not Foo.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('class')
-    expect(bar?.docstring).toBe('')
+    expect(bar?.parent).toBe('')
     // Method b genuinely belongs to Bar.
     const b = symbols.find((s) => s.name === 'b')
     expect(b?.kind).toBe('method')
-    expect(b?.docstring).toBe('Bar')
+    expect(b?.parent).toBe('Bar')
     // Sanity: method a still belongs to Foo.
     const a = symbols.find((s) => s.name === 'a')
     expect(a?.kind).toBe('method')
-    expect(a?.docstring).toBe('Foo')
+    expect(a?.parent).toBe('Foo')
   })
 
   it('does not misclassify a function nested inside a method body as a class method', () => {
@@ -824,11 +830,11 @@ class Foo {
     // baz is nested two brace-levels inside Foo (inside bar's body), not directly in Foo's
     // own body, so it must not be classified as a method of Foo.
     expect(baz?.kind).toBe('function')
-    expect(baz?.docstring).toBe('')
+    expect(baz?.parent).toBe('')
     // bar is directly in Foo's body (one brace level in) and must still be a real method.
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('parses declarations and braces that share a line with a block comment', () => {
@@ -849,16 +855,16 @@ function tail() {}
     expect(foo?.kind).toBe('class')
     const methodA = symbols.find((s) => s.name === 'methodA')
     expect(methodA?.kind).toBe('method')
-    expect(methodA?.docstring).toBe('Foo')
+    expect(methodA?.parent).toBe('Foo')
     // Core regression: afterFoo shares a line with */ that closes Foo; the closing brace must pop Foo's scope so afterFoo is top-level, not a method.
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
-    expect(afterFoo?.docstring).toBe('')
+    expect(afterFoo?.parent).toBe('')
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('class')
     const tail = symbols.find((s) => s.name === 'tail')
     expect(tail?.kind).toBe('function')
-    expect(tail?.docstring).toBe('')
+    expect(tail?.parent).toBe('')
   })
 
   it('does not treat a /* that appears inside a string literal as a block-comment opener', () => {
@@ -874,13 +880,13 @@ function afterGlob() {}
     const { symbols } = extractPhp(content, 'scanner.php')
     const scan = symbols.find((s) => s.name === 'scan')
     expect(scan?.kind).toBe('method')
-    expect(scan?.docstring).toBe('Scanner')
+    expect(scan?.parent).toBe('Scanner')
     // Regression: 'src/*.php' inside the glob() string call must not be mistaken for a
     // comment opener - otherwise everything after it (including this declaration) is
     // silently swallowed as "inside a never-closed comment".
     const afterGlob = symbols.find((s) => s.name === 'afterGlob')
     expect(afterGlob?.kind).toBe('function')
-    expect(afterGlob?.docstring).toBe('')
+    expect(afterGlob?.parent).toBe('')
   })
 
   it('does not index a function-local `static $var` declaration as a phantom class property (regression: the property branch had no brace-depth gate, unlike the method branch, so PROP_RE\'s `static` modifier alternation matched an ordinary function-local static variable and attributed it to whatever class was still on top of the context stack)', () => {
@@ -899,7 +905,7 @@ class Counter {
     expect(names).toContain('shared')
     expect(names).toContain('next')
     expect(names).not.toContain('counter')
-    expect(symbols.find((s) => s.name === 'shared')?.docstring).toBe('Counter')
+    expect(symbols.find((s) => s.name === 'shared')?.parent).toBe('Counter')
   })
 
   it('does not attribute a constant declared inside an untracked anonymous class body to the enclosing named class (regression: the const branch had no brace-depth gate, unlike the method and property branches, so a const nested inside an anonymous class - which never gets pushed onto the context stack - was mistaken for a constant of whatever named class was still on top of it)', () => {
@@ -915,8 +921,8 @@ class Outer {
 }
 `
     const { symbols } = extractPhp(content, 'Outer.php')
-    expect(symbols.find((s) => s.name === 'INNER')?.docstring).toBe('')
-    expect(symbols.find((s) => s.name === 'REAL')?.docstring).toBe('Outer')
+    expect(symbols.find((s) => s.name === 'INNER')?.parent).toBe('')
+    expect(symbols.find((s) => s.name === 'REAL')?.parent).toBe('Outer')
   })
 
   it('does not attribute a function-local class declaration to the enclosing method\'s class (regression: CLASS_RE\'s handler had no brace-depth gate, unlike the method/property/const branches, so a class declared inside a method body - a legal PHP idiom for lazy/conditional class definition - was mistaken for a real nested member class of whatever class the enclosing method belonged to, when PHP has no true nested classes)', () => {
@@ -932,7 +938,7 @@ class Outer {
     const { symbols } = extractPhp(content, 'FnLocalClass.php')
     // Helper is declared two brace-levels inside Outer (inside make's body), not directly in
     // Outer's own body, so it is not a real nested class of Outer - PHP has no nested classes.
-    expect(symbols.find((s) => s.name === 'Helper')?.docstring).toBe('')
+    expect(symbols.find((s) => s.name === 'Helper')?.parent).toBe('')
   })
 
   it('detects .php language via parseFile', async () => {
@@ -957,10 +963,10 @@ function afterFoo() {}
     // one of Foo's own methods instead of being a top-level function.
     const a = symbols.find((s) => s.name === 'a')
     expect(a?.kind).toBe('method')
-    expect(a?.docstring).toBe('Foo')
+    expect(a?.parent).toBe('Foo')
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
-    expect(afterFoo?.docstring).toBe('')
+    expect(afterFoo?.parent).toBe('')
   })
 
   it('does not let a brace inside a trailing // or # comment desync scope depth', () => {
@@ -976,7 +982,7 @@ class A {
     // declaration early and mis-parenting method1 as a top-level function instead of A's method.
     const method1 = symbols.find((s) => s.name === 'method1')
     expect(method1?.kind).toBe('method')
-    expect(method1?.docstring).toBe('A')
+    expect(method1?.parent).toBe('A')
   })
 
   it('does not pop a class context on a multi-line header before its body brace is reached', () => {
@@ -994,7 +1000,7 @@ implements Bar, Baz
     // seen - and method1 was mis-parented as a top-level function instead of Foo's method.
     const method1 = symbols.find((s) => s.name === 'method1')
     expect(method1?.kind).toBe('method')
-    expect(method1?.docstring).toBe('Foo')
+    expect(method1?.parent).toBe('Foo')
   })
 
   it('classifies kind correctly when the declared name is itself a substring of the keyword', () => {
@@ -1404,7 +1410,7 @@ class Bar {
     expect(names).toContain('Foo')
     expect(names).toContain('testFoo')
     expect(names).toContain('MyComposable')
-    expect(symbols.find((s) => s.name === 'testFoo')?.docstring).toBe('Bar')
+    expect(symbols.find((s) => s.name === 'testFoo')?.parent).toBe('Bar')
   })
 
   it('indexes top-level SCREAMING_SNAKE const/val declarations', () => {
@@ -1453,8 +1459,8 @@ class Config {
     const { symbols } = extractKotlin(content, 'Formatter.kt')
     const names = symbols.map((s) => s.name)
     expect(names).toEqual(['Formatter', 'clean', 'after', 'after2'])
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
-    expect(symbols.find((s) => s.name === 'after2')?.docstring).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after2')?.parent).toBe('Formatter')
   })
 
   it('indexes members of a modifier-prefixed companion object instead of dropping them', () => {
@@ -1472,7 +1478,7 @@ class Config {
     const x = symbols.find((s) => s.name === 'x')
     expect(x).toBeDefined()
     expect(x?.kind).toBe('method')
-    expect(x?.docstring).toBe('Companion')
+    expect(x?.parent).toBe('Companion')
   })
 
   it('indexes members of an unmodified and a named companion object', () => {
@@ -1489,9 +1495,9 @@ class Bar {
 `
     const { symbols } = extractKotlin(content, 'Foo.kt')
     const y = symbols.find((s) => s.name === 'y')
-    expect(y?.docstring).toBe('Companion')
+    expect(y?.parent).toBe('Companion')
     const z = symbols.find((s) => s.name === 'z')
-    expect(z?.docstring).toBe('Named')
+    expect(z?.parent).toBe('Named')
   })
 
   it('does not index a function-local class as a member of the enclosing class', () => {
@@ -1515,7 +1521,7 @@ class Bar {
     expect(help).toBeUndefined()
     const makeThing = symbols.find((s) => s.name === 'makeThing')
     expect(makeThing?.kind).toBe('method')
-    expect(makeThing?.docstring).toBe('Outer')
+    expect(makeThing?.parent).toBe('Outer')
   })
 
   it('does not index a function-local companion object as a member of the enclosing class', () => {
@@ -1577,7 +1583,7 @@ class Dog : Animal {
     // otherwise a ktlint-formatted multi-line constructor header drops every member of the class.
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('ignores an unmatched brace inside a /* */ block comment when tracking scope depth', () => {
@@ -1598,7 +1604,7 @@ class Dog : Animal {
     // otherwise the class closes early and every member declared after the comment is dropped.
     const second = symbols.find((s) => s.name === 'second')
     expect(second?.kind).toBe('method')
-    expect(second?.docstring).toBe('Foo')
+    expect(second?.parent).toBe('Foo')
   })
 
   it('ignores braces inside a full-line // comment when tracking scope depth', () => {
@@ -1621,7 +1627,7 @@ fun afterFoo(): Int {
     // the class never closes and every top-level declaration after it is misattributed as a member.
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
-    expect(afterFoo?.docstring).toBe('')
+    expect(afterFoo?.parent).toBe('')
   })
 
   it('does not let an unbalanced brace inside a string literal desync scope depth', () => {
@@ -1643,10 +1649,10 @@ fun afterFoo(): Int {
     // one of Foo's own methods instead of being a top-level function.
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
-    expect(afterFoo?.docstring).toBe('')
+    expect(afterFoo?.parent).toBe('')
   })
 
   it('captures a nested class inside another class, parented correctly, along with its own member', () => {
@@ -1668,13 +1674,13 @@ fun afterFoo(): Int {
     // to it either.
     const inner = symbols.find((s) => s.name === 'Inner')
     expect(inner?.kind).toBe('class')
-    expect(inner?.docstring).toBe('Outer')
+    expect(inner?.parent).toBe('Outer')
     const innerMethod = symbols.find((s) => s.name === 'innerMethod')
     expect(innerMethod?.kind).toBe('method')
-    expect(innerMethod?.docstring).toBe('Inner')
+    expect(innerMethod?.parent).toBe('Inner')
     const outerMethod = symbols.find((s) => s.name === 'outerMethod')
     expect(outerMethod?.kind).toBe('method')
-    expect(outerMethod?.docstring).toBe('Outer')
+    expect(outerMethod?.parent).toBe('Outer')
   })
 
   it('does not drop top-level declarations after a class whose body opens and closes on the same line', () => {
@@ -1693,7 +1699,7 @@ fun afterEmpty(): Int {
     expect(empty?.kind).toBe('class')
     const afterEmpty = symbols.find((s) => s.name === 'afterEmpty')
     expect(afterEmpty?.kind).toBe('function')
-    expect(afterEmpty?.docstring).toBe('')
+    expect(afterEmpty?.parent).toBe('')
   })
 
   it('does not drop declarations after a body-less data class (no trailing brace at all)', () => {
@@ -1716,10 +1722,10 @@ fun bar(): Int {
     expect(point?.kind).toBe('class')
     const foo = symbols.find((s) => s.name === 'foo')
     expect(foo?.kind).toBe('function')
-    expect(foo?.docstring).toBe('')
+    expect(foo?.parent).toBe('')
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('function')
-    expect(bar?.docstring).toBe('')
+    expect(bar?.parent).toBe('')
   })
 
   it('does not drop declarations after several consecutive body-less data classes', () => {
@@ -1737,7 +1743,7 @@ fun afterAll(): Int {
     expect(symbols.find((s) => s.name === 'C')?.kind).toBe('class')
     const afterAll = symbols.find((s) => s.name === 'afterAll')
     expect(afterAll?.kind).toBe('function')
-    expect(afterAll?.docstring).toBe('')
+    expect(afterAll?.parent).toBe('')
   })
 
   it('still recognizes a multi-line constructor header whose body opens on the closing-paren line', () => {
@@ -1754,7 +1760,7 @@ fun afterAll(): Int {
     // multi-line constructor header must stay on the stack until its body actually opens.
     const method = symbols.find((s) => s.name === 'method')
     expect(method?.kind).toBe('method')
-    expect(method?.docstring).toBe('Foo')
+    expect(method?.parent).toBe('Foo')
   })
 
   it('does not index local functions/vals inside method bodies as class members', () => {
@@ -1772,7 +1778,7 @@ fun afterAll(): Int {
     // it were a direct member of the enclosing class.
     const handle = symbols.find((s) => s.name === 'handle')
     expect(handle?.kind).toBe('method')
-    expect(handle?.docstring).toBe('Service')
+    expect(handle?.parent).toBe('Service')
     expect(symbols.find((s) => s.name === 'inner')).toBeUndefined()
     expect(symbols.find((s) => s.name === 'LOCAL_THING')).toBeUndefined()
   })
@@ -1793,8 +1799,8 @@ fun afterAll(): Int {
     expect(names).toContain('Foo')
     expect(names).toContain('doWork')
     expect(names).toContain('CONST_A')
-    expect(symbols.find((s) => s.name === 'doWork')?.docstring).toBe('Foo')
-    expect(symbols.find((s) => s.name === 'CONST_A')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'doWork')?.parent).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'CONST_A')?.parent).toBe('Foo')
   })
 
   it('does not drop members of a class with a wrapped, comma-separated supertype list', () => {
@@ -1814,7 +1820,7 @@ fun afterAll(): Int {
     expect(names).toContain('MyFavouriteVeryLongClassHolder')
     expect(names).toContain('doWork')
     expect(names).toContain('CONST_X')
-    expect(symbols.find((s) => s.name === 'doWork')?.docstring).toBe('MyFavouriteVeryLongClassHolder')
+    expect(symbols.find((s) => s.name === 'doWork')?.parent).toBe('MyFavouriteVeryLongClassHolder')
   })
 
   it('still pops a genuinely body-less class header before the next top-level declaration (guard)', () => {
@@ -1824,7 +1830,7 @@ fun main() {}
     const { symbols } = extractKotlin(content, 'Repro.kt')
     const main = symbols.find((s) => s.name === 'main')
     expect(main?.kind).toBe('function')
-    expect(main?.docstring).toBe('')
+    expect(main?.parent).toBe('')
   })
 
   it('does not drop members of a class whose Allman-style body brace is on its own line', () => {
@@ -1843,8 +1849,8 @@ fun main() {}
     expect(names).toContain('Foo')
     expect(names).toContain('bar')
     expect(names).toContain('baz')
-    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBe('Foo')
-    expect(symbols.find((s) => s.name === 'baz')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'bar')?.parent).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'baz')?.parent).toBe('Foo')
   })
 
   it('does not drop members of a class with a multi-line where type-constraint clause', () => {
@@ -1857,7 +1863,7 @@ fun main() {}
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Container')
     expect(names).toContain('add')
-    expect(symbols.find((s) => s.name === 'add')?.docstring).toBe('Container')
+    expect(symbols.find((s) => s.name === 'add')?.parent).toBe('Container')
   })
 
   it('indexes a fun interface (SAM/functional interface) and its members (regression: CLASS_HEADER_RE\'s modifier alternation did not include "fun", so a fun interface header never matched at all -- no frame was pushed for it, and every member declared inside was silently dropped rather than misattributed)', () => {
@@ -1873,7 +1879,7 @@ class Ordinary {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Calculator')
     expect(names).toContain('apply')
-    expect(symbols.find((s) => s.name === 'apply')?.docstring).toBe('Calculator')
+    expect(symbols.find((s) => s.name === 'apply')?.parent).toBe('Calculator')
   })
 
   it('indexes a tailrec function at top level and as a class member (regression: FUN_RE/TOP_FUN_RE\'s modifier alternations did not include the real, still-valid Kotlin function modifier "tailrec", so a tailrec fun header never matched at all and the whole function was silently dropped from the index)', () => {
@@ -1891,7 +1897,7 @@ class Calc {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('factorial')
     expect(names).toContain('gcd')
-    expect(symbols.find((s) => s.name === 'gcd')?.docstring).toBe('Calc')
+    expect(symbols.find((s) => s.name === 'gcd')?.parent).toBe('Calc')
   })
 
   it('extracts extension functions with a receiver type before the function name (regression: TOP_FUN_RE/FUN_RE captured the receiver identifier instead of the real function name, or failed to match at all against a generic receiver like List<T>, so every extension function/method in a Kotlin file was silently dropped)', () => {
@@ -1923,7 +1929,7 @@ class Utils {
     expect(names).not.toContain('List')
     expect(names).not.toContain('Flow')
     expect(names).not.toContain('MutableList')
-    expect(symbols.find((s) => s.name === 'swap')?.docstring).toBe('Utils')
+    expect(symbols.find((s) => s.name === 'swap')?.parent).toBe('Utils')
   })
 })
 
@@ -1951,7 +1957,7 @@ func topLevel() {}
     expect(symbols.find((s) => s.name === 'UserService')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'getUser')?.kind).toBe('method')
     expect(symbols.find((s) => s.name === 'topLevel')?.kind).toBe('function')
-    expect(symbols.find((s) => s.name === 'getUser')?.docstring).toBe('UserService')
+    expect(symbols.find((s) => s.name === 'getUser')?.parent).toBe('UserService')
     expect(imports.some((i) => i.target === 'Foundation')).toBe(true)
   })
 
@@ -1977,11 +1983,11 @@ protocol Greetable {
     // Point's stored properties are indexed as members ('var' kind), parented to Point.
     const x = symbols.find((s) => s.name === 'x')
     expect(x?.kind).toBe('var')
-    expect(x?.docstring).toBe('Point')
+    expect(x?.parent).toBe('Point')
     // A protocol requirement (no body) is still indexed as a method of the protocol.
     const greet = symbols.find((s) => s.name === 'greet')
     expect(greet?.kind).toBe('method')
-    expect(greet?.docstring).toBe('Greetable')
+    expect(greet?.parent).toBe('Greetable')
   })
 
   it('extracts an actor (Swift 5.5 concurrency reference type) and its members', () => {
@@ -2006,13 +2012,13 @@ final actor Counter {
     // keyword in TYPE_HEADER_RE dropped the actor's frame, so every member vanished too).
     const balance = symbols.find((s) => s.name === 'balance')
     expect(balance?.kind).toBe('var')
-    expect(balance?.docstring).toBe('BankAccount')
+    expect(balance?.parent).toBe('BankAccount')
     const deposit = symbols.find((s) => s.name === 'deposit')
     expect(deposit?.kind).toBe('method')
-    expect(deposit?.docstring).toBe('BankAccount')
+    expect(deposit?.parent).toBe('BankAccount')
     // A modifier-prefixed actor (`final actor`) is recognized too.
     expect(symbols.find((s) => s.name === 'Counter')?.kind).toBe('actor')
-    expect(symbols.find((s) => s.name === 'tick')?.docstring).toBe('Counter')
+    expect(symbols.find((s) => s.name === 'tick')?.parent).toBe('Counter')
   })
 
   it('extracts a distributed actor (SE-0336) and its members (regression: TYPE_HEADER_RE\'s modifier alternation lacked "distributed", so the whole header failed to match and the actor plus every nested member vanished from the index)', () => {
@@ -2029,7 +2035,7 @@ public distributed actor Greeter {
     expect(greeter?.kind).toBe('actor')
     const greet = symbols.find((s) => s.name === 'greet')
     expect(greet?.kind).toBe('method')
-    expect(greet?.docstring).toBe('Greeter')
+    expect(greet?.parent).toBe('Greeter')
   })
 
   it('recognizes the Swift 5.9 package access modifier on a type and its members', () => {
@@ -2050,7 +2056,7 @@ package func topLevelHelper() {}
     expect(symbols.find((s) => s.name === 'Repository')?.kind).toBe('struct')
     const items = symbols.find((s) => s.name === 'items')
     expect(items?.kind).toBe('var')
-    expect(items?.docstring).toBe('Repository')
+    expect(items?.parent).toBe('Repository')
     expect(symbols.find((s) => s.name === 'add')?.kind).toBe('method')
     // `package(set) var` — the `(set)` setter-visibility suffix must fold onto package too.
     expect(symbols.find((s) => s.name === 'count')?.kind).toBe('var')
@@ -2078,10 +2084,10 @@ extension Circle {
     expect(symbols.find((s) => s.name === 'Circle' && s.kind === 'extension')).toBeDefined()
     const area = symbols.find((s) => s.name === 'area')
     expect(area?.kind).toBe('var')
-    expect(area?.docstring).toBe('Circle')
+    expect(area?.parent).toBe('Circle')
     const describe = symbols.find((s) => s.name === 'describe')
     expect(describe?.kind).toBe('method')
-    expect(describe?.docstring).toBe('Circle')
+    expect(describe?.parent).toBe('Circle')
   })
 
   it('extracts init/deinit and a generic function (edge case: generics come after the function name in Swift, unlike Kotlin)', () => {
@@ -2100,10 +2106,10 @@ func firstElement<T>(_ items: [T]) -> T? {
     const { symbols } = extractSwift(content, 'Cache.swift')
     const init = symbols.find((s) => s.name === 'init')
     expect(init?.kind).toBe('method')
-    expect(init?.docstring).toBe('Cache')
+    expect(init?.parent).toBe('Cache')
     const deinitSym = symbols.find((s) => s.name === 'deinit')
     expect(deinitSym?.kind).toBe('method')
-    expect(deinitSym?.docstring).toBe('Cache')
+    expect(deinitSym?.parent).toBe('Cache')
     const generic = symbols.find((s) => s.name === 'firstElement')
     expect(generic?.kind).toBe('function')
   })
@@ -2123,7 +2129,7 @@ func firstElement<T>(_ items: [T]) -> T? {
     expect(names).toContain('Widget')
     expect(names).toContain('render')
     expect(names).toContain('compute')
-    expect(symbols.find((s) => s.name === 'render')?.docstring).toBe('Widget')
+    expect(symbols.find((s) => s.name === 'render')?.parent).toBe('Widget')
   })
 
   it('does not index a function-local type as a member of the enclosing type', () => {
@@ -2161,7 +2167,7 @@ func firstElement<T>(_ items: [T]) -> T? {
     const { symbols } = extractSwift(content, 'Formatter.swift')
     const names = symbols.map((s) => s.name)
     expect(names).toEqual(['Formatter', 'template', 'after'])
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('Formatter')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('Formatter')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2200,8 +2206,8 @@ object Main {
     // stopped being detected.
     expect(symbols.find((s) => s.name === 'Main')?.kind).toBe('object')
     expect(symbols.find((s) => s.name === 'distance')?.kind).toBe('function')
-    expect(symbols.find((s) => s.name === 'distance')?.docstring).toBe('Point')
-    expect(symbols.find((s) => s.name === 'main')?.docstring).toBe('Main')
+    expect(symbols.find((s) => s.name === 'distance')?.parent).toBe('Point')
+    expect(symbols.find((s) => s.name === 'main')?.parent).toBe('Main')
     expect(imports.some((i) => i.target === 'scala.util.Random')).toBe(true)
   })
 
@@ -2244,11 +2250,11 @@ class Sibling {
     // A method nested one brace level inside the enum body is extracted and parented to it.
     const isRed = symbols.find((s) => s.name === 'isRed')
     expect(isRed?.kind).toBe('function')
-    expect(isRed?.docstring).toBe('Color')
+    expect(isRed?.parent).toBe('Color')
     // Frame bookkeeping stays intact: a sibling declaration after the enum bodies close is
     // still recognized as top-level (a dropped closing brace would corrupt the gate).
     expect(symbols.find((s) => s.name === 'Sibling')?.kind).toBe('class')
-    expect(symbols.find((s) => s.name === 'hi')?.docstring).toBe('Sibling')
+    expect(symbols.find((s) => s.name === 'hi')?.parent).toBe('Sibling')
   })
 
   it('does not index local functions as top-level', () => {
@@ -2330,7 +2336,7 @@ sealed trait Status
     const { symbols } = extractScala(content, 'modifiers.scala')
     expect(symbols.find((s) => s.name === 'Shape')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'area')?.kind).toBe('function')
-    expect(symbols.find((s) => s.name === 'area')?.docstring).toBe('Shape')
+    expect(symbols.find((s) => s.name === 'area')?.parent).toBe('Shape')
     expect(symbols.find((s) => s.name === 'Circle')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'Registry')?.kind).toBe('object')
     expect(symbols.find((s) => s.name === 'MAX_ITEMS')?.kind).toBe('val')
@@ -2357,7 +2363,7 @@ def topLevelFn(): Unit = {}
     expect(symbols.find((s) => s.name === 'Foo')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'Bar')?.kind).toBe('object')
     expect(symbols.find((s) => s.name === 'Baz')?.kind).toBe('class')
-    expect(symbols.find((s) => s.name === 'method')?.docstring).toBe('Baz')
+    expect(symbols.find((s) => s.name === 'method')?.parent).toBe('Baz')
     expect(symbols.find((s) => s.name === 'topLevelFn')?.kind).toBe('function')
   })
 })
@@ -2443,8 +2449,8 @@ end
 `
     const { symbols } = extractLua(content, 'main.lua')
     // The anonymous body's `end` must not pop `outer`; `inner` after it stays parented to outer.
-    expect(symbols.find((s) => s.name === 'inner')?.docstring).toBe('outer')
-    expect(symbols.find((s) => s.name === 'cb')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'inner')?.parent).toBe('outer')
+    expect(symbols.find((s) => s.name === 'cb')?.parent).toBe('outer')
   })
 
   it('does not let an if/for/while block desync nested-function parent attribution', () => {
@@ -2463,7 +2469,7 @@ end
 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'inner')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'inner')?.parent).toBe('outer')
   })
 
   it('does not let a same-line one-liner function desync subsequent parent attribution', () => {
@@ -2476,8 +2482,8 @@ end
 function bar() return 2 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'foo')?.docstring).toBeFalsy()
-    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'foo')?.parent).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'bar')?.parent).toBeFalsy()
   })
 
   it('handles a one-liner function with an inline if/elseif/end still balanced on one line', () => {
@@ -2486,7 +2492,7 @@ function bar() return 2 end
 function bar() return 2 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBeFalsy()
+    expect(symbols.find((s) => s.name === 'bar')?.parent).toBeFalsy()
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2515,8 +2521,8 @@ function bar() return 2 end
 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'makeCb')?.docstring).toBe('outer')
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'makeCb')?.parent).toBe('outer')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('outer')
   })
 
   it('does not push a frame for a one-liner anonymous callback that closes itself', () => {
@@ -2529,7 +2535,7 @@ end
 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('outer')
   })
 
   it('pops one frame per `end` token when multiple closes share a line', () => {
@@ -2549,7 +2555,7 @@ end
 end
 `
     const { symbols } = extractLua(content, 'main.lua')
-    expect(symbols.find((s) => s.name === 'after')?.docstring).toBe('outer')
+    expect(symbols.find((s) => s.name === 'after')?.parent).toBe('outer')
   })
 })
 
@@ -2579,7 +2585,7 @@ end
     expect(names).toContain('validate')
     expect(symbols.find((s) => s.name === 'User')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'new')?.kind).toBe('function')
-    expect(symbols.find((s) => s.name === 'new')?.docstring).toBe('User')
+    expect(symbols.find((s) => s.name === 'new')?.parent).toBe('User')
   })
 
   it('extracts defmacro', () => {
@@ -2593,7 +2599,7 @@ end
 `
     const { symbols } = extractElixir(content, 'helpers.ex')
     expect(symbols.find((s) => s.name === 'debug')?.kind).toBe('function')
-    expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'debug')?.parent).toBe('Helpers')
   })
 
   it('extracts a defprotocol and parents its def signatures to the protocol', () => {
@@ -2614,11 +2620,11 @@ end
     const proto = symbols.find((s) => s.name === 'My.Sizeable')
     expect(proto?.kind).toBe('protocol')
     // The protocol's def signatures are parented to it, not orphaned to the top level.
-    expect(symbols.find((s) => s.name === 'size')?.docstring).toBe('My.Sizeable')
-    expect(symbols.find((s) => s.name === 'empty?')?.docstring).toBe('My.Sizeable')
+    expect(symbols.find((s) => s.name === 'size')?.parent).toBe('My.Sizeable')
+    expect(symbols.find((s) => s.name === 'empty?')?.parent).toBe('My.Sizeable')
     // Frame balance survives: the module after the protocol and its function still resolve.
     expect(symbols.find((s) => s.name === 'Box')?.kind).toBe('class')
-    expect(symbols.find((s) => s.name === 'area')?.docstring).toBe('Box')
+    expect(symbols.find((s) => s.name === 'area')?.parent).toBe('Box')
   })
 
   it('attributes every function in a module to that module, not just the first', () => {
@@ -2636,8 +2642,8 @@ end
 end
 `
     const { symbols } = extractElixir(content, 'greeter.ex')
-    expect(symbols.find((s) => s.name === 'hello')?.docstring).toBe('MyApp.Greeter')
-    expect(symbols.find((s) => s.name === 'goodbye')?.docstring).toBe('MyApp.Greeter')
+    expect(symbols.find((s) => s.name === 'hello')?.parent).toBe('MyApp.Greeter')
+    expect(symbols.find((s) => s.name === 'goodbye')?.parent).toBe('MyApp.Greeter')
   })
 
   it('does not let a nested do-block construct (quote/case/etc) desync scope tracking', () => {
@@ -2657,8 +2663,8 @@ end
 end
 `
     const { symbols } = extractElixir(content, 'helpers.ex')
-    expect(symbols.find((s) => s.name === 'debug')?.docstring).toBe('Helpers')
-    expect(symbols.find((s) => s.name === 'after_macro')?.docstring).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'debug')?.parent).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'after_macro')?.parent).toBe('Helpers')
   })
 
   it('does not let a bare (do-less) multi-clause `fn ... end` desync scope tracking', () => {
@@ -2683,8 +2689,8 @@ end
 end
 `
     const { symbols } = extractElixir(content, 'helpers.ex')
-    expect(symbols.find((s) => s.name === 'process')?.docstring).toBe('Helpers')
-    expect(symbols.find((s) => s.name === 'after_fn')?.docstring).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'process')?.parent).toBe('Helpers')
+    expect(symbols.find((s) => s.name === 'after_fn')?.parent).toBe('Helpers')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2749,7 +2755,7 @@ abstract base class Combined {
     // type AND its members with it. `abstract class Shape` is the ubiquitous case.
     expect(byName('Shape')?.kind).toBe('class')
     expect(byName('area')?.kind).toBe('function')
-    expect(byName('area')?.docstring).toBe('Shape')
+    expect(byName('area')?.parent).toBe('Shape')
     expect(byName('Node')?.kind).toBe('class')
     expect(byName('Widget')?.kind).toBe('class')
     expect(byName('Service')?.kind).toBe('class')
@@ -2758,7 +2764,7 @@ abstract base class Combined {
     expect(byName('Helper')?.kind).toBe('class')
     // Stacked modifiers (`abstract base class`) and the member under them.
     expect(byName('Combined')?.kind).toBe('class')
-    expect(byName('run')?.docstring).toBe('Combined')
+    expect(byName('run')?.parent).toBe('Combined')
   })
 
   it('extracts a base mixin (Dart 3) distinctly from a mixin class', () => {
@@ -2769,7 +2775,7 @@ abstract base class Combined {
     const { symbols } = extractDart(content, 'log.dart')
     const loggable = symbols.find((s) => s.name === 'Loggable')
     expect(loggable?.kind).toBe('mixin')
-    expect(symbols.find((s) => s.name === 'log')?.docstring).toBe('Loggable')
+    expect(symbols.find((s) => s.name === 'log')?.parent).toBe('Loggable')
   })
 
   it('extracts mixin and extension', () => {
@@ -2808,8 +2814,8 @@ class Robot {
     const { symbols } = extractDart(content, 'zoo.dart')
     expect(symbols.find((s) => s.name === 'Animal')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'Robot')?.kind).toBe('class')
-    expect(symbols.find((s) => s.name === 'speak')?.docstring).toBe('Animal')
-    expect(symbols.find((s) => s.name === 'beep')?.docstring).toBe('Robot')
+    expect(symbols.find((s) => s.name === 'speak')?.parent).toBe('Animal')
+    expect(symbols.find((s) => s.name === 'beep')?.parent).toBe('Robot')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2836,7 +2842,7 @@ class Robot {
     expect(meters?.kind).toBe('extension_type')
     const method = symbols.find((s) => s.name === 'toMillimeters')
     expect(method?.kind).toBe('function')
-    expect(method?.docstring).toBe('Meters')
+    expect(method?.parent).toBe('Meters')
   })
 })
 
@@ -2895,7 +2901,7 @@ var counter: i32 = 0;
     // core symptom of the old bug (no frame pushed => every method dropped).
     const init = symbols.find((s) => s.name === 'init')
     expect(init?.kind).toBe('function')
-    expect(init?.docstring).toBe('Point')
+    expect(init?.parent).toBe('Point')
     // A genuine non-container const (an @import, a scalar) still resolves as a plain const.
     expect(symbols.find((s) => s.name === 'std')?.kind).toBe('const')
     expect(symbols.find((s) => s.name === 'PI')?.kind).toBe('const')
@@ -2923,7 +2929,7 @@ const Vector = struct {
     const { symbols } = extractZig(content, 'shapes.zig')
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('struct')
     expect(symbols.find((s) => s.name === 'Vector')?.kind).toBe('struct')
-    expect(symbols.find((s) => s.name === 'magnitude')?.docstring).toBe('Point')
+    expect(symbols.find((s) => s.name === 'magnitude')?.parent).toBe('Point')
   })
 
   it('returns empty arrays for empty input', () => {
@@ -2950,7 +2956,7 @@ const Vector = struct {
     const { symbols } = extractZig(content, 'main.zig')
     const inner = symbols.find((s) => s.name === 'Inner')
     expect(inner).toBeUndefined()
-    expect(symbols.find((s) => s.name === 'bar')?.docstring).toBe('Foo')
+    expect(symbols.find((s) => s.name === 'bar')?.parent).toBe('Foo')
   })
 })
 
@@ -4479,7 +4485,7 @@ function MyFunction {
     const { symbols } = extractPowershell(content, 'widget.ps1')
     const render = symbols.find((s) => s.name === 'Render')
     expect(render?.kind).toBe('method')
-    expect(render?.docstring).toBe('Widget')
+    expect(render?.parent).toBe('Widget')
   })
 
   it('indexes a method whose return type is a nested generic (regression: the return-type bracket group only matched a single, non-nested `[...]` pair, so `[List[string]]` consumed only up to the inner `]`, left the outer `]` dangling, and silently dropped the whole method)', () => {
@@ -4653,7 +4659,7 @@ function AfterComment {
     // currentClass may never pop after Foo's real closing brace.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
-    expect(bar?.docstring).toBe('Foo')
+    expect(bar?.parent).toBe('Foo')
   })
 
   it('does not let an unbalanced brace in block-comment prose desync the brace-depth counter', () => {

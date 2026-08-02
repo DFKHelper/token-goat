@@ -148,7 +148,7 @@ export function extractPowershell(
       if (funcMatch) {
         const fname = funcMatch[1] ?? ''
         if (symbols.length < MAX_SYMBOLS) {
-          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, line.trimEnd().slice(0, 200), undefined, lines, 'hash'))
         }
       }
     }
@@ -160,7 +160,7 @@ export function extractPowershell(
         const cname = classMatch[2] ?? ''
         const kind = (classMatch[1] ?? '').toLowerCase() === 'enum' ? 'enum' : 'class'
         if (symbols.length < MAX_SYMBOLS) {
-          symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
+          symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200), undefined, lines, 'hash'))
         }
         if (kind === 'class') {
           // Count on a string-stripped copy, not the raw line: a literal brace inside a string value (e.g. a default like `"}"`) would otherwise desync this one-liner check from the real braceDepth tracker below (which already strips strings) -- the phantom brace makes openCount !== closeCount even though the real braces net to zero, so the class is wrongly treated as multi-line and currentClass is never cleared, stranding it and dropping every top-level declaration that follows.
@@ -190,7 +190,7 @@ export function extractPowershell(
           if (mname && symbols.length < MAX_SYMBOLS) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
-            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass))
+            symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), currentClass, lines, 'hash'))
           }
         }
       }
