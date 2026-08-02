@@ -1036,6 +1036,34 @@ describe('read_commands', () => {
         expect(stdout).toContain('# 1 lines (~5 tok)\nfunction myFn() {}')
         expect(mockQueryRefCounts).not.toHaveBeenCalled()
       })
+
+      it('text mode: a bare parent-name docstring (regex-adapter overload of the docstring column) renders "undocumented", not "documented" (regression: M35b parent-name convention)', () => {
+        const sym: MockSymbol = { name: 'undocumentedMethod', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun undocumentedMethod() {}', docstring: 'Widget' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['undocumentedMethod', 0]]))
+        const { text: stdout } = runRead({ spec: 'src/Widget.kt::undocumentedMethod', stats: true })
+        expect(stdout).toContain('undocumented')
+        expect(stdout).not.toContain(', documented]')
+      })
+
+      it('text mode: a real doc comment with spaces still renders "documented" (fix must not over-correct)', () => {
+        const sym: MockSymbol = { name: 'add', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun add() {}', docstring: 'Adds two numbers.' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['add', 0]]))
+        const { text: stdout } = runRead({ spec: 'src/Widget.kt::add', stats: true })
+        expect(stdout).toContain(', documented]')
+      })
+
+      it('text mode: a genuine one-word doc comment ending in punctuation (e.g. "Deprecated.") still renders "documented" (edge case: punctuation defeats the bare-identifier regex)', () => {
+        const sym: MockSymbol = { name: 'legacy', kind: 'method', filePath: 'src/Widget.kt', lineStart: 1, lineEnd: 1, body: 'fun legacy() {}', docstring: 'Deprecated.' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['legacy', 0]]))
+        const { text: stdout } = runRead({ spec: 'src/Widget.kt::legacy', stats: true })
+        expect(stdout).toContain(', documented]')
+      })
     })
   })
 
@@ -1459,6 +1487,50 @@ describe('read_commands', () => {
     // indexed (constants.ts). runOutline/runSkeleton used to call queryRefCounts with no
     // project-root argument, so --stats ref counts summed references across every project
     // sharing a symbol name.
+    it('runOutline JSON mode: a bare parent-name docstring reports hasDoc: false, not a false positive (regression: M35b parent-name convention)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      const { text: stdout } = runOutline({ file: 'f.kt', stats: true, json: true })
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string; hasDoc?: boolean }> }
+      expect(parsed.items.find((p) => p.name === 'undocumentedMethod')?.hasDoc).toBe(false)
+    })
+
+    it('runSkeleton JSON mode: a bare parent-name docstring reports hasDoc: false, not a false positive (regression: M35b parent-name convention)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      mockQueryRefCounts.mockReturnValue(new Map())
+      const { text: stdout } = runSkeleton({ file: 'f.kt', stats: true, json: true })
+      const parsed = JSON.parse(stdout) as { items: Array<{ name: string; hasDoc?: boolean }> }
+      expect(parsed.items.find((p) => p.name === 'undocumentedMethod')?.hasDoc).toBe(false)
+    })
+
+    it('runOutline text mode does not render a bare parent-name docstring as a "# Widget" doc-comment line', () => {
+      const syms: MockSymbol[] = [
+        { name: 'undocumentedMethod', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Widget' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runOutline({ file: 'f.kt' })
+      expect(stdout).not.toContain('# Widget')
+    })
+
+    it('runOutline text mode still renders a real doc comment as "# <text>" (fix must not over-correct)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'add', kind: 'method', filePath: 'f.kt', lineStart: 1, lineEnd: 5, body: 'x', docstring: 'Adds two numbers.' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { text: stdout } = runOutline({ file: 'f.kt' })
+      expect(stdout).toContain('# Adds two numbers.')
+    })
+
     it('runOutline --stats scopes queryRefCounts to the current project root', () => {
       const syms: MockSymbol[] = [
         { name: 'used', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },

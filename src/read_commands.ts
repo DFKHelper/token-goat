@@ -1212,13 +1212,31 @@ function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
 const SKELETON_SYMBOL_CAP = 5000
 
 /**
+ * Whether a symbol's `docstring` field holds an actual doc comment.
+ *
+ * The column is overloaded: the regex-parsed adapters (php/csharp/kotlin/swift/scala/...)
+ * store the *parent class name* there, because their class symbol is a single-line span at the
+ * header that never contains the method body, so line-containment can't recover the parent (see
+ * {@link findParentName}). Treating that bare name as documentation made every nested symbol in
+ * those languages report `documented` when it has no doc comment at all -- a false positive, and
+ * worse than the missing-docstring case because it asserts something untrue.
+ *
+ * A real doc comment is never a single bare identifier, so {@link PARENT_IDENTIFIER_RE} -- the
+ * same test `findParentName` already uses to recognize the parent convention -- separates them.
+ */
+function hasRealDocstring(docstring: string): boolean {
+  const doc = docstring.trim()
+  return doc !== '' && !PARENT_IDENTIFIER_RE.test(doc)
+}
+
+/**
  * Render the trailing `--stats` annotation (`  [N refs, documented|undocumented]`) shared by
  * `skeleton`, `outline`, and `read`'s text output. Returns `''` when `refCounts` is `undefined`
  * (i.e. `--stats` wasn't requested), so callers can always append the result unconditionally.
  */
 function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
   return refCounts !== undefined
-    ? `  [${refCounts.get(sym.name) ?? 0} refs, ${sym.docstring.trim().length > 0 ? 'documented' : 'undocumented'}]`
+    ? `  [${refCounts.get(sym.name) ?? 0} refs, ${hasRealDocstring(sym.docstring) ? 'documented' : 'undocumented'}]`
     : ''
 }
 
@@ -1288,7 +1306,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       lineStart: s.lineStart,
       lineEnd: s.lineEnd,
       ...(refCounts !== undefined
-        ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: s.docstring.trim().length > 0 }
+        ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) }
         : {}),
     }))
     const capped = guardJsonRows(rows)
@@ -1345,7 +1363,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
         ? filtered.map((s) => ({
             ...s,
             refCount: refCounts.get(s.name) ?? 0,
-            hasDoc: s.docstring.trim().length > 0,
+            hasDoc: hasRealDocstring(s.docstring),
           }))
         : filtered
     const capped = guardJsonRows(rows)
@@ -1364,7 +1382,9 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
     const bodyLen = sym.lineEnd - sym.lineStart + 1
-    const docFirst = sym.docstring ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
+    // Same overloaded-column guard as the stats flag: a bare parent name is not a doc comment
+    // and must not be rendered as one (see hasRealDocstring).
+    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}`)
   }
