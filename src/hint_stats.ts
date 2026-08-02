@@ -403,8 +403,8 @@ function isActedOn(category: HintCategory, correlator: string, command: string):
  * Advance every unresolved pending hint for this session by one tool-use event: mark
  * `acted_on` when this event's Bash command demonstrates follow-through (see {@link isActedOn}),
  * otherwise decrement its remaining window and resolve it (still not acted on) once that
- * window is exhausted. Every tool call in the session consumes one unit of window for every
- * pending row, not just Bash calls, since the window models "how soon after the hint," not
+ * window is exhausted. Every tool call token-goat observes consumes one unit of window for
+ * every pending row, not just Bash calls, since the window models "how soon after the hint," not
  * "how many Bash calls specifically."
  */
 export function resolvePendingHintsForEvent(event: HookEvent): void {
@@ -437,16 +437,25 @@ export function resolvePendingHintsForEvent(event: HookEvent): void {
 }
 
 // Advisory (never short-circuits another handler — see hook_registry.ts's Registration.advisory
-// doc comment) and unfiltered by toolName so every tool call in a session gets a chance to
-// resolve pending hints, not just Bash calls (a Read/Edit/Grep/etc. call still consumes one unit
-// of window even though it can never itself satisfy isActedOn's Bash-command check).
+// doc comment) and unfiltered by toolName so every observed tool call gets a chance to resolve
+// pending hints, not just Bash calls (a Read/Edit/Grep/etc. call still consumes one unit of
+// window even though it can never itself satisfy isActedOn's Bash-command check).
+//
+// followsMatcher: this is the one handler that would otherwise force PostToolUse to a catch-all
+// matcher, making every unrelated tool call spawn a whole hook process (~90% of which is Node
+// startup plus bundle evaluation) purely to tick a counter. Accepting the installed matcher means
+// the window counts tool calls token-goat *observes* rather than every tool call in the session —
+// roughly 15% fewer in practice, so a pending hint survives slightly longer in wall-clock terms.
+// That is within ACTED_ON_WINDOW's own stated tolerance (5 is a deliberately rough "the immediate
+// next couple of tool calls"), and it cannot change which hints are creditable: only a Bash call
+// ever satisfies isActedOn, and Bash is always in the matcher.
 registerHook(
   'post_tool_use',
   (event) => {
     resolvePendingHintsForEvent(event)
     return passOutput()
   },
-  { advisory: true },
+  { advisory: true, followsMatcher: true },
 )
 
 export interface CategoryEfficacy {
