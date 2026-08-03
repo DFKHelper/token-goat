@@ -60,7 +60,7 @@ afterEach(() => {
 })
 
 describe('sessionStartHandler', () => {
-  it('emits a project-aware reminder naming the indexed symbol count when the cwd is indexed', () => {
+  it('emits a project-aware reminder that names no exact symbol count when the cwd is indexed', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-proj-'))
     try {
       const forwardSlashDir = normalizePath(projectDir)
@@ -75,10 +75,47 @@ describe('sessionStartHandler', () => {
       const result = sessionStartHandler(makeEvent(projectDir))
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
-        expect(result.context).toContain('indexed (2 symbols)')
+        expect(result.context).toContain('this project is indexed')
+        expect(result.context).not.toMatch(/\(\d+ symbols\)/)
         expect(result.context).toContain('symbol')
         expect(result.context).toContain('Read/Grep tool call')
         expect(result.context).toContain('shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls`')
+      }
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  // Regression: the whole point of dropping the exact symbol count is that the SessionStart
+  // context is byte-identical across a reindex that changes symbol counts, since it lands in
+  // the earliest, most cacheable position of the request. Asserting the absence of a digit
+  // (above) proves the count is gone but not that the string is actually stable end to end --
+  // this drives the real change (inserting a symbol between two calls) and diffs full strings.
+  it('emits byte-identical context across a reindex that changes the symbol count', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-stable-'))
+    try {
+      const forwardSlashDir = normalizePath(projectDir)
+      const db = getDb(_testDbPath)
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(`${forwardSlashDir}/a.ts`, 'foo', 'function', 1, 2, '', '')
+
+      const before = sessionStartHandler(makeEvent(projectDir))
+      expect(before.hookType).toBe('context')
+
+      // Simulate a reindex that grows the symbol count mid-session.
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(`${forwardSlashDir}/b.ts`, 'bar', 'function', 1, 2, '', '')
+      db.prepare(
+        'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(`${forwardSlashDir}/c.ts`, 'baz', 'function', 1, 2, '', '')
+
+      const after = sessionStartHandler(makeEvent(projectDir))
+      expect(after.hookType).toBe('context')
+
+      if (before.hookType === 'context' && after.hookType === 'context') {
+        expect(after.context).toBe(before.context)
       }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })
@@ -132,8 +169,13 @@ describe('sessionStartHandler', () => {
     const result = sessionStartHandler(makeEvent(undefined))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('above the')
+      expect(result.context).toContain('exceed the')
       expect(result.context).toContain('reclaim-index')
+      // Regression: the message must never leak the specific offending file path or exact
+      // char length -- both are data-derived and not guaranteed stable across two runs
+      // against the same DB (LIMIT 1, no ORDER BY), let alone across a reindex.
+      expect(result.context).not.toContain('/some/generated.js')
+      expect(result.context).not.toMatch(/is \d+ chars/)
     }
   })
 
