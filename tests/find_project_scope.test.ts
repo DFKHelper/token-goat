@@ -75,7 +75,11 @@ describe('runFind cross-project scoping', () => {
       runFind({ pattern: 'sharedName' })
     })
 
-    expect(stdout).toContain(path.basename(rootA))
+    // HUMAN output shortens an in-root indexed path to project-root-relative (rootA's own
+    // basename no longer appears at all -- the printed line is just 'sharedName.ts'); the
+    // regression this test actually guards -- rootB's file never leaking into rootA's scoped
+    // results -- still holds.
+    expect(stdout).toContain('sharedName.ts')
     expect(stdout).not.toContain(path.basename(rootB))
   })
 })

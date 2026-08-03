@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS, walkProject } from './baseline.js'
 import { querySymbols, queryRefs, queryRefCounts, searchSymbolsFts, getFileEntry, countSymbols, countRefs } from './index_reader.js'
-import { resolveIndexPath } from './paths.js'
+import { resolveIndexPath, toDisplayPath } from './paths.js'
 import { indexFileSync } from './parser.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { globalDbPath } from './constants.js'
@@ -322,7 +322,7 @@ function formatBareNameSpecError(command: string, name: string, projectRoot?: st
   const seen = new Set<string>()
   const specs: string[] = []
   for (const m of matches) {
-    const spec = `${m.filePath}::${m.name}`
+    const spec = `${toDisplayPath(rootDir, m.filePath)}::${m.name}`
     if (seen.has(spec)) continue
     seen.add(spec)
     specs.push(spec)
@@ -816,7 +816,11 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // qualifier that failed to narrow): refuse to guess. The error lists every candidate and
     // the qualified retry syntax instead of silently returning the first-ordered row.
     return {
-      text: formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates),
+      text: formatAmbiguity(
+        resolution.symbol,
+        resolution.file,
+        resolution.candidates,
+      ),
       code: 1,
     }
   }
@@ -2337,7 +2341,13 @@ export function runBrief(opts: BriefOptions): number {
 
   const resolution = resolveSymbolSpec(opts.spec)
   if (resolution.kind === 'ambiguous') {
-    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
+    emitErr(
+      formatAmbiguity(
+        resolution.symbol,
+        resolution.file,
+        resolution.candidates,
+      ),
+    )
     return 1
   }
   if (resolution.kind === 'none') {
@@ -2391,7 +2401,7 @@ export function runBrief(opts: BriefOptions): number {
   const body = resolveBody(match)
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
-    `# ${match.name}  ${match.kind}  ${match.filePath}:${match.lineStart}-${match.lineEnd}`,
+    `# ${match.name}  ${match.kind}  ${toDisplayPath(rootDir, match.filePath)}:${match.lineStart}-${match.lineEnd}`,
     `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
     body,
     '',
@@ -2399,7 +2409,7 @@ export function runBrief(opts: BriefOptions): number {
 
   lines.push(`Callers (${totalCallers}):`)
   for (const c of shown) {
-    lines.push(`  ${c.caller}\t${c.file}:${c.line}`)
+    lines.push(`  ${c.caller}\t${toDisplayPath(rootDir, c.file)}:${c.line}`)
   }
   if (truncated) {
     lines.push(`  ...(${totalCallers - shown.length} more elided)`)
@@ -2436,8 +2446,11 @@ export function runFind(opts: FindOptions): number {
 
   // "find <pattern>" — the command's own help text promises pattern-style matching, not an
   // exact name lookup, so scan the index and match by case-insensitive substring.
+  // Resolved once and reused for the query's rootDir scope AND for shortening the printed
+  // paths below -- one git shell-out, not two.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
   const patternLower = opts.pattern.toLowerCase()
-  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir: resolveProjectRoot({ project: process.cwd() }) })
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
@@ -2455,7 +2468,7 @@ export function runFind(opts: FindOptions): number {
   }
 
   for (const f of files) {
-    emit(f)
+    emit(toDisplayPath(rootDir, f))
   }
 
   if (truncated) {
@@ -2623,9 +2636,9 @@ export function runChanged(opts: ChangedOptions = {}): number {
       recordReadStat('changed_lookup', symbolFullBytes, text, ref)
       return 0
     }
-    const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`).join('\n')
+    const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${toDisplayPath(projectRoot, s.filePath)}:${s.lineStart}`).join('\n')
     for (const s of allSymbols) {
-      emit(`${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`)
+      emit(`${s.name} (${s.kind}) — ${toDisplayPath(projectRoot, s.filePath)}:${s.lineStart}`)
     }
     recordReadStat('changed_lookup', symbolFullBytes, symbolText, ref)
     return 0
@@ -2733,7 +2746,13 @@ function resolveSymbolSpecOrEmitError(
   if (resolution.kind === 'ambiguous') {
     // Same hard-refuse shape as runRead's ambiguous branch -- never guess which candidate the
     // caller meant.
-    emitErr(formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates))
+    emitErr(
+      formatAmbiguity(
+        resolution.symbol,
+        resolution.file,
+        resolution.candidates,
+      ),
+    )
     return null
   }
 
@@ -2776,7 +2795,7 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   if (diffResult.stdout.trim() === '') {
-    emit(`No changes to '${match.name}' in '${match.filePath}'.`)
+    emit(`No changes to '${match.name}' in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
     return 0
   }
 
@@ -2784,7 +2803,7 @@ export function runDiff(opts: DiffOptions): number {
   const overlapping = hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
   if (overlapping.length === 0) {
-    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${match.filePath}'.`)
+    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
     return 0
   }
 
@@ -2808,7 +2827,7 @@ export function runDiff(opts: DiffOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${match.filePath}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(opts.projectRoot, match.filePath)}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
   return 0
 }
@@ -2930,7 +2949,7 @@ export function runLog(opts: LogOptions): number {
   }
 
   if (logResult.stdout.trim() === '') {
-    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${match.filePath}'.`)
+    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
     return 0
   }
 
@@ -2954,7 +2973,7 @@ export function runLog(opts: LogOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${match.filePath}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(opts.projectRoot, match.filePath)}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
   return 0
 }
@@ -3998,8 +4017,8 @@ function previewLines(body: string, n: number): string {
 }
 
 /** `name (kind) — file:start-end` header line for a symbol. */
-function symbolHeader(s: SymbolEntry): string {
-  return `# ${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}-${s.lineEnd}`
+function symbolHeader(s: SymbolEntry, root: string): string {
+  return `# ${s.name} (${s.kind}) — ${toDisplayPath(root, s.filePath)}:${s.lineStart}-${s.lineEnd}`
 }
 
 interface SemanticOptions {
@@ -4091,7 +4110,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       return { text, code: 0 }
     }
     const blocks = hits.map(
-      (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
+      (h) => `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
     )
     const text = guardText(blocks.join('\n\n'), 'semantic')
     recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
@@ -4124,7 +4143,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
     return { text, code: 0 }
   }
-  const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
+  const blocks = results.map((s) => `${symbolHeader(s, rootDir)}\n${previewLines(s.body, 3)}`)
   const text = guardText(blocks.join('\n\n'), 'semantic')
   recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
   return { text, code: 0 }
@@ -4214,7 +4233,8 @@ export function runNoteList(opts: NoteListOptions = {}): { text: string; code: n
     return { text: opts.staleOnly === true ? 'No stale notes.' : 'No notes recorded.', code: 0 }
   }
   const lines = filtered.map(({ note, stale }) => {
-    const target = note.symbol === WHOLE_FILE_NOTE_SYMBOL ? note.filePath : `${note.filePath}::${note.symbol}`
+    const displayFile = note.filePath
+    const target = note.symbol === WHOLE_FILE_NOTE_SYMBOL ? displayFile : `${displayFile}::${note.symbol}`
     return `${stale ? '[STALE] ' : ''}${target}`
   })
   return { text: lines.join('\n'), code: 0 }

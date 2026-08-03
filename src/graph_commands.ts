@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
-import { resolveIndexPath } from './paths.js'
+import { resolveIndexPath, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
@@ -222,12 +222,15 @@ function filterRefsForSymbol(
  * project shares `name`, so a caller of the other symbol isn't misattributed. Omitted by the
  * bare `token-goat callers <name>` CLI path, which intentionally reports every reference to
  * `name` project-wide regardless of which same-named definition it targets. */
-export function resolveCallers(name: string, limit?: number, filePath?: string): CallerEntry[] {
+export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string): CallerEntry[] {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
   // symbol in an unrelated project on the same machine don't leak into this project's results.
-  const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const refs = queryRefs({ name, limit: limit ?? 500, rootDir })
+  // A caller that has already resolved its own project root (e.g. runCallers, which also needs
+  // it to shorten the printed paths for HUMAN output) passes it in so this doesn't shell out to
+  // git a second time for the same value.
+  const resolvedRootDir = rootDir ?? resolveProjectRoot({ project: process.cwd() })
+  const refs = queryRefs({ name, limit: limit ?? 500, rootDir: resolvedRootDir })
   const getSyms = buildFileSymCache()
   const scoped = filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms)
 
@@ -251,7 +254,10 @@ export function runCallers(opts: CallersOptions): number {
     return 1
   }
 
-  const entries = resolveCallers(opts.symbol, opts.limit)
+  // Resolved once here (not left to resolveCallers' own internal default) so the same value
+  // scopes the query AND shortens the printed paths below -- one git shell-out, not two.
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const entries = resolveCallers(opts.symbol, opts.limit, undefined, rootDir)
   if (entries.length === 0) {
     emitErr(`No references found for '${opts.symbol}'`)
     return 1
@@ -263,7 +269,7 @@ export function runCallers(opts: CallersOptions): number {
   }
 
   for (const e of entries) {
-    emit(`${e.caller}\t${e.file}:${e.line}`)
+    emit(`${e.caller}\t${toDisplayPath(rootDir, e.file)}:${e.line}`)
   }
   return 0
 }
@@ -427,8 +433,15 @@ export function runImpact(opts: ImpactOptions): number {
     return 0
   }
 
+  // `symbol` is either a real symbol name or a synthetic "(module scope) <file>" key (see the
+  // fileKey branch above); only the latter embeds an indexed path that needs shortening for
+  // HUMAN output -- a real symbol name must never be run through toDisplayPath.
+  const MODULE_SCOPE_PREFIX = '(module scope) '
   for (const [symbol, h] of sorted) {
-    emit(`${symbol}\t(hops: ${h})`)
+    const displaySymbol = symbol.startsWith(MODULE_SCOPE_PREFIX)
+      ? MODULE_SCOPE_PREFIX + toDisplayPath(rootDir, symbol.slice(MODULE_SCOPE_PREFIX.length))
+      : symbol
+    emit(`${displaySymbol}\t(hops: ${h})`)
   }
   return 0
 }
@@ -537,7 +550,7 @@ export function runDead(opts: DeadOptions): number {
   }
 
   for (const r of sliced) {
-    emit(`${r.name}\t${r.file}:${r.line}`)
+    emit(`${r.name}\t${toDisplayPath(rootDir, r.file)}:${r.line}`)
   }
   return 0
 }
@@ -790,7 +803,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   for (const r of results) {
-    emit(`${r.name}\t${r.kind}\t${r.filePath}:${r.lineStart}`)
+    emit(`${r.name}\t${r.kind}\t${toDisplayPath(rootDir, r.filePath)}:${r.lineStart}`)
   }
   return 0
 }
@@ -1049,7 +1062,7 @@ export function runSimilar(opts: SimilarOptions): number {
     emit(JSON.stringify(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart })), null, 2))
     return 0
   }
-  for (const h of results) emit(`${h.name}\t${h.kind}\t${h.filePath}:${h.lineStart}`)
+  for (const h of results) emit(`${h.name}\t${h.kind}\t${toDisplayPath(rootDir, h.filePath)}:${h.lineStart}`)
   return 0
 }
 
@@ -1102,7 +1115,7 @@ export function runContextFor(opts: ContextForOptions): number {
     emit(JSON.stringify(entries, null, 2))
     return 0
   }
-  for (const e of entries) emit(e.readCmd)
+  for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}"`)
   return 0
 }
 
@@ -1177,7 +1190,7 @@ export function runTestFor(opts: TestForOptions): number {
     return 0
   }
   for (const r of results) {
-    emit(r.testFile)
+    emit(toDisplayPath(rootDir, r.testFile))
     for (const fn of r.testFunctions) emit(`  ${fn}`)
   }
   return 0
@@ -1229,7 +1242,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
     emit('No coverage gaps found.')
     return 0
   }
-  for (const g of sliced) emit(`${g.name}\t${g.kind}\t${g.file}:${g.line}`)
+  for (const g of sliced) emit(`${g.name}\t${g.kind}\t${toDisplayPath(rootDir, g.file)}:${g.line}`)
   return 0
 }
 
@@ -1318,11 +1331,11 @@ export function runArch(opts: ArchOptions): number {
   }
 
   emit(`hubs (top ${top} most-imported):`)
-  for (const h of hubs) emit(`  ${h.importedBy} importers\t${h.file}`)
+  for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(opts.cwd, h.file)}`)
   emit(`entry points (imported by nobody, top ${top}):`)
-  for (const e of entryPoints) emit(`  ${e.file}`)
+  for (const e of entryPoints) emit(`  ${toDisplayPath(opts.cwd, e.file)}`)
   emit(`cycles (${cycles.length} found):`)
-  for (const c of cycles) emit(`  ${c.join(' -> ')}`)
+  for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(opts.cwd, f)).join(' -> ')}`)
   return 0
 }
 
@@ -1377,7 +1390,7 @@ export function runBlame(opts: BlameOptions): number {
     return 0
   }
 
-  emit(`${symbolArg}\t${filePath}:${start}-${end}`)
+  emit(`${symbolArg}\t${toDisplayPath(opts.cwd, filePath)}:${start}-${end}`)
   emit(raw.trim())
   return 0
 }
@@ -1415,7 +1428,7 @@ export function runAsk(opts: AskOptions): number {
       return 0
     }
     emit(`[degraded mode - set ${BACKEND_ENV}=claude|codex for LLM synthesis]`)
-    for (const e of entries) emit(e.readCmd)
+    for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}"`)
     return 0
   }
 

@@ -165,6 +165,37 @@ export function resolveIndexPath(file: string, base: string = process.cwd()): st
 }
 
 /**
+ * Convert an indexed absolute path to a display form for HUMAN (non-JSON) output.
+ *
+ * The global index is machine-wide and keyed by absolute path on purpose (see
+ * `resolveIndexPath` above), so a query can legitimately return rows from projects
+ * other than `root` -- those rows must stay absolute or the printed path becomes
+ * ambiguous. Only a path genuinely inside `root` is shortened, and only for display;
+ * `--json` payloads must never call this and must keep the raw absolute path.
+ *
+ * Cross-drive guard: on Windows, `path.relative()` between two different drive
+ * letters returns the target's own absolute path unchanged rather than a `..`-prefixed
+ * relative path (documented Node behavior, not a bug). A bare `!rel.startsWith('..')`
+ * check is therefore not sufficient -- it would let an unrelated-drive path through as
+ * if it were in-root. Mirrors the guard shape already used by
+ * `relPathWithinRoot` (hooks_read.ts) and `isPathWithinRoot` (pack.ts): any relative
+ * result that is itself absolute, or that starts with `..`, means `target` is NOT
+ * inside `root`, so the original absolute path is returned unchanged.
+ */
+export function toDisplayPath(root: string | undefined, target: string): string {
+  // No root means the caller has none it can name without resolving one itself. Return the
+  // absolute path rather than falling back to process.cwd(): a cwd-relative path renders the
+  // SAME query differently depending on where it was run from, is ambiguous once printed, and
+  // cannot be resolved from anywhere else -- strictly worse than the absolute path it replaced.
+  if (root === undefined) return target
+  const rel = path.relative(root, target).replace(/\\/g, '/')
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return rel === '' ? '.' : target
+  }
+  return rel
+}
+
+/**
  * Join `base` with one or more path parts, rejecting any part that could
  * escape the base directory via a Windows drive-letter or NTFS stream.
  *
