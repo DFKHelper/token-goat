@@ -16,8 +16,8 @@ import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
 import { ALL_SYMBOLS_IN_FILE_LIMIT, enclosingSymbol } from './graph_commands.js'
 import { querySymbols } from './index_reader.js'
-import { normalizeDarwinSystemAlias, resolveIndexPath } from './paths.js'
-import { canonicalize, findProject } from './project.js'
+import { normalizeDarwinSystemAlias, resolveIndexPath, toDisplayPath } from './paths.js'
+import { canonicalize, findProject, getDisplayRoot } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { resolveBody } from './read_commands.js'
 import { getSessionFiles } from './session.js'
@@ -1443,8 +1443,9 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
     return
   }
 
+  const hotDisplayRoot = getDisplayRoot()
   for (const e of entries) {
-    process.stdout.write(`${e.readCount}\t${e.path}\n`)
+    process.stdout.write(`${e.readCount}\t${toDisplayPath(hotDisplayRoot, e.path)}\n`)
   }
 }
 
@@ -1484,10 +1485,11 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
     process.stdout.write('No files read in this session yet.\n')
     return
   }
+  const recentDisplayRoot = getDisplayRoot()
   for (const e of entries) {
     const edited = e.wasEdited ? '  [edited]' : ''
     const ts = new Date(e.lastReadAt).toISOString()
-    process.stdout.write(`${ts}  ${e.path}${edited}\n`)
+    process.stdout.write(`${ts}  ${toDisplayPath(recentDisplayRoot, e.path)}${edited}\n`)
   }
 }
 
