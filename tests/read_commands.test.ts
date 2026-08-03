@@ -455,6 +455,42 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
+    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own
+    // not-found wording untouched -- only the bare-name (no `::` at all) case below changes.
+    it('a proper file::symbol spec with a bad symbol keeps its existing not-found wording', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runRead({ spec: 'src/foo.ts::missingSymbol' })
+      expect(code).toBe(1)
+      expect(text).toContain("Symbol 'missingSymbol' not found in 'src/foo.ts'")
+      expect(text).not.toContain('Invalid spec')
+    })
+
+    // Regression: a bare symbol name with no `::` used to say "Could not read: <name>" once
+    // readFileText failed, which frames a spec-format mistake as a filesystem problem and
+    // sends an agent hunting for a file that was never the argument's intent. When the bare
+    // name IS indexed, point at the exact `file::symbol` spec to retry with instead.
+    it('a bare indexed name (no :: separator) points at the resolved file::symbol spec instead of falsely claiming a file could not be read', () => {
+      const sym: MockSymbol = { name: 'didYouMean', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { text, code } = runRead({ spec: 'didYouMean' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('Could not read')
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('token-goat read "src/read_commands.ts::didYouMean"')
+    })
+
+    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec"
+    // wording `similar`/`blame` (graph_commands.ts) already use for this exact case, instead
+    // of a third, differently-worded dialect of the same error.
+    it('a bare unindexed name (no :: separator) gets the shared "Invalid spec" wording, not a false "Could not read"', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { text, code } = runRead({ spec: 'totallyUnknownSymbolXyz' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('Could not read')
+      expect(text).toBe('Invalid spec - expected "file::symbol", got: totallyUnknownSymbolXyz')
+    })
+
     it('prints body when symbol found', () => {
       const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1691,6 +1727,46 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([])
       const code = runBrief({ spec: 'f.ts::missing' })
       expect(code).toBe(1)
+    })
+
+    // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own
+    // "Symbol not found" wording untouched -- only the bare-name (no `::` at all) case below
+    // changes.
+    it('a proper file::symbol spec with a bad symbol keeps its existing "Symbol not found" wording', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stderr } = capture(() => {
+        const code = runBrief({ spec: 'f.ts::missing' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain('Symbol not found: f.ts::missing')
+    })
+
+    // Regression: a bare symbol name with no `::` used to say "Symbol not found", which is
+    // false when the name IS indexed -- an agent reads that as "does not exist" and stops
+    // looking. Point at the exact `file::symbol` spec to retry with instead.
+    it('a bare indexed name (no :: separator) points at the resolved file::symbol spec instead of falsely claiming the symbol is missing', () => {
+      const sym: MockSymbol = { name: 'didYouMean', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { stderr } = capture(() => {
+        const code = runBrief({ spec: 'didYouMean' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).not.toContain('Symbol not found')
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('token-goat brief "src/read_commands.ts::didYouMean"')
+    })
+
+    // When the bare name matches nothing indexed either, fall back to the same "Invalid spec"
+    // wording `similar`/`blame` already use for this exact case.
+    it('a bare unindexed name (no :: separator) gets the shared "Invalid spec" wording, not a false "Symbol not found"', () => {
+      mockQuerySymbols.mockReturnValue([])
+      const { stderr } = capture(() => {
+        const code = runBrief({ spec: 'totallyUnknownSymbolXyz' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).not.toContain('Symbol not found')
+      expect(stderr).toContain('Invalid spec - expected "file::symbol", got: totallyUnknownSymbolXyz')
     })
 
     // Same reasoning as runSymbol/runRefs/runFind: limit: 0 (or negative) must be rejected up
