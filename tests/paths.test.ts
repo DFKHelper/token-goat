@@ -9,6 +9,7 @@ import {
   normalizePath,
   resolveIndexPath,
   safeJoin,
+  toDisplayPath,
 } from '../src/paths.js'
 
 describe('safeJoin', () => {
@@ -338,5 +339,56 @@ describe('resolveIndexPath', () => {
     } finally {
       win32Spy.mockRestore()
     }
+  })
+})
+
+describe('toDisplayPath', () => {
+  // Regression: an earlier pass defaulted the display root to process.cwd() when the caller
+  // had none. That made the same query print differently depending on the directory it ran
+  // from -- ambiguous once printed and unresolvable elsewhere. An absent root must yield the
+  // absolute path, never a cwd-relative one.
+  it('returns the absolute path unchanged when no root is available', () => {
+    expect(toDisplayPath(undefined, '/home/user/repo/src/foo.ts')).toBe('/home/user/repo/src/foo.ts')
+  })
+
+  it('does not fall back to cwd-relative output when root is undefined', () => {
+    const inCwd = path.join(process.cwd(), 'src', 'foo.ts')
+    expect(toDisplayPath(undefined, inCwd)).toBe(inCwd)
+  })
+
+  it('returns a forward-slashed relative path for a target inside root', () => {
+    expect(toDisplayPath('/home/user/repo', '/home/user/repo/src/foo.ts')).toBe('src/foo.ts')
+  })
+
+  it('returns the absolute path unchanged for a target outside root', () => {
+    expect(toDisplayPath('/home/user/repo', '/home/user/other/foo.ts')).toBe('/home/user/other/foo.ts')
+  })
+
+  it('returns the root itself as "."', () => {
+    expect(toDisplayPath('/home/user/repo', '/home/user/repo')).toBe('.')
+  })
+
+  it('handles a trailing separator on root', () => {
+    expect(toDisplayPath('/home/user/repo/', '/home/user/repo/src/foo.ts')).toBe('src/foo.ts')
+  })
+
+  describe('cross-drive (win32-gated)', () => {
+    const realPlatform = process.platform
+    const setPlatform = (p: string): void => {
+      Object.defineProperty(process, 'platform', { value: p, configurable: true })
+    }
+    afterEach(() => setPlatform(realPlatform))
+
+    // fail-on-buggy: on win32, path.relative() between different drive letters returns the
+    // target's own absolute path rather than a '..'-prefixed chain. A naive
+    // `!rel.startsWith('..')` check would treat that returned absolute path as "inside root"
+    // and (with the forward-slash rewrite) print it as a bogus relative path. This asserts the
+    // real absolute path comes back unchanged, not a mangled false-relative one.
+    it('returns the absolute path unchanged for a target on a different drive letter than root', () => {
+      setPlatform('win32')
+      const result = toDisplayPath('C:/proj', 'D:/other/x.ts')
+      expect(result).toBe('D:/other/x.ts')
+      expect(path.isAbsolute(result) || /^[a-zA-Z]:/.test(result)).toBe(true)
+    })
   })
 })

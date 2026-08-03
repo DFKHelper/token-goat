@@ -3719,7 +3719,20 @@ describe('read_commands', () => {
     })
 
     it('lists changed symbols with kind and location in symbol mode', () => {
-      gitOk('a.ts\n')
+      // Distinguish the rev-parse (project root) call from git diff --name-only -- gitOk's single
+      // canned response for every runGit call would otherwise make resolveProjectRoot's toplevel
+      // resolve to the literal string 'a.ts', which then collides with the symbol's own indexed
+      // filePath ('a.ts') and toDisplayPath prints '.' instead of the real relative path.
+      const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
+      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+      mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(toplevel as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(nameOnly as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(noHunkDiff as any)
       const syms: MockSymbol[] = [
         { name: 'changedFn', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'function changedFn() {}', docstring: '' },
       ]
