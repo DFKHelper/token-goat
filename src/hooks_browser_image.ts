@@ -40,6 +40,7 @@ import { formatShrinkSummary, shrinkImage } from './image_shrink.js'
 import { BROWSER_TOOL_RE } from './mcp_compress_packs.js'
 import { getLastTabContext, setLastTabContext } from './session.js'
 import { recordStat } from './stats.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 interface ContentBlock {
   readonly type?: unknown
@@ -80,12 +81,25 @@ async function shrinkImageBlock(block: ContentBlock): Promise<{ text: string; ch
   return { text: `${summary}\n${dataUrl}`, changed: true, savedBytes: saved }
 }
 
+const TAB_CONTEXT_UNCHANGED_NOTICE = '(tabs unchanged since last check)'
+
 function dedupTabContext(text: string): { text: string; changed: boolean } {
   if (!TAB_CONTEXT_RE.test(text)) return { text, changed: false }
   const isRepeat = getLastTabContext() === text
   setLastTabContext(text)
   if (!isRepeat) return { text, changed: false }
-  return { text: '(tabs unchanged since last check)', changed: true }
+  // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
+  // bash_runner's filter pipeline): a short tab list repeated verbatim could
+  // be smaller than the placeholder itself, in which case shipping the
+  // original tab list untouched beats "shrinking" it into something bigger.
+  const worthwhile = isRewriteWorthwhile({
+    originalBytes: Buffer.byteLength(text, 'utf-8'),
+    rewrittenBytes: 0,
+    noticeBytes: Buffer.byteLength(TAB_CONTEXT_UNCHANGED_NOTICE, 'utf-8'),
+    minNetSavingsBytes: resolveMinNetSavingsBytes(),
+  })
+  if (!worthwhile) return { text, changed: false }
+  return { text: TAB_CONTEXT_UNCHANGED_NOTICE, changed: true }
 }
 
 export async function postBrowserImageHandler(event: HookEvent): Promise<HookOutput> {

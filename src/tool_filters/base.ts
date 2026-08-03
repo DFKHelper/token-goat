@@ -25,6 +25,70 @@ import {
   truncateMiddleSmart,
 } from './helpers.js'
 import { redactSecrets } from '../secret_redact.js'
+import { loadConfig } from '../config.js'
+
+/**
+ * Default `bash_compress.min_net_savings_bytes` floor, used when config fails
+ * to load. Mirrored here (not just in config.ts's own default) because
+ * {@link resolveMinNetSavingsBytes} must still return a sane value when
+ * `loadConfig()` itself throws.
+ */
+const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
+
+/**
+ * Resolve the net-benefit floor (bytesSaved minus the rewrite's own
+ * notice/marker cost) a rewrite must clear to ship, from
+ * `bash_compress.min_net_savings_bytes`. This is the single resolver every
+ * output-rewriting hook consults — originally private to `bash_runner.ts`,
+ * hoisted here so every consumer of {@link isRewriteWorthwhile} shares the
+ * same config read and fallback instead of re-deriving it.
+ *
+ * The config key lives under `bash_compress` for historical reasons (it was
+ * introduced for the Bash-output compression filter pipeline first), but the
+ * question it answers — "is this net saving worth destabilising bytes that
+ * could otherwise be served from the provider's cached prefix?" — applies
+ * identically to every rewrite path in this codebase, so it is reused
+ * wholesale rather than forked into per-path config families.
+ */
+export function resolveMinNetSavingsBytes(): number {
+  try {
+    return loadConfig().bash_compress.min_net_savings_bytes
+  } catch {
+    return DEFAULT_MIN_NET_SAVINGS_BYTES
+  }
+}
+
+/** Inputs to {@link isRewriteWorthwhile}. */
+export interface RewriteWorthwhileInput {
+  /** Byte size of the content that would otherwise be shipped untouched. */
+  originalBytes: number
+  /** Byte size of the replacement body, EXCLUDING any notice/marker text. */
+  rewrittenBytes: number
+  /** Byte cost of the notice/marker text the rewrite would add. */
+  noticeBytes: number
+  /** Configured floor (see {@link resolveMinNetSavingsBytes}). */
+  minNetSavingsBytes: number
+}
+
+/**
+ * Single shared definition of "is this rewrite worth shipping", usable by any
+ * call site that swaps a tool result for a smaller one plus some notice —
+ * not just {@link CompressedOutput.worthApplying}'s bash-filter case. A
+ * rewrite is worthwhile only when it has non-negative original bytes, a
+ * strictly positive raw saving (`originalBytes - rewrittenBytes`), and that
+ * saving still clears `minNetSavingsBytes` after paying for its own notice.
+ */
+export function isRewriteWorthwhile({
+  originalBytes,
+  rewrittenBytes,
+  noticeBytes,
+  minNetSavingsBytes,
+}: RewriteWorthwhileInput): boolean {
+  if (originalBytes <= 0) return false
+  const bytesSaved = Math.max(0, originalBytes - rewrittenBytes)
+  if (bytesSaved <= 0) return false
+  return bytesSaved - noticeBytes >= minNetSavingsBytes
+}
 
 /**
  * Result of running a {@link ToolFilter} over a captured command output.
@@ -87,8 +151,12 @@ export class CompressedOutput {
    * not re-derive its own `bytesSaved > 0` check.
    */
   worthApplying(minNetSavingsBytes: number): boolean {
-    if (this.originalBytes <= 0 || this.bytesSaved <= 0) return false
-    return this.netSavingsBytes >= minNetSavingsBytes
+    return isRewriteWorthwhile({
+      originalBytes: this.originalBytes,
+      rewrittenBytes: this.compressedBytes,
+      noticeBytes: this.markerBytes,
+      minNetSavingsBytes,
+    })
   }
 
   /**

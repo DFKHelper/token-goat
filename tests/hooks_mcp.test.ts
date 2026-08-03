@@ -369,6 +369,32 @@ describe('postMcpHandler generic compression (real runHook dispatch)', () => {
     }
   })
 
+  // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile,
+  // resolveMinNetSavingsBytes) is actually wired into this path, not just present
+  // in bash_runner.ts: cranking the SAME config key/env var bash_runner already
+  // used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES) to an impossible floor flips this
+  // otherwise-compressible result from rewriteOutput to pass.
+  it('leaves an otherwise-compressible result untouched when TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES is set impossibly high', async () => {
+    delete process.env['TOKEN_GOAT_MCP_COMPRESS']
+    const prevFloor = process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+    process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = '10000000'
+    try {
+      const rows = homogeneousRows(200)
+      const result = await runHook(
+        buildEvent('post_tool_use', {
+          tool_name: compressTool,
+          tool_input: compressInput,
+          session_id: sessionId,
+          tool_response: JSON.stringify(rows),
+        }),
+      )
+      expect(result.hookType).toBe('pass')
+    } finally {
+      if (prevFloor === undefined) delete process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+      else process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = prevFloor
+    }
+  })
+
   it('is disabled by TOKEN_GOAT_MCP_COMPRESS=0, still caches the raw result', async () => {
     process.env['TOKEN_GOAT_MCP_COMPRESS'] = '0'
     const rows = homogeneousRows(200)

@@ -19,6 +19,7 @@ import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
 import { redactSecrets } from './secret_redact.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
  * Return true when a tool_response is an MCP `CallToolResult` carrying an
@@ -99,9 +100,25 @@ function postMcpHandler(event: HookEvent): HookOutput {
         // unredacted on this live path even though every other place that ever persists MCP output
         // redacts it first. Same defense-in-depth choke point ToolFilter.apply() applies for bash
         // output; mirror it here for MCP's live rewrite.
-        return {
-          hookType: 'rewriteOutput',
-          updatedOutput: `[token-goat: compressed, full via mcp-output ${id}]\n${redactSecrets(compressed).text}`,
+        const redactedBody = redactSecrets(compressed).text
+        const notice = `[token-goat: compressed, full via mcp-output ${id}]\n`
+        // Net-benefit gate (shared with bash_runner's filter pipeline, see
+        // tool_filters/base.ts::isRewriteWorthwhile): a rewrite that barely
+        // beats the original after paying for its own notice destabilises
+        // bytes that could otherwise be served from the provider's cached
+        // prefix for no real gain -- below the floor, ship resultText
+        // untouched instead.
+        const worthwhile = isRewriteWorthwhile({
+          originalBytes: Buffer.byteLength(resultText, 'utf-8'),
+          rewrittenBytes: Buffer.byteLength(redactedBody, 'utf-8'),
+          noticeBytes: Buffer.byteLength(notice, 'utf-8'),
+          minNetSavingsBytes: resolveMinNetSavingsBytes(),
+        })
+        if (worthwhile) {
+          return {
+            hookType: 'rewriteOutput',
+            updatedOutput: `${notice}${redactedBody}`,
+          }
         }
       }
     }

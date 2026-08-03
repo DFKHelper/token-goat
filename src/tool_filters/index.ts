@@ -1,8 +1,8 @@
 // Public surface of the bash-output compression filter framework.
 
 export * from './helpers.js'
-export { CompressedOutput, ToolFilter } from './base.js'
-export type { ApplyOptions } from './base.js'
+export { CompressedOutput, ToolFilter, isRewriteWorthwhile, resolveMinNetSavingsBytes } from './base.js'
+export type { ApplyOptions, RewriteWorthwhileInput } from './base.js'
 export { GenericFilter } from './generic.js'
 export { makeNodeTestRunnerFilter, makePackageManagerFilter, makeLinterFilter, makeAiCliFilter, plural } from './families.js'
 export type { NodeTestRunnerConfig, PackageManagerFilterConfig, LinterFilterConfig, DropRule, AiCliFilterConfig, AiCliCountedRule, AiCliKeepLastRule } from './families.js'
