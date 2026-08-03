@@ -942,6 +942,13 @@ export interface SectionOptions {
    * resolve on disk relative to the wrong directory.
    */
   projectRoot?: string
+  /**
+   * Suppress this call's own `recordReadStat`. Set by {@link runSectionMulti} when delegating
+   * to a recursive `runSection` call per heading, so the multi-heading call records exactly
+   * one stat for the whole spec instead of one per heading -- same reasoning as
+   * {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option.
+   */
+  suppressStat?: boolean
 }
 
 /** Handle ``token-goat section "file::Heading"``. */
@@ -960,6 +967,14 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       ? path.resolve(opts.projectRoot, specFilePath)
       : specFilePath
   const heading = opts.spec.slice(colonIdx + 2)
+
+  // Multi-heading form: `file::A,B,C`. Mirrors runRead's `file::a,b,c` multi-symbol grammar
+  // (see runReadMulti) -- section headings carry no numeric-range meaning of their own (unlike
+  // read's `file::N,M` line-range spec), so no guard is needed before splitting on the comma.
+  if (heading.includes(',')) {
+    const multiHeadings = heading.split(',').map((h) => h.trim()).filter((h) => h.length > 0)
+    if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
+  }
 
   const result = readSection(filePath, heading)
   if (result === null) {
@@ -985,7 +1000,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
 
   if (opts.json === true) {
     const text = JSON.stringify(result, null, 2)
-    recordReadStat(kind, fullSourceBytes, text, heading)
+    if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
     return { text, code: 0 }
   }
 
@@ -995,8 +1010,49 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
     'heading',
   )
-  recordReadStat(kind, fullSourceBytes, text, heading)
+  if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
   return { text, code: 0 }
+}
+
+/**
+ * Handle ``token-goat section "file::A,B,C"`` -- fetch several sections from one file in a
+ * single call, mirroring `read`'s comma-separated multi-symbol grammar (see
+ * {@link runReadMulti}). Delegates each heading to a recursive {@link runSection} call
+ * (`suppressStat: true`) rather than reimplementing resolution, so not-found + did-you-mean
+ * and JSON shape all come from the exact same code path the single-heading form already
+ * exercises -- a failure to resolve one heading is reported inline instead of aborting the
+ * whole call, same as `runReadMulti`'s per-symbol handling.
+ */
+function runSectionMulti(
+  specFilePath: string,
+  resolvedFilePath: string,
+  headings: string[],
+  opts: SectionOptions,
+): { text: string; code: number } {
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+
+  for (const heading of headings) {
+    const sub = runSection({ ...opts, spec: `${specFilePath}::${heading}`, suppressStat: true })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) {
+      // Parse the sub-call's JSON string back into an object so the multi envelope nests real
+      // JSON per heading, never an embedded string -- a failed sub-call has no JSON body of
+      // its own, so it is represented by its plain-text error instead.
+      jsonOut[heading] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      continue
+    }
+    textBlocks.push(`${heading}:\n${sub.text}`)
+  }
+
+  // Count the file's on-disk size once for the whole multi-heading call, not once per
+  // heading -- each sub-call already skipped its own recordReadStat via suppressStat for
+  // exactly this reason (see SectionOptions.suppressStat).
+  const fullSourceBytes = sumFileSizes([resolvedFilePath])
+  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  if (anyFound) recordReadStat('section_read', fullSourceBytes, text, opts.spec)
+  return { text, code: anyFound ? 0 : 1 }
 }
 
 // ---- refs -------------------------------------------------------------------

@@ -1347,6 +1347,74 @@ describe('read_commands', () => {
       expect(stdout).toContain("Request a narrower sub-heading, e.g. 'doc.md::Section#2'.")
       expect(stdout).not.toContain('x'.repeat(2000))
     })
+
+    // ---- multi-heading section (file::A,B) ---------------------------------
+    describe('multi-heading section (file::A,B)', () => {
+      function headingMock(sections: Record<string, { content: string; heading: string; lineStart: number; lineEnd: number }>): void {
+        mockReadSection.mockImplementation((_file: string, heading: string) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (sections[heading] ?? null) as any
+        })
+      }
+
+      it('returns both section bodies in text mode', () => {
+        headingMock({
+          Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 },
+          Architecture: { content: '## Architecture\nsome design notes', heading: 'Architecture', lineStart: 5, lineEnd: 6 },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'doc.md::Commands,Architecture' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('Commands')
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('Architecture')
+        expect(stdout).toContain('some design notes')
+      })
+
+      it('returns an object keyed by both headings in JSON mode, each a real nested object', () => {
+        headingMock({
+          Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 },
+          Architecture: { content: '## Architecture\nsome design notes', heading: 'Architecture', lineStart: 5, lineEnd: 6 },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'doc.md::Commands,Architecture', json: true })
+        expect(code).toBe(0)
+        const payload = JSON.parse(stdout) as Record<string, { heading: string; content: string }>
+        expect(payload.Commands?.heading).toBe('Commands')
+        expect(payload.Commands?.content).toContain('npm test')
+        expect(payload.Architecture?.heading).toBe('Architecture')
+        expect(payload.Architecture?.content).toContain('some design notes')
+      })
+
+      it('one existing + one missing heading: existing section returned, missing one reported inline, exit code 0', () => {
+        headingMock({
+          Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'doc.md::Commands,MissingHeading' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('MissingHeading')
+        expect(stdout).toContain('not found')
+      })
+
+      it('returns exit code 1 when no heading in the list resolves', () => {
+        headingMock({})
+        mockListSections.mockReturnValue([])
+        const { code } = runSection({ spec: 'doc.md::MissingA,MissingB' })
+        expect(code).toBe(1)
+      })
+
+      it('single-heading section output is byte-identical to before (no comma path regression)', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
+        const { text: stdout, code } = runSection({ spec: 'README.md::Install' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm install')
+        // No multi-heading merge artifacts leak into the single-heading path.
+        expect(stdout).not.toContain('Install:\n')
+      })
+    })
   })
 
   // ---- runSkeleton --------------------------------------------------------
