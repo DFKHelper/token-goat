@@ -237,11 +237,16 @@ describe('cli_doctor', () => {
 
       const result = checkSymbolBodySize(dbPath)
       expect(result.status).toBe('warn')
-      expect(result.message).toContain('above the')
-      expect(result.message).toContain('src/generated.js')
+      expect(result.message).toContain('exceed the')
       expect(result.message).toContain('CANNOT remove')
       expect(result.message).toContain('reclaim-index --rebuild')
       expect(result.message).toContain('worker stop')
+      // Regression: this message is surfaced verbatim in the SessionStart hook's earliest,
+      // most cacheable context position, so it must not leak the specific offending file path
+      // or exact char length -- neither is guaranteed stable across two runs (LIMIT 1, no
+      // ORDER BY), let alone across a reindex.
+      expect(result.message).not.toContain('src/generated.js')
+      expect(result.message).not.toMatch(/is \d+ chars/)
     })
 
     it('is ok when a body is exactly MAX_SYMBOL_BODY_CHARS chars (boundary)', () => {

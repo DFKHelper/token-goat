@@ -32,7 +32,23 @@ import { checkSymbolBodySize } from './cli_doctor.js'
 const GENERIC_REMINDER =
   'token-goat: prefer surgical reads over the Read/Grep tools on this codebase; shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are just commands, not tool names -- `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::Heading"`, `token-goat semantic "description"`, `token-goat outline <file>`. Run `token-goat index .` if this project is not indexed yet.'
 
-/** Build the reminder string for `cwd`, naming a concrete indexed symbol count when available. */
+/**
+ * Reminder used when the cwd resolves to an indexed project.
+ *
+ * Deliberately omits the exact symbol count: this string lands in the earliest, most
+ * cacheable position of a SessionStart request (the part a provider's prompt/prefix cache
+ * matches on), and `countSymbols()` drifts on every reindex -- a live number here would
+ * invalidate that cache prefix every session, and every time the index changes mid-session.
+ * "Is indexed" is the only signal an agent acts on; the count was decoration in the worst
+ * possible position. Byte-identical across reindexes by construction: nothing in this
+ * string depends on index state beyond the ok/not-ok branch already selected by the caller.
+ */
+const INDEXED_REMINDER =
+  'token-goat: this project is indexed. Prefer `symbol <name>`, `read "file::symbol"`, ' +
+  '`section "file::Heading"`, `semantic "description"`, or `outline <file>` over a full ' +
+  'Read/Grep tool call; shell commands like `rg`, `grep`, `fd`, `sed`, `cat`, `find`, and `ls` are still just commands.'
+
+/** Build the reminder string for `cwd`: distinguishes an indexed project from the generic fallback. */
 function buildReminder(cwd: string | undefined): string {
   if (cwd === undefined) return GENERIC_REMINDER
   let symbolCount: number
@@ -42,11 +58,7 @@ function buildReminder(cwd: string | undefined): string {
     return GENERIC_REMINDER
   }
   if (symbolCount <= 0) return GENERIC_REMINDER
-  return (
-    `token-goat: this project is indexed (${symbolCount} symbols). Prefer \`symbol <name>\`, ` +
-    `\`read "file::symbol"\`, \`section "file::Heading"\`, \`semantic "description"\`, or \`outline <file>\` ` +
-    `over a full Read/Grep tool call; shell commands like \`rg\`, \`grep\`, \`fd\`, \`sed\`, \`cat\`, \`find\`, and \`ls\` are still just commands.`
-  )
+  return INDEXED_REMINDER
 }
 
 /** session_start handler: inject the reminder as context, gated on hints.session_start_reminder. */

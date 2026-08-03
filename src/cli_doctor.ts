@@ -138,12 +138,19 @@ export function checkSymbolBodySize(dbPath: string): DoctorResult {
       .prepare('SELECT LENGTH(body) as len, file_path as filePath FROM symbols WHERE LENGTH(body) > ? LIMIT 1')
       .get(MAX_SYMBOL_BODY_CHARS) as { len: number; filePath: string } | undefined
     if (row !== undefined) {
+      // Deliberately omits row.filePath and row.len: this message is surfaced verbatim by
+      // hooks_session_start.ts in the earliest, most cacheable position of a SessionStart
+      // request, and both fields are data-derived -- the offending row (LIMIT 1, no ORDER BY)
+      // isn't even guaranteed stable across two runs against the same unchanged DB, let alone
+      // across a reindex. The remediation command is the actionable content; which specific
+      // file happens to be first is not. Keeping this text static means only the ok/warn
+      // *presence* of the check varies session to session, never its wording.
       return {
         name: 'Symbol body size',
         status: 'warn',
         message:
-          `a stored symbol body in ${row.filePath} is ${row.len} chars, above the ${MAX_SYMBOL_BODY_CHARS}-char cap ` +
-          `enforced by boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
+          `one or more stored symbol bodies exceed the ${MAX_SYMBOL_BODY_CHARS}-char cap enforced by ` +
+          `boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
           `A plain 'token-goat reclaim-index' (VACUUM only) CANNOT remove these rows -- it only reclaims freed ` +
           `pages, it never deletes row content. Only 'token-goat reclaim-index --rebuild' drops and re-derives ` +
           `them under the cap (stop the worker first with 'token-goat worker stop', since reclaim-index refuses ` +
