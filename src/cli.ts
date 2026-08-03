@@ -3784,6 +3784,8 @@ export function buildProgram(): Command {
 
   program
     .command('compress')
+    .alias('bash')
+    .alias('run')
     .description('run a shell command and emit a compressed view of its output')
     .requiredOption('-c, --cmd <command>', 'the shell command to run, as one string')
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
