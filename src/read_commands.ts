@@ -308,6 +308,38 @@ export function didYouMean(candidates: string[]): string {
   return lines.join('\n')
 }
 
+// Shared "file::symbol" spec-format error for `read`/`brief` when the argument has no `::`
+// separator and isn't a readable file. The old messages ("Symbol not found" for brief, "Could
+// not read" for read) asserted something false -- the name may well be indexed, and the
+// argument was never a file at all, so this is a spec-format mistake, not a missing-symbol or
+// filesystem problem. Mirrors `similar`/`blame` (graph_commands.ts): a bare name that resolves
+// to indexed symbols is pointed at the exact `file::symbol` spec(s) to retry with; one that
+// resolves to nothing gets those commands' own "Invalid spec" wording verbatim, rather than a
+// third dialect of the same error.
+function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
+  const rootDir = projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+  const matches = querySymbols({ name, limit: 50, rootDir })
+  const seen = new Set<string>()
+  const specs: string[] = []
+  for (const m of matches) {
+    const spec = `${m.filePath}::${m.name}`
+    if (seen.has(spec)) continue
+    seen.add(spec)
+    specs.push(spec)
+  }
+  if (specs.length === 0) {
+    return `Invalid spec - expected "file::symbol", got: ${name}`
+  }
+  const lines = [`Not a file: '${name}'. Did you mean:`]
+  for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
+    lines.push(`  - token-goat ${command} "${spec}"`)
+  }
+  if (specs.length > DIDYOUMEAN_LIMIT) {
+    lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
+  }
+  return lines.join('\n')
+}
+
 function trimBlankLines(lines: string[]): string[] {
   let start = 0
   let end = lines.length
@@ -766,6 +798,12 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   if (symbol === undefined || symbol === '') {
     const text = readFileText(file)
     if (text === null) {
+      // A bare name (no `::` at all, as opposed to a `file::` with an empty symbol) that isn't
+      // a readable file is very likely a symbol name passed without its `file::` prefix --
+      // "Could not read" would wrongly frame that as a filesystem problem.
+      if (findSpecSeparator(opts.spec) === -1) {
+        return { text: formatBareNameSpecError('read', file, opts.projectRoot), code: 1 }
+      }
       return { text: `Could not read: ${file}`, code: 1 }
     }
     return { text: guardText(text, 'symbol'), code: 0 }
@@ -2303,6 +2341,13 @@ export function runBrief(opts: BriefOptions): number {
     return 1
   }
   if (resolution.kind === 'none') {
+    // A bare name (no `::` at all) is a spec-format mistake, not evidence the symbol is
+    // missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely
+    // resolves to nothing keeps the original wording below, untouched.
+    if (findSpecSeparator(opts.spec) === -1) {
+      emitErr(formatBareNameSpecError('brief', opts.spec))
+      return 1
+    }
     emitErr(`Symbol not found: ${opts.spec}`)
     return 1
   }
