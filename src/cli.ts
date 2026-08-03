@@ -2570,7 +2570,7 @@ export function buildProgram(): Command {
   program
     .command('section <spec>')
     .description(
-      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading), or list all sections with --list',
+      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
