@@ -34,6 +34,7 @@ import { storeBlob } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { redactSecrets } from './secret_redact.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
  * Deterministic, session-scoped recall id for a BashOutput poll snapshot --
@@ -109,9 +110,24 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
       // annotating) is safe here.
       storePollSnapshot(event.sessionId, bashId, output)
       if (Buffer.byteLength(output, 'utf-8') < minBytes) return passOutput()
+      const unchangedNotice = `[token-goat: bash_id ${bashId} unchanged since last poll -- no new output]`
+      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
+      // bash_runner's filter pipeline): cache_min_bytes above only answers "is
+      // the input big enough to bother" -- this separately confirms the marker
+      // itself doesn't eat the whole saving before shipping the rewrite.
+      if (
+        !isRewriteWorthwhile({
+          originalBytes: Buffer.byteLength(output, 'utf-8'),
+          rewrittenBytes: 0,
+          noticeBytes: Buffer.byteLength(unchangedNotice, 'utf-8'),
+          minNetSavingsBytes: resolveMinNetSavingsBytes(),
+        })
+      ) {
+        return passOutput()
+      }
       return {
         hookType: 'rewriteOutput',
-        updatedOutput: `[token-goat: bash_id ${bashId} unchanged since last poll -- no new output]`,
+        updatedOutput: unchangedNotice,
       }
     }
 
@@ -126,9 +142,20 @@ export function postBashOutputHandler(event: HookEvent): HookOutput {
     const delta = output.slice(prior.output.length)
     storePollSnapshot(event.sessionId, bashId, output)
     if (Buffer.byteLength(delta, 'utf-8') < minBytes) return passOutput()
+    const deltaNotice = `[token-goat: bash_id ${bashId} delta since last poll]\n`
+    if (
+      !isRewriteWorthwhile({
+        originalBytes: Buffer.byteLength(output, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(delta, 'utf-8'),
+        noticeBytes: Buffer.byteLength(deltaNotice, 'utf-8'),
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return passOutput()
+    }
     return {
       hookType: 'rewriteOutput',
-      updatedOutput: `[token-goat: bash_id ${bashId} delta since last poll]\n${delta}`,
+      updatedOutput: `${deltaNotice}${delta}`,
     }
   } catch {
     return passOutput()

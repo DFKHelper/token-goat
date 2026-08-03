@@ -38,10 +38,19 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
     return { tool_name: toolName, tool_input: toolInput, session_id: sessionId, tool_response: { output, status: 'success' } }
   }
 
+  // The rewrite now goes through the shared net-benefit gate
+  // (tool_filters/base.ts::isRewriteWorthwhile): the omission pointer itself costs
+  // ~108 bytes, and the default floor (bash_compress.min_net_savings_bytes) is 100,
+  // so a plan body has to be comfortably larger than ~208 bytes for the rewrite to
+  // clear the floor. Every test below that asserts a rewrite uses a plan body sized
+  // well above that; a dedicated pair of tests further down covers the below-floor
+  // (untouched) and above-floor (rewritten) boundary explicitly.
+  const bigPlanBody = 'This is the plan body. '.repeat(20) // ~480 bytes
+
   it('rewrites a result with the "## Approved Plan:" marker to omit the plan body', async () => {
     const confirmLine = 'User has approved your plan.'
     const marker = '## Approved Plan:'
-    const planBody = 'This is the plan body\nwith multiple lines\nof plan content'
+    const planBody = bigPlanBody
     const output = `${confirmLine}\n\n${marker}\n${planBody}`
 
     const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
@@ -101,7 +110,7 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
   it('keeps the prefix text when rewriting (confirmation before the marker)', async () => {
     const prefix = 'User has approved your plan.\n\nHere are some notes:\n'
     const marker = '## Approved Plan:'
-    const planBody = 'The actual plan proposal goes here...\nMultiple lines...'
+    const planBody = bigPlanBody
     const output = `${prefix}${marker}\n${planBody}`
 
     const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
@@ -114,8 +123,8 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
   })
 
   it('includes the omission pointer in the rewritten output', async () => {
-    const output = '## Approved Plan:\nplan body here'
-    const res = await runHook(buildEvent('post_tool_use', postPayload(output, 'plan body here')))
+    const output = `## Approved Plan:\n${bigPlanBody}`
+    const res = await runHook(buildEvent('post_tool_use', postPayload(output, bigPlanBody)))
     expect(res.hookType).toBe('rewriteOutput')
     if (res.hookType === 'rewriteOutput') {
       expect(res.updatedOutput).toContain('token-goat')
@@ -126,7 +135,7 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
 
   it('handles a marker at the very start of output (no prefix)', async () => {
     const marker = '## Approved Plan:'
-    const planBody = 'This is the original plan body content'
+    const planBody = bigPlanBody
     const output = `${marker}\n${planBody}`
 
     const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
@@ -142,7 +151,7 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
     const line1 = 'User has approved your plan.'
     const middle = 'Some intermediate explanation line here.'
     const marker = '## Approved Plan:'
-    const planBody = 'actual plan text'
+    const planBody = bigPlanBody
     const output = `${line1}\n${middle}\n${marker}\n${planBody}`
 
     const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
@@ -193,5 +202,33 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
       buildEvent('post_tool_use', postPayload(output, 'An unrelated plan body that does not appear in this output at all')),
     )
     expect(res.hookType).toBe('pass')
+  })
+
+  describe('net-benefit gate (shared tool_filters/base.ts::isRewriteWorthwhile)', () => {
+    it('leaves a below-floor plan body untouched -- omitting it would not clear the net-savings floor', async () => {
+      // A short plan body: the pointer text (~108 bytes) plus the default
+      // min_net_savings_bytes floor (100) together demand ~208+ bytes of
+      // omittable body before the rewrite pays for itself. This body is
+      // deliberately short of that.
+      const marker = '## Approved Plan:'
+      const planBody = 'Fix the bug.'
+      const output = `User has approved your plan.\n\n${marker}\n${planBody}`
+
+      const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
+      expect(res.hookType).toBe('pass')
+    })
+
+    it('rewrites an above-floor plan body exactly as before', async () => {
+      const marker = '## Approved Plan:'
+      const planBody = bigPlanBody
+      const output = `User has approved your plan.\n\n${marker}\n${planBody}`
+
+      const res = await runHook(buildEvent('post_tool_use', postPayload(output, planBody)))
+      expect(res.hookType).toBe('rewriteOutput')
+      if (res.hookType === 'rewriteOutput') {
+        expect(res.updatedOutput).not.toContain(planBody)
+        expect(res.updatedOutput).toContain('omitted')
+      }
+    })
   })
 })

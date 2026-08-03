@@ -124,7 +124,14 @@ describe('postBrowserImageHandler', () => {
   })
 
   describe('Tab Context dedup', () => {
-    const tabContextText = '\n\nTab Context:\n- Available tabs:\n  • tabId 1: "New Tab" (chrome://newtab/)'
+    // Big enough (comfortably over the default min_net_savings_bytes=100 floor
+    // once the ~34-byte placeholder notice is subtracted) so the dedup rewrite
+    // clears the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile).
+    // A dedicated pair of tests further down covers the below-floor (untouched)
+    // and above-floor (rewritten) boundary explicitly with small/large lists.
+    const tabContextText =
+      '\n\nTab Context:\n- Available tabs:\n' +
+      Array.from({ length: 6 }, (_, i) => `  • tabId ${i + 1}: "Tab number ${i + 1}" (https://example.com/page-${i + 1})`).join('\n')
 
     it('passes a first-seen Tab Context block through verbatim and records it', async () => {
       const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
@@ -152,6 +159,42 @@ describe('postBrowserImageHandler', () => {
       // Below-threshold image + a non-repeat Tab Context (first-seen-or-changed passes through verbatim, which is a no-op) means nothing actually needs rewriting this call.
       expect(result.hookType).toBe('pass')
       expect(getLastTabContext()).toBe(changed)
+    })
+
+    it('leaves a below-floor repeated Tab Context untouched -- the placeholder would not clear the net-savings floor', async () => {
+      // A tiny one-tab list: shrinking it to the ~34-byte placeholder saves too
+      // few bytes to clear the default min_net_savings_bytes=100 floor.
+      const tinyTabContext = '\n\nTab Context:\n- Available tabs:\n  • tabId 1: "New Tab" (chrome://newtab/)'
+      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
+      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
+      expect(result.hookType).toBe('pass')
+    })
+
+    // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile,
+    // resolveMinNetSavingsBytes) is actually wired into this path: cranking the same
+    // config key/env var bash_runner already used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES)
+    // to an impossible floor flips an otherwise-rewritable repeat back to a pass-through.
+    it('leaves an otherwise-shortenable repeated Tab Context untouched when TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES is set impossibly high', async () => {
+      const prevFloor = process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+      process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = '10000000'
+      try {
+        await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+        const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+        expect(result.hookType).toBe('pass')
+      } finally {
+        if (prevFloor === undefined) delete process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+        else process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = prevFloor
+      }
+    })
+
+    it('shortens an above-floor repeated Tab Context to the placeholder', async () => {
+      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      expect(result.hookType).toBe('rewriteOutput')
+      if (result.hookType === 'rewriteOutput') {
+        expect(result.updatedOutput).not.toContain('Available tabs')
+        expect(result.updatedOutput).toContain('(tabs unchanged since last check)')
+      }
     })
   })
 

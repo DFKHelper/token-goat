@@ -42,6 +42,7 @@ import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_
 import { loadConfig } from './config.js'
 import { dedupeConsecutive } from './tool_filters/helpers.js'
 import { redactSecrets } from './secret_redact.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
  * Deterministic, session-scoped recall id for a TaskOutput poll snapshot --
@@ -122,6 +123,21 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       if (collapsed === output) return passOutput()
       const savings = Buffer.byteLength(output, 'utf-8') - Buffer.byteLength(collapsed, 'utf-8')
       if (savings < minBytes) return passOutput()
+      // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
+      // bash_runner's filter pipeline and hooks_bashoutput.ts): the collapse has
+      // no separate notice/marker text (the collapsed body IS the replacement),
+      // so noticeBytes is 0, but routing through the same shared check keeps
+      // this path's "worth it" decision identical in shape to every other one.
+      if (
+        !isRewriteWorthwhile({
+          originalBytes: Buffer.byteLength(output, 'utf-8'),
+          rewrittenBytes: Buffer.byteLength(collapsed, 'utf-8'),
+          noticeBytes: 0,
+          minNetSavingsBytes: resolveMinNetSavingsBytes(),
+        })
+      ) {
+        return passOutput()
+      }
       return {
         hookType: 'rewriteOutput',
         updatedOutput: collapsed,
@@ -133,9 +149,20 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
       // why replacing (not just annotating) is safe here.
       storePollSnapshot(event.sessionId, taskId, output)
       if (Buffer.byteLength(output, 'utf-8') < minBytes) return passOutput()
+      const unchangedNotice = `[token-goat: task_id ${taskId} unchanged since last poll -- no new output]`
+      if (
+        !isRewriteWorthwhile({
+          originalBytes: Buffer.byteLength(output, 'utf-8'),
+          rewrittenBytes: 0,
+          noticeBytes: Buffer.byteLength(unchangedNotice, 'utf-8'),
+          minNetSavingsBytes: resolveMinNetSavingsBytes(),
+        })
+      ) {
+        return passOutput()
+      }
       return {
         hookType: 'rewriteOutput',
-        updatedOutput: `[token-goat: task_id ${taskId} unchanged since last poll -- no new output]`,
+        updatedOutput: unchangedNotice,
       }
     }
 
@@ -150,9 +177,21 @@ export function postTaskOutputHandler(event: HookEvent): HookOutput {
     const delta = output.slice(prior.output.length)
     storePollSnapshot(event.sessionId, taskId, output)
     if (Buffer.byteLength(delta, 'utf-8') < minBytes) return passOutput()
+    const collapsedDelta = collapseRepeatedLines(delta)
+    const deltaNotice = `[token-goat: task_id ${taskId} delta since last poll]\n`
+    if (
+      !isRewriteWorthwhile({
+        originalBytes: Buffer.byteLength(output, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(collapsedDelta, 'utf-8'),
+        noticeBytes: Buffer.byteLength(deltaNotice, 'utf-8'),
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return passOutput()
+    }
     return {
       hookType: 'rewriteOutput',
-      updatedOutput: `[token-goat: task_id ${taskId} delta since last poll]\n${collapseRepeatedLines(delta)}`,
+      updatedOutput: `${deltaNotice}${collapsedDelta}`,
     }
   } catch {
     return passOutput()

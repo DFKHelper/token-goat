@@ -34,6 +34,7 @@
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
  * Plan-body omission marker that replaces the echoed plan text after we
@@ -75,11 +76,27 @@ export function postExitPlanModeHandler(event: HookEvent): HookOutput {
     // Keep everything up to and including the marker, then add the pointer.
     // This preserves the "User has approved your plan" confirmation line.
     const prefix = output.slice(0, markerIndex + APPROVED_PLAN_MARKER.length)
-    const rewritten = `${prefix}\n${PLAN_OMIT_POINTER}`
+    const notice = `\n${PLAN_OMIT_POINTER}`
+
+    // Net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, shared with
+    // bash_runner's filter pipeline): for a short approved plan the pointer
+    // text can be as large as (or larger than) the echoed body it replaces --
+    // in that case shipping `output` untouched beats destabilising the bytes
+    // for a rewrite that saves nothing.
+    if (
+      !isRewriteWorthwhile({
+        originalBytes: Buffer.byteLength(output, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(prefix, 'utf-8'),
+        noticeBytes: Buffer.byteLength(notice, 'utf-8'),
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return passOutput()
+    }
 
     return {
       hookType: 'rewriteOutput',
-      updatedOutput: rewritten,
+      updatedOutput: `${prefix}${notice}`,
     }
   } catch {
     return passOutput()

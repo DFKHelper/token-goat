@@ -73,6 +73,30 @@ describe('TaskOutput poll-delta hook (real runHook dispatch)', () => {
     }
   })
 
+  // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile,
+  // resolveMinNetSavingsBytes) is actually wired into this path: cranking the same
+  // config key/env var bash_runner already used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES)
+  // to an impossible floor flips both the unchanged-poll and delta-poll rewrites back
+  // to pass, even though cache_min_bytes alone would have let them through.
+  it('leaves an otherwise-rewritable unchanged/delta poll untouched when TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES is set impossibly high', async () => {
+    const prevFloor = process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+    process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = '10000000'
+    try {
+      const first = await runHook(buildEvent('post_tool_use', postPayload(bigChunk)))
+      expect(first.hookType).toBe('pass')
+
+      const unchanged = await runHook(buildEvent('post_tool_use', postPayload(bigChunk)))
+      expect(unchanged.hookType).toBe('pass')
+
+      const delta = 'y'.repeat(600)
+      const withDelta = await runHook(buildEvent('post_tool_use', postPayload(bigChunk + delta)))
+      expect(withDelta.hookType).toBe('pass')
+    } finally {
+      if (prevFloor === undefined) delete process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
+      else process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = prevFloor
+    }
+  })
+
   it('passes through an unchanged small poll (below the savings floor)', async () => {
     const small = 'small output'
     const first = await runHook(buildEvent('post_tool_use', postPayload(small)))
@@ -100,7 +124,11 @@ describe('TaskOutput poll-delta hook (real runHook dispatch)', () => {
     // falls through to the "buffer reset" branch on every subsequent poll -- permanently
     // disabling delta compression for this task the moment a secret-shaped token ever appears,
     // even though the accumulated output really is a simple append each time.
-    const withSecret = `line1\nAKIA${'1'.repeat(16)}\n`
+    // Prefix sized well above the notice's own byte cost so the delta rewrite's
+    // net savings clear the shared floor (tool_filters/base.ts::isRewriteWorthwhile)
+    // once the redacted `AKIA...` line is subtracted out. Lines are varied (not
+    // repeated) so this doesn't also trip the first-poll collapseRepeatedLines path.
+    const withSecret = `${Array.from({ length: 150 }, (_, i) => `line${i}`).join('\n')}\nAKIA${'1'.repeat(16)}\n`
     const first = await runHook(buildEvent('post_tool_use', postPayload(withSecret)))
     expect(first.hookType).toBe('pass')
 

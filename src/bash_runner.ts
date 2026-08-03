@@ -17,6 +17,7 @@ import {
   combineStreams,
   compressOutput,
   filterByName,
+  resolveMinNetSavingsBytes,
   selectFilter,
   shlexSplit,
 } from './tool_filters/index.js'
@@ -106,18 +107,6 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
     return { maxLines: bc.max_lines, maxBytes: bc.max_bytes }
   } catch {
     return { maxLines: 1000, maxBytes: 64 * 1024 }
-  }
-}
-
-/** Default `bash_compress.min_net_savings_bytes` floor, mirrored from config.ts, used when config fails to load. */
-const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
-
-/** Resolve the net-benefit floor (bytesSaved minus the marker's own cost) a rewrite must clear to ship, from config. */
-function resolveMinNetSavingsBytes(): number {
-  try {
-    return loadConfig().bash_compress.min_net_savings_bytes
-  } catch {
-    return DEFAULT_MIN_NET_SAVINGS_BYTES
   }
 }
 
