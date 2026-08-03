@@ -8,6 +8,7 @@ import {
   MAX_INSPECT_BYTES,
   byteLength,
   capBytes,
+  combineStreams,
   compressBashOutput,
   compressionMarker,
   fallbackTruncate,
@@ -60,11 +61,44 @@ export class CompressedOutput {
   }
 
   /**
-   * `text` with the trailing compression-summary marker appended. Skipped
-   * entirely on a no-op (savings ≤ 0) so raw output never carries a marker.
+   * Byte cost of the trailing marker {@link withMarker} would append for this
+   * result's filter name and percentage. The marker is not free — a rewrite
+   * whose `bytesSaved` doesn't even cover its own marker is strictly worse
+   * than doing nothing.
    */
-  withMarker(): string {
-    if (this.bytesSaved <= 0 || this.originalBytes <= 0) return this.text
+  get markerBytes(): number {
+    return byteLength(compressionMarker(this.filterName, this.percentSaved))
+  }
+
+  /**
+   * Net savings after subtracting the marker's own byte cost — the true
+   * benefit of shipping the rewrite instead of the untouched original.
+   */
+  get netSavingsBytes(): number {
+    return this.bytesSaved - this.markerBytes
+  }
+
+  /**
+   * Single definition of "is this rewrite worth shipping". `minNetSavingsBytes`
+   * is the configured floor (`bash_compress.min_net_savings_bytes`) below
+   * which a rewrite is considered too trivial to justify destabilising the
+   * bytes (breaks provider prefix caching) for — every consumer that chooses
+   * between the compressed body and the original output must go through this,
+   * not re-derive its own `bytesSaved > 0` check.
+   */
+  worthApplying(minNetSavingsBytes: number): boolean {
+    if (this.originalBytes <= 0 || this.bytesSaved <= 0) return false
+    return this.netSavingsBytes >= minNetSavingsBytes
+  }
+
+  /**
+   * `text` with the trailing compression-summary marker appended. Skipped
+   * entirely when the rewrite doesn't clear `minNetSavingsBytes` (default 0,
+   * i.e. the marker must at least pay for itself) so raw output never carries
+   * a marker for a trivial or net-negative rewrite.
+   */
+  withMarker(minNetSavingsBytes = 0): string {
+    if (!this.worthApplying(minNetSavingsBytes)) return this.text
     return this.text + compressionMarker(this.filterName, this.percentSaved)
   }
 }
@@ -129,8 +163,7 @@ export abstract class ToolFilter {
 
   /** Combine stdout/stderr with a `---` separator when both are present. */
   protected combineOutput(stdout: string, stderr: string): string {
-    if (stderr.trim() && stdout.trim()) return `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
-    return stdout.trim() ? stdout.replace(/\s+$/, '') : stderr.replace(/\s+$/, '')
+    return combineStreams(stdout, stderr)
   }
 
   /** Append a `[token-goat: <joined notes>]` summary line to `kept`. */

@@ -39,6 +39,7 @@ export interface BashCompressConfig {
   cache_max_file_count: number
   cache_max_bytes: number
   cache_max_bytes_per_output: number
+  min_net_savings_bytes: number
 }
 
 export interface BashDiffConfig {
@@ -273,6 +274,12 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     cache_max_file_count: 4096,
     cache_max_bytes: 16 * 1024 * 1024,
     cache_max_bytes_per_output: 50 * 1024 * 1024,
+    // Measured against the filter test-fixture corpus (424 apply() calls, 298 with
+    // bytesSaved > 0): net-of-marker savings (bytesSaved - ~70-79B marker cost) is
+    // <= 0 for 130/298 (44%) of "compressed" results and <= 100 for 170/298 (57%),
+    // while the real-win half sits at p75=393B / p90=952B net. 100 kills the
+    // marker-doesn't-even-pay-for-itself tier without touching genuine wins.
+    min_net_savings_bytes: 100,
   },
   bash_diff: {
     max_hunks_per_file: 10,
@@ -512,6 +519,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'bash_compress.cache_max_file_count': {min: 1, max: 1_000_000},
   'bash_compress.cache_max_bytes': {min: 1024, max: 4 * 1024 * 1024 * 1024},
   'bash_compress.cache_max_bytes_per_output': {min: 1024, max: 4 * 1024 * 1024 * 1024, clampTo: 'bash_compress.cache_max_bytes'},
+  'bash_compress.min_net_savings_bytes': {min: 0, max: 1024 * 1024},
   'bash_diff.max_hunks_per_file': {min: 1, max: 10000},
   'bash_severity_log.context_lines': {min: 0, max: 100},
   'bash_severity_log.score_threshold': {min: 0.0, max: 1.0},
@@ -1070,11 +1078,13 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   bc.cache_max_file_count = validatedInt(bc_raw['cache_max_file_count'], bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
   bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
+  bc.min_net_savings_bytes = validatedInt(bc_raw['min_net_savings_bytes'], bc.min_net_savings_bytes, ...boundsOf('bash_compress.min_net_savings_bytes'))
   bc.enabled = envBool('TOKEN_GOAT_BASH_COMPRESS', bc.enabled)
   bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes, ...boundsOf('bash_compress.cache_min_bytes'))
   bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, ...boundsOf('bash_compress.cache_max_file_count'))
   bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, ...boundsOf('bash_compress.cache_max_bytes'))
   bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, ...boundsOf('bash_compress.cache_max_bytes_per_output'))
+  bc.min_net_savings_bytes = envInt('TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES', bc.min_net_savings_bytes, ...boundsOf('bash_compress.min_net_savings_bytes'))
   // A per-item cap larger than the total-directory budget is nonsensical: pruneBlobs()
   // would otherwise evict a freshly-written item (and everything else) in the same
   // storeBlob() call that just wrote it. Clamp it so the per-item cap can never
@@ -1321,6 +1331,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'bash_compress.cache_max_file_count': ['TOKEN_GOAT_BASH_CACHE_MAX_FILES'],
   'bash_compress.cache_max_bytes': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES'],
   'bash_compress.cache_max_bytes_per_output': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT'],
+  'bash_compress.min_net_savings_bytes': ['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'],
   'session_brief.enabled': ['TOKEN_GOAT_SESSION_BRIEF'],
   'skill_preservation.enabled': ['TOKEN_GOAT_SKILL_PRESERVATION'],
   'skill_preservation.compress_bodies': ['TOKEN_GOAT_SKILL_COMPRESS'],
@@ -1401,6 +1412,7 @@ export function saveConfig(config: Config): void {
       cache_max_file_count: bc.cache_max_file_count,
       cache_max_bytes: bc.cache_max_bytes,
       cache_max_bytes_per_output: bc.cache_max_bytes_per_output,
+      min_net_savings_bytes: bc.min_net_savings_bytes,
     },
     bash_diff: {
       max_hunks_per_file: config.bash_diff.max_hunks_per_file,

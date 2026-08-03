@@ -74,11 +74,16 @@ afterAll(() => {
 
 describe('bash_runner.run (in-process)', () => {
   it('applies the named filter and dedupes consecutive lines', () => {
-    const s = script('dup.js', "for (let i = 0; i < 6; i++) console.log('compiling...')\nconsole.log('done')\n")
+    // 60 repeats (not 6): dedupe collapses ~900 bytes down to one line, clearing
+    // the net-benefit floor (bash_compress.min_net_savings_bytes) by a wide
+    // margin. A handful of repeats saves only marker-sized bytes and would now
+    // legitimately fall back to the untouched original — this fixture exercises
+    // the real dedupe logic, not that trivial-savings edge case.
+    const s = script('dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
-    expect(out).toContain('×6')
+    expect(out).toContain('×60')
     expect(out).toContain('done')
     expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
@@ -173,6 +178,78 @@ describe('bash_runner.run — config-driven compress limits (bash_compress.max_l
   })
 })
 
+// ---------------------------------------------------------------------------
+// Net-benefit floor (bash_compress.min_net_savings_bytes). A rewrite whose
+// bytesSaved doesn't clear the marker's own byte cost plus this configured
+// floor destabilises the bytes (breaks provider prefix caching) for a saving
+// too small to be worth it. Below the floor the ORIGINAL output ships
+// untouched with no marker; above it, compression proceeds exactly as before.
+// ---------------------------------------------------------------------------
+describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_bytes)', () => {
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(path.join(DATA_DIR_TMP, 'config.toml'))
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('a below-floor saving passes through the ORIGINAL output untouched with no marker', () => {
+    // Two repeats of "compiling..." dedupe to a couple dozen bytes of saving —
+    // smaller than the ~70-byte marker plus the default 100-byte floor, so this
+    // must fall all the way back to the untouched original.
+    const s = script('tiny-dup.js', "for (let i = 0; i < 2; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).not.toContain('×2')
+    expect(out).not.toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+    expect(out.trim()).toBe('compiling...\ncompiling...\ndone')
+  })
+
+  it('an above-floor saving still compresses exactly as today, marker included', () => {
+    // 60 repeats produces a large, unambiguous dedupe win that clears the
+    // default 100-byte floor by a wide margin.
+    const s = script('big-dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).toContain('×60')
+    expect(out).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+  })
+
+  it('the config key actually moves the threshold: lowering it ships a rewrite that the default floor would have suppressed', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.min_net_savings_bytes = 0
+    saveConfig(cfg)
+
+    // 10 repeats dedupes under the default floor's own math (bytesSaved clears
+    // the marker cost) but not the default's extra 100-byte margin -- with
+    // min_net_savings_bytes=0 it should ship.
+    const s = script('tiny-dup2.js', "for (let i = 0; i < 10; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).toContain('×10')
+  })
+
+  it('the config key actually moves the threshold: raising it suppresses a rewrite the default floor would have shipped', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.min_net_savings_bytes = 100_000
+    saveConfig(cfg)
+
+    const s = script('big-dup2.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).not.toContain('×60')
+    expect(out).not.toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+  })
+})
+
 describe('compress command (built-bundle e2e)', () => {
   let dataBase: string
 
@@ -194,10 +271,12 @@ describe('compress command (built-bundle e2e)', () => {
   }
 
   it('is reachable from the shipped registry and compresses output', () => {
-    const s = script('e2e-dup.js', "for (let i = 0; i < 6; i++) console.log('compiling...')\nconsole.log('done')\n")
+    // 60 repeats -- see the in-process test above for why 6 is no longer enough
+    // to clear the net-benefit floor.
+    const s = script('e2e-dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     const r = compress(['--filter', 'generic', '--cmd', nodeCmd(s)])
     expect(r.status).toBe(0)
-    expect(r.stdout).toContain('×6')
+    expect(r.stdout).toContain('×60')
     expect(r.stdout).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
   })
 
