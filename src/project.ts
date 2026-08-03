@@ -276,6 +276,37 @@ export function findProject(cwd: string): Project | null {
   return null;
 }
 
+let _displayRootCache: { cwd: string; root: string | undefined } | null = null;
+
+/**
+ * Resolve the project root to use for shortening an indexed absolute path to a project-relative
+ * one for human-facing CLI output (see `toDisplayPath()` in `paths.ts`).
+ *
+ * Precedence: an explicitly-passed root wins outright (a caller that already resolved its own
+ * project root for querying, e.g. via `resolveProjectRoot()`); otherwise fall back to the cheap,
+ * subprocess-free `findProject()` marker walk from `process.cwd()`; otherwise `undefined`, which
+ * `toDisplayPath()` treats as "no project found" and returns the path unchanged (absolute).
+ *
+ * Deliberately never falls back to `process.cwd()` itself as a display root -- only to the
+ * *project root* that `findProject()` resolves by walking up from cwd. Using cwd directly would
+ * make output depend on which subdirectory the command was run from; the marker-walked project
+ * root is stable regardless of cwd's subdirectory.
+ *
+ * Memoized per `process.cwd()` for the explicit-root-omitted branch, matching
+ * `resolveConfigProjectRoot()`'s (config.ts) memoization rationale: this is a one-shot CLI
+ * process, cwd does not change within its lifetime, but a single command can call this helper in
+ * a loop over many result rows, so the marker walk should run once per process, not once per row.
+ */
+export function getDisplayRoot(explicitRoot?: string): string | undefined {
+  if (explicitRoot !== undefined) return explicitRoot;
+  const cwd = process.cwd();
+  if (_displayRootCache !== null && _displayRootCache.cwd === cwd) return _displayRootCache.root;
+  const project = findProject(cwd);
+  const root = project !== null ? project.root : undefined;
+  _displayRootCache = { cwd, root };
+  return root;
+}
+
 /**
  * True when `filePath` lives inside the OS system temp directory (`os.tmpdir()`), including any
  * subdirectory of it -- scratch checkouts, ad hoc debugging copies, per-test fixture dirs, etc.

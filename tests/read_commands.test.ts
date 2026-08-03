@@ -405,6 +405,64 @@ describe('read_commands', () => {
       expect(text.toLowerCase()).toContain('limit')
       expect(mockQuerySymbols).not.toHaveBeenCalled()
     })
+
+    // getDisplayRoot()/toDisplayPath() wiring: runSymbol never resolved its own project root
+    // before this fix, so its header always printed the raw absolute filePath. process.cwd() in
+    // this test process is this repo's own root (no chdir happens anywhere in this file), so
+    // findProject(cwd) resolves to this repo, and a fixture path genuinely inside it is now
+    // shortened for human output while a path outside it (an unrelated temp dir) stays absolute.
+    describe('project-relative display paths (toDisplayPath/getDisplayRoot wiring)', () => {
+      const inProjectAbs = path.join(process.cwd(), 'src', 'display-fixture.ts')
+      const outOfProjectAbs = path.join(os.tmpdir(), 'tg-outside-project-fixture', 'far.ts')
+
+      it('shortens an in-project symbol path to project-relative in human (non-JSON) output', () => {
+        const sym: MockSymbol = { name: 'inProjSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        const { text } = runSymbol({ name: 'inProjSym' })
+        expect(text).toContain('src/display-fixture.ts:1-1')
+        expect(text).not.toContain(inProjectAbs)
+      })
+
+      it('leaves an out-of-project symbol path absolute in human output, even alongside an in-project row', () => {
+        const inRow: MockSymbol = { name: 'mixedSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        const outRow: MockSymbol = { name: 'mixedSym', kind: 'function', filePath: outOfProjectAbs, lineStart: 2, lineEnd: 2, body: 'y', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([inRow, outRow] as any)
+        const { text } = runSymbol({ name: 'mixedSym' })
+        expect(text).toContain('src/display-fixture.ts:1-1')
+        // Out-of-project rows are returned unchanged by toDisplayPath (absolute, un-normalized) --
+        // it only ever normalizes slashes for a path it actually shortens.
+        expect(text).toContain(`${outOfProjectAbs}:2-2`)
+      })
+
+      it('--json output stays absolute and byte-identical regardless of project-relative display logic', () => {
+        const sym: MockSymbol = { name: 'jsonSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockCountSymbols.mockReturnValue(1)
+        const { text } = runSymbol({ name: 'jsonSym', json: true })
+        const parsed = JSON.parse(text) as { items: Array<{ filePath: string }> }
+        expect(parsed.items[0]?.filePath).toBe(inProjectAbs)
+      })
+
+      it('produces identical output whether process.cwd() is the project root or a subdirectory of it (cwd-independence)', () => {
+        const sym: MockSymbol = { name: 'cwdIndepSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        const before = process.cwd()
+        try {
+          process.chdir(before)
+          const atRoot = runSymbol({ name: 'cwdIndepSym' }).text
+          process.chdir(path.join(before, 'src'))
+          const atSubdir = runSymbol({ name: 'cwdIndepSym' }).text
+          expect(atSubdir).toBe(atRoot)
+          expect(atRoot).toContain('src/display-fixture.ts:1-1')
+        } finally {
+          process.chdir(before)
+        }
+      })
+    })
   })
 
   // ---- runRead ------------------------------------------------------------
@@ -709,12 +767,15 @@ describe('read_commands', () => {
         expect(code).toBe(1)
         expect(stdout).toContain("Ambiguous symbol 'helper'")
         // Distinguishable: each label carries its own file path, not an identical bare "helper (line N)".
-        expect(stdout).toContain(`  - ${fileA}::helper (line 3)`)
-        expect(stdout).toContain(`  - ${fileB}::helper (line 7)`)
+        // fileA/fileB resolve to absolute paths inside this repo's own project root (the test
+        // process's cwd), so formatAmbiguity's toDisplayPath() shortens them to project-relative
+        // form for human output -- src/utils.ts / lib/utils.ts, not the raw absolute fileA/fileB.
+        expect(stdout).toContain('  - src/utils.ts::helper (line 3)')
+        expect(stdout).toContain('  - lib/utils.ts::helper (line 7)')
         // Each retry targets that candidate's own file -- not the original ambiguous "utils.ts" spec,
         // which would just re-enter this same ambiguous resolution path.
-        expect(stdout).toContain(`token-goat read "${fileA}::helper"`)
-        expect(stdout).toContain(`token-goat read "${fileB}::helper"`)
+        expect(stdout).toContain('token-goat read "src/utils.ts::helper"')
+        expect(stdout).toContain('token-goat read "lib/utils.ts::helper"')
         expect(stdout).not.toMatch(/token-goat read "utils\.ts::/)
 
         // Feed the exact printed retry specs back in and confirm each resolves to exactly one,
@@ -745,9 +806,11 @@ describe('read_commands', () => {
         expect(code).toBe(1)
         expect(stdout).toContain("Ambiguous symbol 'compress'")
         // Cross-file span -> every label is file-prefixed, even the ones with a same-file parent.
-        expect(stdout).toContain(`  - ${fileA}::ClassA.compress (line 3)`)
-        expect(stdout).toContain(`  - ${fileA}::ClassB.compress (line 22)`)
-        expect(stdout).toContain(`  - ${fileB}::compress (line 7)`)
+        // Both fixture paths live inside this repo's own project root (the test process's cwd),
+        // so formatAmbiguity's toDisplayPath() shortens fileA/fileB to project-relative form.
+        expect(stdout).toContain('  - src/compress.ts::ClassA.compress (line 3)')
+        expect(stdout).toContain('  - src/compress.ts::ClassB.compress (line 22)')
+        expect(stdout).toContain('  - lib/compress.ts::compress (line 7)')
 
         const retries = [...stdout.matchAll(/token-goat read "([^"]+)"/g)].map((m) => m[1] ?? '')
         expect(retries).toHaveLength(3)
@@ -4413,6 +4476,68 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     })
     expect(stderr.toLowerCase()).toContain('limit')
     expect(mockQueryRefs).not.toHaveBeenCalled()
+  })
+})
+
+// getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root
+// before this fix, so plain (non --top/--callers) `refs` output always printed the raw absolute
+// filePath. process.cwd() in this test process is this repo's own root (no chdir happens
+// elsewhere in this file), so findProject(cwd) resolves to this repo.
+describe('runRefs — project-relative display paths (toDisplayPath/getDisplayRoot wiring)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const inProjectAbs = path.join(process.cwd(), 'src', 'refs-display-fixture.ts')
+  const outOfProjectAbs = path.join(os.tmpdir(), 'tg-outside-project-refs-fixture', 'far.ts')
+
+  it('shortens an in-project ref path to project-relative in human output', () => {
+    mockQueryRefs.mockReturnValue([ref(inProjectAbs, 10, 'inProjSym()')])
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'inProjSym' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('src/refs-display-fixture.ts:10: inProjSym()')
+    expect(stdout).not.toContain(inProjectAbs)
+  })
+
+  it('leaves an out-of-project ref path absolute in human output, even alongside an in-project row', () => {
+    mockQueryRefs.mockReturnValue([
+      ref(inProjectAbs, 10, 'mixedSym()'),
+      ref(outOfProjectAbs, 20, 'mixedSym()'),
+    ])
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'mixedSym' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('src/refs-display-fixture.ts:10: mixedSym()')
+    expect(stdout).toContain(`${outOfProjectAbs}:20: mixedSym()`)
+  })
+
+  it('--json output stays absolute and byte-identical regardless of project-relative display logic', () => {
+    mockQueryRefs.mockReturnValue([ref(inProjectAbs, 10, 'jsonSym()')])
+    mockCountRefs.mockReturnValue(1)
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'jsonSym', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(stdout) as { items: Array<{ filePath: string }> }
+    expect(parsed.items[0]?.filePath).toBe(inProjectAbs)
+  })
+
+  it('produces identical output whether process.cwd() is the project root or a subdirectory of it (cwd-independence)', () => {
+    mockQueryRefs.mockReturnValue([ref(inProjectAbs, 10, 'cwdIndepSym()')])
+    const before = process.cwd()
+    try {
+      process.chdir(before)
+      const atRoot = capture(() => runRefs({ spec: 'cwdIndepSym' })).stdout
+      process.chdir(path.join(before, 'src'))
+      const atSubdir = capture(() => runRefs({ spec: 'cwdIndepSym' })).stdout
+      expect(atSubdir).toBe(atRoot)
+      expect(atRoot).toContain('src/refs-display-fixture.ts:10: cwdIndepSym()')
+    } finally {
+      process.chdir(before)
+    }
   })
 })
 

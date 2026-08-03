@@ -30,7 +30,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 });
 
 import { execFileSync } from 'node:child_process';
-import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, PROJECT_MARKERS, isUnderSystemTemp } from '../src/project.js';
+import { canonicalize, projectHash, makeProjectAt, findProject, resolveProjectRoot, getDisplayRoot, PROJECT_MARKERS, isUnderSystemTemp } from '../src/project.js';
 import { lowercaseDriveLetter } from '../src/paths.js';
 import { foldPath } from '../src/util.js';
 
@@ -596,6 +596,73 @@ describe('project', () => {
       } finally {
         // Windows can't remove a directory that is the current working directory; chdir away
         // first (afterEach also restores cwd, but that runs after this finally block).
+        process.chdir(before);
+        fs.rmSync(otherDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // getDisplayRoot() feeds toDisplayPath() (paths.ts) directly at every human-output CLI site
+  // that never resolved its own project root -- see its own doc comment in project.ts for the
+  // precedence rationale (explicit root wins; else findProject(cwd); else undefined).
+  describe('getDisplayRoot', () => {
+    const before = process.cwd();
+    afterEach(() => {
+      process.chdir(before);
+    });
+
+    it('an explicit root wins outright, without even consulting findProject/process.cwd()', () => {
+      // process.cwd() here is a genuinely different, unrelated directory (tmpDir has no marker),
+      // so if the explicit root were ignored, findProject(cwd) would return undefined instead.
+      process.chdir(tmpDir);
+      expect(getDisplayRoot('/some/explicit/root')).toBe('/some/explicit/root');
+    });
+
+    it('falls back to findProject(process.cwd())?.root when no explicit root is given, inside a project', () => {
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      process.chdir(tmpDir);
+
+      expect(getDisplayRoot()).toBe(canonicalize(tmpDir));
+    });
+
+    it('returns undefined when no explicit root is given and process.cwd() is outside any project', () => {
+      // tmpDir is a fresh mkdtemp with no marker file created in it.
+      process.chdir(tmpDir);
+
+      expect(getDisplayRoot()).toBeUndefined();
+    });
+
+    // Memoization: a single command can call this helper in a loop over many result rows, and
+    // the marker-walk should run once per process, not once per row -- verified by counting
+    // fs.existsSync calls (markerExists's own probe) across two back-to-back calls with the same
+    // process.cwd(), rather than asserting on the (unexported) findProject call count directly.
+    it('memoizes the findProject(process.cwd()) result -- a second call with the same cwd does not re-walk the filesystem', () => {
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      process.chdir(tmpDir);
+
+      const first = getDisplayRoot();
+      expect(first).toBe(canonicalize(tmpDir));
+
+      const existsSpy = vi.spyOn(fs, 'existsSync');
+      const second = getDisplayRoot();
+
+      expect(second).toBe(first);
+      expect(existsSpy).not.toHaveBeenCalled();
+      existsSpy.mockRestore();
+    });
+
+    it('re-walks when process.cwd() changes to a different directory (cache is keyed by cwd, not global)', () => {
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      process.chdir(tmpDir);
+      expect(getDisplayRoot()).toBe(canonicalize(tmpDir));
+
+      const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-test-other-'));
+      try {
+        process.chdir(otherDir);
+        // otherDir has no marker of its own -- a stale cache keyed globally (not per-cwd) would
+        // wrongly keep returning tmpDir's root here instead of re-resolving to undefined.
+        expect(getDisplayRoot()).toBeUndefined();
+      } finally {
         process.chdir(before);
         fs.rmSync(otherDir, { recursive: true, force: true });
       }

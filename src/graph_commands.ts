@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath, toDisplayPath } from './paths.js'
-import { resolveProjectRoot } from './project.js'
+import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -854,8 +854,9 @@ export function runScope(opts: ScopeOptions): number {
     return 0
   }
 
+  const scopeDisplayRoot = getDisplayRoot()
   for (const s of enclosing) {
-    emit(`${s.name}\t${s.kind}\t${s.filePath}:${s.lineStart}-${s.lineEnd}`)
+    emit(`${s.name}\t${s.kind}\t${toDisplayPath(scopeDisplayRoot, s.filePath)}:${s.lineStart}-${s.lineEnd}`)
   }
   return 0
 }
@@ -1331,11 +1332,11 @@ export function runArch(opts: ArchOptions): number {
   }
 
   emit(`hubs (top ${top} most-imported):`)
-  for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(opts.cwd, h.file)}`)
+  for (const h of hubs) emit(`  ${h.importedBy} importers\t${toDisplayPath(getDisplayRoot(opts.cwd), h.file)}`)
   emit(`entry points (imported by nobody, top ${top}):`)
-  for (const e of entryPoints) emit(`  ${toDisplayPath(opts.cwd, e.file)}`)
+  for (const e of entryPoints) emit(`  ${toDisplayPath(getDisplayRoot(opts.cwd), e.file)}`)
   emit(`cycles (${cycles.length} found):`)
-  for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(opts.cwd, f)).join(' -> ')}`)
+  for (const c of cycles) emit(`  ${c.map((f) => toDisplayPath(getDisplayRoot(opts.cwd), f)).join(' -> ')}`)
   return 0
 }
 
@@ -1390,7 +1391,7 @@ export function runBlame(opts: BlameOptions): number {
     return 0
   }
 
-  emit(`${symbolArg}\t${toDisplayPath(opts.cwd, filePath)}:${start}-${end}`)
+  emit(`${symbolArg}\t${toDisplayPath(getDisplayRoot(opts.cwd), filePath)}:${start}-${end}`)
   emit(raw.trim())
   return 0
 }

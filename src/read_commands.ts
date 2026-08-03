@@ -22,7 +22,7 @@ import { readSection, listSections, extractSection, findContainingSection } from
 import type { SectionResult } from './section_reader.js'
 import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
-import { resolveProjectRoot } from './project.js'
+import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
@@ -451,8 +451,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
+  const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
   const blocks = results.map((sym) => {
-    const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
+    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}`
     const body = resolveBody(sym)
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
@@ -637,8 +638,9 @@ function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string 
  * A mixed list (some candidates share a same-file parent, others don't, across multiple files)
  * gets file-prefixed labels for every candidate, each with its own working, distinct retry.
  */
-function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]): string {
+function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string): string {
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
+  const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
     `Ambiguous symbol '${symbol}' in '${file}': ${candidates.length} definitions match. ` +
       `Retry with one of the qualified commands below to pick one:`,
@@ -656,8 +658,8 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
     // spec -- retarget the retry at this candidate's own indexed file path so it resolves to
     // exactly this candidate. Same-file ambiguity keeps retrying against the original `file`
     // string, unchanged from the pre-fix behavior.
-    const retryFile = multiFile ? c.filePath : file
-    const label = multiFile ? `${c.filePath}::${qualifier}` : qualifier
+    const retryFile = multiFile ? toDisplayPath(displayRoot, c.filePath) : file
+    const label = multiFile ? `${toDisplayPath(displayRoot, c.filePath)}::${qualifier}` : qualifier
     lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat read "${retryFile}::${qualifier}"`)
   }
   return lines.join('\n')
@@ -820,6 +822,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
         resolution.symbol,
         resolution.file,
         resolution.candidates,
+        opts.projectRoot,
       ),
       code: 1,
     }
@@ -1180,12 +1183,13 @@ function runRefsSingle(opts: RefsOptions): number {
     return 0
   }
 
+  const displayRoot = getDisplayRoot()
   const lines =
     opts.top !== undefined
-      ? renderTopFilesSummary(results, opts.top)
+      ? renderTopFilesSummary(results, opts.top, displayRoot)
       : opts.callers === true
-        ? renderCallerGroups(results)
-        : results.map((ref) => `${ref.filePath}:${ref.line}: ${ref.context}`)
+        ? renderCallerGroups(results, displayRoot)
+        : results.map((ref) => `${toDisplayPath(displayRoot, ref.filePath)}:${ref.line}: ${ref.context}`)
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -1208,11 +1212,11 @@ function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
 }
 
 /** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). */
-function renderTopFilesSummary(refs: RefEntry[], topN: number): string[] {
+function renderTopFilesSummary(refs: RefEntry[], topN: number, displayRoot?: string): string[] {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
   const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})`]
-  for (const { file, count } of shown) lines.push(`  ${count}  ${file}`)
+  for (const { file, count } of shown) lines.push(`  ${count}  ${toDisplayPath(displayRoot, file)}`)
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
     const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
@@ -1237,7 +1241,7 @@ function topFilesJsonPayload(refs: RefEntry[], topN: number): RefsTopJsonEntry {
 
 type RefsJsonEntry = { items: RefEntry[]; truncated: boolean; totalCount: number } | RefsTopJsonEntry
 
-function renderCallerGroups(refs: RefEntry[]): string[] {
+function renderCallerGroups(refs: RefEntry[], displayRoot?: string): string[] {
   const byFile = new Map<string, RefEntry[]>()
   for (const ref of refs) {
     const bucket = byFile.get(ref.filePath)
@@ -1249,7 +1253,7 @@ function renderCallerGroups(refs: RefEntry[]): string[] {
   }
   const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
-    lines.push(`${file}:`)
+    lines.push(`${toDisplayPath(displayRoot, file)}:`)
     for (const ref of fileRefs) {
       lines.push(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
     }
@@ -2751,6 +2755,7 @@ function resolveSymbolSpecOrEmitError(
         resolution.symbol,
         resolution.file,
         resolution.candidates,
+        projectRoot,
       ),
     )
     return null
@@ -2795,7 +2800,7 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   if (diffResult.stdout.trim() === '') {
-    emit(`No changes to '${match.name}' in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
+    emit(`No changes to '${match.name}' in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
     return 0
   }
 
@@ -2803,7 +2808,7 @@ export function runDiff(opts: DiffOptions): number {
   const overlapping = hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
   if (overlapping.length === 0) {
-    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
+    emit(`No changes to '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
     return 0
   }
 
@@ -2827,7 +2832,7 @@ export function runDiff(opts: DiffOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(opts.projectRoot, match.filePath)}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, ...overlapping.map((h) => h.text)].join('\n'), 'diff'))
   return 0
 }
@@ -2949,7 +2954,7 @@ export function runLog(opts: LogOptions): number {
   }
 
   if (logResult.stdout.trim() === '') {
-    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(opts.projectRoot, match.filePath)}'.`)
+    emit(`No history for '${match.name}' (lines ${match.lineStart}-${match.lineEnd}) in '${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}'.`)
     return 0
   }
 
@@ -2973,7 +2978,7 @@ export function runLog(opts: LogOptions): number {
     return 0
   }
 
-  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(opts.projectRoot, match.filePath)}:${match.lineStart}-${match.lineEnd}`
+  const header = `# ${match.name} (${match.kind}) — ${toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath)}:${match.lineStart}-${match.lineEnd}`
   emit(guardText([header, logResult.stdout].join('\n'), 'diff'))
   return 0
 }
@@ -4232,8 +4237,9 @@ export function runNoteList(opts: NoteListOptions = {}): { text: string; code: n
   if (filtered.length === 0) {
     return { text: opts.staleOnly === true ? 'No stale notes.' : 'No notes recorded.', code: 0 }
   }
+  const noteListDisplayRoot = getDisplayRoot()
   const lines = filtered.map(({ note, stale }) => {
-    const displayFile = note.filePath
+    const displayFile = toDisplayPath(noteListDisplayRoot, note.filePath)
     const target = note.symbol === WHOLE_FILE_NOTE_SYMBOL ? displayFile : `${displayFile}::${note.symbol}`
     return `${stale ? '[STALE] ' : ''}${target}`
   })
