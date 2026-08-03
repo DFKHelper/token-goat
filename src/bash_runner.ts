@@ -14,6 +14,7 @@ import {
   type CompressedOutput,
   ToolFilter,
   capTokens,
+  combineStreams,
   compressOutput,
   filterByName,
   selectFilter,
@@ -105,6 +106,18 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
     return { maxLines: bc.max_lines, maxBytes: bc.max_bytes }
   } catch {
     return { maxLines: 1000, maxBytes: 64 * 1024 }
+  }
+}
+
+/** Default `bash_compress.min_net_savings_bytes` floor, mirrored from config.ts, used when config fails to load. */
+const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
+
+/** Resolve the net-benefit floor (bytesSaved minus the marker's own cost) a rewrite must clear to ship, from config. */
+function resolveMinNetSavingsBytes(): number {
+  try {
+    return loadConfig().bash_compress.min_net_savings_bytes
+  } catch {
+    return DEFAULT_MIN_NET_SAVINGS_BYTES
   }
 }
 
@@ -214,15 +227,24 @@ function wrapAndCompress(
     maxLines: limits.maxLines,
     maxBytes: limits.maxBytes,
   })
+  // Net-benefit gate: a rewrite whose bytesSaved doesn't clear the marker's own
+  // cost plus the configured floor destabilises the bytes (breaks provider
+  // prefix caching) for a saving too small to be worth it. Below the floor,
+  // ship the ORIGINAL output untouched with no marker -- exactly as though no
+  // filter had matched -- rather than the (marker-less but still rewritten)
+  // compressed body. `CompressedOutput.worthApplying` is the single definition
+  // of this decision; `withMarker()` below reuses it so the two can't drift.
+  const minNetSavingsBytes = resolveMinNetSavingsBytes()
+  const applied = compressed.worthApplying(minNetSavingsBytes)
   // Apply the pressure-scaled token cap to the body BEFORE appending the marker so the savings marker survives truncation and stays visible to the agent.
-  let text = compressed.text
+  let text = applied ? compressed.text : combineStreams(stdoutText, stderrText)
   const maxTokens = opts.maxTokens ?? 0
   if (maxTokens > 0) text = capTokens(text, maxTokens)
-  const marker = compressed.withMarker().slice(compressed.text.length) // "" when no savings
+  const marker = applied ? compressed.withMarker(minNetSavingsBytes).slice(compressed.text.length) : ''
   const body = text + marker
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 
-  recordSavings(compressed)
+  if (applied) recordSavings(compressed)
   return exitCode
 }
 

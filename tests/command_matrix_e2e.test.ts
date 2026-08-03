@@ -774,16 +774,19 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rBad.stdout + rBad.stderr).toContain('not an mcp-output id')
   },
   compress: () => {
-    // Real output: the generic filter collapses the 6 identical lines to one.
+    // Real output: the generic filter collapses the 60 identical lines to one.
+    // 60 (not 6) repeats so the dedupe savings clear the net-benefit floor
+    // (bash_compress.min_net_savings_bytes) -- a handful of repeats only saves
+    // marker-sized bytes and legitimately falls back to the untouched original.
     const r = run([
       'compress',
       '--filter',
       'generic',
       '--cmd',
-      `"${process.execPath}" -e "for (let i = 0; i < 6; i++) console.log('compiling...')"`,
+      `"${process.execPath}" -e "for (let i = 0; i < 60; i++) console.log('compiling...')"`,
     ])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toContain('×6')
+    expect(r.stdout).toContain('×60')
   },
   stats: () => {
     const r = run(['stats'])

@@ -33,6 +33,17 @@ export function compressionMarker(filter: string, pct: number): string {
   return `\n[token-goat: ${filter} filter -${Math.round(pct)}%; disable via TOKEN_GOAT_BASH_COMPRESS]`
 }
 
+/**
+ * Combine stdout/stderr with a `---` separator when both are present. Shared
+ * by {@link ToolFilter.combineOutput} (per-tool compression) and the
+ * below-floor original-output fallback in `bash_runner.ts`, so "what the
+ * agent would have seen with no filter at all" is defined once.
+ */
+export function combineStreams(stdout: string, stderr: string): string {
+  if (stderr.trim() && stdout.trim()) return `${stdout.replace(/\s+$/, '')}\n---\n${stderr.replace(/\s+$/, '')}`
+  return stdout.trim() ? stdout.replace(/\s+$/, '') : stderr.replace(/\s+$/, '')
+}
+
 // ---------------------------------------------------------------------------
 // Shared regexes
 // ---------------------------------------------------------------------------
