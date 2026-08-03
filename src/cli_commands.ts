@@ -28,6 +28,7 @@ export interface CommandManifestArgument {
 export interface CommandManifestEntry {
   readonly name: string
   readonly description: string
+  readonly aliases: readonly string[]
   readonly options: readonly CommandManifestOption[]
   readonly arguments: readonly CommandManifestArgument[]
   readonly subcommands: readonly CommandManifestEntry[]
@@ -37,6 +38,7 @@ function toEntry(cmd: Command): CommandManifestEntry {
   return {
     name: cmd.name(),
     description: cmd.description(),
+    aliases: cmd.aliases(),
     options: cmd.options.map((o) => ({ flags: o.flags, description: o.description })),
     arguments: cmd.registeredArguments.map((a) => ({ name: a.name(), description: a.description, required: a.required })),
     subcommands: cmd.commands.filter((sub) => sub.name() !== 'help').map(toEntry),
@@ -66,7 +68,7 @@ export function formatCommandManifest(manifest: readonly CommandManifestEntry[])
   lines.push('# token-goat commands')
   lines.push('')
   for (const entry of manifest) {
-    lines.push(`## ${entry.name}${entry.description ? ' -- ' + entry.description : ''}`)
+    lines.push(`## ${entry.name}${entry.aliases.length ? ' (alias: ' + entry.aliases.join(', ') + ')' : ''}${entry.description ? ' -- ' + entry.description : ''}`)
     for (const arg of entry.arguments) {
       lines.push(`  arg: ${arg.name}${arg.required ? '' : ' (optional)'}${arg.description ? ' -- ' + arg.description : ''}`)
     }

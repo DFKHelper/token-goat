@@ -51,6 +51,20 @@ describe('buildCommandManifest', () => {
     expect(symbol?.arguments.length).toBe(1)
     expect(symbol?.arguments[0]?.required).toBe(true)
   })
+
+  it('captures a real command\'s registered aliases', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const compress = manifest.find((e) => e.name === 'compress')
+    expect(compress).toBeDefined()
+    expect(compress?.aliases).toEqual(['bash', 'run'])
+  })
+
+  it('gives a command with no aliases an empty aliases array', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const symbol = manifest.find((e) => e.name === 'symbol')
+    expect(symbol).toBeDefined()
+    expect(symbol?.aliases).toEqual([])
+  })
 })
 
 describe('flattenCommandNames', () => {
@@ -67,6 +81,14 @@ describe('flattenCommandNames', () => {
     expect(names).toContain('worker start')
     expect(names).toContain('worker stop')
     expect(names).toContain('worker status')
+  })
+
+  it('does not surface aliases as separate flattened names (README/matrix guards stay name-only)', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const names = flattenCommandNames(manifest)
+    expect(names).toContain('compress')
+    expect(names).not.toContain('bash')
+    expect(names).not.toContain('run')
   })
 })
 
@@ -85,5 +107,18 @@ describe('formatCommandManifest', () => {
     const manifest = buildCommandManifest(buildProgram())
     const json = JSON.parse(JSON.stringify(manifest)) as typeof manifest
     expect(json).toEqual(manifest)
+  })
+
+  it('renders a command\'s aliases in the text listing', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const text = formatCommandManifest(manifest)
+    expect(text).toContain('## compress (alias: bash, run)')
+  })
+
+  it('does not add an alias marker for a command with no aliases', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const text = formatCommandManifest(manifest)
+    expect(text).toContain('## symbol -- ')
+    expect(text).not.toMatch(/## symbol \(alias:/)
   })
 })
