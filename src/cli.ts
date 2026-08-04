@@ -1123,14 +1123,6 @@ function recordDocStat(kind: string, file: string, emitted: string): void {
 
 async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
   const slides = await pptxOutline(file)
-  if (slides.length === 0) {
-    if (opts.json === true) {
-      out(JSON.stringify([], null, 2))
-    } else {
-      out('no slides found')
-    }
-    return
-  }
   const text =
     opts.json === true
       ? JSON.stringify(slides, null, 2)
@@ -1205,18 +1197,19 @@ function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
     return
   }
   const outline = buildTranscriptOutline(cues)
+  let text: string
   if (opts.json === true) {
-    out(JSON.stringify(outline, null, 2))
+    text = JSON.stringify(outline, null, 2)
   } else {
     const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
     if (outline.speakers.length > 0) {
       lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
     }
     lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
-    const text = lines.join('\n')
-    out(text)
-    recordDocStat('transcript_outline', file, text)
+    text = lines.join('\n')
   }
+  out(text)
+  recordDocStat('transcript_outline', file, text)
 }
 
 function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }) {

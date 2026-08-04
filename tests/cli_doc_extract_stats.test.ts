@@ -90,6 +90,16 @@ describe('document-extraction CLI stat recording', () => {
     ['docx-text', () => ['docx-text', join(root, 'doc.docx')], 'docx_text'],
     ['transcript-outline', () => ['transcript-outline', join(root, 'meeting.vtt')], 'transcript_outline'],
     ['transcript', () => ['transcript', join(root, 'meeting.vtt')], 'transcript'],
+    // --json is a rendering choice, not a reason to stop recording the saving. An early
+    // version of the --json rollout left transcript-outline's recordDocStat inside the
+    // text-only branch, so JSON callers silently recorded nothing while its siblings did.
+    ['pptx-outline --json', () => ['pptx-outline', join(root, 'deck.pptx'), '--json'], 'pptx_outline'],
+    ['docx-outline --json', () => ['docx-outline', join(root, 'doc.docx'), '--json'], 'docx_outline'],
+    [
+      'transcript-outline --json',
+      () => ['transcript-outline', join(root, 'meeting.vtt'), '--json'],
+      'transcript_outline',
+    ],
   ] as const)('`token-goat %s` records a %s stat row through the real global stats DB', async (_cmd, argsFn, kind) => {
     const before = summarize(30).by_kind[kind]
     const beforeEvents = before?.events ?? 0
