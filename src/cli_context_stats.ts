@@ -33,7 +33,7 @@ export function tok(filePath: string): number {
  * Claude Code loads the global ~/.claude/CLAUDE.md plus every CLAUDE.md found
  * walking up the directory tree from the project root.
  */
-export function findClaudeMdFiles(projectRoot: string): string[] {
+export function findClaudeMdFiles(projectRoot: string, homeDir = os.homedir()): string[] {
   const found: string[] = []
   const seen = new Set<string>()
 
@@ -49,7 +49,7 @@ export function findClaudeMdFiles(projectRoot: string): string[] {
     current = parent
   }
 
-  const globalMd = path.join(os.homedir(), '.claude', 'CLAUDE.md')
+  const globalMd = path.join(homeDir, '.claude', 'CLAUDE.md')
   if (!seen.has(globalMd) && fs.existsSync(globalMd)) {
     found.push(globalMd)
   }
@@ -61,9 +61,9 @@ export function findClaudeMdFiles(projectRoot: string): string[] {
  * Return the MEMORY.md path for the given project root by scanning
  * ~/.claude/projects/, or null if none is found.
  */
-export function findMemoryMd(projectRoot: string): string | null {
+export function findMemoryMd(projectRoot: string, homeDir = os.homedir()): string | null {
   try {
-    const projectsDir = path.join(os.homedir(), '.claude', 'projects')
+    const projectsDir = path.join(homeDir, '.claude', 'projects')
     if (!fs.existsSync(projectsDir)) return null
 
     const rootStr = path.resolve(projectRoot)
@@ -94,8 +94,8 @@ interface ContextStatsResult {
   total_tokens: number
 }
 
-function buildStats(projectRoot: string): ContextStatsResult {
-  const claudeMds = findClaudeMdFiles(projectRoot)
+export function buildStats(projectRoot: string, homeDir = os.homedir()): ContextStatsResult {
+  const claudeMds = findClaudeMdFiles(projectRoot, homeDir)
   const claudeMdRows: ContextStatsRow[] = []
   let claudeMdTotal = 0
 
@@ -116,7 +116,7 @@ function buildStats(projectRoot: string): ContextStatsResult {
     claudeMdRows.push({ label, tokens: t, path: p })
   }
 
-  const memPath = findMemoryMd(projectRoot)
+  const memPath = findMemoryMd(projectRoot, homeDir)
   const memTok = memPath !== null ? tok(memPath) : 0
   const total = claudeMdTotal + memTok
 

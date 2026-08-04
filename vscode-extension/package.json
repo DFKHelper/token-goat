@@ -1,0 +1,51 @@
+{
+  "name": "token-goat-vscode",
+  "displayName": "token-goat",
+  "description": "Send compressed selections and surgical file reads to VS Code chat.",
+  "version": "0.1.0",
+  "publisher": "dfkhelper",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DFKHelper/token-goat.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:token-goat.sendSelection",
+    "onCommand:token-goat.sendSurgicalRead"
+  ],
+  "main": "./out/extension.js",
+  "files": [
+    "out/**",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "token-goat.sendSelection",
+        "title": "token-goat: Send Selection as Compressed Payload"
+      },
+      {
+        "command": "token-goat.sendSurgicalRead",
+        "title": "token-goat: Send Surgical Read Payload"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "npm run compile && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.2",
+    "typescript": "^5.7.0"
+  }
+}

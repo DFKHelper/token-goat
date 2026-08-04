@@ -57,6 +57,7 @@
     "csv-parse": "^7.0.1",
     "html-to-text": "^10.0.0",
     "js-yaml": "^5.2.1",
+    "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.7.0",
     "zod": "^4.4.3"
   },

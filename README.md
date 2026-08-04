@@ -509,6 +509,7 @@ To upgrade cleanly:
 | `token-goat stats` | See how many tokens you have saved. Shows total events / bytes saved / tokens saved. Add `--full` for the per-source, per-command, and per-day breakdown. |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
 | `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` prunes dead-link and duplicate entries from `MEMORY.md` and writes the file (destructive — inspect the report first). |
+| `token-goat bootstrap-audit [--project <path>] [--json]` | Audit Claude Code startup-context contributors without outputting prompt bodies: global/project `CLAUDE.md` totals plus agent/skill frontmatter metadata, largest entries, diagnostics, and CI warning/failure budgets (`--warn-tokens`, `--fail-tokens`, `--warn-bytes`, `--fail-bytes`). |
 | `token-goat memory [--project <path>] [--analyze\|--fix] [--yes]` | Find duplicate/overlapping content across the `CLAUDE.md` files loaded for a project, plus near-duplicate sibling auto-memory files. `--analyze` (default) is report-only. `--fix` removes exact-duplicate lines within a file (the only mechanical, judgment-free fix); duplicate headings and cross-file overlaps are reported as advisory only and never auto-applied. See [Memory analysis and cleanup](#memory-analysis-and-cleanup) below. |
 | `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
@@ -724,7 +725,19 @@ harness is the closest real signal available.
 token-goat mcp-serve
 ```
 
-Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing `read`, `symbol`, `section`, `outline`, `skeleton`, and `semantic` as tools that call the same in-process logic the CLI commands do — no subprocess spawn per call.
+Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing surgical-read tools plus `compress_text`, `retrieve_text`, `handoff_create`, and `handoff_resolve`. These local-only tools use bounded, redacted storage; MCP never intercepts a client's built-in file reads.
+
+### Generic compression and handoffs
+
+```text
+token-goat compress-text "text to keep locally"
+token-goat retrieve tg_<id>
+token-goat handoff-create review-notes "text for another agent"
+token-goat handoff-resolve review-notes
+token-goat handoff-resolve review-notes --full
+```
+
+`token-goat compress-text` returns a stable opaque ID, a deflate/base64url payload, byte metadata, and a recovery command. `token-goat retrieve` restores the locally cached text. Handoffs are created with `token-goat handoff-create` and resolved with `token-goat handoff-resolve`; they are named and project-local, and resolve compactly by default or in full with `--full`. Content is limited to 512 KiB and stored in a bounded local cache with secret redaction. `token-goat stats` includes these outcomes alongside existing savings.
 
 **VS Code** — add it to `.vscode/mcp.json` under the `"servers"` key (this is the correct root key for VS Code's MCP config; it is not `"mcpServers"`):
 
@@ -739,6 +752,27 @@ Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol
   }
 }
 ```
+
+`token-goat install --vscode` creates or idempotently updates that project-local
+configuration and adds a delimited block to
+`.github/copilot-instructions.md`, preserving unrelated JSON and user text. It
+fails clearly on malformed JSON. `token-goat uninstall --vscode` removes only
+token-goat's server entry and guidance block.
+
+The optional source-controlled extension lives in `vscode-extension/`. Build
+and install its VSIX manually; `--vscode` intentionally does not copy or
+install extensions:
+
+```text
+cd vscode-extension
+npm install
+npm run compile
+npx @vscode/vsce package
+code --install-extension token-goat-vscode-0.1.0.vsix
+```
+
+Its two commands call the local CLI and use `workbench.action.chat.open` to
+prefill chat. They never submit chat automatically.
 
 **Copilot CLI** — add it to `~/.copilot/mcp-config.json`:
 
@@ -827,6 +861,13 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 |------|------|
 | `~/.grok/hooks/token-goat.json` | Hook config (`{ hooks }`) registering `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` with an empty (match-everything) matcher, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched; global scope only (Grok's project-scoped `.grok/hooks/` requires a separate manual `/hooks-trust` grant). |
 | `~/.grok/hooks/token-goat-shim.js` | The shim `token-goat.json`'s hook commands invoke. Translates `PreToolUse`'s deny shape only (`{"decision":"block",...}` → Grok's documented `{"decision":"deny",...}`, plus exit code 2); every other event's response is forwarded unmodified. Regenerated on every `install --grok` run. |
+
+**With `--vscode`** (project-local VS Code MCP configuration)
+
+| Path | What |
+|------|------|
+| `<project>/.vscode/mcp.json` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. |
+| `<project>/.github/copilot-instructions.md` | Adds a delimited VS Code routing block that documents supported MCP selection and explicitly says MCP does not intercept built-in file reads. |
 
 **With `--hermes`** (Hermes Agent integration)
 
@@ -1081,7 +1122,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, `--copilot`, or `--grok` to also strip those integrations. There is no `--purge` flag — `uninstall` never deletes the data directory (cache, index, models, logs); remove it by hand if you want it gone. It also does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--pi`, `--hermes`, `--openclaw`, `--copilot`, `--grok`, or `--vscode` to also strip those integrations. There is no `--purge` flag — `uninstall` never deletes the data directory (cache, index, models, logs); remove it by hand if you want it gone. It also does not stop a running worker; use `token-goat worker stop` for that. Nothing else on the system depends on it.
 
 ## About
 
