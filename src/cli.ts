@@ -970,13 +970,20 @@ async function cmdPdfExtract(
   recordStat('pdf_extract', bytesSaved, Math.round(bytesSaved / 4))
 }
 
-async function cmdPdfOutline(file: string) {
+async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   const entries = await runPdfOutline(file)
   if (entries.length === 0) {
-    out('no bookmarks in this PDF; try pdf-extract')
+    if (opts.json === true) {
+      out(JSON.stringify([], null, 2))
+    } else {
+      out('no bookmarks in this PDF; try pdf-extract')
+    }
     return
   }
-  const text = entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
+  const text =
+    opts.json === true
+      ? JSON.stringify(entries, null, 2)
+      : entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n')
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
@@ -3463,6 +3470,7 @@ export function buildProgram(): Command {
   program
     .command('pdf-outline <file>')
     .description('list a PDF\'s bookmark/outline tree with page numbers instead of a raw Read')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdPdfOutline))
 
   program
