@@ -42,3 +42,10 @@ export {
   uninstallGrok,
 } from './grok_install.js'
 export type { GrokInstallResult } from './grok_install.js'
+export {
+  installVscode,
+  uninstallVscode,
+  vscodeInstructionsPath,
+  vscodeMcpPath,
+} from './vscode_install.js'
+export type { VscodeInstallResult } from './vscode_install.js'

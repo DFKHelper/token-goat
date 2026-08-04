@@ -55,6 +55,7 @@ import { installOpencode, uninstallOpencode } from './bridges/opencode_install.j
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, uninstallGrok } from './bridges/grok_install.js'
+import { installVscode, uninstallVscode } from './bridges/vscode_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -174,6 +175,7 @@ import { cmdBashHistory, cmdWebHistory, cmdMcpHistory, cmdCleanCache, cmdPruneCa
 import { cmdReclaimIndex } from './index_reclaim.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 import { runContextStats } from './cli_context_stats.js'
+import { runBootstrapAudit } from './cli_bootstrap_audit.js'
 import { runMemoryCommand } from './cli_memory.js'
 import { runWasteCommand } from './cli_waste.js'
 import { buildSessionOutline, formatSessionOutline, formatSessionSlice, parseTurnRange, resolveSessionTranscript, sliceSessionTurns } from './session_read.js'
@@ -183,6 +185,7 @@ import { isRecallCacheType, type RecallCacheType } from './recall_index.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { isHintCategory } from './hint_stats.js'
 import { runStatuslineCommand } from './cli_statusline.js'
+import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -194,6 +197,59 @@ function out(text: string): void {
 
 function err(text: string): void {
   process.stderr.write(ensureNewline(text))
+}
+
+function readBoundedText(text: string | undefined, file: string | undefined): string {
+  if (text !== undefined && file !== undefined) throw new CliError('provide text or --file, not both')
+  if (text === undefined && file === undefined) throw new CliError('provide text or --file')
+  let value: string
+  if (file !== undefined) {
+    if (fs.statSync(file).size > CONTENT_MAX_INPUT_CHARS) {
+      throw new CliError(`file exceeds the ${CONTENT_MAX_INPUT_CHARS}-byte safety limit`)
+    }
+    value = fs.readFileSync(file, 'utf8')
+  } else {
+    if (text === undefined) throw new CliError('provide text or --file')
+    value = text
+  }
+  if (value.length > CONTENT_MAX_INPUT_CHARS) {
+    throw new CliError(`text exceeds the ${CONTENT_MAX_INPUT_CHARS}-character safety limit`)
+  }
+  return value
+}
+
+function formatCompression(result: ReturnType<typeof compressText>): string {
+  return [
+    `id: ${result.id}`,
+    `encoding: ${result.encoding}`,
+    `original_bytes: ${result.originalBytes}`,
+    `compact_bytes: ${result.compactBytes}`,
+    `bytes_saved: ${result.bytesSaved}`,
+    `recovery: ${result.recovery}`,
+    'payload:',
+    result.compact,
+  ].join('\n')
+}
+
+function cmdContentCompress(text: string | undefined, opts: { file?: string }): void {
+  out(formatCompression(compressText(readBoundedText(text, opts.file))))
+}
+
+function cmdRetrieve(id: string): void {
+  const text = retrieveText(id)
+  if (text === null) throw new CliError(`no token-goat content for id: ${id}. The local cache may have expired.`)
+  out(text)
+}
+
+function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?: string }): void {
+  const result = createHandoff(name, readBoundedText(text, opts.file))
+  out(JSON.stringify(result, null, 2))
+}
+
+function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
+  const result = resolveHandoff(name, { full: opts.full === true })
+  if (result === null) throw new CliError(`no local handoff named "${name}" in this project`)
+  out(typeof result === 'string' ? result : formatCompression(result))
 }
 
 // Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3 rejects with an opaque "datatype mismatch" error).
@@ -421,6 +477,7 @@ async function cmdInstall(opts: {
   openclaw?: boolean
   copilot?: boolean
   grok?: boolean
+  vscode?: boolean
   local?: boolean
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -527,6 +584,15 @@ async function cmdInstall(opts: {
     }
   }
 
+  if (opts.vscode === true) {
+    const vscodeResult = installVscode()
+    out(
+      vscodeResult.alreadyInstalled
+        ? `VS Code MCP integration already installed → ${vscodeResult.mcpPath}`
+        : `Installed token-goat VS Code MCP integration → ${vscodeResult.mcpPath}, ${vscodeResult.instructionsPath}`,
+    )
+  }
+
   // --hermes writes nothing new: Hermes delegates to `claude -p '<task>'`, which loads the same Claude Code settings.json installHooks() just wrote. There is no separate Hermes config file to patch, so this is a verification-only flag -- run the same isInstalled() check `doctor` uses and report whether the hooks Hermes will inherit are really there.
   if (opts.hermes === true) {
     out(
@@ -583,6 +649,7 @@ function cmdUninstall(opts: {
   openclaw?: boolean
   copilot?: boolean
   grok?: boolean
+  vscode?: boolean
   local?: boolean
 }): void {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -618,6 +685,7 @@ function cmdUninstall(opts: {
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
+    { flag: opts.vscode === true, run: uninstallVscode, label: 'VS Code MCP integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -693,6 +761,30 @@ async function cmdDoctor(opts: { context?: boolean }): Promise<void> {
 
 function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
   return runContextStats(opts)
+}
+
+function cmdBootstrapAudit(opts: {
+  project?: string
+  home?: string
+  followLinks?: boolean
+  json?: boolean
+  top?: string
+  warnTokens?: string
+  failTokens?: string
+  warnBytes?: string
+  failBytes?: string
+} = {}): Promise<void> {
+  return runBootstrapAudit({
+    ...(opts.project === undefined ? {} : { project: opts.project }),
+    ...(opts.home === undefined ? {} : { home: opts.home }),
+    ...(opts.followLinks === undefined ? {} : { followLinks: opts.followLinks }),
+    ...(opts.json === undefined ? {} : { json: opts.json }),
+    ...(opts.top === undefined ? {} : { top: Number(opts.top) }),
+    ...(opts.warnTokens === undefined ? {} : { warnTokens: Number(opts.warnTokens) }),
+    ...(opts.failTokens === undefined ? {} : { failTokens: Number(opts.failTokens) }),
+    ...(opts.warnBytes === undefined ? {} : { warnBytes: Number(opts.warnBytes) }),
+    ...(opts.failBytes === undefined ? {} : { failBytes: Number(opts.failBytes) }),
+  })
 }
 
 function cmdMemory(opts: { project?: string; analyze?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
@@ -2677,8 +2769,31 @@ export function buildProgram(): Command {
 
   program
     .command('mcp-serve')
-    .description('run token-goat as an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic tools')
+    .description('run token-goat as an MCP stdio server exposing surgical reads and local compression/handoff tools')
     .action(guard(cmdMcpServe))
+
+  program
+    .command('compress-text [text]')
+    .description('compress arbitrary local text and print an opaque recovery ID plus compact payload')
+    .option('--file <path>', 'read text from a local file instead of the argument')
+    .action(guard(cmdContentCompress))
+
+  program
+    .command('retrieve <id>')
+    .description('retrieve original text previously stored by token-goat compress')
+    .action(guard(cmdRetrieve))
+
+  program
+    .command('handoff-create <name> [text]')
+    .description('create a project-local named compressed handoff')
+    .option('--file <path>', 'read handoff text from a local file instead of the argument')
+    .action(guard(cmdHandoffCreate))
+
+  program
+    .command('handoff-resolve <name>')
+    .description('resolve a project-local handoff compactly, or return it in full')
+    .option('--full', 'return the full handoff text')
+    .action(guard(cmdHandoffResolve))
 
   program
     .command('hook <event>')
@@ -2699,6 +2814,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--copilot', 'also register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.js, <project>/.github/copilot-instructions.md)')
     .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
+    .option('--vscode', 'also configure the project-local VS Code MCP server and Copilot routing guidance')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -2715,6 +2831,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
     .option('--copilot', 'also remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
+    .option('--vscode', 'also remove the project-local VS Code MCP server and routing guidance')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
@@ -2742,6 +2859,20 @@ export function buildProgram(): Command {
     .option('--fix', 'apply automatic fixes (confirm-gated; shows a diff before writing)')
     .option('-y, --yes', 'with --fix, apply without prompting (non-interactive / scripted use)')
     .action(guard(cmdContextStats))
+
+  program
+    .command('bootstrap-audit')
+    .description('audit Claude Code startup-context contributors without reading prompt bodies')
+    .option('--project <path>', 'project root to analyze')
+    .option('--home <path>', 'home directory override (for CI/testing)')
+    .option('--follow-links', 'follow external symlink/junction roots and direct children')
+    .option('-j, --json', 'output as JSON')
+    .option('--top <n>', 'largest metadata entries to show (default 10)', '10')
+    .option('--warn-tokens <n>', 'warn when total estimated startup tokens exceed n')
+    .option('--fail-tokens <n>', 'fail when total estimated startup tokens exceed n')
+    .option('--warn-bytes <n>', 'warn when agent/skill metadata bytes exceed n')
+    .option('--fail-bytes <n>', 'fail when agent/skill metadata bytes exceed n')
+    .action(guard(cmdBootstrapAudit))
 
   program
     .command('memory')

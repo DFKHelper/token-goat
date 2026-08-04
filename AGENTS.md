@@ -24,6 +24,8 @@ Tests run in two tiers:
 
 Both tiers derive their command set from one source, [tests/registry.ts](tests/registry.ts) (`allCommandNames()`), so a newly registered command is automatically in scope for the guard and the matrix — there is no second list to forget. **Every user-facing command must appear in the matrix**; a registered command with no matrix case fails the coverage gate by design.
 
+**Tests must be deterministic.** Do not dismiss intermittent failures as environmental noise or waive them with retries. Find and remove the source of timing, shared-state, ordering, or resource-contention flakiness; a test is complete only when it passes reliably in its real full-suite execution mode.
+
 ## The indexer and worker are the critical path — prioritize them
 
 The indexer (`src/parser.ts`: parse, then write symbols/refs/sections, plus embeddings) and the worker that drives it (`src/worker.ts`: drain the dirty queue, reindex changed files) are the core of the product. Every surgical-read command — `symbol`, `read`, `skeleton`, `outline`, `semantic`, read-dedup — returns nothing if this pipeline is broken. Treat it as the **highest priority for tests, bug-fixing, and improvements**, above hooks, image-shrinking, formatting, and CLI ergonomics, when triaging or planning work.
