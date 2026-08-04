@@ -61,19 +61,27 @@ export function findClaudeMdFiles(projectRoot: string, homeDir = os.homedir()): 
  * Return the MEMORY.md path for the given project root by scanning
  * ~/.claude/projects/, or null if none is found.
  */
-export function findMemoryMd(projectRoot: string, homeDir = os.homedir()): string | null {
+export function findMemoryMd(
+  projectRoot: string,
+  homeDir = os.homedir(),
+  alternateRoots: readonly string[] = [],
+): string | null {
   try {
     const projectsDir = path.join(homeDir, '.claude', 'projects')
     if (!fs.existsSync(projectsDir)) return null
 
     const rootStr = path.resolve(projectRoot)
-    // A path has more than one valid spelling, and Claude Code named the directory after whichever one it saw. macOS /var is a symlink to /private/var, Windows hands out 8.3 short names like RUNNER~1, and both differ from the caller's spelling only after realpath. Checking a single spelling silently misses a MEMORY.md that is really there, so try the caller's form first and the real one as a fallback.
+    // One directory has several valid spellings and Claude Code named its projects dir after whichever one it saw, so checking a single spelling silently misses a MEMORY.md that is really on disk. Two transforms cause this in practice, and canonicalize() (src/project.ts) applies both: macOS /var is a symlink to /private/var, and Windows 8.3 short names like RUNNER~1 expand to their long form. That means callers can arrive here holding EITHER spelling -- resolveProjectRoot canonicalizes, while a raw --project argument does not -- so try the caller's form, the realpath form, and any alternate the caller still had before normalizing.
     const candidateRoots = [rootStr]
     try {
       const realRoot = fs.realpathSync.native(rootStr)
       if (realRoot !== rootStr) candidateRoots.push(realRoot)
     } catch {
       // Root may not exist yet; the caller's spelling is then the only one we can check.
+    }
+    for (const alternate of alternateRoots) {
+      const resolved = path.resolve(alternate)
+      if (!candidateRoots.includes(resolved)) candidateRoots.push(resolved)
     }
     for (const root of candidateRoots) {
       // Real Claude Code project-dir naming convention: every non-alphanumeric char in the resolved path becomes '-', with no leading/trailing trim. A UNC root like \\server\share\proj starts with two backslashes, so its slug genuinely starts with two dashes -- trimming them (as this used to) points at a directory Claude Code never created and findMemoryMd silently misses it.
@@ -104,7 +112,11 @@ interface ContextStatsResult {
   total_tokens: number
 }
 
-export function buildStats(projectRoot: string, homeDir = os.homedir()): ContextStatsResult {
+export function buildStats(
+  projectRoot: string,
+  homeDir = os.homedir(),
+  alternateRoots: readonly string[] = [],
+): ContextStatsResult {
   const claudeMds = findClaudeMdFiles(projectRoot, homeDir)
   const claudeMdRows: ContextStatsRow[] = []
   let claudeMdTotal = 0
@@ -126,7 +138,7 @@ export function buildStats(projectRoot: string, homeDir = os.homedir()): Context
     claudeMdRows.push({ label, tokens: t, path: p })
   }
 
-  const memPath = findMemoryMd(projectRoot, homeDir)
+  const memPath = findMemoryMd(projectRoot, homeDir, alternateRoots)
   const memTok = memPath !== null ? tok(memPath) : 0
   const total = claudeMdTotal + memTok
 

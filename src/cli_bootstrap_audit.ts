@@ -206,7 +206,8 @@ async function scanMetadataRoot(
 export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Promise<BootstrapAuditResult> {
   const project = resolveProjectRoot(opts.project === undefined ? {} : { project: opts.project })
   const home = path.resolve(opts.home ?? os.homedir())
-  const context = buildStats(project, home)
+  // resolveProjectRoot canonicalizes (macOS /var -> /private/var, Windows 8.3 expansion), but Claude Code named ~/.claude/projects/<slug> after the spelling IT saw, which may be the pre-canonical one the caller passed. Keep that spelling as an alternate so the memory lookup can try both.
+  const context = buildStats(project, home, opts.project === undefined ? [] : [opts.project])
   const diagnostics: Diagnostic[] = []
   const top = opts.top === undefined ? 10 : parseBudget('--top', opts.top) ?? 10
   const visitedDirs = new Set<string>()

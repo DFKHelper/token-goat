@@ -143,6 +143,22 @@ describe('cli_context_stats', () => {
       expect(findMemoryMd(linkRoot)).toBe(memFile)
     })
 
+    it('finds MEMORY.md via an alternate root when the caller already canonicalized the spelling away', () => {
+      // Deliberately no homedir mock: this case passes homeDir explicitly, and a queued mockReturnValueOnce that nothing consumes is dequeued by the NEXT test instead, handing it a stale tempDir from a previous beforeEach.
+      // The reverse of the junction case above, and the one CI actually hit on macOS and Windows: resolveProjectRoot canonicalizes (/var -> /private/var, RUNNER~1 -> runneradmin) BEFORE findMemoryMd sees the path, so the pre-canonical spelling Claude Code named the dir after is unrecoverable from the argument alone. It has to be passed through. Uses a synthetic pair so the assertion holds on every platform rather than only where that transform exists.
+      const asSeenRoot = path.join(tempDir, 'var', 'my-project')
+      const canonicalRoot = path.join(tempDir, 'private', 'var', 'my-project')
+
+      const slug = path.resolve(asSeenRoot).replace(/[^A-Za-z0-9]/g, '-')
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
+      fs.mkdirSync(memDir, { recursive: true })
+      const memFile = path.join(memDir, 'MEMORY.md')
+      fs.writeFileSync(memFile, '# Memory')
+
+      expect(findMemoryMd(canonicalRoot, tempDir)).toBeNull()
+      expect(findMemoryMd(canonicalRoot, tempDir, [asSeenRoot])).toBe(memFile)
+    })
+
     it('does not strip a leading dash that is genuinely part of the slug (fail-on-buggy: leading-dash trim mismatches the real Claude Code project-dir naming convention)', () => {
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
       homedirMock.mockReturnValueOnce(tempDir)

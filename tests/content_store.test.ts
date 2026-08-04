@@ -3,7 +3,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { clearModuleCaches } from '../src/reset.js'
-import { _resetDataDirCacheForTesting } from '../src/constants.js'
+import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import {
   compressText,
   createHandoff,
@@ -24,9 +24,12 @@ beforeEach(() => {
   previousXdgDataHome = process.env['XDG_DATA_HOME']
   home = fs.mkdtempSync(path.join(process.cwd(), '.tg-content-test-'))
   process.env['TOKEN_GOAT_HOME'] = home
-  // dataDir() reads LOCALAPPDATA only on win32 and XDG_DATA_HOME on macOS/Linux (see src/constants.ts), so pinning one of them isolates this test on exactly one platform: recordStat then wrote to the worker-wide data dir while summarize(..., home) read the per-test one, and every stat assertion below saw zero on macOS and Linux.
-  process.env['LOCALAPPDATA'] = path.join(home, 'AppData', 'Local')
-  process.env['XDG_DATA_HOME'] = path.join(home, 'AppData', 'Local')
+  // recordStat writes through getGlobalDb() (which uses dataDir(), driven by these env vars) while summarize(..., home) reads through getGlobalDb(home) (which uses dataDirForHome(home)). The two agree only if the env root is the exact parent of dataDirForHome's per-platform layout -- `<home>/AppData/Local` happens to satisfy that on win32 and nowhere else, which is why hardcoding it passed on Windows and left every stat assertion at zero on macOS and Linux. Derive the root from dataDirForHome so the two paths agree on every platform, and pin both vars because dataDir() reads LOCALAPPDATA on win32 and XDG_DATA_HOME elsewhere.
+  const dataRoot = dataDirForHome(home)
+  const envRoot =
+    process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+  process.env['LOCALAPPDATA'] = envRoot
+  process.env['XDG_DATA_HOME'] = envRoot
   fs.writeFileSync(path.join(home, 'package.json'), '{}\n')
   _resetDataDirCacheForTesting()
   clearModuleCaches()
