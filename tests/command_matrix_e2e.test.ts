@@ -1087,6 +1087,25 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(symbolEntry?.description).toBe('search for a symbol by name')
     const workerEntry = manifest.find((e) => e.name === 'worker')
     expect(workerEntry?.subcommands.map((s) => s.name)).toContain('start')
+
+    // --grep narrows by name/description/alias; parent match keeps all subcommands, no-match is exit 0.
+    const rGrep = run(['commands', '--grep', '^symbol$'])
+    expect(rGrep.status, rGrep.stderr).toBe(0)
+    expect(rGrep.stdout).toContain('symbol')
+    expect(rGrep.stdout).not.toContain('## install')
+
+    const rGrepJson = run(['commands', '--grep', '^symbol$', '--json'])
+    const grepManifest = JSON.parse(rGrepJson.stdout) as Array<{ name: string }>
+    expect(grepManifest.map((e) => e.name)).toEqual(['symbol'])
+
+    const rGrepWorker = run(['commands', '--grep', 'start', '--json'])
+    const grepWorkerManifest = JSON.parse(rGrepWorker.stdout) as Array<{ name: string; subcommands: Array<{ name: string }> }>
+    expect(grepWorkerManifest.map((e) => e.name)).toEqual(['worker'])
+    expect(grepWorkerManifest[0]?.subcommands.map((s) => s.name)).toEqual(['start'])
+
+    const rNoMatch = run(['commands', '--grep', 'zzz-no-such-command'])
+    expect(rNoMatch.status, rNoMatch.stderr).toBe(0)
+    expect(rNoMatch.stdout.trim()).toBe('no matches')
   },
   hook: () => {
     // relay never throws on an unknown event; it emits {} and returns 0.

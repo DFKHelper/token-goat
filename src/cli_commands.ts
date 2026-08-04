@@ -62,6 +62,41 @@ export function flattenCommandNames(manifest: readonly CommandManifestEntry[]): 
   return names
 }
 
+/** True if `entry`'s name, description, or aliases match `pattern` (regex, falling back to a literal substring match on invalid regex -- same convention as `--grep` on `bash-output`/`web-output`/`read`/`section`). */
+function entryMatches(entry: CommandManifestEntry, re: RegExp | null, pattern: string): boolean {
+  const haystacks = [entry.name, entry.description, ...entry.aliases]
+  return haystacks.some((h) => (re !== null ? re.test(h) : h.includes(pattern)))
+}
+
+/**
+ * Filter a manifest by `pattern`, matched against each entry's name, description, and aliases.
+ * A parent that matches directly is kept whole (all of its subcommands included, since the agent
+ * asked for that command and its children are part of it). A parent that doesn't match directly
+ * but has a matching child is kept with only the matching subcommand(s), so the result stays
+ * narrow. Entries with no match anywhere in their own fields or their subcommands' fields are
+ * dropped.
+ */
+export function filterCommandManifest(manifest: readonly CommandManifestEntry[], pattern: string): CommandManifestEntry[] {
+  let re: RegExp | null
+  try {
+    re = new RegExp(pattern)
+  } catch {
+    re = null
+  }
+  const result: CommandManifestEntry[] = []
+  for (const entry of manifest) {
+    if (entryMatches(entry, re, pattern)) {
+      result.push(entry)
+      continue
+    }
+    const matchingSubs = entry.subcommands.filter((sub) => entryMatches(sub, re, pattern))
+    if (matchingSubs.length > 0) {
+      result.push({ ...entry, subcommands: matchingSubs })
+    }
+  }
+  return result
+}
+
 /** Render the manifest as a human-readable text listing (default `token-goat commands` output). */
 export function formatCommandManifest(manifest: readonly CommandManifestEntry[]): string {
   const lines: string[] = []

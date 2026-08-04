@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildProgram } from '../src/cli.js'
-import { buildCommandManifest, flattenCommandNames, formatCommandManifest } from '../src/cli_commands.js'
+import { buildCommandManifest, filterCommandManifest, flattenCommandNames, formatCommandManifest } from '../src/cli_commands.js'
 import { allCommandNames } from './registry.js'
 
 describe('buildCommandManifest', () => {
@@ -89,6 +89,56 @@ describe('flattenCommandNames', () => {
     expect(names).toContain('compress')
     expect(names).not.toContain('bash')
     expect(names).not.toContain('run')
+  })
+})
+
+describe('filterCommandManifest', () => {
+  it('matches a name substring, dropping unrelated entries', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const filtered = filterCommandManifest(manifest, 'symbol')
+    expect(filtered.map((e) => e.name)).toContain('symbol')
+    expect(filtered.map((e) => e.name)).not.toContain('install')
+  })
+
+  it('matches on description alone, with no substring hit in the name', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const bashOutput = manifest.find((e) => e.name === 'bash-output')
+    expect(bashOutput?.description.toLowerCase()).toContain('cached')
+    const filtered = filterCommandManifest(manifest, 'cached')
+    expect(filtered.map((e) => e.name)).toContain('bash-output')
+  })
+
+  it('matches on a registered alias (compress via its "bash" alias)', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const filtered = filterCommandManifest(manifest, '^bash$')
+    expect(filtered.map((e) => e.name)).toContain('compress')
+  })
+
+  it('keeps every subcommand when the parent itself matches', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const filtered = filterCommandManifest(manifest, 'worker')
+    const worker = filtered.find((e) => e.name === 'worker')
+    expect(worker?.subcommands.map((s) => s.name).sort()).toEqual(['start', 'status', 'stop'])
+  })
+
+  it('keeps only the matching subcommand when the parent itself does not match', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const filtered = filterCommandManifest(manifest, 'start')
+    const worker = filtered.find((e) => e.name === 'worker')
+    expect(worker).toBeDefined()
+    expect(worker?.subcommands.map((s) => s.name)).toEqual(['start'])
+  })
+
+  it('returns an empty array for a pattern matching nothing', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    expect(filterCommandManifest(manifest, 'zzz-no-such-command-exists')).toEqual([])
+  })
+
+  it('falls back to a literal substring match on an invalid regex pattern', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    // "(" alone is an invalid regex; the fallback path does a literal substring search instead
+    // of throwing, and this nonsense pattern (still containing an unbalanced "(") matches nothing.
+    expect(filterCommandManifest(manifest, 'zzz-no-such-command-exists(')).toEqual([])
   })
 })
 
