@@ -202,10 +202,9 @@ describe('cli_context_stats', () => {
     })
 
     it('--fix actually prunes MEMORY.md via memory_prune (not a no-op)', async () => {
-      // runContextStats calls os.homedir() twice (findClaudeMdFiles, then findMemoryMd),
-      // so it needs two queued mock returns.
+      // runContextStats resolves os.homedir() once and passes it to both scans.
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
-      homedirMock.mockReturnValueOnce(tempDir).mockReturnValueOnce(tempDir)
+      homedirMock.mockReturnValueOnce(tempDir)
 
       const projectRoot = path.join(tempDir, 'fix-project')
       fs.mkdirSync(projectRoot)
@@ -244,7 +243,7 @@ describe('cli_context_stats', () => {
 
     it('--fix without --yes on a non-TTY stdin is a dry run: reports and does not write', async () => {
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
-      homedirMock.mockReturnValueOnce(tempDir).mockReturnValueOnce(tempDir)
+      homedirMock.mockReturnValueOnce(tempDir)
 
       const projectRoot = path.join(tempDir, 'fix-dryrun-project')
       fs.mkdirSync(projectRoot)

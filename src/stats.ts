@@ -64,6 +64,7 @@ export const SOURCE_BASH = 'bash'
 export const SOURCE_WEB = 'web'
 export const SOURCE_MCP = 'mcp'
 export const SOURCE_SKILL = 'skill'
+export const SOURCE_CONTENT = 'content'
 export const SOURCE_OTHER = 'other'
 
 const _BYTES_MODE_ONLY_KINDS = new Set(['webfetch_image', 'gdrive_image'])
@@ -149,6 +150,10 @@ const KIND_TO_SOURCE: Record<string, string> = {
   skill_load: SOURCE_SKILL,
   skill_oversized_first_load: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
+  content_compress: SOURCE_CONTENT,
+  content_retrieve: SOURCE_CONTENT,
+  handoff_create: SOURCE_CONTENT,
+  handoff_resolve: SOURCE_CONTENT,
 }
 
 const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
@@ -212,6 +217,10 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   'note-add': new Set(['note_write']),
   'note-get': new Set(['note_read']),
   'note-list': new Set(['note_list']),
+  'compress-text': new Set(['content_compress']),
+  retrieve: new Set(['content_retrieve']),
+  'handoff-create': new Set(['handoff_create']),
+  'handoff-resolve': new Set(['handoff_resolve']),
   npm: new Set([
     'bash_compress:npm_install',
     'bash_compress:npm_ci',

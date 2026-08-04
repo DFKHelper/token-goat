@@ -28,6 +28,13 @@ import {
   runExports,
 } from './read_commands.js'
 import { recordStat } from './stats.js'
+import {
+  compressText,
+  createHandoff,
+  resolveHandoff,
+  retrieveText,
+  CONTENT_MAX_INPUT_CHARS,
+} from './content_store.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
 // doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal
@@ -65,6 +72,13 @@ function mcpFriendlyText(text: string): string {
 function toCallToolResult(result: { text: string; code: number }): CallToolResult {
   return {
     content: [{ type: 'text', text: mcpFriendlyText(result.text) }],
+    isError: result.code !== 0,
+  }
+}
+
+function toRawCallToolResult(result: { text: string; code: number }): CallToolResult {
+  return {
+    content: [{ type: 'text', text: result.text }],
     isError: result.code !== 0,
   }
 }
@@ -426,6 +440,73 @@ export function createMcpServer(): McpServer {
     (args) => {
       const { file, json } = args
       return toCallToolResultFromExitCode(() => runExports({ file, ...(json === true ? { json: true } : {}) }))
+    },
+  )
+
+  server.registerTool(
+    'compress_text',
+    {
+      description: 'Compress arbitrary local text, persist it in the bounded local cache, and return an opaque recovery ID plus metadata.',
+      inputSchema: {
+        text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('text to compress'),
+      },
+    },
+    (args) => toCallToolResult({ text: JSON.stringify(compressText(args.text), null, 2), code: 0 }),
+  )
+
+  server.registerTool(
+    'retrieve_text',
+    {
+      description: 'Retrieve original text from a token-goat compression ID.',
+      inputSchema: {
+        id: z.string().regex(/^tg_[0-9a-f]{16}$/).describe('opaque token-goat content ID'),
+      },
+    },
+    (args) => {
+      const text = retrieveText(args.id)
+      return text === null
+        ? toCallToolResult({ text: `no token-goat content for id: ${args.id}`, code: 1 })
+        : toRawCallToolResult({ text, code: 0 })
+    },
+  )
+
+  server.registerTool(
+    'handoff_create',
+    {
+      description: 'Create a bounded, project-local named compressed handoff for another agent.',
+      inputSchema: {
+        name: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).describe('handoff name'),
+        text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('handoff text'),
+        projectRoot: makeProjectRootField('scope'),
+      },
+    },
+    (args) =>
+      toCallToolResult({
+        text: JSON.stringify(createHandoff(args.name, args.text, args.projectRoot), null, 2),
+        code: 0,
+      }),
+  )
+
+  server.registerTool(
+    'handoff_resolve',
+    {
+      description: 'Resolve a project-local handoff compactly or in full. MCP does not intercept built-in file reads.',
+      inputSchema: {
+        name: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).describe('handoff name'),
+        full: z.boolean().optional().describe('return full text instead of a compact payload'),
+        projectRoot: makeProjectRootField('scope'),
+      },
+    },
+    (args) => {
+      const result = resolveHandoff(args.name, {
+        ...(args.projectRoot !== undefined ? { projectRoot: args.projectRoot } : {}),
+        ...(args.full === true ? { full: true } : {}),
+      })
+      return result === null
+        ? toCallToolResult({ text: `no local handoff named "${args.name}" in this project`, code: 1 })
+        : typeof result === 'string'
+          ? toRawCallToolResult({ text: result, code: 0 })
+          : toCallToolResult({ text: JSON.stringify(result, null, 2), code: 0 })
     },
   )
 

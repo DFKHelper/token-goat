@@ -24,6 +24,10 @@ const TOOL_NAMES = [
   'grep',
   'imports',
   'exports',
+  'compress_text',
+  'retrieve_text',
+  'handoff_create',
+  'handoff_resolve',
 ]
 
 /**
@@ -89,7 +93,7 @@ describe('mcp_server', () => {
     if (tempDir !== undefined) fs.rmSync(tempDir, { recursive: true, force: true })
   })
 
-  it('lists all 12 surgical-read tools over the real protocol layer', async () => {
+  it('lists all surgical-read and local compression tools over the real protocol layer', async () => {
     const { client, close } = await connectedClient()
     cleanup = close
     const { tools } = await client.listTools()
@@ -384,5 +388,23 @@ describe('mcp_server', () => {
     const block = (result.content as any[])[0]
     expect(block.text).toBe(expected.text)
     expect(block.text).toContain('shown')
+  })
+
+  it('retrieves compressed content byte-for-byte without rewriting CLI-looking text', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+    const text = 'keep --json, --limit, and --top exactly as written'
+
+    const compressed = await client.callTool({ name: 'compress_text', arguments: { text } })
+    expect(compressed.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const compressedBlock = (compressed.content as any[])[0]
+    const { id } = JSON.parse(compressedBlock.text) as { id: string }
+
+    const retrieved = await client.callTool({ name: 'retrieve_text', arguments: { id } })
+    expect(retrieved.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const retrievedBlock = (retrieved.content as any[])[0]
+    expect(retrievedBlock.text).toBe(text)
   })
 })

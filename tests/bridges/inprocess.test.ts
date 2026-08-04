@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { transformSync } from 'esbuild'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
@@ -32,12 +32,17 @@ import { expandShortPath } from '../../src/paths.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
+let sharedHookFixture: { entryPath: string; markerPath: string; dir: string } | undefined
 
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) rmSync(dir, { recursive: true, force: true })
   }
+})
+
+afterAll(() => {
+  if (sharedHookFixture) rmSync(sharedHookFixture.dir, { recursive: true, force: true })
 })
 
 // %TEMP% can be pinned to its Windows 8.3 short form (e.g. `RUNNER~1`), which every
@@ -58,24 +63,29 @@ function mkIsolated(): string {
  * `path.join(path.dirname(entryPath), 'token-goat-hook.mjs')` sibling lookup finds a
  * genuine, working hook library instead of a stub.
  */
-function setupPoisonedEntryWithRealHookLib(cwd: string): { entryPath: string; markerPath: string } {
-  const entryPath = join(cwd, 'poisoned-entry.js')
-  const markerPath = join(cwd, 'SPAWNED_MARKER.txt')
-  const markerLiteral = JSON.stringify(markerPath)
-  writeFileSync(
-    entryPath,
-    `require('fs').writeFileSync(${markerLiteral}, 'spawned')\nprocess.stdout.write('{}')\n`,
-    'utf8',
-  )
-  copyFileSync(HOOK_BUNDLE, join(cwd, 'token-goat-hook.mjs'))
-  // token-goat-hook.mjs bundles everything except its native/optional deps
-  // (better-sqlite3, sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
-  // which it resolves at runtime via ordinary Node module resolution from its own
-  // directory. In the real install that directory (dist/) sits inside
-  // node_modules/token-goat/, with those deps reachable as node_modules siblings a few
-  // levels up. This isolated temp dir has no such ancestry, so link one in.
-  symlinkSync(join(ROOT, 'node_modules'), join(cwd, 'node_modules'), 'junction')
-  return { entryPath, markerPath }
+function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; markerPath: string } {
+  if (sharedHookFixture === undefined) {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-inprocess-hook-'))
+    const entryPath = join(dir, 'poisoned-entry.js')
+    const markerPath = join(dir, 'SPAWNED_MARKER.txt')
+    const markerLiteral = JSON.stringify(markerPath)
+    writeFileSync(
+      entryPath,
+      `require('fs').writeFileSync(${markerLiteral}, 'spawned')\nprocess.stdout.write('{}')\n`,
+      'utf8',
+    )
+    copyFileSync(HOOK_BUNDLE, join(dir, 'token-goat-hook.mjs'))
+    // token-goat-hook.mjs bundles everything except its native/optional deps
+    // (better-sqlite3, sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
+    // which it resolves at runtime via ordinary Node module resolution from its own
+    // directory. In the real install that directory (dist/) sits inside
+    // node_modules/token-goat/, with those deps reachable as node_modules siblings a few
+    // levels up. This isolated temp dir has no such ancestry, so link one in.
+    symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'junction')
+    sharedHookFixture = { dir, entryPath, markerPath }
+  }
+  rmSync(sharedHookFixture.markerPath, { force: true })
+  return sharedHookFixture
 }
 
 /**
@@ -92,6 +102,12 @@ function makeEnvFixture(cwd: string): string {
   writeFileSync(envPath, 'FOO=bar\n', 'utf8')
   return envPath
 }
+
+// Preload the shared hook library during collection so a cold 3.2 MB dynamic import cannot
+// consume an async test's 5s watchdog under full-suite load; bridge imports then hit this URL's
+// module cache.
+setupPoisonedEntryWithRealHookLib('')
+await import(pathToFileURL(join(sharedHookFixture!.dir, 'token-goat-hook.mjs')).href)
 
 describe('codex/claude code shims: in-process hook call replaces the second node spawn', () => {
   describe.each([

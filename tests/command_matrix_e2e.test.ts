@@ -785,6 +785,33 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('×6')
   },
+  'compress-text': () => {
+    const r = run(['compress-text', 'matrix text '.repeat(20)])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/id: tg_[0-9a-f]{16}/)
+    expect(r.stdout).toContain('recovery: token-goat retrieve')
+  },
+  retrieve: () => {
+    const compressed = run(['compress-text', 'matrix retrieval text'])
+    expect(compressed.status, compressed.stderr).toBe(0)
+    const id = compressed.stdout.match(/id: (tg_[0-9a-f]{16})/)?.[1]
+    expect(id).toBeDefined()
+    const r = run(['retrieve', id as string])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('matrix retrieval text')
+  },
+  'handoff-create': () => {
+    const r = run(['handoff-create', 'matrix-handoff', 'handoff text'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('"name": "matrix-handoff"')
+  },
+  'handoff-resolve': () => {
+    const created = run(['handoff-create', 'matrix-resolve', 'resolve text'])
+    expect(created.status, created.stderr).toBe(0)
+    const r = run(['handoff-resolve', 'matrix-resolve', '--full'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('resolve text')
+  },
   stats: () => {
     const r = run(['stats'])
     expect(r.status, r.stderr).toBe(0)
@@ -819,6 +846,29 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rj.status, rj.stderr).toBe(0)
     const output = JSON.parse(rj.stdout) as { total_tokens: number }
     expect(typeof output.total_tokens).toBe('number')
+  },
+  'bootstrap-audit': () => {
+    const proj = mkIsolated('tg-matrix-bootstrap-project-')
+    const home = mkIsolated('tg-matrix-bootstrap-home-')
+    fs.mkdirSync(path.join(home, '.claude', 'agents'), { recursive: true })
+    fs.writeFileSync(path.join(proj, 'CLAUDE.md'), 'project startup guidance\n')
+    fs.writeFileSync(
+      path.join(home, '.claude', 'CLAUDE.md'),
+      'global startup guidance\n',
+    )
+    fs.writeFileSync(
+      path.join(home, '.claude', 'agents', 'agent.md'),
+      '---\ndescription: matrix metadata\ntools: Read\n---\nPRIVATE PROMPT BODY\n',
+    )
+    const r = run(['bootstrap-audit', '--project', proj, '--home', home, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const output = JSON.parse(r.stdout) as { counts: { metadata_files: number }; total_estimated_tokens: number }
+    expect(output.counts.metadata_files).toBe(1)
+    expect(output.total_estimated_tokens).toBeGreaterThan(0)
+    const failed = run(['bootstrap-audit', '--project', proj, '--home', home, '--json', '--fail-tokens', '0'])
+    expect(failed.status, failed.stderr).toBe(3)
+    const failedOutput = JSON.parse(failed.stdout) as { budgets: { failures: string[] } }
+    expect(failedOutput.budgets.failures.length).toBeGreaterThan(0)
   },
   memory: () => {
     const proj = mkIsolated('tg-matrix-mem-')
@@ -1176,17 +1226,18 @@ const cases: Record<string, () => void | Promise<void>> = {
   },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
-    const r = run(['install', '--project'], { cwd: proj })
+    const r = run(['install', '--project', '--vscode'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Installed token-goat hooks \(project\)/)
     expect(fs.existsSync(path.join(proj, '.claude', 'settings.json'))).toBe(true)
+    expect(fs.existsSync(path.join(proj, '.vscode', 'mcp.json'))).toBe(true)
   },
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
     const proj = mkIsolated('tg-matrix-uninstall-')
-    const installed = run(['install', '--project'], { cwd: proj })
+    const installed = run(['install', '--project', '--vscode'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
-    const r = run(['uninstall', '--project'], { cwd: proj })
+    const r = run(['uninstall', '--project', '--vscode'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Removed token-goat hooks \(project\)\./)
   },
@@ -1299,13 +1350,17 @@ const cases: Record<string, () => void | Promise<void>> = {
       })
       expect(toolNames.sort()).toEqual([
         'changed',
+        'compress_text',
         'exports',
         'grep',
+        'handoff_create',
+        'handoff_resolve',
         'imports',
         'map',
         'outline',
         'read',
         'refs',
+        'retrieve_text',
         'section',
         'semantic',
         'skeleton',
