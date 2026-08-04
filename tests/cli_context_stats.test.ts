@@ -122,6 +122,27 @@ describe('cli_context_stats', () => {
       expect(findMemoryMd(projectRoot)).toBe(memFile)
     })
 
+    it('finds MEMORY.md when the projects dir is named after the real path but the caller passes a link spelling', () => {
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValueOnce(tempDir)
+
+      // The same directory has more than one valid spelling, and Claude Code named the projects dir after whichever one it saw. This is not exotic: macOS os.tmpdir() lives under /var, a symlink to /private/var, and GitHub's Windows runners hand out 8.3 short names like RUNNER~1 -- so CI hit exactly this and the real MEMORY.md went unfound. A junction reproduces it on every platform without needing symlink privileges on Windows.
+      const realRoot = path.join(tempDir, 'real-project')
+      fs.mkdirSync(realRoot)
+      const linkRoot = path.join(tempDir, 'link-project')
+      fs.symlinkSync(realRoot, linkRoot, 'junction')
+
+      // Name the projects dir after the REAL path, then look it up by the LINK spelling.
+      const slug = fs.realpathSync.native(realRoot).replace(/[^A-Za-z0-9]/g, '-')
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
+      fs.mkdirSync(memDir, { recursive: true })
+      const memFile = path.join(memDir, 'MEMORY.md')
+      fs.writeFileSync(memFile, '# Memory')
+
+      expect(path.resolve(linkRoot)).not.toBe(fs.realpathSync.native(linkRoot))
+      expect(findMemoryMd(linkRoot)).toBe(memFile)
+    })
+
     it('does not strip a leading dash that is genuinely part of the slug (fail-on-buggy: leading-dash trim mismatches the real Claude Code project-dir naming convention)', () => {
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
       homedirMock.mockReturnValueOnce(tempDir)

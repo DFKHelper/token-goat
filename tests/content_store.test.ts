@@ -16,13 +16,17 @@ import { summarize } from '../src/stats.js'
 let home: string
 let previousHome: string | undefined
 let previousLocalAppData: string | undefined
+let previousXdgDataHome: string | undefined
 
 beforeEach(() => {
   previousHome = process.env['TOKEN_GOAT_HOME']
   previousLocalAppData = process.env['LOCALAPPDATA']
+  previousXdgDataHome = process.env['XDG_DATA_HOME']
   home = fs.mkdtempSync(path.join(process.cwd(), '.tg-content-test-'))
   process.env['TOKEN_GOAT_HOME'] = home
+  // dataDir() reads LOCALAPPDATA only on win32 and XDG_DATA_HOME on macOS/Linux (see src/constants.ts), so pinning one of them isolates this test on exactly one platform: recordStat then wrote to the worker-wide data dir while summarize(..., home) read the per-test one, and every stat assertion below saw zero on macOS and Linux.
   process.env['LOCALAPPDATA'] = path.join(home, 'AppData', 'Local')
+  process.env['XDG_DATA_HOME'] = path.join(home, 'AppData', 'Local')
   fs.writeFileSync(path.join(home, 'package.json'), '{}\n')
   _resetDataDirCacheForTesting()
   clearModuleCaches()
@@ -33,6 +37,8 @@ afterEach(() => {
   else process.env['TOKEN_GOAT_HOME'] = previousHome
   if (previousLocalAppData === undefined) delete process.env['LOCALAPPDATA']
   else process.env['LOCALAPPDATA'] = previousLocalAppData
+  if (previousXdgDataHome === undefined) delete process.env['XDG_DATA_HOME']
+  else process.env['XDG_DATA_HOME'] = previousXdgDataHome
   _resetDataDirCacheForTesting()
   clearModuleCaches()
   fs.rmSync(home, { recursive: true, force: true })
