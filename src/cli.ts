@@ -1121,11 +1121,22 @@ function recordDocStat(kind: string, file: string, emitted: string): void {
   recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
 }
 
-async function cmdPptxOutline(file: string) {
+async function cmdPptxOutline(file: string, opts: { json?: boolean }) {
   const slides = await pptxOutline(file)
-  const text = slides
-    .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
-    .join('\n')
+  if (slides.length === 0) {
+    if (opts.json === true) {
+      out(JSON.stringify([], null, 2))
+    } else {
+      out('no slides found')
+    }
+    return
+  }
+  const text =
+    opts.json === true
+      ? JSON.stringify(slides, null, 2)
+      : slides
+          .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
+          .join('\n')
   out(text)
   recordDocStat('pptx_outline', file, text)
 }
@@ -1156,13 +1167,20 @@ async function cmdPptxText(file: string, opts: { grep: string }) {
   recordDocStat('pptx_text', file, text)
 }
 
-async function cmdDocxOutline(file: string) {
+async function cmdDocxOutline(file: string, opts: { json?: boolean }) {
   const headings = await docxOutline(file)
   if (headings.length === 0) {
-    out('no headings found (try docx-text for full body text)')
+    if (opts.json === true) {
+      out(JSON.stringify([], null, 2))
+    } else {
+      out('no headings found (try docx-text for full body text)')
+    }
     return
   }
-  const text = headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
+  const text =
+    opts.json === true
+      ? JSON.stringify(headings, null, 2)
+      : headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n')
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -1176,21 +1194,29 @@ async function cmdDocxText(
   recordDocStat('docx_text', file, printed)
 }
 
-function cmdTranscriptOutline(file: string) {
+function cmdTranscriptOutline(file: string, opts: { json?: boolean }) {
   const cues = readTranscript(file)
   if (cues.length === 0) {
-    out('no cues found (not a valid .vtt/.srt file?)')
+    if (opts.json === true) {
+      out(JSON.stringify({ durationSeconds: 0, speakers: [], markers: [] }, null, 2))
+    } else {
+      out('no cues found (not a valid .vtt/.srt file?)')
+    }
     return
   }
   const outline = buildTranscriptOutline(cues)
-  const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
-  if (outline.speakers.length > 0) {
-    lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
+  if (opts.json === true) {
+    out(JSON.stringify(outline, null, 2))
+  } else {
+    const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
+    if (outline.speakers.length > 0) {
+      lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${s.name}  (${s.cueCount} cues)`))
+    }
+    lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
+    const text = lines.join('\n')
+    out(text)
+    recordDocStat('transcript_outline', file, text)
   }
-  lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${m.preview}`))
-  const text = lines.join('\n')
-  out(text)
-  recordDocStat('transcript_outline', file, text)
 }
 
 function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }) {
@@ -3525,6 +3551,7 @@ export function buildProgram(): Command {
   program
     .command('pptx-outline <file>')
     .description('per-slide title + body size + notes flag instead of a raw Read')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdPptxOutline))
 
   program
@@ -3549,6 +3576,7 @@ export function buildProgram(): Command {
   program
     .command('docx-outline <file>')
     .description('heading tree of a Word document instead of a raw Read')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdDocxOutline))
 
   program
@@ -3564,6 +3592,7 @@ export function buildProgram(): Command {
   program
     .command('transcript-outline <file>')
     .description('speaker list, duration, and time-bucketed markers for a WebVTT/SRT transcript instead of a raw Read')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdTranscriptOutline))
 
   program
