@@ -230,6 +230,13 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('alphaSym')
     expect(r.stdout).toContain('return 1')
     expect(r.stdout).toMatch(/Callers \(\d+\)/)
+    // Comma-separated multi-symbol form against the real built bundle -- proves the shipping CLI path, not just the in-process unit tests.
+    const multi = run(['brief', 'src/mod.ts::alphaSym,betaSym'])
+    expect(multi.status, multi.stderr).toBe(0)
+    expect(multi.stdout).toContain('alphaSym')
+    expect(multi.stdout).toContain('return 1')
+    expect(multi.stdout).toContain('betaSym')
+    expect(multi.stdout).toContain('return 2')
   },
   refs: () => {
     const r = run(['refs', 'caller.ts::refHelper', '--callers'])

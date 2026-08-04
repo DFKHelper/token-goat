@@ -2376,6 +2376,8 @@ interface BriefOptions {
   spec: string
   limit?: number
   json?: boolean
+  /** Internal only -- set by {@link runBriefMulti} on each per-symbol recursive `runBriefCore` call so the single-symbol path skips its own `recordReadStat`, same convention as {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option. */
+  suppressStat?: boolean
 }
 
 interface BriefResult {
@@ -2386,40 +2388,27 @@ interface BriefResult {
   section: SectionResult | null
 }
 
-/** Handle ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved
- * callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic),
- * and its containing doc section (if the file has heading structure) into one response --
- * cutting the common "understand this function" pattern from 2-3 round-trips to 1. */
-export function runBrief(opts: BriefOptions): number {
-  // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently
-  // slice the caller list down to zero entries instead of surfacing a clear "you asked for
-  // nothing" error, consistent with every other --limit flag in this codebase.
-  if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
-    return 1
-  }
-
+/** Core of ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic), and its containing doc section (if the file has heading structure) into one response -- cutting the common "understand this function" pattern from 2-3 round-trips to 1. Returns text+code instead of emitting directly so {@link runBrief} can both dispatch to {@link runBriefMulti} for a comma-separated spec and reuse this exact single-symbol path for each sub-call, mirroring runRead/runSection's core-vs-dispatcher split. Note that --limit validation deliberately lives in {@link runBrief}, not here: it is a whole-invocation flag, so validating per sub-call would repeat one usage error once per symbol and frame it as a per-symbol resolution failure. */
+function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const resolution = resolveSymbolSpec(opts.spec)
   if (resolution.kind === 'ambiguous') {
-    emitErr(
-      formatAmbiguity(
+    return {
+      text: formatAmbiguity(
         resolution.symbol,
         resolution.file,
         resolution.candidates,
       ),
-    )
-    return 1
+      code: 1,
+    }
   }
   if (resolution.kind === 'none') {
     // A bare name (no `::` at all) is a spec-format mistake, not evidence the symbol is
     // missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely
     // resolves to nothing keeps the original wording below, untouched.
     if (findSpecSeparator(opts.spec) === -1) {
-      emitErr(formatBareNameSpecError('brief', opts.spec))
-      return 1
+      return { text: formatBareNameSpecError('brief', opts.spec), code: 1 }
     }
-    emitErr(`Symbol not found: ${opts.spec}`)
-    return 1
+    return { text: `Symbol not found: ${opts.spec}`, code: 1 }
   }
   const match = resolution.entry
 
@@ -2453,9 +2442,8 @@ export function runBrief(opts: BriefOptions): number {
       section,
     }
     const jsonText = JSON.stringify(result, null, 2)
-    emit(jsonText)
-    recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
-    return 0
+    if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
+    return { text: jsonText, code: 0 }
   }
 
   const body = resolveBody(match)
@@ -2481,9 +2469,57 @@ export function runBrief(opts: BriefOptions): number {
   }
 
   const text = guardText(trimBlankLines(lines).join('\n'), 'symbol')
-  emit(text)
-  recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
-  return 0
+  if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
+  return { text, code: 0 }
+}
+
+/** Handle ``token-goat brief "file::a,b,c"`` -- bundle several symbols' body+callers+section views from one file in a single call, mirroring `read`/`section`'s comma-separated multi-spec grammar (see {@link runReadMulti}). Delegates each symbol to a recursive {@link runBriefCore} call (`suppressStat: true`) so ambiguity handling, not-found + did-you-mean, and JSON shape all come from the exact same code path the single-symbol form already exercises -- a failure to resolve one symbol is reported inline instead of aborting the whole call, same as `runReadMulti`'s per-symbol handling. */
+function runBriefMulti(file: string, symbols: string[], opts: BriefOptions): { text: string; code: number } {
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+
+  for (const sym of symbols) {
+    const sub = runBriefCore({ ...opts, spec: `${file}::${sym}`, suppressStat: true })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) {
+      // Parse the sub-call's JSON string back into an object so the multi envelope nests real JSON per symbol, never an embedded string -- a failed sub-call has no JSON body of its own, so it is represented by its plain-text error instead.
+      jsonOut[sym] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      continue
+    }
+    textBlocks.push(`${sym}:\n${sub.text}`)
+  }
+
+  // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
+  const fullSourceBytes = sumFileSizes([resolveIndexPath(file, process.cwd())])
+  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
+  return { text, code: anyFound ? 0 : 1 }
+}
+
+/** Handle ``token-goat brief "file::symbol"``: dispatches to {@link runBriefMulti} for a comma-separated `file::a,b` spec, otherwise runs the single-symbol {@link runBriefCore} path, then emits the result -- `emitErr` on a nonzero code, `emit` on success. */
+export function runBrief(opts: BriefOptions): number {
+  // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
+  if (opts.limit !== undefined && opts.limit <= 0) {
+    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    return 1
+  }
+
+  const { file, symbol } = parseReadSpec(opts.spec)
+  if (symbol !== undefined && symbol !== '' && symbol.includes(',')) {
+    const multiSymbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    if (multiSymbols.length > 1) {
+      const { text, code } = runBriefMulti(file, multiSymbols, opts)
+      if (code === 0) emit(text)
+      else emitErr(text)
+      return code
+    }
+  }
+
+  const { text, code } = runBriefCore(opts)
+  if (code === 0) emit(text)
+  else emitErr(text)
+  return code
 }
 
 // ---- find -------------------------------------------------------------------
