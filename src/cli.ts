@@ -114,7 +114,7 @@ import {
 } from './read_commands.js'
 import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
-import { buildCommandManifest, formatCommandManifest } from './cli_commands.js'
+import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
 import { listSheets as xlsxListSheets, headSheet as xlsxHeadSheet, rangeSheet as xlsxRangeSheet, formatXlsxRange, querySheet as xlsxQuerySheet } from './xlsx_extract.js'
 import { pptxOutline, pptxSlideText, pptxNotesText, pptxTextGrep } from './pptx_extract.js'
 import { docxOutline, docxText } from './docx_extract.js'
@@ -365,10 +365,17 @@ function cmdBridgesStatus(opts: { json?: boolean }): void {
   }
 }
 
-function cmdCommands(opts: { json?: boolean }): void {
-  const manifest = buildCommandManifest(buildProgram())
+function cmdCommands(opts: { json?: boolean; grep?: string }): void {
+  let manifest = buildCommandManifest(buildProgram())
+  if (opts.grep !== undefined) {
+    manifest = filterCommandManifest(manifest, opts.grep)
+  }
   if (opts.json === true) {
     out(JSON.stringify(manifest))
+  } else if (manifest.length === 0) {
+    // Same wording as cmdPptxText's --grep-with-no-hits path: a filter matching nothing is a
+    // legitimate empty result, not an error, so this stays a plain message on exit 0.
+    out('no matches')
   } else {
     out(formatCommandManifest(manifest))
   }
@@ -2673,6 +2680,7 @@ export function buildProgram(): Command {
     .command('commands')
     .description('machine-readable manifest of every registered command, its options, and its arguments')
     .option('--json', 'emit the manifest as JSON instead of text')
+    .option('--grep <pattern>', 'filter to commands whose name, description, or aliases match this regex')
     .action(guard(cmdCommands))
 
   program
