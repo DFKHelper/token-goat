@@ -67,10 +67,20 @@ export function findMemoryMd(projectRoot: string, homeDir = os.homedir()): strin
     if (!fs.existsSync(projectsDir)) return null
 
     const rootStr = path.resolve(projectRoot)
-    // Real Claude Code project-dir naming convention: every non-alphanumeric char in the resolved path becomes '-', with no leading/trailing trim. A UNC root like \\server\share\proj starts with two backslashes, so its slug genuinely starts with two dashes -- trimming them (as this used to) points at a directory Claude Code never created and findMemoryMd silently misses it.
-    const expectedSlug = rootStr.replace(/[^A-Za-z0-9]/g, '-')
-    const candidate = path.join(projectsDir, expectedSlug, 'memory', 'MEMORY.md')
-    if (fs.existsSync(candidate)) return candidate
+    // A path has more than one valid spelling, and Claude Code named the directory after whichever one it saw. macOS /var is a symlink to /private/var, Windows hands out 8.3 short names like RUNNER~1, and both differ from the caller's spelling only after realpath. Checking a single spelling silently misses a MEMORY.md that is really there, so try the caller's form first and the real one as a fallback.
+    const candidateRoots = [rootStr]
+    try {
+      const realRoot = fs.realpathSync.native(rootStr)
+      if (realRoot !== rootStr) candidateRoots.push(realRoot)
+    } catch {
+      // Root may not exist yet; the caller's spelling is then the only one we can check.
+    }
+    for (const root of candidateRoots) {
+      // Real Claude Code project-dir naming convention: every non-alphanumeric char in the resolved path becomes '-', with no leading/trailing trim. A UNC root like \\server\share\proj starts with two backslashes, so its slug genuinely starts with two dashes -- trimming them (as this used to) points at a directory Claude Code never created and findMemoryMd silently misses it.
+      const expectedSlug = root.replace(/[^A-Za-z0-9]/g, '-')
+      const candidate = path.join(projectsDir, expectedSlug, 'memory', 'MEMORY.md')
+      if (fs.existsSync(candidate)) return candidate
+    }
 
     return null
   } catch {
