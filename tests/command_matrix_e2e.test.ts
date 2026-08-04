@@ -1148,10 +1148,15 @@ const cases: Record<string, () => void | Promise<void>> = {
     const grepManifest = JSON.parse(rGrepJson.stdout) as Array<{ name: string }>
     expect(grepManifest.map((e) => e.name)).toEqual(['symbol'])
 
+    // Subcommand narrowing: a parent that does not itself match keeps only its matching
+    // children. Assert on the `worker` entry specifically rather than pinning the whole
+    // result set -- any future command whose name or description contains "start" is a
+    // legitimate additional match, and `bootstrap-audit` ("startup-context") already is one.
     const rGrepWorker = run(['commands', '--grep', 'start', '--json'])
     const grepWorkerManifest = JSON.parse(rGrepWorker.stdout) as Array<{ name: string; subcommands: Array<{ name: string }> }>
-    expect(grepWorkerManifest.map((e) => e.name)).toEqual(['worker'])
-    expect(grepWorkerManifest[0]?.subcommands.map((s) => s.name)).toEqual(['start'])
+    const grepWorkerEntry = grepWorkerManifest.find((e) => e.name === 'worker')
+    expect(grepWorkerEntry, rGrepWorker.stdout).toBeDefined()
+    expect(grepWorkerEntry?.subcommands.map((s) => s.name)).toEqual(['start'])
 
     const rNoMatch = run(['commands', '--grep', 'zzz-no-such-command'])
     expect(rNoMatch.status, rNoMatch.stderr).toBe(0)
