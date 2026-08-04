@@ -160,6 +160,7 @@ CLAUDE.md
 
 # JS/TS dependencies (root-level)
 node_modules/
+vscode-extension/out/
 
 # TypeScript build output
 *.tsbuildinfo
