@@ -6,9 +6,18 @@
  * denormalization and hook dispatch now live in relay.ts / hook_registry.ts.
  */
 
+// All three levels are wired to console.error (stderr), never console.log/console.debug
+// (stdout): `token-goat hook <event>` treats its own stdout as the wire protocol Claude
+// Code parses byte-for-byte as JSON, so any diagnostic output landing on stdout corrupts
+// the response. console.warn/console.error already default to stderr in Node, but
+// console.debug defaults to *stdout* (the same stream as console.log) -- using it here
+// silently prepended a debug line in front of the JSON response the moment this code path
+// actually ran with a payload missing tool_name (see relay.ts's `relay()`: a payload that
+// fails to parse as JSON now degrades to an empty object rather than aborting the whole
+// hook call, so this branch became reachable for real where it previously wasn't).
 const _LOG = {
   warn: (msg: string, ...args: unknown[]) => console.warn(`[hooks_cli] ${msg}`, ...args),
-  debug: (msg: string, ...args: unknown[]) => console.debug(`[hooks_cli] ${msg}`, ...args),
+  debug: (msg: string, ...args: unknown[]) => console.error(`[hooks_cli] ${msg}`, ...args),
   error: (msg: string, err?: unknown, ...args: unknown[]) =>
     console.error(`[hooks_cli] ${msg}`, ...(err ? [err] : []), ...args),
 }

@@ -8,10 +8,13 @@
  * {@link runHook}, serializes the result with {@link serializeOutput}, and
  * writes it to stdout.
  *
- * The cardinal rule: never block Claude Code. Any failure — empty stdin,
- * non-JSON, a throwing handler, an unknown event — results in `{}` (a no-op
- * pass-through) on stdout, so a broken hook degrades to "do nothing" rather
- * than wedging the tool call.
+ * The cardinal rule: never block Claude Code. Any failure results in a wire
+ * response on stdout so a broken hook degrades rather than wedging the tool
+ * call: an unparseable/unreadable stdin payload degrades to an empty payload
+ * (letting each handler apply its own missing-field fallback, e.g.
+ * `sessionStartHandler`'s `GENERIC_REMINDER`; see {@link relay}), while a
+ * throwing handler or an unknown event still degrades all the way to a bare
+ * `{}` no-op pass-through.
  *
  * Importing this module pulls in every hook-registering module for its
  * side-effects, so the registry is populated by the time {@link relay} runs.
@@ -258,9 +261,23 @@ export async function relayInProcess(eventName: string, rawPayload: unknown): Pr
  * Run the hook for `eventName` and write the wire JSON response to stdout.
  *
  * Reads stdin, then delegates to {@link relayInProcess} for everything else,
- * and prints its result. On *any* error — including a stdin read failure —
- * it writes `{}` so the tool call proceeds unchanged. This function never
- * throws.
+ * and prints its result. This function never throws.
+ *
+ * A stdin read failure (timeout, oversized payload, or -- the common real case on
+ * Windows -- a caller that string-interpolated a raw backslash path into the JSON
+ * text instead of escaping it, so `JSON.parse` rejects) degrades to an *empty*
+ * payload (`{}` as a parsed object) rather than abandoning the call outright: the
+ * event name is already known from `eventName` (a CLI arg, never part of the
+ * unparseable stdin), so every handler still runs with all-fields-missing input and
+ * gets the same chance to apply its own graceful fallback that "field omitted"
+ * already gives it (e.g. session_start's `sessionStartHandler` falls back to
+ * `GENERIC_REMINDER` when `cwd` is missing -- see hooks_session_start.ts). Treating
+ * a malformed payload as strictly worse than a merely incomplete one produced a
+ * silent `{"hookType":"pass"}`-shaped `{}` with zero diagnostics, indistinguishable
+ * from "no hook registered for this event," even though the event itself was
+ * perfectly identifiable and every handler was fully able to degrade gracefully.
+ * Only a genuinely unknown/invalid `eventName` -- which no fallback can route --
+ * still short-circuits straight to the bare pass-through `{}` below.
  */
 export async function relay(eventName: string): Promise<void> {
   try {
@@ -268,10 +285,15 @@ export async function relay(eventName: string): Promise<void> {
       process.stdout.write('{}')
       return
     }
-    const rawPayload = await readStdinJson()
+    let rawPayload: unknown
+    try {
+      rawPayload = await readStdinJson()
+    } catch {
+      rawPayload = {}
+    }
     process.stdout.write(await relayInProcess(eventName, rawPayload))
   } catch {
-    // Pass-through on every failure path — a hook must never block Claude Code.
+    // Pass-through on every remaining failure path — a hook must never block Claude Code.
     process.stdout.write('{}')
   }
 }
