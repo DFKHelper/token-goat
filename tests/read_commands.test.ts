@@ -2041,6 +2041,94 @@ describe('read_commands', () => {
       expect(stdout).toContain('<h2>Some Heading</h2>')
       expect(stdout).not.toContain('~0 tok')
     })
+
+    // ---- multi-symbol brief (file::a,b) ------------------------------------
+    describe('multi-symbol brief (file::a,b)', () => {
+      function poolMock(pool: MockSymbol[]): void {
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = pool
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+      }
+
+      const symA: MockSymbol = { name: 'alphaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'alphaFn body', docstring: '' }
+      const symB: MockSymbol = { name: 'betaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 5, body: 'betaFn body', docstring: '' }
+
+      it('returns both symbols merged in text mode', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,betaFn' })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('alphaFn:\n')
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('betaFn:\n')
+        expect(stdout).toContain('betaFn body')
+      })
+
+      it('returns an object keyed by both symbol names in JSON mode, each a real nested object', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,betaFn', json: true })
+          expect(code).toBe(0)
+        })
+        const payload = JSON.parse(stdout) as Record<string, { symbol: { name: string; body: string } }>
+        expect(payload.alphaFn?.symbol.name).toBe('alphaFn')
+        expect(payload.alphaFn?.symbol.body).toBe('alphaFn body')
+        expect(payload.betaFn?.symbol.name).toBe('betaFn')
+        expect(payload.betaFn?.symbol.body).toBe('betaFn body')
+      })
+
+      it('one existing + one missing symbol: existing bundle returned, missing one reported as an error entry, exit code 0', () => {
+        poolMock([symA])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,missingFn', json: true })
+          expect(code).toBe(0)
+        })
+        const payload = JSON.parse(stdout) as Record<string, unknown>
+        expect((payload.alphaFn as { symbol: { body: string } }).symbol.body).toBe('alphaFn body')
+        expect((payload.missingFn as { error: string }).error).toContain('not found')
+      })
+
+      it('returns exit code 1 when no symbol in the list resolves', () => {
+        poolMock([])
+        let code = 0
+        capture(() => { code = runBrief({ spec: 'src/foo.ts::missingA,missingB' }) })
+        expect(code).toBe(1)
+      })
+
+      it('reports an invalid --limit once for the whole call, not once per symbol', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        let code = 0
+        const { stdout, stderr } = capture(() => { code = runBrief({ spec: 'src/foo.ts::alphaFn,betaFn', limit: 0 }) })
+        expect(code).toBe(1)
+        // --limit is a whole-invocation flag, so validating it per sub-call would repeat the usage error once per symbol and dress it up as a per-symbol resolution failure ("alphaFn:\n--limit must be...") -- which also drives anyFound false and routes a usage error through the not-found path.
+        expect(stderr.match(/--limit must be a positive number/g)).toHaveLength(1)
+        expect(stderr).not.toContain('alphaFn:')
+        expect(stderr).not.toContain('betaFn:')
+        expect(stdout).toBe('')
+      })
+
+      it('single-symbol brief output is byte-identical to before (no comma path regression)', () => {
+        poolMock([symA])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => { runBrief({ spec: 'src/foo.ts::alphaFn' }) })
+        expect(stdout).toContain('alphaFn body')
+        // No multi-symbol merge artifacts leak into the single-symbol path.
+        expect(stdout).not.toContain('alphaFn:\n')
+      })
+    })
   })
 
   // ---- runGrep ------------------------------------------------------------
