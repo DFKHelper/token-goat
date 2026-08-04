@@ -65,7 +65,8 @@ function mkIsolated(): string {
  */
 function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; markerPath: string } {
   if (sharedHookFixture === undefined) {
-    const dir = mkdtempSync(join(tmpdir(), 'tg-inprocess-hook-'))
+    // Same 8.3 short-form hazard mkIsolated() guards against, and this dir is the one actually handed to pathToFileURL below -- expanding it there but not here left `RUNNER~1` intact on GitHub's Windows runners, where it URL-encoded to RUNNER%7E1 and the hook library failed to load for the whole file.
+    const dir = expandShortPath(mkdtempSync(join(tmpdir(), 'tg-inprocess-hook-')).replace(/\\/g, '/'))
     const entryPath = join(dir, 'poisoned-entry.js')
     const markerPath = join(dir, 'SPAWNED_MARKER.txt')
     const markerLiteral = JSON.stringify(markerPath)
@@ -74,6 +75,8 @@ function setupPoisonedEntryWithRealHookLib(_cwd: string): { entryPath: string; m
       `require('fs').writeFileSync(${markerLiteral}, 'spawned')\nprocess.stdout.write('{}')\n`,
       'utf8',
     )
+    // Enforce the expansion above rather than trusting it: a surviving `~` segment does not fail here, it fails much later as an opaque "Failed to load url ...%7E1..." collection error for the entire file.
+    if (/~\d/.test(dir)) throw new Error(`hook fixture dir still holds an 8.3 short name: ${dir}`)
     copyFileSync(HOOK_BUNDLE, join(dir, 'token-goat-hook.mjs'))
     // token-goat-hook.mjs bundles everything except its native/optional deps
     // (better-sqlite3, sqlite-vec, tree-sitter*, see esbuild.config.mjs's `external` list),
