@@ -2333,6 +2333,162 @@ describe('read_commands', () => {
         expect(stdout).not.toContain('alphaFn:\n')
       })
     })
+
+    describe('cross-file multi-spec brief (a.ts::x,b.ts::y)', () => {
+      function poolMock(pool: MockSymbol[]): void {
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = pool
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+      }
+
+      const symA: MockSymbol = { name: 'alphaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'alphaFn body', docstring: '' }
+      const symB: MockSymbol = { name: 'betaFn', kind: 'function', filePath: 'src/bar.ts', lineStart: 5, lineEnd: 5, body: 'betaFn body', docstring: '' }
+
+      it('bundles two symbols from two different files in text mode, keyed by file::symbol', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn' })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('src/foo.ts::alphaFn:\n')
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('src/bar.ts::betaFn:\n')
+        expect(stdout).toContain('betaFn body')
+      })
+
+      it('bundles two symbols from two different files in JSON mode, keyed by file::symbol', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn', json: true })
+          expect(code).toBe(0)
+        })
+        const payload = JSON.parse(stdout) as Record<string, { symbol: { name: string; body: string } }>
+        expect(payload['src/foo.ts::alphaFn']?.symbol.name).toBe('alphaFn')
+        expect(payload['src/foo.ts::alphaFn']?.symbol.body).toBe('alphaFn body')
+        expect(payload['src/bar.ts::betaFn']?.symbol.name).toBe('betaFn')
+        expect(payload['src/bar.ts::betaFn']?.symbol.body).toBe('betaFn body')
+      })
+
+      it('keeps blocks distinct when the same symbol name is defined in two different files, keying each by its full file::symbol pair', () => {
+        const fooSame: MockSymbol = { name: 'sameFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'foo sameFn body', docstring: '' }
+        const barSame: MockSymbol = { name: 'sameFn', kind: 'function', filePath: 'src/bar.ts', lineStart: 9, lineEnd: 9, body: 'bar sameFn body', docstring: '' }
+        poolMock([fooSame, barSame])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::sameFn,src/bar.ts::sameFn', json: true })
+          expect(code).toBe(0)
+        })
+        const payload = JSON.parse(stdout) as Record<string, { symbol: { body: string } }>
+        expect(Object.keys(payload)).toHaveLength(2)
+        expect(payload['src/foo.ts::sameFn']?.symbol.body).toBe('foo sameFn body')
+        expect(payload['src/bar.ts::sameFn']?.symbol.body).toBe('bar sameFn body')
+        // Same-name collision would otherwise silently overwrite one block's text with the other's.
+        const { stdout: textOut } = capture(() => { runBrief({ spec: 'src/foo.ts::sameFn,src/bar.ts::sameFn' }) })
+        expect(textOut).toContain('foo sameFn body')
+        expect(textOut).toContain('bar sameFn body')
+      })
+
+      it('a bare segment after file::symbol inherits the previous file across a real file boundary (a.ts::x,b.ts::y,z resolves z against b.ts)', () => {
+        const symX: MockSymbol = { name: 'x', kind: 'function', filePath: 'src/a.ts', lineStart: 1, lineEnd: 1, body: 'x body', docstring: '' }
+        const symY: MockSymbol = { name: 'y', kind: 'function', filePath: 'src/b.ts', lineStart: 2, lineEnd: 2, body: 'y body', docstring: '' }
+        const symZ: MockSymbol = { name: 'z', kind: 'function', filePath: 'src/b.ts', lineStart: 3, lineEnd: 3, body: 'z body', docstring: '' }
+        poolMock([symX, symY, symZ])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/a.ts::x,src/b.ts::y,z' })
+          expect(code).toBe(0)
+        })
+        // The load-bearing assertion: `z` (a bare segment) resolved -- proving the spec crossed a
+        // file boundary and `z` was looked up against src/b.ts (the file to its left), not src/a.ts.
+        // A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path
+        // at all -- it would still resolve today via the pre-existing same-file multi-symbol path,
+        // proving nothing about this change.
+        expect(stdout).toContain('src/a.ts::x:\n')
+        expect(stdout).toContain('x body')
+        expect(stdout).toContain('src/b.ts::y:\n')
+        expect(stdout).toContain('y body')
+        expect(stdout).toContain('z:\n')
+        expect(stdout).toContain('z body')
+      })
+
+      it('one existing + one missing symbol: existing bundle returned, missing one reported as an error entry, exit code 0', () => {
+        poolMock([symA])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::missingFn', json: true })
+          expect(code).toBe(0)
+        })
+        const payload = JSON.parse(stdout) as Record<string, unknown>
+        expect((payload['src/foo.ts::alphaFn'] as { symbol: { body: string } }).symbol.body).toBe('alphaFn body')
+        expect((payload['src/bar.ts::missingFn'] as { error: string }).error).toContain('not found')
+      })
+
+      it('returns exit code 1 when no pair in the cross-file spec resolves', () => {
+        poolMock([])
+        let code = 0
+        capture(() => { code = runBrief({ spec: 'src/foo.ts::missingA,src/bar.ts::missingB' }) })
+        expect(code).toBe(1)
+      })
+
+      it('applies --limit per symbol on the cross-file path, not once globally, matching runBriefMulti\'s same-file behavior', () => {
+        poolMock([symA, symB])
+        const tenCallers = Array.from({ length: 10 }, (_, i) => ({ caller: `caller${i}`, kind: 'function', file: 'g.ts', line: i + 1 }))
+        // Both symbols independently have 10 resolvable callers -- --limit 3 must cap each pair's
+        // own shown list to 3, not share one global slice across the whole call.
+        mockResolveCallers.mockReturnValue(tenCallers)
+        mockFindContainingSection.mockReturnValue(null)
+        const { stdout } = capture(() => {
+          const code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn', limit: 3 })
+          expect(code).toBe(0)
+        })
+        // Pin WHICH symbols were resolved first -- the pre-fix mis-parse would fold this spec into
+        // one bogus lookup and satisfy a bare per-call property assertion vacuously.
+        expect(mockResolveCallers.mock.calls.map((c) => c[0])).toEqual(['alphaFn', 'betaFn'])
+        // Each block independently reports the true count (10) and elides down to the per-symbol limit (3), proving --limit was applied per symbol, not once for the whole call.
+        expect(stdout).toContain('src/foo.ts::alphaFn:\n')
+        expect(stdout).toContain('src/bar.ts::betaFn:\n')
+        const alphaBlock = stdout.slice(stdout.indexOf('src/foo.ts::alphaFn:'), stdout.indexOf('src/bar.ts::betaFn:'))
+        const betaBlock = stdout.slice(stdout.indexOf('src/bar.ts::betaFn:'))
+        expect(alphaBlock).toContain('Callers (10):')
+        expect(alphaBlock).toContain('...(7 more elided)')
+        expect(betaBlock).toContain('Callers (10):')
+        expect(betaBlock).toContain('...(7 more elided)')
+      })
+
+      it('reports an invalid --limit once for the whole call, not once per pair', () => {
+        poolMock([symA, symB])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        let code = 0
+        const { stdout, stderr } = capture(() => { code = runBrief({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn', limit: 0 }) })
+        expect(code).toBe(1)
+        expect(stderr.match(/--limit must be a positive number/g)).toHaveLength(1)
+        expect(stdout).toBe('')
+      })
+
+      it('does not affect a same-file multi-spec (only one distinct file involved) -- byte-identical to the pre-existing same-file output', () => {
+        poolMock([symA, { ...symB, filePath: 'src/foo.ts' }])
+        mockResolveCallers.mockReturnValue([])
+        mockFindContainingSection.mockReturnValue(null)
+        // Only one `::` segment in this spec (`src/foo.ts::alphaFn`), so parseCrossFileMultiSpec
+        // declines and this still runs the pre-existing runBriefMulti same-file path, unchanged.
+        const { stdout } = capture(() => { runBrief({ spec: 'src/foo.ts::alphaFn,betaFn' }) })
+        expect(stdout).toContain('alphaFn:\n')
+        expect(stdout).toContain('betaFn:\n')
+        expect(stdout).not.toContain('src/foo.ts::alphaFn:\n')
+        expect(stdout).not.toContain('src/foo.ts::betaFn:\n')
+      })
+    })
   })
 
   // ---- runGrep ------------------------------------------------------------
