@@ -150,6 +150,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   skill_load: SOURCE_SKILL,
   skill_oversized_first_load: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
+  // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.
+  agent_report_compact: SOURCE_CONTENT,
   content_compress: SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,

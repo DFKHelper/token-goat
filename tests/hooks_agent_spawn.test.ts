@@ -9,6 +9,8 @@ import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
+import { summarize } from '../src/stats.js'
+import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
@@ -364,6 +366,78 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     const report = ['Summary.', '```', ...Array.from({ length: 5 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'y'.repeat(9000)].join('\n')
     const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
     expect(result.hookType).toBe('context')
+  })
+
+  it('treats an inner ``` inside a 4-backtick fence as content, not as a closer (a naive ```-toggle closes at the inner line and mis-slices the surrounding prose)', async () => {
+    const tail = 'TRAILING PROSE SENTINEL'
+    const report = [
+      'Intro.',
+      '````',
+      ...Array.from({ length: 30 }, (_, i) => `outer ${i}`),
+      '```',
+      'inner fenced example',
+      '```',
+      ...Array.from({ length: 30 }, (_, i) => `outer tail ${i}`),
+      '````',
+      tail,
+      'p'.repeat(8000),
+    ].join('\n')
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      const out = result.updatedOutput
+      // One block spanning both 4-backtick markers: its ends survive, its middle (including the whole inner fence) goes, and the prose after the real closer is untouched.
+      expect(out).toContain('outer 0')
+      expect(out).toContain('outer tail 29')
+      expect(out).toContain(tail)
+      expect(out).not.toContain('inner fenced example')
+      expect(out.match(/lines elided/g)).toHaveLength(1)
+    }
+  })
+
+  it('collapses a ~~~ fence and does not let a ``` line close it', async () => {
+    const report = [
+      'Intro.',
+      '~~~',
+      ...Array.from({ length: 25 }, (_, i) => `tilde body ${i}`),
+      '```',
+      ...Array.from({ length: 25 }, (_, i) => `still inside ${i}`),
+      '~~~',
+      'AFTER TILDE FENCE',
+      'q'.repeat(8000),
+    ].join('\n')
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toContain('AFTER TILDE FENCE')
+      expect(result.updatedOutput).toContain('tilde body 0')
+      expect(result.updatedOutput).toContain('still inside 24')
+      expect(result.updatedOutput.match(/lines elided/g)).toHaveLength(1)
+    }
+  })
+
+  it('records the real byte saving under agent_report_compact, not a zero-valued event', async () => {
+    // recordStat writes through getGlobalDb() -> dataDir(), driven by LOCALAPPDATA/XDG_DATA_HOME and NOT by TOKEN_GOAT_HOME. Without pinning both, this assertion reads a different database than the hook just wrote to -- and worse, the hook writes into the developer's real global index. Pin both to the exact parent dataDirForHome() derives its per-platform layout from, so writer and reader agree on every platform rather than only on win32.
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      const report = ['Intro.', '```', ...Array.from({ length: 400 }, (_, i) => `gate line ${i} with padding`), '```'].join('\n')
+      const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+      expect(result.hookType).toBe('rewriteOutput')
+      // The whole point: a rewrite that removes thousands of bytes must not report 0 the way the advisory session_hint sibling correctly does.
+      expect(summarize(3650).by_kind['agent_report_compact']?.bytes_saved ?? 0).toBeGreaterThan(1000)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
   })
 
   it('emits an unterminated trailing fence verbatim rather than guessing where it ends', async () => {
