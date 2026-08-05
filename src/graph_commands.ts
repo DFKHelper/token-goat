@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor } from './read_commands.js'
+import { extractImports, importsExtensionFor, findSpecSeparator } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage } from './util.js'
@@ -153,6 +153,13 @@ export function isDeadSymbol(name: string, refCount: number): boolean {
 
 // ---- file cache helper used by multiple commands ----------------------------
 
+/** Splits a `token-goat callers/call-chain/impact` positional argument into the bare symbol name to query plus, when a `::`-prefixed file was given, the raw file text -- the same `file::symbol` grammar `refs`/`brief` use to disambiguate WHICH same-named definition is meant. Reimplements read_commands.ts's unexported `parseReadSpec` locally via its exported `findSpecSeparator` instead of widening that module's public surface for a single three-line split; both stay in sync automatically since `findSpecSeparator` IS the shared separator logic both would otherwise duplicate. With no `::`, returns only `name` (the whole input unchanged), so every bare-symbol call path stays byte-for-byte identical to before this function existed. */
+function parseGraphSymbolSpec(spec: string): { name: string; file?: string } {
+  const colonIdx = findSpecSeparator(spec)
+  if (colonIdx === -1) return { name: spec }
+  return { name: spec.slice(colonIdx + 2), file: spec.slice(0, colonIdx) }
+}
+
 function buildFileSymCache(): (fp: string) => SymbolEntry[] {
   const cache = new Map<string, SymbolEntry[]>()
   return (fp: string): SymbolEntry[] => {
@@ -257,7 +264,14 @@ export function runCallers(opts: CallersOptions): number {
   // Resolved once here (not left to resolveCallers' own internal default) so the same value
   // scopes the query AND shortens the printed paths below -- one git shell-out, not two.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const entries = resolveCallers(opts.symbol, opts.limit, undefined, rootDir)
+  const { name, file } = parseGraphSymbolSpec(opts.symbol)
+  // `file`, when present, only disambiguates WHICH same-named definition is meant -- resolved to an index-path hint and threaded straight into resolveCallers' pre-existing `filePath` parameter (its own `filterRefsForSymbol` attribution logic above), never used to filter queryRefs' results by call-SITE file, which is the exact bug 0ec04da8 fixed: a call site's file is where a call OCCURS, not where the symbol is DEFINED, so filtering refs by it would silently drop legitimate callers living in every other file.
+  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
+  if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
+    emitErr(`Symbol '${name}' not found in '${file}'`)
+    return 1
+  }
+  const entries = resolveCallers(name, opts.limit, fileHint, rootDir)
   if (entries.length === 0) {
     emitErr(`No references found for '${opts.symbol}'`)
     return 1
@@ -296,13 +310,22 @@ export function runCallChain(opts: CallChainOptions): number {
   // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
   // an unrelated project on the same machine doesn't leak into this project's call chains.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const { name, file } = parseGraphSymbolSpec(opts.symbol)
+  // `file`, when present, only disambiguates WHICH same-named definition is the BFS root -- resolved to an index-path hint, never used to filter queryRefs' results by call-SITE file (the 0ec04da8 bug class: a call site's file is where a call OCCURS, not where the symbol is DEFINED).
+  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
 
   // Verify the symbol is actually indexed before doing any BFS work -- otherwise a nonexistent
   // symbol falls straight through to bfsCallChains, which has no way to distinguish "no callers"
   // from "no such symbol" and returns `[[symbol]]` either way, fabricating a false "root entry
   // point" result (and, with --json, a machine-consumable one). Every sibling command
   // (similar/blame/refs/callers) already errors on an unknown symbol; this makes call-chain match.
-  if (querySymbols({ name: opts.symbol, rootDir, limit: 1 }).length === 0) {
+  if (fileHint !== undefined) {
+    // A `file::symbol` spec names a specific definition, so the existence check must be scoped to that file too -- matching refs'/brief's own "Symbol 'X' not found in 'Y'" wording verbatim rather than the generic message below, which stays reserved for the bare-name path.
+    if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
+      emitErr(`Symbol '${name}' not found in '${file}'`)
+      return 1
+    }
+  } else if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
     emitErr(`Symbol not found: ${opts.symbol}`)
     return 1
   }
@@ -311,18 +334,20 @@ export function runCallChain(opts: CallChainOptions): number {
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
 
-  const callersOf: CallersOfFn = (name: string): string[] => {
-    const refs = queryRefs({ name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+  const callersOf: CallersOfFn = (n: string): string[] => {
+    const refs = queryRefs({ name: n, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     if (refs.length === 0) return []
+    // Only the ROOT hop (n === name, the exact symbol the spec asked to disambiguate) can be scoped by fileHint via filterRefsForSymbol, mirroring resolveCallers' own attribution pattern -- every hop beyond that resolves to a caller's bare symbol NAME with no file attached to disambiguate against, so it deliberately stays unscoped rather than fabricating a hint the BFS has no way to carry forward past the first hop.
+    const scoped = fileHint !== undefined && n === name ? filterRefsForSymbol(refs, n, fileHint, getSyms) : refs
     const names = new Set<string>()
-    for (const ref of refs) {
+    for (const ref of scoped) {
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
       if (enc !== null) names.add(enc.name)
     }
     return [...names]
   }
 
-  const chains = bfsCallChains(opts.symbol, callersOf, maxDepth)
+  const chains = bfsCallChains(name, callersOf, maxDepth)
 
   if (opts.json === true) {
     emit(JSON.stringify({ chains }, null, 2))
@@ -333,8 +358,8 @@ export function runCallChain(opts: CallChainOptions): number {
   // via `complete.push(chain)`, so `[[symbol]]` (one chain, one element) is the actual "no
   // callers" signal, not `chains.length === 0`. The depth<=0 rejection above rules out the only
   // other way bfsCallChains produces this exact shape (its own `maxDepth <= 0` short-circuit).
-  if (chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === opts.symbol) {
-    emit(`${opts.symbol}  (no callers)`)
+  if (chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === name) {
+    emit(`${name}  (no callers)`)
     return 0
   }
 
@@ -382,12 +407,20 @@ export function runImpact(opts: ImpactOptions): number {
   // (constants.ts); scope every ref lookup to the current project root so a same-named symbol in
   // an unrelated project on the same machine doesn't leak into this project's impact analysis.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const { name: rootName, file } = parseGraphSymbolSpec(opts.symbol)
+  // `file`, when present, only disambiguates WHICH same-named definition is the BFS root -- resolved to an index-path hint, never used to filter queryRefs' results by call-SITE file (the 0ec04da8 bug class: a call site's file is where a call OCCURS, not where the symbol is DEFINED).
+  const fileHint = file !== undefined ? resolveIndexPath(file, rootDir) : undefined
+  // Unlike runCallChain, runImpact never checked symbol existence up front (a nonexistent bare name just BFS's to zero refs and reports "No callers found" below, which is a fine existing contract) -- this check is added ONLY on the file::symbol path, where a spec names a specific definition and must match refs'/brief's own "Symbol 'X' not found in 'Y'" wording rather than silently falling through to the generic empty-result message.
+  if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
+    emitErr(`Symbol '${rootName}' not found in '${file}'`)
+    return 1
+  }
   // Hoisted once outside the BFS loop -- buildFileSymCache() must run a single time and be reused
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
 
-  const hops = new Map<string, number>([[opts.symbol, 0]])
-  const queue: Array<[string, number]> = [[opts.symbol, 0]]
+  const hops = new Map<string, number>([[rootName, 0]])
+  const queue: Array<[string, number]> = [[rootName, 0]]
 
   while (queue.length > 0) {
     const item = queue.shift()
@@ -395,7 +428,9 @@ export function runImpact(opts: ImpactOptions): number {
     const [name, depth] = item
     if (depth >= DEPTH_CAP) continue
     const refs = queryRefs({ name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
-    for (const ref of refs) {
+    // Only the ROOT hop (name === rootName, the exact symbol the spec asked to disambiguate) can be scoped by fileHint via filterRefsForSymbol, mirroring resolveCallers'/runCallChain's own attribution pattern -- every hop beyond that resolves to a caller's bare symbol NAME with no file attached to disambiguate against.
+    const scoped = fileHint !== undefined && name === rootName ? filterRefsForSymbol(refs, name, fileHint, getSyms) : refs
+    for (const ref of scoped) {
       const newHop = depth + 1
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
       if (enc === null) {
@@ -417,7 +452,7 @@ export function runImpact(opts: ImpactOptions): number {
     }
   }
 
-  hops.delete(opts.symbol)
+  hops.delete(rootName)
 
   const sorted = [...hops.entries()]
     .sort(compareHopEntries)

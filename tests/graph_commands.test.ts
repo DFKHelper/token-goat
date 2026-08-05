@@ -986,6 +986,135 @@ describe('runCallers integration', () => {
   })
 })
 
+// ---- runCallers file::symbol spec (real disambiguation via resolveCallers' filePath param) ---
+
+describe('runCallers file::symbol spec', () => {
+  it('accepts file::symbol and disambiguates which same-named definition is meant', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-spec-'))
+    try {
+      const defA = normalizePath(join(root, 'gspec-a.ts'))
+      const defB = normalizePath(join(root, 'gspec-b.ts'))
+      // defB defines its OWN copy and calls it locally -- filterRefsForSymbol must attribute that local call to defB's definition only, never to defA's.
+      writeFileSync(defA, 'export function gspecFn4x9() { return 1 }\n')
+      writeFileSync(defB, 'export function gspecFn4x9() { return 2 }\nfunction localCaller() { gspecFn4x9() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        expect(runCallers({ symbol: `${defA}::gspecFn4x9` })).toBe(1) // defA's own copy is never called -- "no references found" for that definition specifically.
+        const capturedB = captureStdout(() => {
+          expect(runCallers({ symbol: `${defB}::gspecFn4x9` })).toBe(0)
+        })
+        expect(capturedB).toContain('localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
+  // than the one that defines the symbol must still surface when a file::symbol spec is used,
+  // because the file half of the spec only disambiguates WHICH definition is meant, it must never
+  // scope queryRefs itself to call sites inside that same file.
+  it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-otherfile-'))
+    try {
+      const defFile = normalizePath(join(root, 'gspec-def.ts'))
+      const callerFile = normalizePath(join(root, 'gspec-remote-caller.ts'))
+      writeFileSync(defFile, 'export function gspecRemoteFn2q7() { return 1 }\n')
+      writeFileSync(callerFile, 'function remoteCaller() { gspecRemoteFn2q7() }\n')
+      indexFileSync(defFile)
+      indexFileSync(callerFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runCallers({ symbol: `${defFile}::gspecRemoteFn2q7` })).toBe(0)
+        })
+        expect(captured).toContain('remoteCaller')
+        expect(captured).toContain('gspec-remote-caller.ts') // the caller's OWN file, not defFile -- proves the ref wasn't dropped by a same-file scope.
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('bare symbol name stays byte-for-byte unchanged: reports every same-named caller regardless of defining file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-bare-'))
+    try {
+      const defA = normalizePath(join(root, 'gspec-bare-a.ts'))
+      const defB = normalizePath(join(root, 'gspec-bare-b.ts'))
+      writeFileSync(defA, 'export function gspecBareFn8h3() { return 1 }\n')
+      writeFileSync(defB, 'export function gspecBareFn8h3() { return 2 }\nfunction localCaller() { gspecBareFn8h3() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runCallers({ symbol: 'gspecBareFn8h3' })).toBe(0)
+        })
+        expect(captured).toContain('localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-missing-'))
+    try {
+      const defFile = normalizePath(join(root, 'gspec-missing.ts'))
+      writeFileSync(defFile, 'export function gspecMissingFn1a2() { return 1 }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          expect(runCallers({ symbol: `${defFile}::noSuchSymbolXyz9` })).toBe(1)
+        })
+        expect(errCaptured).toContain(`Symbol 'noSuchSymbolXyz9' not found in '${defFile}'`)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
+  // trusting any property on it -- a property-only assertion over mock.calls would pass
+  // vacuously even if the wrong number/order of querySymbols calls happened.
+  it('pins the disambiguating querySymbols call as the first call, with the exact name/filePath/limit it must use', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-pin-'))
+    try {
+      const defFile = normalizePath(join(root, 'gspec-pin.ts'))
+      writeFileSync(defFile, 'export function gspecPinFn3z7() { return 1 }\nfunction caller() { gspecPinFn3z7() }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        vi.mocked(querySymbols).mockClear()
+        expect(runCallers({ symbol: `${defFile}::gspecPinFn3z7` })).toBe(0)
+        const calls = vi.mocked(querySymbols).mock.calls
+        expect(calls.length).toBeGreaterThan(0)
+        expect(calls[0]?.[0]).toEqual({ name: 'gspecPinFn3z7', filePath: defFile, limit: 1 })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- resolveCallers/runCallers cross-project scoping (regression) -----------
 
 describe('resolveCallers cross-project scoping', () => {
@@ -1516,7 +1645,140 @@ describe('runCallChain error handling and no-callers branch', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
 
+// ---- runCallChain file::symbol spec (real disambiguation, ROOT hop only) ----
+
+describe('runCallChain file::symbol spec', () => {
+  it('accepts file::symbol and disambiguates which same-named definition the chain starts from at the root hop', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-spec-'))
+    try {
+      const defA = normalizePath(join(root, 'chain-a.ts'))
+      const defB = normalizePath(join(root, 'chain-b.ts'))
+      writeFileSync(defA, 'export function chainSpecFn6r4() { return 1 }\n')
+      writeFileSync(defB, 'export function chainSpecFn6r4() { return 2 }\nfunction localCaller() { chainSpecFn6r4() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const capturedA = captureStdout(() => {
+          expect(runCallChain({ symbol: `${defA}::chainSpecFn6r4` })).toBe(0)
+        })
+        expect(capturedA).toContain('(no callers)') // defA's own copy is never called.
+
+        const capturedB = captureStdout(() => {
+          expect(runCallChain({ symbol: `${defB}::chainSpecFn6r4` })).toBe(0)
+        })
+        expect(capturedB).toContain('chainSpecFn6r4 -> localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
+  // than the one that defines the symbol must still surface in the chain when file::symbol names
+  // the defining file, since the file half only disambiguates WHICH definition the root is.
+  it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-otherfile-'))
+    try {
+      const defFile = normalizePath(join(root, 'chain-def.ts'))
+      const callerFile = normalizePath(join(root, 'chain-remote-caller.ts'))
+      writeFileSync(defFile, 'export function chainRemoteFn5t2() { return 1 }\n')
+      writeFileSync(callerFile, 'function remoteChainCaller() { chainRemoteFn5t2() }\n')
+      indexFileSync(defFile)
+      indexFileSync(callerFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runCallChain({ symbol: `${defFile}::chainRemoteFn5t2` })).toBe(0)
+        })
+        expect(captured).toContain('chainRemoteFn5t2 -> remoteChainCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('bare symbol name stays byte-for-byte unchanged: chains from every same-named definition regardless of file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-bare-'))
+    try {
+      const defA = normalizePath(join(root, 'chain-bare-a.ts'))
+      const defB = normalizePath(join(root, 'chain-bare-b.ts'))
+      writeFileSync(defA, 'export function chainBareFn9y6() { return 1 }\n')
+      writeFileSync(defB, 'export function chainBareFn9y6() { return 2 }\nfunction localCaller() { chainBareFn9y6() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainBareFn9y6' })).toBe(0)
+        })
+        expect(captured).toContain('chainBareFn9y6 -> localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-missing-'))
+    try {
+      const defFile = normalizePath(join(root, 'chain-missing.ts'))
+      writeFileSync(defFile, 'export function chainMissingFn2w8() { return 1 }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          expect(runCallChain({ symbol: `${defFile}::noSuchSymbolAbc3` })).toBe(1)
+        })
+        expect(errCaptured).toContain(`Symbol 'noSuchSymbolAbc3' not found in '${defFile}'`)
+        expect(errCaptured).not.toContain('Symbol not found:') // the generic bare-name wording must not leak onto the file::symbol path.
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
+  // trusting any property on it -- a property-only assertion over mock.calls would pass
+  // vacuously even if the wrong number/order of querySymbols calls happened.
+  it('pins the disambiguating querySymbols existence-check call as the first call, with the exact name/filePath/limit it must use', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-pin-'))
+    try {
+      const defFile = normalizePath(join(root, 'chain-pin.ts'))
+      writeFileSync(defFile, 'export function chainPinFn4u9() { return 1 }\nfunction caller() { chainPinFn4u9() }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        vi.mocked(querySymbols).mockClear()
+        expect(runCallChain({ symbol: `${defFile}::chainPinFn4u9` })).toBe(0)
+        const calls = vi.mocked(querySymbols).mock.calls
+        expect(calls.length).toBeGreaterThan(0)
+        expect(calls[0]?.[0]).toEqual({ name: 'chainPinFn4u9', filePath: defFile, limit: 1 })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runCallChain error handling and no-callers branch, part 2', () => {
   // Edge case: bfsCallChains also returns `[[start]]` when maxDepth <= 0 (its own first-line
   // short-circuit), for a symbol that may well have real callers. Rejecting non-positive --depth
   // up front (matching runCallers'/runSimilar's own --limit/--top <= 0 convention) means this
@@ -1630,6 +1892,133 @@ describe('runImpact integration', () => {
   it('exits 1 for an unknown symbol', () => {
     const code = runImpact({ symbol: '__xyzzy_no_such_symbol_9f3k__' })
     expect(code).toBe(1)
+  })
+})
+
+// ---- runImpact file::symbol spec (real disambiguation, ROOT hop only) -------
+
+describe('runImpact file::symbol spec', () => {
+  it('accepts file::symbol and disambiguates which same-named definition the walk starts from at the root hop', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-spec-'))
+    try {
+      const defA = normalizePath(join(root, 'impact-a.ts'))
+      const defB = normalizePath(join(root, 'impact-b.ts'))
+      writeFileSync(defA, 'export function impactSpecFn7p1() { return 1 }\n')
+      writeFileSync(defB, 'export function impactSpecFn7p1() { return 2 }\nfunction localCaller() { impactSpecFn7p1() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        expect(runImpact({ symbol: `${defA}::impactSpecFn7p1` })).toBe(1) // defA's own copy is never called -- no impacted callers for that definition specifically.
+
+        const capturedB = captureStdout(() => {
+          expect(runImpact({ symbol: `${defB}::impactSpecFn7p1` })).toBe(0)
+        })
+        expect(capturedB).toContain('localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
+  // than the one that defines the symbol must still surface in the impact walk when file::symbol
+  // names the defining file, since the file half only disambiguates WHICH definition the root is.
+  it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-otherfile-'))
+    try {
+      const defFile = normalizePath(join(root, 'impact-def.ts'))
+      const callerFile = normalizePath(join(root, 'impact-remote-caller.ts'))
+      writeFileSync(defFile, 'export function impactRemoteFn8s5() { return 1 }\n')
+      writeFileSync(callerFile, 'function remoteImpactCaller() { impactRemoteFn8s5() }\n')
+      indexFileSync(defFile)
+      indexFileSync(callerFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runImpact({ symbol: `${defFile}::impactRemoteFn8s5` })).toBe(0)
+        })
+        expect(captured).toContain('remoteImpactCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('bare symbol name stays byte-for-byte unchanged: walks from every same-named definition regardless of file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-bare-'))
+    try {
+      const defA = normalizePath(join(root, 'impact-bare-a.ts'))
+      const defB = normalizePath(join(root, 'impact-bare-b.ts'))
+      writeFileSync(defA, 'export function impactBareFn4v6() { return 1 }\n')
+      writeFileSync(defB, 'export function impactBareFn4v6() { return 2 }\nfunction localCaller() { impactBareFn4v6() }\n')
+      indexFileSync(defA)
+      indexFileSync(defB)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactBareFn4v6' })).toBe(0)
+        })
+        expect(captured).toContain('localCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-missing-'))
+    try {
+      const defFile = normalizePath(join(root, 'impact-missing.ts'))
+      writeFileSync(defFile, 'export function impactMissingFn6c3() { return 1 }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          expect(runImpact({ symbol: `${defFile}::noSuchSymbolDef7` })).toBe(1)
+        })
+        expect(errCaptured).toContain(`Symbol 'noSuchSymbolDef7' not found in '${defFile}'`)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
+  // trusting any property on it -- a property-only assertion over mock.calls would pass
+  // vacuously even if the wrong number/order of querySymbols calls happened.
+  it('pins the disambiguating querySymbols existence-check call as the first call, with the exact name/filePath/limit it must use', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-pin-'))
+    try {
+      const defFile = normalizePath(join(root, 'impact-pin.ts'))
+      writeFileSync(defFile, 'export function impactPinFn5w2() { return 1 }\nfunction caller() { impactPinFn5w2() }\n')
+      indexFileSync(defFile)
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        vi.mocked(querySymbols).mockClear()
+        expect(runImpact({ symbol: `${defFile}::impactPinFn5w2` })).toBe(0)
+        const calls = vi.mocked(querySymbols).mock.calls
+        expect(calls.length).toBeGreaterThan(0)
+        expect(calls[0]?.[0]).toEqual({ name: 'impactPinFn5w2', filePath: defFile, limit: 1 })
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
