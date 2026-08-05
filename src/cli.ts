@@ -2691,7 +2691,7 @@ export function buildProgram(): Command {
   program
     .command('brief <spec>')
     .description(
-      'symbol body + callers + containing doc section in one call (spec: file::symbol; comma-separated file::a,b for a merged multi-symbol view)',
+      'symbol body + callers + containing doc section in one call (spec: file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported)',
     )
     .option('-j, --json', 'output as JSON')
     .option('--limit <n>', 'max callers to show (default: 20)')

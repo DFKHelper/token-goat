@@ -2632,12 +2632,47 @@ function runBriefMulti(file: string, symbols: string[], opts: BriefOptions): { t
   return { text, code: anyFound ? 0 : 1 }
 }
 
-/** Handle ``token-goat brief "file::symbol"``: dispatches to {@link runBriefMulti} for a comma-separated `file::a,b` spec, otherwise runs the single-symbol {@link runBriefCore} path, then emits the result -- `emitErr` on a nonzero code, `emit` on success. */
+/** Cross-file brief, e.g. `src/a.ts::fnA,src/b.ts::fnB`. Body mirrors runBriefMulti's own per-symbol loop above (same runBriefCore sub-call, same suppressStat + single fullSourceBytes-over-all-files convention), swapping the shared `file` for each pair's own -- and mirrors runSectionCrossFile/runRefsCrossFile/runReadMulti's `keyFor` rule: one distinct file across all pairs keys by bare symbol (matches today's same-file `brief "file::a,b"` output byte-for-byte), more than one keys by the full `file::symbol` pair so two files contributing the same symbol name stay distinct. */
+function runBriefCrossFile(pairs: { file: string; symbol: string }[], opts: BriefOptions): { text: string; code: number } {
+  const distinctFiles = new Set(pairs.map((p) => p.file))
+  const keyFor = (p: { file: string; symbol: string }): string => (distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`)
+
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+
+  for (const { file, symbol } of pairs) {
+    const key = keyFor({ file, symbol })
+    const sub = runBriefCore({ ...opts, spec: `${file}::${symbol}`, suppressStat: true })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) {
+      jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      continue
+    }
+    textBlocks.push(`${key}:\n${sub.text}`)
+  }
+
+  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, process.cwd())))
+  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
+  return { text, code: anyFound ? 0 : 1 }
+}
+
+/** Handle ``token-goat brief "file::symbol"``: dispatches to {@link runBriefCrossFile} for a cross-file `a.ts::x,b.ts::y` spec, to {@link runBriefMulti} for a comma-separated same-file `file::a,b` spec, otherwise runs the single-symbol {@link runBriefCore} path, then emits the result -- `emitErr` on a nonzero code, `emit` on success. */
 export function runBrief(opts: BriefOptions): number {
   // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
   if (opts.limit !== undefined && opts.limit <= 0) {
     emitErr(`--limit must be a positive number, got: ${opts.limit}`)
     return 1
+  }
+
+  // Cross-file multi-spec `src/a.ts::fnA,src/b.ts::fnB`. Checked before the single-file `::` handling below for the same reason runRead/runSection/runRefs check it first (see parseCrossFileMultiSpec) -- parseReadSpec's `lastIndexOf('::')` would otherwise fold a spec crossing a file boundary into one bogus file/symbol-list pair. parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::a,b` multi-symbol form.
+  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
+  if (crossFilePairs !== null) {
+    const { text, code } = runBriefCrossFile(crossFilePairs, opts)
+    if (code === 0) emit(text)
+    else emitErr(text)
+    return code
   }
 
   const { file, symbol } = parseReadSpec(opts.spec)
