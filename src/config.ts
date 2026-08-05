@@ -42,6 +42,15 @@ export interface BashCompressConfig {
   min_net_savings_bytes: number
 }
 
+export interface AgentReportConfig {
+  /** Reports at or above this many bytes are cached and eligible for envelope compaction. */
+  min_bytes: number
+  /** A fenced block must exceed this many body lines before any of it is elided. */
+  fence_collapse_min_lines: number
+  /** Lines kept at each end of a collapsed fenced block. */
+  fence_collapse_keep_lines: number
+}
+
 export interface BashDiffConfig {
   max_hunks_per_file: number
 }
@@ -220,6 +229,7 @@ export interface HintStatsConfig {
 export interface Config {
   compact_assist: CompactAssistConfig
   bash_compress: BashCompressConfig
+  agent_report: AgentReportConfig
   bash_diff: BashDiffConfig
   bash_severity_log: SeverityLogConfig
   post_read_code_compress: CodeCompressConfig
@@ -280,6 +290,12 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     // while the real-win half sits at p75=393B / p90=952B net. 100 kills the
     // marker-doesn't-even-pay-for-itself tier without touching genuine wins.
     min_net_savings_bytes: 100,
+  },
+  agent_report: {
+    // Well above the ~2,220 char/call average measured from real claude-skills session transcripts, so only genuine outlier reports are touched. Preserves the hardcoded AGENT_RESULT_CACHE_MIN_BYTES this replaced, so untouched-config installs see no behavior change.
+    min_bytes: 8000,
+    fence_collapse_min_lines: 20,
+    fence_collapse_keep_lines: 6,
   },
   bash_diff: {
     max_hunks_per_file: 10,
@@ -424,6 +440,7 @@ export function defaultConfig(): Config {
   return {
     compact_assist: getDefaultConfig('compact_assist') as CompactAssistConfig,
     bash_compress: getDefaultConfig('bash_compress') as BashCompressConfig,
+    agent_report: getDefaultConfig('agent_report') as AgentReportConfig,
     bash_diff: getDefaultConfig('bash_diff') as BashDiffConfig,
     bash_severity_log: getDefaultConfig('bash_severity_log') as SeverityLogConfig,
     post_read_code_compress: getDefaultConfig('post_read_code_compress') as CodeCompressConfig,
@@ -520,6 +537,10 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'bash_compress.cache_max_bytes': {min: 1024, max: 4 * 1024 * 1024 * 1024},
   'bash_compress.cache_max_bytes_per_output': {min: 1024, max: 4 * 1024 * 1024 * 1024, clampTo: 'bash_compress.cache_max_bytes'},
   'bash_compress.min_net_savings_bytes': {min: 0, max: 1024 * 1024},
+  'agent_report.min_bytes': {min: 0, max: 100 * 1024 * 1024},
+  'agent_report.fence_collapse_min_lines': {min: 1, max: 100_000},
+  // Bounded below the min-lines floor's own minimum is NOT enforceable here (bounds are per-key), so the loader clamps keep_lines against min_lines after both are read -- see the clamp comment there.
+  'agent_report.fence_collapse_keep_lines': {min: 0, max: 100_000},
   'bash_diff.max_hunks_per_file': {min: 1, max: 10000},
   'bash_severity_log.context_lines': {min: 0, max: 100},
   'bash_severity_log.score_threshold': {min: 0.0, max: 1.0},
@@ -1091,6 +1112,18 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // exceed the total budget.
   bc.cache_max_bytes_per_output = Math.min(bc.cache_max_bytes_per_output, bc.cache_max_bytes)
 
+  const ar_raw = section(raw, 'agent_report')
+  const ar = getDefaultConfig('agent_report') as AgentReportConfig
+  ar.min_bytes = validatedInt(ar_raw['min_bytes'], ar.min_bytes, ...boundsOf('agent_report.min_bytes'))
+  ar.fence_collapse_min_lines = validatedInt(ar_raw['fence_collapse_min_lines'], ar.fence_collapse_min_lines, ...boundsOf('agent_report.fence_collapse_min_lines'))
+  ar.fence_collapse_keep_lines = validatedInt(ar_raw['fence_collapse_keep_lines'], ar.fence_collapse_keep_lines, ...boundsOf('agent_report.fence_collapse_keep_lines'))
+  // Env overrides applied after the file values, matching bash_compress above. Without these the CONFIG_KEY_ENV_OVERRIDES entries would be dead config: listed by `config-get`/doctor, settable by a user, and silently ignored.
+  ar.min_bytes = envInt('TOKEN_GOAT_AGENT_REPORT_MIN_BYTES', ar.min_bytes, ...boundsOf('agent_report.min_bytes'))
+  ar.fence_collapse_min_lines = envInt('TOKEN_GOAT_AGENT_REPORT_FENCE_MIN_LINES', ar.fence_collapse_min_lines, ...boundsOf('agent_report.fence_collapse_min_lines'))
+  ar.fence_collapse_keep_lines = envInt('TOKEN_GOAT_AGENT_REPORT_FENCE_KEEP_LINES', ar.fence_collapse_keep_lines, ...boundsOf('agent_report.fence_collapse_keep_lines'))
+  // Two keep-ends plus the elision marker must be strictly smaller than the block they replace, or "collapsing" a block would emit MORE lines than it removed. Clamped rather than rejected so a hand-edited config degrades to "collapse less" instead of failing the hook.
+  ar.fence_collapse_keep_lines = Math.min(ar.fence_collapse_keep_lines, Math.floor((ar.fence_collapse_min_lines - 1) / 2))
+
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig
   bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, ...boundsOf('bash_diff.max_hunks_per_file'))
@@ -1295,6 +1328,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   return {
     compact_assist: ca,
     bash_compress: bc,
+    agent_report: ar,
     bash_diff: bd,
     bash_severity_log: sl,
     post_read_code_compress: cc,
@@ -1332,6 +1366,9 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'bash_compress.cache_max_bytes': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES'],
   'bash_compress.cache_max_bytes_per_output': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT'],
   'bash_compress.min_net_savings_bytes': ['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'],
+  'agent_report.min_bytes': ['TOKEN_GOAT_AGENT_REPORT_MIN_BYTES'],
+  'agent_report.fence_collapse_min_lines': ['TOKEN_GOAT_AGENT_REPORT_FENCE_MIN_LINES'],
+  'agent_report.fence_collapse_keep_lines': ['TOKEN_GOAT_AGENT_REPORT_FENCE_KEEP_LINES'],
   'session_brief.enabled': ['TOKEN_GOAT_SESSION_BRIEF'],
   'skill_preservation.enabled': ['TOKEN_GOAT_SKILL_PRESERVATION'],
   'skill_preservation.compress_bodies': ['TOKEN_GOAT_SKILL_COMPRESS'],
@@ -1413,6 +1450,11 @@ export function saveConfig(config: Config): void {
       cache_max_bytes: bc.cache_max_bytes,
       cache_max_bytes_per_output: bc.cache_max_bytes_per_output,
       min_net_savings_bytes: bc.min_net_savings_bytes,
+    },
+    agent_report: {
+      min_bytes: config.agent_report.min_bytes,
+      fence_collapse_min_lines: config.agent_report.fence_collapse_min_lines,
+      fence_collapse_keep_lines: config.agent_report.fence_collapse_keep_lines,
     },
     bash_diff: {
       max_hunks_per_file: config.bash_diff.max_hunks_per_file,
