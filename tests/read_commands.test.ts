@@ -1185,6 +1185,86 @@ describe('read_commands', () => {
       })
     })
 
+    // ---- cross-file multi-symbol read (a.ts::x,b.ts::y) --------------------
+    describe('cross-file multi-symbol read (a.ts::x,b.ts::y)', () => {
+      function poolMock(pool: MockSymbol[]): void {
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = pool
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+      }
+
+      const symA: MockSymbol = { name: 'alphaFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'alphaFn body', docstring: '' }
+      const symB: MockSymbol = { name: 'betaFn', kind: 'function', filePath: 'src/bar.ts', lineStart: 5, lineEnd: 5, body: 'betaFn body', docstring: '' }
+
+      it('reads two symbols from two different files in text mode, keyed by file::symbol', () => {
+        poolMock([symA, symB])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('src/foo.ts::alphaFn:\n')
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('src/bar.ts::betaFn:\n')
+        expect(stdout).toContain('betaFn body')
+      })
+
+      it('reads two symbols from two different files in JSON mode, keyed by file::symbol', () => {
+        poolMock([symA, symB])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,src/bar.ts::betaFn', json: true })
+        expect(code).toBe(0)
+        const payload = JSON.parse(stdout) as Record<string, { name: string; body: string }>
+        expect(payload['src/foo.ts::alphaFn']?.name).toBe('alphaFn')
+        expect(payload['src/foo.ts::alphaFn']?.body).toBe('alphaFn body')
+        expect(payload['src/bar.ts::betaFn']?.name).toBe('betaFn')
+        expect(payload['src/bar.ts::betaFn']?.body).toBe('betaFn body')
+      })
+
+      it('same symbol name in two different files: both entries survive distinctly', () => {
+        const fooSame: MockSymbol = { name: 'sameFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'foo sameFn body', docstring: '' }
+        const barSame: MockSymbol = { name: 'sameFn', kind: 'function', filePath: 'src/bar.ts', lineStart: 9, lineEnd: 9, body: 'bar sameFn body', docstring: '' }
+        poolMock([fooSame, barSame])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::sameFn,src/bar.ts::sameFn', json: true })
+        expect(code).toBe(0)
+        const payload = JSON.parse(stdout) as Record<string, { body: string }>
+        expect(Object.keys(payload)).toHaveLength(2)
+        expect(payload['src/foo.ts::sameFn']?.body).toBe('foo sameFn body')
+        expect(payload['src/bar.ts::sameFn']?.body).toBe('bar sameFn body')
+        expect(stdout).toContain('foo sameFn body')
+        expect(stdout).toContain('bar sameFn body')
+      })
+
+      it('one valid symbol + one from a nonexistent file: partial success, exit 0, error entry inline', () => {
+        poolMock([symA])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,src/does-not-exist.ts::betaFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('alphaFn body')
+        expect(stdout).toContain('src/does-not-exist.ts::betaFn')
+        expect(stdout).toContain('not found')
+      })
+
+      it('same-file file::a,b form is still byte-identical (single file keeps bare-name keying)', () => {
+        poolMock([symA, { ...symB, filePath: 'src/foo.ts' }])
+        const { text: stdout, code } = runRead({ spec: 'src/foo.ts::alphaFn,betaFn' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('alphaFn:\n')
+        expect(stdout).toContain('betaFn:\n')
+        expect(stdout).not.toContain('src/foo.ts::alphaFn:\n')
+        expect(stdout).not.toContain('src/foo.ts::betaFn:\n')
+      })
+
+      it('REGRESSION: file::10,20 numeric range still works, not misparsed as cross-file', () => {
+        const f = path.join(tempDir, 'colon-range-crossfile.txt')
+        fs.writeFileSync(f, Array.from({ length: 5 }, (_, i) => `line${i + 1}`).join('\n') + '\n')
+        mockQuerySymbols.mockReturnValue([])
+        const { text: stdout, code } = runRead({ spec: `${f}::2,4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('line2\nline3\nline4')
+        expect(stdout).not.toContain('line1')
+        expect(stdout).not.toContain('line5')
+      })
+    })
+
     describe('--stats', () => {
       it('text mode: header line carries the ref count and documented flag', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: 'does a thing' }
