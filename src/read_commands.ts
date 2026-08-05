@@ -1231,10 +1231,7 @@ export function runRefs(opts: RefsOptions): number {
   const refFilePaths: string[] = []
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
-    // The `file` in `file::symbol` names where the symbol is DEFINED, only used to
-    // disambiguate a same-named symbol elsewhere in the index. Callers of it can live
-    // anywhere in the codebase, so --callers must never scope the search to that file.
-    if (file !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
+    // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only.
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     const results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
@@ -1292,8 +1289,7 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
   for (const { file, symbol } of pairs) {
     const key = keyFor({ file, symbol })
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
-    // Same reasoning as runRefs's per-symbol loop above: the pair's `file` only disambiguates which same-named symbol this is, by its defining file -- --callers must never scope the search to that one file since callers can live anywhere.
-    if (opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
+    // Same reasoning as runRefs's per-symbol loop above: the pair's `file` only disambiguates which same-named symbol this is, by its defining file, via applyTypedRefsTier below -- it must never be passed to queryRefs/countRefs, which would wrongly narrow every result to same-file references only.
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     const results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
@@ -1342,10 +1338,8 @@ function runRefsSingle(opts: RefsOptions): number {
   const symName = symbol ?? file
 
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
-  // Same reasoning as runRefs above: `file` only disambiguates which same-named symbol
-  // this is, by its defining file — it must not restrict --callers to that one file.
+  // `file` in `file::symbol` names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call below, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result to same-file references only.
   const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
-  if (defFileHint !== undefined && opts.callers !== true) queryOpts.filePath = defFileHint
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
 
