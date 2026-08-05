@@ -1265,8 +1265,19 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['install', '--project', '--vscode'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Installed token-goat hooks \(project\)/)
-    expect(fs.existsSync(path.join(proj, '.claude', 'settings.json'))).toBe(true)
+    const settingsFile = path.join(proj, '.claude', 'settings.json')
+    expect(fs.existsSync(settingsFile)).toBe(true)
     expect(fs.existsSync(path.join(proj, '.vscode', 'mcp.json'))).toBe(true)
+
+    // The generated hook shim must actually be written and wired -- through the BUILT bundle, not source. It sat fully built and fully unit-tested but never written by any install path for months (the injected-seam trap CLAUDE.md calls out), which no source-level test caught.
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks?: Array<{ command: string }> }>>
+    }
+    const preCommand = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]?.command ?? ''
+    expect(preCommand).toMatch(/token-goat-shim\.js/)
+    const shimPath = preCommand.match(/"([^"]*token-goat-shim\.js)"/)?.[1]
+    expect(shimPath, `no quoted shim path in wired command: ${preCommand}`).toBeDefined()
+    expect(fs.existsSync(shimPath!)).toBe(true)
   },
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.

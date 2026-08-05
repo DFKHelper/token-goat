@@ -4,6 +4,26 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.23] - 2026-08-05
+
+### Changed
+- **Claude Code hooks now run through a generated shim instead of a bare `token-goat hook <event>` command.** `token-goat install` writes `~/.claude/hooks/token-goat-shim.js` and wires each hook to `"<node>" "<shim>" <event> "<entry>"`. The shim imports the hook library in-process rather than spawning a second process, and naming the node binary directly skips the npm bin wrapper — on Windows that wrapper is a `cmd.exe` layer every hook was paying for. Measured 480 ms → 324 ms per hook call, about a third, on every tool call in a session. The shim itself was written and fully unit-tested months ago but no install path ever wrote it to disk, so it had never run for anyone. Re-running `install` upgrades an existing bare-command entry in place, and hook groups you have added your own commands to are left alone. See [src/install.ts](src/install.ts), [src/bridges/claudecode.ts](src/bridges/claudecode.ts).
+- **Oversized subagent reports are compacted before the parent agent sees them.** A report over 8 KB keeps 6 lines at each end of any long fenced code block and loses the middle to a marker, with the full text still recallable. Prose is never touched — the caveats and "I did not verify X" admissions that catch a subagent shipping something it never checked all live in prose, while what collapses is gate transcripts and diff tables that can be regenerated from the repo. Measured 32% smaller on a realistic report. Thanks to Gerard for the envelopes idea. See [src/hooks_agent_spawn.ts](src/hooks_agent_spawn.ts).
+- **`token-goat install` now says when hooks were already up to date** instead of reporting a fresh install every time. Every other harness already reported this; the base Claude Code path was the one that discarded it. See [src/cli.ts](src/cli.ts).
+
+### Added
+- **Cross-file `read`.** `token-goat read "a.ts::alpha,b.ts::beta"` pulls symbols from several files in one call. A bare name after a `file::symbol` segment keeps the previous file, so `"a.ts::alpha,beta"` still means two symbols from `a.ts`. See [src/read_commands.ts](src/read_commands.ts).
+- **Multi-symbol `brief`.** `token-goat brief "file.ts::alpha,beta"` returns a merged view, matching the comma syntax `read` and `refs` already had. See [src/read_commands.ts](src/read_commands.ts).
+- **`--full` on `bash-output`, `web-output`, and `mcp-output`.** These commands elide the middle of a long entry by default (head 30 / tail 80), so a cached entry could not actually be recalled in full — the store was lossless but no reader was. `--full` prints the stored entry verbatim. Explicit narrowing you asked for (`--section`, `--grep`, `--max-matches`) still applies. See [src/cli.ts](src/cli.ts).
+- **`agent_report` config section** with `min_bytes`, `fence_collapse_min_lines`, and `fence_collapse_keep_lines`, plus matching environment overrides. See [src/config.ts](src/config.ts).
+
+### Fixed
+- Envelope compaction recorded no savings of its own, so the largest new saver reported as worth nothing on the stats dashboard. It now records real bytes under `agent_report_compact`. See [src/stats.ts](src/stats.ts).
+- The fenced-block scanner used a plain backtick toggle, so a nested ` ``` ` inside a `~~~` or four-backtick block ended it early and corrupted the collapse. It now tracks the opening marker's character and length. See [src/hooks_agent_spawn.ts](src/hooks_agent_spawn.ts).
+
+### Internal
+- New guard walks every scalar key in the config and checks it survives a save/load round trip. This repo has shipped a missing `saveConfig` line at least four times, each caught in production and closed with its own single-key test; this one grows with the schema instead. See [tests/guards/config_roundtrip_completeness.test.ts](tests/guards/config_roundtrip_completeness.test.ts).
+
 ## [2.6.22] - 2026-08-02
 
 ### Added

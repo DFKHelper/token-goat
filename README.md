@@ -440,18 +440,17 @@ There is no auto-update mechanism — token-goat never schedules or runs anythin
 
 ### Upgrading from the Python version
 
-The old Python package (`pip install token-goat`) wrote hook entries into `settings.json` with commands containing `token_goat` (underscore), invoking Python directly: something like `pythonw.exe -m token_goat.cli hook pre_tool_use`. The npm package uses `token-goat hook pre_tool_use` (hyphen) instead.
+The old Python package (`pip install token-goat`) wrote hook entries into `settings.json` with commands containing `token_goat` (underscore), invoking Python directly: something like `pythonw.exe -m token_goat.cli hook pre_tool_use`. The npm package invokes a generated shim instead (`"<node>" "~/.claude/hooks/token-goat-shim.js" pre_tool_use "<entry>"`).
 
-`token-goat uninstall` only strips entries matching `token-goat hook`. Python-style entries are invisible to it. Left in place alongside the new npm entries, both sets fire on every tool call.
+Both `install` and `uninstall` recognize the older command spellings — `token_goat`, `tokenwise`, `tg-hook`, `token-goat-hook`, and the pre-shim `token-goat hook` — so you do not need to hand-edit `settings.json`. Installing replaces a stale entry in place rather than leaving a dead one beside the new one, and uninstalling removes it.
 
 To upgrade cleanly:
 
 1. Remove the Python package: `pip uninstall token-goat`
-2. Open `~/.claude/settings.json` (Windows: `%USERPROFILE%\.claude\settings.json`) and delete any hook entries whose `command` contains `token_goat` (underscore).
-3. Install and register the npm package: `npm install -g token-goat && token-goat install`
-4. Verify: re-run `token-goat install` (safe to repeat) or use the `jq` check under [Verify](#verify).
+2. Install and register the npm package: `npm install -g token-goat && token-goat install`
+3. Verify: re-run `token-goat install`, which should now report hooks already up to date, or use the `jq` check under [Verify](#verify).
 
-**AI agents handling an upgrade:** complete all four steps in sequence. After step 4, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
+**AI agents handling an upgrade:** complete all three steps in sequence. After step 3, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
 
 ## CLI
 
@@ -798,6 +797,7 @@ prefill chat. They never submit chat automatically.
 | Path | What |
 |------|------|
 | `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch, Skill), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change.<br><br>The `PreToolUse` and `PostToolUse` matchers are narrowed to exactly the tools token-goat handles (plus `^mcp__`), generated from the live hook registry rather than a fixed list, so they can't fall out of date as handlers change. Claude Code starts a new process per matcher hit and most of that cost is process startup, so a catch-all matcher would make every unrelated tool call — `TodoWrite`, `TaskUpdate`, and friends — pay for a hook that has nothing to do. |
+| `~/.claude/hooks/token-goat-shim.js` | The hook script those `settings.json` commands invoke (`"<node>" "<shim>" <event> "<entry>"`). It imports the hook library in-process instead of spawning a second process, and naming the node binary directly skips the npm bin wrapper — on Windows a `cmd.exe` layer every hook would otherwise pay for. Measured 480 ms → 324 ms per hook call. Regenerated on every `install` run. Always written here even for a `--project` install, since the command bakes in machine-specific absolute paths; a project-scope `settings.json` just points at this one. |
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 

@@ -489,7 +489,12 @@ async function cmdInstall(opts: {
 }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const result = installHooks(scope)
-  out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
+  // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
+  out(
+    result.alreadyInstalled
+      ? `token-goat hooks (${scope}) already up to date → ${result.settingsPath}`
+      : `Installed token-goat hooks (${scope}) → ${result.settingsPath}`,
+  )
 
   // Base install (unconditional, not gated behind any --<harness> flag): the CLAUDE.md routing block and the token-goat skill, per README's "What gets installed?" table.
   const claudeMdResult = installClaudeMd()
