@@ -210,7 +210,15 @@ const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
   pi: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   opencode: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   openclaw: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
-  copilot_cli: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'stop', 'subagent_stop', 'user_prompt_submit'],
+  copilot_cli: [
+    'session_start',
+    'pre_tool_use',
+    'post_tool_use',
+    'pre_compact',
+    'stop',
+    'subagent_stop',
+    'user_prompt_submit',
+  ],
   generic: [...HOOK_EVENTS],
 }
 

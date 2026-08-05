@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.24] - 2026-08-05
+
+### Fixed
+- **Copilot CLI now gets the token-goat routing reminder at session start, so it stops forgetting the commands exist.** Copilot was the only supported harness where `sessionStart` was hard-wired to do nothing. The reason given in the code was that token-goat had no session-start handler — untrue for a long time, and the reason Copilot sessions alone were never told token-goat was available. `install --copilot` now registers `sessionStart` and the shim returns the reminder as `additionalContext`. Verified against Copilot CLI 1.0.77 with a canary that appears only in the reminder: wired, a session answers with it; with the hook removed and nothing else changed, the same question in the same directory answers that it has no such note. The upstream bug that would have made this pointless ([github/copilot-cli#2142](https://github.com/github/copilot-cli/issues/2142), `additionalContext` discarded) was fixed months ago, and its companion multi-extension bug never applied to this config-file hook path. If you installed the Copilot bridge before this release, re-run `token-goat install --copilot` and restart Copilot CLI — it caches hook config at session start. See [src/bridges/copilot_cli.ts](src/bridges/copilot_cli.ts), [src/bridges/copilot_cli_install.ts](src/bridges/copilot_cli_install.ts).
+
 ## [2.6.23] - 2026-08-05
 
 ### Changed

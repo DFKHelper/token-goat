@@ -173,9 +173,12 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 6/8 score for claudecode/copilot_cli, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
+  it('shows a 7/8 score for copilot_cli, 6/8 for claudecode, 5/8 for codex/grok/qwen, 3/8 for opencode/gemini/openclaw/pi', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    for (const harness of ['claudecode', 'copilot_cli']) {
+    // copilot_cli overtakes claudecode here: it wires session_start (like claudecode) *and*
+    // stop via its agentStop mapping, which claudecode's settings.json wiring does not.
+    expect(text).toMatch(/copilot_cli\s+.*\s7\/8/)
+    for (const harness of ['claudecode']) {
       expect(text).toMatch(new RegExp(`${harness}\\s+.*\\s6\\/8`))
     }
     for (const harness of ['codex', 'grok', 'qwen']) {

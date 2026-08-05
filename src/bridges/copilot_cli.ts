@@ -70,14 +70,23 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
-// HOOK_EVENTS). Only these six have a token-goat handler; every other real
+// HOOK_EVENTS). Only these seven have a token-goat handler; every other real
 // Copilot event (sessionEnd, postToolUseFailure, subagentStart,
 // errorOccurred, notification, permissionRequest) is left unimplemented
 // rather than guessed at, and falls through to the default no-op below.
-// 'sessionStart' is handled as a permanent no-op even though it's a real
-// Copilot event, because token-goat has no internal session_start handler
-// (mirrors PI_EXTENSION_SCRIPT's documented precedent).
+// 'sessionStart' was previously a permanent no-op on the stated grounds that
+// token-goat has no internal session_start handler. That was simply wrong --
+// hooks_session_start.ts has long emitted the command-routing reminder that
+// every other harness receives -- and the no-op was the reason Copilot CLI
+// sessions alone never got told token-goat exists. It is wired now: verified
+// against Copilot CLI 1.0.77 that a hooks.json sessionStart entry returning
+// {additionalContext} does reach the model. The github/copilot-cli#2142
+// fire-and-forget bug that would have made this dead wiring was fixed in a
+// pre-release months before that version, and its companion multi-extension
+// hook-overwrite bug never applied here: it hit runtime *extension* hooks,
+// while this config-file hooks.json path goes through Copilot's own merge.
 const COPILOT_TO_TG_EVENT = {
+  sessionStart: 'session_start',
   preToolUse: 'pre_tool_use',
   postToolUse: 'post_tool_use',
   preCompact: 'pre_compact',
@@ -188,11 +197,6 @@ async function tryInProcess(entryPath, tgEvent, canonical) {
 
 async function main() {
   const copilotEvent = process.argv[2] || ''
-
-  if (copilotEvent === 'sessionStart') {
-    process.stdout.write('{}')
-    return
-  }
 
   const tgEvent = COPILOT_TO_TG_EVENT[copilotEvent]
   if (!tgEvent) {
@@ -319,7 +323,10 @@ function translate(copilotEvent, resp) {
     return {}
   }
 
-  if (copilotEvent === 'postToolUse') {
+  if (copilotEvent === 'postToolUse' || copilotEvent === 'sessionStart') {
+    // Both surface token-goat's context through the same field. sessionStart is
+    // the one channel that reaches the model before it picks its first read
+    // tool, so this is where the routing reminder has to land.
     const context = extractContext(resp)
     if (context) return { additionalContext: context }
     return {}
@@ -343,9 +350,8 @@ function translate(copilotEvent, resp) {
   // doc that both are notification-only -- Copilot never reads a response
   // body for either, so any additionalContext/systemMessage token-goat
   // produces has no surfacing channel here. This still routes through the
-  // token-goat hook call above (unlike sessionStart's early no-op) so the
-  // internal handler's own side effects keep running; only the response is
-  // discarded.
+  // token-goat hook call above so the internal handler's own side effects keep
+  // running; only the response is discarded.
   return {}
 }
 
