@@ -175,14 +175,19 @@ const cases: Record<string, () => void | Promise<void>> = {
   symbol: () => expectRead(['symbol', 'alphaSym'], 'alphaSym'),
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
-    // Comma-separated multi-symbol form against the real built bundle -- proves the shipping
-    // CLI path, not just the in-process unit tests.
+    // Comma-separated multi-symbol form against the real built bundle -- proves the shipping CLI path, not just the in-process unit tests.
     const multi = run(['read', 'src/mod.ts::alphaSym,betaSym'])
     expect(multi.status, multi.stderr).toBe(0)
     expect(multi.stdout).toContain('alphaSym')
     expect(multi.stdout).toContain('return 1')
     expect(multi.stdout).toContain('betaSym')
     expect(multi.stdout).toContain('return 2')
+    // Cross-file form `a::x,b::y` against the real built bundle. Worth its own bundle case rather than trusting the in-process test: the whole bug this closed was a spec MIS-PARSE (lastIndexOf('::') folding the comma-joined spec into one bogus filename), so it can only be proven dead by handing the real argv through the shipping CLI.
+    const cross = run(['read', 'src/mod.ts::alphaSym,caller.ts::refHelper'])
+    expect(cross.status, cross.stderr).toBe(0)
+    expect(cross.stdout).toContain('src/mod.ts::alphaSym')
+    expect(cross.stdout).toContain('return 1')
+    expect(cross.stdout).toContain('caller.ts::refHelper')
     // --stats against the real built bundle -- proves the flag reaches the shipping CLI, not
     // just the in-process unit tests.
     const stats = run(['read', 'src/mod.ts::alphaSym', '--stats'])

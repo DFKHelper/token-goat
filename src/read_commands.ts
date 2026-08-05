@@ -502,6 +502,29 @@ function parseReadSpec(spec: string): { file: string; symbol?: string } {
   return { file: spec.slice(0, colonIdx), symbol: spec.slice(colonIdx + 2) }
 }
 
+// Cross-file multi-spec: `src/a.ts::alphaFn,src/b.ts::betaFn`. Comma-separated segments are walked left to right tracking a "current file" -- a segment containing `::` sets a new current file and contributes its own symbol, a segment with no `::` inherits the current file (so `src/a.ts::alphaFn,src/b.ts::betaFn,gammaFn` reads gammaFn from b.ts). Deliberately returns null (falling through to the existing single-file `parseReadSpec`/`findSpecSeparator` handling, byte-for-byte unchanged) unless at least two segments carry their own `::`, because a spec with only one `::` segment is either the pre-existing single-file `file::a,b` form or the numeric line-range form `file::N,M` -- both already handled correctly by the code below and must not be reinterpreted here. Also declines outright if the first segment has no `::`, so a bare-name spec (no file prefix at all) keeps reaching `formatBareNameSpecError` untouched.
+function parseCrossFileMultiSpec(spec: string): { file: string; symbol: string }[] | null {
+  const segments = spec.split(',')
+  if (segments.length < 2) return null
+  if (findSpecSeparator(segments[0]!) === -1) return null
+  if (segments.filter((seg) => findSpecSeparator(seg) !== -1).length < 2) return null
+
+  let currentFile: string | undefined
+  const pairs: { file: string; symbol: string }[] = []
+  for (const rawSeg of segments) {
+    const seg = rawSeg.trim()
+    const idx = findSpecSeparator(seg)
+    if (idx !== -1) {
+      currentFile = seg.slice(0, idx)
+      const sym = seg.slice(idx + 2)
+      if (sym.length > 0) pairs.push({ file: currentFile, symbol: sym })
+      continue
+    }
+    if (currentFile !== undefined && seg.length > 0) pairs.push({ file: currentFile, symbol: seg })
+  }
+  return pairs.length > 1 ? pairs : null
+}
+
 // A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read.
 function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
   const m = /^(.+)@(\d+)(?:-(\d+))?$/.exec(spec)
@@ -785,6 +808,10 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const range = parseLineRange(opts.spec)
   if (range !== null) return runLineRange(range, opts)
 
+  // Cross-file multi-spec `src/a.ts::alphaFn,src/b.ts::betaFn`. Checked before the single-file `parseReadSpec` below because that function's `lastIndexOf('::')` would otherwise fold the whole spec into one bogus file/symbol pair -- see parseCrossFileMultiSpec for why it declines (and falls through here) on every spec the single-file path already handles correctly.
+  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
+  if (crossFilePairs !== null) return runReadMulti(crossFilePairs, opts)
+
   const { file, symbol } = parseReadSpec(opts.spec)
 
   // Multi-symbol form: `file::a,b,c`. Guarded against the numeric line-range spec `file::N,M`
@@ -794,7 +821,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   // reaches the `::N,M` fallback later exactly as before.
   if (symbol !== undefined && symbol !== '' && symbol.includes(',') && parseColonLineRange(symbol) === null) {
     const multiSymbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    if (multiSymbols.length > 1) return runReadMulti(file, multiSymbols, opts)
+    if (multiSymbols.length > 1) return runReadMulti(multiSymbols.map((s) => ({ file, symbol: s })), opts)
   }
 
   if (symbol === undefined || symbol === '') {
@@ -898,29 +925,33 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
  * single-symbol form already exercises -- a failure to resolve one symbol is reported inline
  * instead of aborting the whole call, same as `runRefs`'s per-symbol handling.
  */
-function runReadMulti(file: string, symbols: string[], opts: ReadOptions): { text: string; code: number } {
+function runReadMulti(pairs: { file: string; symbol: string }[], opts: ReadOptions): { text: string; code: number } {
   let anyFound = false
   const jsonOut: Record<string, unknown> = {}
   const textBlocks: string[] = []
 
-  for (const sym of symbols) {
-    const sub = runRead({ ...opts, spec: `${file}::${sym}`, suppressStat: true })
+  // A bare symbol name is only a safe output key when every pair shares one file -- that is the pre-existing single-file `file::a,b` shape, so keying/prefixing by bare name there keeps output byte-for-byte identical to before cross-file specs existed. Once more than one distinct file is involved, two files can legitimately contribute the same symbol name, so the key must be the full `file::symbol` pair or one entry would silently overwrite the other.
+  const distinctFiles = new Set(pairs.map((p) => p.file))
+  const keyFor = (p: { file: string; symbol: string }): string =>
+    distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`
+
+  for (const { file, symbol } of pairs) {
+    const sub = runRead({ ...opts, spec: `${file}::${symbol}`, suppressStat: true })
     if (sub.code === 0) anyFound = true
+    const key = keyFor({ file, symbol })
     if (opts.json === true) {
       // Parse the sub-call's JSON string back into an object so the multi envelope nests real
       // JSON per symbol, never an embedded string -- a failed sub-call has no JSON body of its
       // own, so it is represented by its plain-text error instead.
-      jsonOut[sym] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
       continue
     }
-    textBlocks.push(`${sym}:\n${sub.text}`)
+    textBlocks.push(`${key}:\n${sub.text}`)
   }
 
-  // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol --
-  // each sub-call already skipped its own recordReadStat via suppressStat for exactly this
-  // reason (see ReadOptions.suppressStat).
+  // Count each distinct file's on-disk size once for the whole multi-symbol call, not once per symbol or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see ReadOptions.suppressStat).
   if (anyFound) {
-    const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
+    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
     const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
     recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
     return { text, code: 0 }
