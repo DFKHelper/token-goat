@@ -36,11 +36,19 @@ import { HOOK_EVENTS } from '../src/types.js'
 
 let TMP: string
 let origCwd: string
+let origCopilotHome: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-copilot-cli-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(path.join(TMP, 'home'))
+
+  // COPILOT_HOME now outranks os.homedir() for the user scope, so a developer or CI
+  // machine that happens to export it would silently redirect every user-scope
+  // assertion below away from the mocked home. Pin it off; the tests that exercise
+  // the override set it themselves.
+  origCopilotHome = process.env['COPILOT_HOME']
+  delete process.env['COPILOT_HOME']
 
   origCwd = process.cwd()
   // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's
@@ -52,6 +60,8 @@ beforeEach(() => {
 
 afterEach(() => {
   process.chdir(origCwd)
+  if (origCopilotHome === undefined) delete process.env['COPILOT_HOME']
+  else process.env['COPILOT_HOME'] = origCopilotHome
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
@@ -226,6 +236,43 @@ describe('installCopilotCli (user scope)', () => {
     const dir = path.dirname(result.configPath)
     const bakFiles = fs.readdirSync(dir).filter((f) => f.startsWith(path.basename(result.configPath) + '.bak.'))
     expect(bakFiles.length).toBe(0)
+  })
+})
+
+describe('COPILOT_HOME override (user scope)', () => {
+  // Copilot CLI documents COPILOT_HOME as replacing ~/.copilot for hooks and instructions.
+  // Ignoring it fails silently in the worst way: install reports success, writes a valid
+  // config under ~/.copilot, and Copilot reads a different directory entirely, so every
+  // hook never fires and nothing surfaces the mismatch.
+  it('redirects the hooks dir, config, shim, and instructions file to $COPILOT_HOME', () => {
+    const custom = path.join(TMP, 'custom-copilot')
+    process.env['COPILOT_HOME'] = custom
+
+    expect(copilotCliUserHooksDir()).toBe(path.join(custom, 'hooks'))
+    expect(copilotCliConfigPath()).toBe(path.join(custom, 'hooks', 'token-goat.json'))
+    expect(copilotCliScriptPath()).toBe(path.join(custom, 'hooks', 'token-goat-shim.js'))
+    expect(copilotCliInstructionsPath()).toBe(path.join(custom, 'copilot-instructions.md'))
+
+    const result = installCopilotCli()
+    expect(fs.existsSync(result.configPath)).toBe(true)
+    expect(fs.existsSync(result.scriptPath)).toBe(true)
+    expect(fs.existsSync(result.instructionsPath)).toBe(true)
+    expect(isCopilotCliInstalled()).toBe(true)
+    // The whole point: nothing lands in the home-relative default.
+    expect(fs.existsSync(path.join(TMP, 'home', '.copilot'))).toBe(false)
+  })
+
+  it('treats an exported-but-empty COPILOT_HOME as unset rather than installing into the process cwd', () => {
+    process.env['COPILOT_HOME'] = '   '
+    // path.resolve('   ') would silently resolve to a whitespace-named dir under cwd.
+    expect(copilotCliUserHooksDir()).toBe(path.join(TMP, 'home', '.copilot', 'hooks'))
+  })
+
+  it('leaves the project scope alone -- COPILOT_HOME is a user-scope concept only', () => {
+    process.env['COPILOT_HOME'] = path.join(TMP, 'custom-copilot')
+    expect(copilotCliConfigPath({ local: true })).toBe(
+      path.join(process.cwd(), '.github', 'hooks', 'token-goat.json'),
+    )
   })
 })
 
