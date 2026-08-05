@@ -1495,6 +1495,130 @@ describe('read_commands', () => {
         expect(stdout).not.toContain('Install:\n')
       })
     })
+
+    // ---- cross-file multi-heading section (a.md::H1,b.md::H2) --------------
+    describe('cross-file multi-heading section (a.md::H1,b.md::H2)', () => {
+      // Keyed by [file][heading] (unlike the same-file headingMock above, which is keyed by
+      // heading alone) so two different files can supply the same heading name independently.
+      function crossFileHeadingMock(byFile: Record<string, Record<string, { content: string; heading: string; lineStart: number; lineEnd: number }>>): void {
+        mockReadSection.mockImplementation((file: string, heading: string) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (byFile[file]?.[heading] ?? null) as any
+        })
+      }
+
+      it('returns both section bodies, one per file, in a single call', () => {
+        crossFileHeadingMock({
+          'README.md': { Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 } },
+          'CLAUDE.arch.md': { 'Component Map': { content: '## Component Map\nparser -> worker', heading: 'Component Map', lineStart: 5, lineEnd: 6 } },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.arch.md::Component Map' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('parser -> worker')
+      })
+
+      it('a bare heading after a file::Heading segment inherits the previous file (mirrors runRead\'s cross-file inheritance)', () => {
+        crossFileHeadingMock({
+          'README.md': {
+            Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 },
+          },
+          'CLAUDE.md': {
+            Install: { content: '## Install\nnpm install', heading: 'Install', lineStart: 3, lineEnd: 4 },
+            Layout: { content: '## Layout\nsrc/ and tests/', heading: 'Layout', lineStart: 5, lineEnd: 6 },
+          },
+        })
+        mockListSections.mockReturnValue([])
+        // The trailing 'Layout' has no '::' of its own, so it must inherit the MOST RECENT file
+        // ('CLAUDE.md'), not the first one -- a spec must cross a file boundary before the
+        // inheritance rule is exercised at all. An earlier version of this test used
+        // 'README.md::Commands,Install', which parseCrossFileMultiSpec declines outright (only one
+        // segment carries '::'), so it ran the pre-existing same-file path and passed identically
+        // before and after cross-file support existed -- it asserted nothing about inheritance.
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::Install,Layout' })
+        expect(code).toBe(0)
+        expect(mockReadSection).toHaveBeenCalledWith('README.md', 'Commands')
+        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Install')
+        expect(mockReadSection).toHaveBeenCalledWith('CLAUDE.md', 'Layout')
+        // Not README.md: inheritance carries the latest file forward, never resets to the first.
+        expect(mockReadSection).not.toHaveBeenCalledWith('README.md', 'Layout')
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('npm install')
+        expect(stdout).toContain('src/ and tests/')
+      })
+
+      it('the same heading name in two different files does not collide -- each is keyed by its full file::heading pair, not the bare heading', () => {
+        crossFileHeadingMock({
+          'README.md': { Commands: { content: '## Commands\nnpm run readme-cmd', heading: 'Commands', lineStart: 1, lineEnd: 2 } },
+          'CLAUDE.md': { Commands: { content: '## Commands\nnpm run claude-cmd', heading: 'Commands', lineStart: 9, lineEnd: 10 } },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::Commands', json: true })
+        expect(code).toBe(0)
+        const payload = JSON.parse(stdout) as Record<string, { content: string }>
+        // Bare 'Commands' would only ever hold one of the two -- proves neither call clobbered
+        // the other.
+        expect(payload['Commands']).toBeUndefined()
+        expect(payload['README.md::Commands']?.content).toContain('npm run readme-cmd')
+        expect(payload['CLAUDE.md::Commands']?.content).toContain('npm run claude-cmd')
+      })
+
+      it('one existing file::heading + one missing heading in a real file: existing section returned, the miss reported inline, exit code 0 (mirrors runReadMulti\'s partial-success contract)', () => {
+        crossFileHeadingMock({
+          'README.md': { Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 } },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,CLAUDE.md::NoSuchHeading' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('NoSuchHeading')
+        expect(stdout).toContain('not found')
+      })
+
+      it('every heading missing across every file: exit code 1', () => {
+        crossFileHeadingMock({})
+        mockListSections.mockReturnValue([])
+        const { code } = runSection({ spec: 'README.md::MissingA,CLAUDE.md::MissingB' })
+        expect(code).toBe(1)
+      })
+
+      it('a nonexistent file in a multi-file spec reports "File not found" for that pair, not a misleading "Section not found"', () => {
+        crossFileHeadingMock({
+          'README.md': { Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 } },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,nonexistent-file-xyz/SKILL.md::Some Heading' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('File not found')
+      })
+
+      it('same-file multi-heading specs (file::A,B) are unaffected: parseCrossFileMultiSpec declines and the pre-existing single-file branch still runs', () => {
+        crossFileHeadingMock({
+          'README.md': {
+            Commands: { content: '## Commands\nnpm test', heading: 'Commands', lineStart: 1, lineEnd: 2 },
+            Architecture: { content: '## Architecture\nsome design notes', heading: 'Architecture', lineStart: 5, lineEnd: 6 },
+          },
+        })
+        mockListSections.mockReturnValue([])
+        const { text: stdout, code } = runSection({ spec: 'README.md::Commands,Architecture' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm test')
+        expect(stdout).toContain('some design notes')
+        // Bare-key form of the pre-existing same-file path, not the file-qualified cross-file key.
+        expect(stdout).toContain('Commands:\n')
+        expect(stdout).not.toContain('README.md::Commands:\n')
+      })
+
+      it('single-file single-heading specs (file::Heading) are unaffected: parseCrossFileMultiSpec declines outright (no comma)', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockReadSection.mockReturnValue({ content: '## Install\nrun npm install', heading: 'Install', startLine: 5, endLine: 10 } as any)
+        const { text: stdout, code } = runSection({ spec: 'README.md::Install' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('npm install')
+      })
+    })
   })
 
   // ---- runSkeleton --------------------------------------------------------
