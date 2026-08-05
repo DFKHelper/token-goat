@@ -40,6 +40,7 @@ export interface CopilotCliScopeOptions {
 
 /** Copilot's own hook event names that this bridge implements (see copilot_cli.ts's COPILOT_TO_TG_EVENT). */
 const COPILOT_CLI_HOOK_EVENTS = [
+  'sessionStart',
   'preToolUse',
   'postToolUse',
   'preCompact',

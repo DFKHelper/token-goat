@@ -104,16 +104,20 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     harness: 'copilot_cli',
     label: 'Copilot CLI',
     sourceFile: 'src/bridges/copilot_cli_install.ts (COPILOT_CLI_HOOK_EVENTS), src/bridges/copilot_cli.ts (COPILOT_TO_TG_EVENT)',
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'stop', 'subagent_stop', 'user_prompt_submit']),
+    implemented: new Set([
+      'session_start',
+      'pre_tool_use',
+      'post_tool_use',
+      'pre_compact',
+      'stop',
+      'subagent_stop',
+      'user_prompt_submit',
+    ]),
     reasons: [
       {
         events: ['notification'],
         reason:
           "Copilot CLI has a real 'notification' hook event, but copilot_cli.ts's COPILOT_TO_TG_EVENT deliberately leaves it (and sessionEnd/postToolUseFailure/subagentStart/errorOccurred/permissionRequest) unimplemented rather than guessed at",
-      },
-      {
-        events: ['session_start'],
-        reason: 'COPILOT_TO_TG_EVENT has no session-start mapping wired yet -- left unimplemented rather than guessed at',
       },
     ],
   },

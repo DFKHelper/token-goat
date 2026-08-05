@@ -56,7 +56,7 @@ afterEach(() => {
 })
 
 describe('installCopilotCli (user scope)', () => {
-  it('writes the shim script and a hooks config registering all six implemented events on a fresh install', () => {
+  it('writes the shim script and a hooks config registering all seven implemented events on a fresh install', () => {
     const result = installCopilotCli()
     expect(result.alreadyInstalled).toBe(false)
     expect(result.configPath).toBe(copilotCliConfigPath())
@@ -70,7 +70,21 @@ describe('installCopilotCli (user scope)', () => {
       hooks: Record<string, Array<{ type: string; command: string }>>
     }
     expect(config.version).toBe(1)
+    // Locked to the exact set, not a subset: a silently dropped event (sessionStart was
+    // missing entirely for months) has to fail here rather than pass a per-event loop.
+    expect(Object.keys(config.hooks).sort()).toEqual(
+      [
+        'sessionStart',
+        'preToolUse',
+        'postToolUse',
+        'preCompact',
+        'agentStop',
+        'subagentStop',
+        'userPromptSubmitted',
+      ].sort(),
+    )
     for (const event of [
+      'sessionStart',
       'preToolUse',
       'postToolUse',
       'preCompact',
@@ -520,23 +534,61 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const mapMatch = /COPILOT_TO_TG_EVENT = \{([\s\S]*?)\}/.exec(COPILOT_CLI_HOOK_SCRIPT)
     expect(mapMatch).not.toBeNull()
     const mapped = [...(mapMatch?.[1] ?? '').matchAll(/:\s*'([^']+)'/g)].map((m) => m[1])
-    // 6 entries: preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted.
-    expect(mapped.length).toBe(6)
+    // 7 entries: sessionStart, preToolUse, postToolUse, preCompact, agentStop, subagentStop, userPromptSubmitted.
+    expect(mapped.length).toBe(7)
     for (const eventName of mapped) {
       expect(HOOK_EVENTS as readonly string[]).toContain(eventName)
     }
   })
 
-  it('no-ops on sessionStart without invoking token-goat at all', () => {
+  // sessionStart is the only channel that reaches the model before it chooses its first read
+  // tool, so it is where token-goat's command-routing reminder has to land. It used to be a
+  // hard-coded early return, justified in a comment by the claim that token-goat had no
+  // session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told
+  // token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook
+  // registered, a session asked for a canary that appears only in the reminder answered
+  // "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same
+  // question in the same directory answered "ABSENT".
+  it('forwards sessionStart to the real session_start handler instead of short-circuiting it', () => {
     const cwd = mkIsolated()
-    // No fake token-goat on PATH -- if the shim tried to spawn it, spawnSync
-    // would fail and the shim's own catch-all would still print '{}', so this
-    // alone wouldn't prove non-invocation. The real proof is the immediate,
-    // synchronous early-return in the source (checked below) plus this
-    // behavioral smoke test.
-    const stdout = runShim('sessionStart', '{}', cwd)
+    const { entryPath, capturePath } = writeFakeEntry(cwd)
+    const scriptPath = path.join(cwd, 'shim.js')
+    fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const res = spawnSync(process.execPath, [scriptPath, 'sessionStart', entryPath], {
+      cwd,
+      input: JSON.stringify({ sessionId: 's1', cwd: '/tmp' }),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: process.env,
+    })
+    expect(res.status).toBe(0)
+    // The proof the early return is gone: token-goat was actually invoked, with the mapped
+    // internal event name. A behavioural '{}' assertion could not distinguish "no-op" from
+    // "invoked and had nothing to say".
+    expect(fs.existsSync(capturePath)).toBe(true)
+    expect(JSON.parse(fs.readFileSync(capturePath, 'utf8')) as string[]).toEqual([
+      'hook',
+      'session_start',
+    ])
+  })
+
+  it("surfaces the session_start handler's context to Copilot as additionalContext", () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ROUTING GATE' },
+      }),
+    )
+    const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd }), cwd, env)
+    expect(JSON.parse(stdout) as Record<string, unknown>).toEqual({ additionalContext: 'ROUTING GATE' })
+  })
+
+  it('still emits {} for sessionStart when the handler produces no context, rather than a stray key', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(cwd, '{}')
+    const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd }), cwd, env)
     expect(stdout.trim()).toBe('{}')
-    expect(COPILOT_CLI_HOOK_SCRIPT).toMatch(/copilotEvent === 'sessionStart'/)
   })
 
   it('no-ops on an event name it does not implement', () => {
