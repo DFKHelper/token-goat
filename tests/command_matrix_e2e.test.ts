@@ -1422,6 +1422,10 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['callers', 'refHelper'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/refDriver|caller\.ts/)
+    // The `caller.ts::` prefix only disambiguates WHICH refHelper is meant -- refDriver still surfaces, exercising the real bundle-level parse + disambiguation path end to end.
+    const rSpec = run(['callers', 'caller.ts::refHelper'])
+    expect(rSpec.status, rSpec.stderr).toBe(0)
+    expect(rSpec.stdout).toMatch(/refDriver|caller\.ts/)
   },
   'call-chain': () => {
     // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
@@ -1431,12 +1435,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/refDriver/)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    const rSpec = run(['call-chain', 'caller.ts::refHelper', '--depth', '4'])
+    expect(rSpec.status, rSpec.stderr).toBe(0)
+    expect(rSpec.stdout).toMatch(/refDriver/)
   },
   impact: () => {
     // refHelper is called by refDriver; impact must list refDriver with hops: 1.
     const r = run(['impact', 'refHelper', '--top', '5'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/refDriver/)
+    const rSpec = run(['impact', 'caller.ts::refHelper', '--top', '5'])
+    expect(rSpec.status, rSpec.stderr).toBe(0)
+    expect(rSpec.stdout).toMatch(/refDriver/)
   },
   dead: () => {
     // The dead command must run and produce valid output (or 'No dead symbols found.') without crashing.

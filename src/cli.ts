@@ -3114,7 +3114,7 @@ export function buildProgram(): Command {
 
   program
     .command('callers <symbol>')
-    .description('find all callers of a symbol, resolved to their enclosing function')
+    .description('find all callers of a symbol, resolved to their enclosing function (accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('-j, --json', 'output as JSON')
     .option('-l, --limit <n>', 'max references to scan')
     .action((symbol: string, opts: { json?: boolean; limit?: string }) =>
@@ -3129,7 +3129,7 @@ export function buildProgram(): Command {
 
   program
     .command('call-chain <symbol>')
-    .description('transitive callers up toward entry points (BFS, cycle-safe)')
+    .description('transitive callers up toward entry points (BFS, cycle-safe; accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('-d, --depth <n>', 'max BFS depth (default 8)')
     .option('-j, --json', 'output as JSON')
     .action((symbol: string, opts: { depth?: string; json?: boolean }) =>
@@ -3144,7 +3144,7 @@ export function buildProgram(): Command {
 
   program
     .command('impact <symbol>')
-    .description('transitive set of callers impacted by a change (with hop depth)')
+    .description('transitive set of callers impacted by a change (with hop depth; accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
     .action((symbol: string, opts: { top?: string; json?: boolean }) =>
