@@ -984,6 +984,10 @@ export interface SectionOptions {
 
 /** Handle ``token-goat section "file::Heading"``. */
 export function runSection(opts: SectionOptions): { text: string; code: number } {
+  // Cross-file multi-spec `src/a.ts::Commands,src/b.ts::Component Map`. Checked before the single-file `::` handling below for the same reason runRead checks it first (see parseCrossFileMultiSpec) -- lastIndexOf('::') would otherwise fold the whole spec into one bogus file/heading pair, and parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::A,B` multi-heading form.
+  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
+  if (crossFilePairs !== null) return runSectionCrossFile(crossFilePairs, opts)
+
   const colonIdx = findSpecSeparator(opts.spec)
   if (colonIdx === -1) {
     return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
@@ -1083,6 +1087,46 @@ function runSectionMulti(
   const fullSourceBytes = sumFileSizes([resolvedFilePath])
   const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('section_read', fullSourceBytes, text, opts.spec)
+  return { text, code: anyFound ? 0 : 1 }
+}
+
+/**
+ * Handle a cross-file multi-heading spec `src/a.ts::Commands,src/b.ts::Component Map` -- mirrors {@link runReadMulti} exactly (see its docstring), with `symbol` on each pair carrying a heading name instead of a symbol name. Delegates each heading to a recursive {@link runSection} call (`suppressStat: true`), so not-found + did-you-mean and JSON shape all come from the exact same single-heading path `runSectionMulti` already exercises -- a failure to resolve one heading is reported inline instead of aborting the whole call.
+ */
+function runSectionCrossFile(pairs: { file: string; symbol: string }[], opts: SectionOptions): { text: string; code: number } {
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+
+  // A bare heading is only a safe output key when every pair shares one file -- that is the pre-existing single-file `file::A,B` shape, so keying by bare heading there keeps output byte-for-byte identical to before cross-file specs existed. Once more than one distinct file is involved, two files can legitimately share a heading name (`## Commands` is common), so the key must be the full `file::heading` pair or one entry would silently overwrite the other -- same reasoning as `runReadMulti`'s `keyFor`.
+  const distinctFiles = new Set(pairs.map((p) => p.file))
+  const keyFor = (p: { file: string; symbol: string }): string =>
+    distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`
+
+  for (const { file, symbol: heading } of pairs) {
+    const sub = runSection({ ...opts, spec: `${file}::${heading}`, suppressStat: true })
+    if (sub.code === 0) anyFound = true
+    const key = keyFor({ file, symbol: heading })
+    if (opts.json === true) {
+      // Parse the sub-call's JSON string back into an object so the multi envelope nests real
+      // JSON per heading, never an embedded string -- a failed sub-call has no JSON body of its
+      // own, so it is represented by its plain-text error instead.
+      jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+      continue
+    }
+    textBlocks.push(`${key}:\n${sub.text}`)
+  }
+
+  // Resolves the same way runSection resolves its own `filePath` -- relative to projectRoot only when one is given and the path isn't already absolute -- so the byte count backing this call's stat matches what a single-file call against the same path would have counted.
+  const resolvePath = (f: string): string =>
+    opts.projectRoot !== undefined && !path.isAbsolute(f) ? path.resolve(opts.projectRoot, f) : f
+
+  const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
+  if (anyFound) {
+    // Count each distinct file's on-disk size once for the whole cross-file call, not once per heading or per file repeat -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see SectionOptions.suppressStat).
+    const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, resolvePath))
+    recordReadStat('section_read', fullSourceBytes, text, opts.spec)
+  }
   return { text, code: anyFound ? 0 : 1 }
 }
 
