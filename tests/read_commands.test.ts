@@ -4839,6 +4839,147 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
   })
 })
 
+// Cross-file multi-spec: `src/a.ts::x,src/b.ts::y`. Regression coverage for the reported bug --
+// parseMultiRefsSpec's findSpecSeparator is a lastIndexOf('::'), so a spec crossing a file
+// boundary used to fold into one bogus file/symbol-list pair (file=`src/read_commands.ts::runSection,src/install.ts`,
+// symbol=`installHooks`) and silently report a genuinely-referenced symbol as unreferenced.
+describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('merges references for two symbols defined in two different files, each scoped to its own file', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
+      if (opts.name === 'runSection') return [ref('src/cli.ts', 5, 'runSection(x)')]
+      if (opts.name === 'installHooks') return [ref('src/cli.ts', 491, 'installHooks()')]
+      return []
+    })
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('runSection:')
+    expect(stdout).toContain('src/cli.ts:5: runSection(x)')
+    expect(stdout).toContain('installHooks:')
+    expect(stdout).toContain('src/cli.ts:491: installHooks()')
+    const calls = mockQueryRefs.mock.calls as [{ name: string; filePath?: string }][]
+    const runSectionCall = calls.find((c) => c[0].name === 'runSection')?.[0]
+    const installHooksCall = calls.find((c) => c[0].name === 'installHooks')?.[0]
+    expect(runSectionCall?.filePath).toBe(resolveIndexPath('src/read_commands.ts'))
+    expect(installHooksCall?.filePath).toBe(resolveIndexPath('src/install.ts'))
+  })
+
+  it('regression: the exact reported spec no longer reports a false "no references found" for a referenced symbol', () => {
+    // Before the fix, lastIndexOf('::') folded this whole spec into file=`src/read_commands.ts::runSection,src/install.ts`
+    // symbol=`installHooks`, that bogus file never matched anything, and installHooks -- which
+    // genuinely has references -- was reported as unreferenced.
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'installHooks') return [ref('src/cli.ts', 491, 'installHooks()'), ref('tests/install.test.ts', 12, 'installHooks()')]
+      return []
+    })
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).not.toContain('No references found')
+    expect(stdout).not.toContain('installHooks: (no references found)')
+    expect(stdout).toContain('installHooks:')
+    expect(stdout).toContain('src/cli.ts:491: installHooks()')
+  })
+
+  it('keeps blocks distinct when the same symbol name is defined in two different files, keying each by its full file::symbol pair', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
+      if (opts.filePath === resolveIndexPath('src/a.ts')) return [ref('src/caller1.ts', 1, 'a.run()')]
+      if (opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/caller2.ts', 2, 'b.run()')]
+      return []
+    })
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::run,src/b.ts::run' })
+      expect(code).toBe(0)
+    })
+    // Same-name collision would otherwise silently overwrite one block with the other.
+    expect(stdout).toContain('src/a.ts::run:')
+    expect(stdout).toContain('src/b.ts::run:')
+    expect(stdout).toContain('src/caller1.ts:1: a.run()')
+    expect(stdout).toContain('src/caller2.ts:2: b.run()')
+    expect(stdout).not.toMatch(/^run:/m)
+  })
+
+  it('a bare segment after file::symbol inherits the previous file across a real file boundary (a.ts::x,b.ts::y,z resolves z against b.ts)', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
+      if (opts.name === 'x' && opts.filePath === resolveIndexPath('src/a.ts')) return [ref('src/callerX.ts', 1, 'x()')]
+      if (opts.name === 'y' && opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/callerY.ts', 2, 'y()')]
+      if (opts.name === 'z' && opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/callerZ.ts', 3, 'z()')]
+      return []
+    })
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::x,src/b.ts::y,z' })
+      expect(code).toBe(0)
+    })
+    const calls = mockQueryRefs.mock.calls as [{ name: string; filePath?: string }][]
+    const zCall = calls.find((c) => c[0].name === 'z')?.[0]
+    // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file
+    // to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec
+    // like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all.
+    expect(zCall?.filePath).toBe(resolveIndexPath('src/b.ts'))
+    expect(stdout).toContain('src/callerZ.ts:3: z()')
+  })
+
+  it('reports a bare "(no references found)" for a pair with no hits alongside a found pair, without failing the whole call', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => (opts.name === 'runSection' ? [ref('src/cli.ts', 5, 'runSection(x)')] : []))
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::nope' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('runSection:')
+    expect(stdout).toContain('nope: (no references found)')
+  })
+
+  it('returns exit 1 when NO pair in a cross-file spec has any references (total failure, matching the same-file multi-spec contract)', () => {
+    mockQueryRefs.mockReturnValue([])
+    const code = runRefs({ spec: 'src/read_commands.ts::nope1,src/install.ts::nope2' })
+    expect(code).toBe(1)
+  })
+
+  it('emits a per-pair map under --json, keyed by full file::symbol when more than one file is involved', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => (opts.name === 'runSection' ? [ref('src/cli.ts', 5, 'runSection(x)')] : []))
+    mockCountRefs.mockImplementation((opts: { name: string }) => (opts.name === 'runSection' ? 1 : 0))
+    const { stdout } = capture(() => runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks', json: true }))
+    const parsed = JSON.parse(stdout) as Record<string, { items: unknown[]; truncated: boolean; totalCount: number }>
+    expect(Object.keys(parsed)).toEqual(['src/read_commands.ts::runSection', 'src/install.ts::installHooks'])
+    expect(parsed['src/read_commands.ts::runSection']?.items).toHaveLength(1)
+    expect(parsed['src/install.ts::installHooks']?.items).toHaveLength(0)
+  })
+
+  it('respects --callers on the cross-file path by never scoping the query to either pair\'s defining file', () => {
+    mockQueryRefs.mockReturnValue([ref('src/caller.ts', 1, 'call()')])
+    capture(() => runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks', callers: true }))
+    // Pin WHICH queries ran, not just a property of whatever ran: the pre-fix mis-parse issued a single query and would satisfy a bare per-call property assertion vacuously.
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)).toEqual(['runSection', 'installHooks'])
+    for (const call of mockQueryRefs.mock.calls) {
+      expect((call[0] as { filePath?: string }).filePath).toBeUndefined()
+    }
+  })
+
+  it('respects --limit on the cross-file path, passed through to every pair\'s query', () => {
+    mockQueryRefs.mockReturnValue([ref('src/caller.ts', 1, 'call()')])
+    capture(() => runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks', limit: 3 }))
+    // Same reason as the --callers test above: assert both pairs were queried, so the pre-fix single-query mis-parse cannot pass this vacuously.
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)).toEqual(['runSection', 'installHooks'])
+    for (const call of mockQueryRefs.mock.calls) {
+      expect((call[0] as { limit?: number }).limit).toBe(3)
+    }
+  })
+
+  it('does not affect a same-file multi-spec (only one distinct file involved) -- output stays keyed by bare symbol', () => {
+    mockQueryRefs.mockReturnValue([])
+    capture(() => runRefs({ spec: 'src/auth.ts::login,refresh' }))
+    // Only one `::` segment in this spec (`src/auth.ts::login`), so parseCrossFileMultiSpec declines and this still runs the pre-existing same-file path -- unchanged from before.
+    const names = mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)
+    expect(names).toEqual(['login', 'refresh'])
+  })
+})
+
 // getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root
 // before this fix, so plain (non --top/--callers) `refs` output always printed the raw absolute
 // filePath. process.cwd() in this test process is this repo's own root (no chdir happens

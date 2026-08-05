@@ -1213,6 +1213,10 @@ export function runRefs(opts: RefsOptions): number {
     return 1
   }
 
+  // Cross-file multi-spec `src/a.ts::fnA,src/b.ts::fnB`. Checked before the single-file `::` handling below for the same reason runRead/runSection check it first (see parseCrossFileMultiSpec) -- parseMultiRefsSpec's findSpecSeparator is a lastIndexOf('::'), so a spec crossing a file boundary would otherwise fold into one bogus file/symbol-list pair and silently miss every symbol but the last (the reported bug: `refs "a.ts::x,b.ts::y"` parsed as file=`a.ts::x,b.ts` symbol=`y`, that nonexistent file matched nothing, and a referenced symbol was reported as unreferenced). parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::a,b` multi-symbol form.
+  const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
+  if (crossFilePairs !== null) return runRefsCrossFile(crossFilePairs, opts)
+
   const { file, symbols } = parseMultiRefsSpec(opts.spec)
   if (symbols.length <= 1) return runRefsSingle(opts)
 
@@ -1255,6 +1259,62 @@ export function runRefs(opts: RefsOptions): number {
       continue
     }
     lines.push(`${sym}:`)
+    if (opts.top !== undefined) {
+      lines.push(...renderTopFilesSummary(results, opts.top))
+    } else if (opts.callers === true) {
+      lines.push(...renderCallerGroups(results))
+    } else {
+      for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
+    }
+  }
+  const fullSourceBytes = sumFileSizes(refFilePaths)
+  if (opts.json === true) {
+    const text = JSON.stringify(jsonOut, null, 2)
+    emit(text)
+    if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
+    return anyFound ? 0 : 1
+  }
+  const text = lines.join('\n')
+  emitGuarded(text, 'symbol')
+  if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
+  return anyFound ? 0 : 1
+}
+
+/** Cross-file refs, e.g. `src/a.ts::fnA,src/b.ts::fnB`. Body mirrors runRefs's own per-symbol loop above (same query construction, same `--callers`/`--limit`/`--top`/`--json` handling), swapping the shared `file` for each pair's own -- and mirrors runSectionCrossFile/runReadMulti's `keyFor` rule: one distinct file across all pairs keys by bare symbol (matches today's same-file `refs "file::a,b"` output byte-for-byte), more than one keys by the full `file::symbol` pair so two files contributing the same symbol name stay distinct. Unlike those two, runRefs prints directly and returns a bare exit code rather than `{text, code}` -- matched here rather than restructured, per runRefs's own existing convention. */
+function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsOptions): number {
+  const distinctFiles = new Set(pairs.map((p) => p.file))
+  const keyFor = (p: { file: string; symbol: string }): string => (distinctFiles.size === 1 ? p.symbol : `${p.file}::${p.symbol}`)
+
+  const jsonOut: Record<string, RefsJsonEntry> = {}
+  let anyFound = false
+  const lines: string[] = []
+  const refFilePaths: string[] = []
+  for (const { file, symbol } of pairs) {
+    const key = keyFor({ file, symbol })
+    const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
+    // Same reasoning as runRefs's per-symbol loop above: the pair's `file` only disambiguates which same-named symbol this is, by its defining file -- --callers must never scope the search to that one file since callers can live anywhere.
+    if (opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
+    if (opts.limit !== undefined) queryOpts.limit = opts.limit
+    else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    const results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
+    if (results.length > 0) anyFound = true
+    refFilePaths.push(...results.map((r) => r.filePath))
+    if (opts.json === true) {
+      if (opts.top !== undefined) {
+        jsonOut[key] = topFilesJsonPayload(results, opts.top)
+      } else {
+        // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
+        const capped = guardJsonRows(results)
+        const trueTotal = countRefs(queryOpts)
+        jsonOut[key] = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+      }
+      continue
+    }
+    if (results.length === 0) {
+      lines.push(`${key}: (no references found)`)
+      continue
+    }
+    lines.push(`${key}:`)
     if (opts.top !== undefined) {
       lines.push(...renderTopFilesSummary(results, opts.top))
     } else if (opts.callers === true) {
