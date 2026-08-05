@@ -4893,14 +4893,14 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(stdout).toContain('logout: (no references found)')
   })
 
-  it('scopes every comma-separated symbol to a `::`-prefixed file', () => {
+  // The `::`-prefixed file only disambiguates which same-named symbol is meant (fed to applyTypedRefsTier's querySymbols call); it must never scope queryRefs itself, or references living in other files would be silently dropped -- the exact reported bug.
+  it('queries every comma-separated symbol codebase-wide, never scoping queryRefs to the `::`-prefixed file', () => {
     mockQueryRefs.mockReturnValue([])
     capture(() => runRefs({ spec: 'src/auth.ts::login,refresh' }))
     const names = mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)
     expect(names).toEqual(['login', 'refresh'])
-    const expectedFilePath = resolveIndexPath('src/auth.ts')
     for (const call of mockQueryRefs.mock.calls) {
-      expect((call[0] as { filePath?: string }).filePath).toBe(expectedFilePath)
+      expect((call[0] as { filePath?: string }).filePath).toBeUndefined()
     }
   })
 
@@ -5004,7 +5004,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     vi.clearAllMocks()
   })
 
-  it('merges references for two symbols defined in two different files, each scoped to its own file', () => {
+  it('merges references for two symbols defined in two different files, querying each codebase-wide (not scoped to its defining file)', () => {
     mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
       if (opts.name === 'runSection') return [ref('src/cli.ts', 5, 'runSection(x)')]
       if (opts.name === 'installHooks') return [ref('src/cli.ts', 491, 'installHooks()')]
@@ -5021,8 +5021,8 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     const calls = mockQueryRefs.mock.calls as [{ name: string; filePath?: string }][]
     const runSectionCall = calls.find((c) => c[0].name === 'runSection')?.[0]
     const installHooksCall = calls.find((c) => c[0].name === 'installHooks')?.[0]
-    expect(runSectionCall?.filePath).toBe(resolveIndexPath('src/read_commands.ts'))
-    expect(installHooksCall?.filePath).toBe(resolveIndexPath('src/install.ts'))
+    expect(runSectionCall?.filePath).toBeUndefined()
+    expect(installHooksCall?.filePath).toBeUndefined()
   })
 
   it('regression: the exact reported spec no longer reports a false "no references found" for a referenced symbol', () => {
@@ -5043,16 +5043,16 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     expect(stdout).toContain('src/cli.ts:491: installHooks()')
   })
 
+  // The two pairs below query the same symbol name ('run') with no filePath scoping (the fix), so
+  // mockQueryRefs can no longer differentiate them by opts.filePath -- differentiate by call order
+  // instead, pinning WHICH queries ran (via keyFor's block keys) rather than a query-argument property.
   it('keeps blocks distinct when the same symbol name is defined in two different files, keying each by its full file::symbol pair', () => {
-    mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
-      if (opts.filePath === resolveIndexPath('src/a.ts')) return [ref('src/caller1.ts', 1, 'a.run()')]
-      if (opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/caller2.ts', 2, 'b.run()')]
-      return []
-    })
+    mockQueryRefs.mockImplementationOnce(() => [ref('src/caller1.ts', 1, 'a.run()')]).mockImplementationOnce(() => [ref('src/caller2.ts', 2, 'b.run()')])
     const { stdout } = capture(() => {
       const code = runRefs({ spec: 'src/a.ts::run,src/b.ts::run' })
       expect(code).toBe(0)
     })
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'run' }, { name: 'run' }])
     // Same-name collision would otherwise silently overwrite one block with the other.
     expect(stdout).toContain('src/a.ts::run:')
     expect(stdout).toContain('src/b.ts::run:')
@@ -5061,23 +5061,26 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
     expect(stdout).not.toMatch(/^run:/m)
   })
 
-  it('a bare segment after file::symbol inherits the previous file across a real file boundary (a.ts::x,b.ts::y,z resolves z against b.ts)', () => {
-    mockQueryRefs.mockImplementation((opts: { name: string; filePath?: string }) => {
-      if (opts.name === 'x' && opts.filePath === resolveIndexPath('src/a.ts')) return [ref('src/callerX.ts', 1, 'x()')]
-      if (opts.name === 'y' && opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/callerY.ts', 2, 'y()')]
-      if (opts.name === 'z' && opts.filePath === resolveIndexPath('src/b.ts')) return [ref('src/callerZ.ts', 3, 'z()')]
+  it('a bare segment after file::symbol inherits the previous file across a real file boundary, threading it into disambiguation (a.ts::x,b.ts::y,z resolves z against b.ts)', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'x') return [ref('src/callerX.ts', 1, 'x()')]
+      if (opts.name === 'y') return [ref('src/callerY.ts', 2, 'y()')]
+      if (opts.name === 'z') return [ref('src/callerZ.ts', 3, 'z()')]
       return []
     })
+    // querySymbols is what now receives the defining-file hint (via applyTypedRefsTier's disambiguation call) -- queryRefs itself is never scoped. An empty return keeps the typed tier a pass-through so the raw queryRefs results above surface unchanged.
+    mockQuerySymbols.mockReturnValue([])
     const { stdout } = capture(() => {
       const code = runRefs({ spec: 'src/a.ts::x,src/b.ts::y,z' })
       expect(code).toBe(0)
     })
-    const calls = mockQueryRefs.mock.calls as [{ name: string; filePath?: string }][]
-    const zCall = calls.find((c) => c[0].name === 'z')?.[0]
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'x' }, { name: 'y' }, { name: 'z' }])
+    const symbolCalls = mockQuerySymbols.mock.calls as [{ name: string; filePath?: string }][]
+    const zSymbolCall = symbolCalls.find((c) => c[0].name === 'z')?.[0]
     // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file
     // to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec
     // like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all.
-    expect(zCall?.filePath).toBe(resolveIndexPath('src/b.ts'))
+    expect(zSymbolCall?.filePath).toBe('src/b.ts')
     expect(stdout).toContain('src/callerZ.ts:3: z()')
   })
 
@@ -5390,7 +5393,11 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
     expect(stdout).toContain('src/z.ts')
   })
 
-  it('without --callers, a file::symbol spec still scopes to that file (unchanged behavior)', () => {
+  // Regression: without --callers, a file::symbol spec used to scope queryRefs to that file too --
+  // exactly the reported bug (`refs "src/install.ts::installHooks"` found zero references because
+  // installHooks is defined in src/install.ts but called only from src/cli.ts and tests/install.test.ts).
+  // The `::`-prefixed file must disambiguate which same-named symbol is meant, never restrict the search.
+  it('without --callers, a file::symbol spec is still NOT scoped to that file (regression: same fix as --callers)', () => {
     mockQueryRefs.mockImplementation(
       fakeRefsTable([
         { filePath: 'src/a.ts', name: 'helperFn', line: 10, context: 'helperFn()' },
@@ -5398,11 +5405,37 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
       ]),
     )
 
-    capture(() => runRefs({ spec: 'src/a.ts::helperFn' }))
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::helperFn' })
+      expect(code).toBe(0)
+    })
 
-    expect(mockQueryRefs).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'helperFn', filePath: expect.any(String) }),
+    expect(mockQueryRefs).toHaveBeenCalledWith({ name: 'helperFn' })
+    // src/b.ts is a DIFFERENT file from the one named in the spec -- this reference must still surface.
+    expect(stdout).toContain('src/b.ts:20: helperFn()')
+  })
+
+  // The headline reported bug, reproduced with the exact spec from the report: installHooks is
+  // DEFINED in src/install.ts but referenced only from src/cli.ts and tests/install.test.ts --
+  // files other than the one in the spec. Before the fix this printed "No references found" and
+  // exited 1, even though the symbol demonstrably has references.
+  it('regression: "refs src/install.ts::installHooks" finds references that occur in OTHER files', () => {
+    mockQueryRefs.mockImplementation(
+      fakeRefsTable([
+        { filePath: 'src/cli.ts', name: 'installHooks', line: 491, context: 'installHooks(root)' },
+        { filePath: 'tests/install.test.ts', name: 'installHooks', line: 12, context: 'installHooks(dir)' },
+      ]),
     )
+
+    const { stdout, stderr } = capture(() => {
+      const code = runRefs({ spec: 'src/install.ts::installHooks' })
+      expect(code).toBe(0)
+    })
+
+    expect(stderr).toBe('')
+    expect(stdout).not.toContain('No references found')
+    expect(stdout).toContain('src/cli.ts:491: installHooks(root)')
+    expect(stdout).toContain('tests/install.test.ts:12: installHooks(dir)')
   })
 })
 
