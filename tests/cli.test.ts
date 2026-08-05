@@ -262,6 +262,22 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --file --full returns every line with no elision (the blob store is lossless, so exactly one flag must expose it that way -- an elision marker elsewhere that points a reader at a cached id is only honest if this holds)', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-full-noelide-${Date.now()}.txt`)
+    const lines = Array.from({ length: 200 }, (_, i) => `LINE ${i + 1}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--full'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain('...(elided)...')
+      expect(r.stdout).toContain('LINE 1')
+      expect(r.stdout).toContain('LINE 100')
+      expect(r.stdout).toContain('LINE 200')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
   it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', () => {
     const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')

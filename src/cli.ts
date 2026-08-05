@@ -905,7 +905,7 @@ function cmdHintStats(opts: { json?: boolean; reset?: boolean; markEffective?: s
 
 function _applyFiltersAndPrint(
   content: string,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
 ): string {
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
@@ -944,6 +944,12 @@ function _applyFiltersAndPrint(
   }
 
   const lines = content.split(/\r?\n/)
+  // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
+  if (opts.full === true) {
+    const printedFull = lines.join('\n')
+    out(printedFull)
+    return printedFull
+  }
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
 
@@ -2981,6 +2987,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the output')
+    .option('--full', 'print the entire cached entry with no head/tail elision')
     .option('--file <path>', 'read from raw output file instead of cache')
     .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
     .action(guard(cmdBashOutput))
@@ -2993,6 +3000,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
+    .option('--full', 'print the entire cached entry with no head/tail elision')
     .action(guard(cmdWebOutput))
 
   program
@@ -3003,6 +3011,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the result')
+    .option('--full', 'print the entire cached entry with no head/tail elision')
     .action(guard(cmdMcpOutput))
 
   program

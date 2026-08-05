@@ -20,6 +20,7 @@ import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
 import { storeMcpOutput } from './mcp_cache.js'
 import { recordStat } from './stats.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder).
@@ -194,8 +195,42 @@ function preAgentHandler(event: HookEvent): HookOutput {
   }
 }
 
-// Well above the ~2,220 char/call average measured from real claude-skills session transcripts, so only genuine outlier reports get cached -- typical subagent reports are completely untouched. Deliberately conservative: unlike MCP JSON (lossless structural re-encoding) or Tab Context (verified byte-identical dedup), a subagent's own report is already-distilled prose with no safe way to shrink it losslessly, so this handler never hides or truncates what the parent sees -- it only appends a recall pointer to the full text for a later turn, via contextOutput (never rewriteOutput).
+// Well above the ~2,220 char/call average measured from real claude-skills session transcripts, so only genuine outlier reports get cached -- typical subagent reports are completely untouched.
 const AGENT_RESULT_CACHE_MIN_BYTES = 8000
+
+// A fenced block must exceed this many lines before any of it is elided, and this many lines are kept at each end. A subagent's report is already-distilled PROSE with no safe way to shrink it losslessly, so prose is never touched by this handler -- caveats, limitations, and "I did not verify X" admissions live there, and those are precisely the sentences that catch a subagent shipping something it did not check (three consecutive self-improvement cycles caught a real defect exactly that way). What IS safely reducible is what agents paste INTO fenced blocks: gate transcripts, `git diff --stat` tables, dogfood output. Those are mechanically reproducible from the repo, and the full text stays one `mcp-output <id>` away, so eliding their middle costs the parent nothing it cannot recover on demand.
+const FENCE_COLLAPSE_MIN_LINES = 20
+const FENCE_COLLAPSE_KEEP_LINES = 6
+
+// Collapse the middle of over-long fenced code blocks, leaving every non-fenced line byte-identical. Fence tracking is a simple open/close toggle on ``` at the start of a trimmed line, matching how the reports are actually written; an unterminated fence at end-of-text is deliberately left alone rather than collapsed, since without a closing marker there is no way to tell a code block from prose that merely began with a fence.
+export function collapseFencedBlocks(text: string, recallHint: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let fenceStart = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const isFenceMarker = line.trimStart().startsWith('```')
+    if (fenceStart === -1) {
+      if (isFenceMarker) fenceStart = i
+      else out.push(line)
+      continue
+    }
+    if (!isFenceMarker) continue
+    // Closing marker reached: `fenceStart`..`i` is one complete block, body exclusive of both markers.
+    const bodyLines = i - fenceStart - 1
+    if (bodyLines > FENCE_COLLAPSE_MIN_LINES) {
+      out.push(...lines.slice(fenceStart, fenceStart + 1 + FENCE_COLLAPSE_KEEP_LINES))
+      out.push(`[token-goat: ${bodyLines - FENCE_COLLAPSE_KEEP_LINES * 2} lines elided -- full report via ${recallHint}]`)
+      out.push(...lines.slice(i - FENCE_COLLAPSE_KEEP_LINES, i + 1))
+    } else {
+      out.push(...lines.slice(fenceStart, i + 1))
+    }
+    fenceStart = -1
+  }
+  // An unterminated trailing fence is emitted verbatim rather than collapsed: with no closing marker there is no way to tell a real code block from prose that merely began with a backtick line, and this handler never guesses at the parent's expense.
+  if (fenceStart !== -1) out.push(...lines.slice(fenceStart))
+  return out.join('\n')
+}
 
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
@@ -213,9 +248,26 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const id = storeMcpOutput(event.sessionId, 'Agent', event.toolInput, resultText)
     if (id === null) return passOutput()
     recordStat('session_hint', 0, 0)
-    return contextOutput(
-      `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: token-goat mcp-output ${id}`,
-    )
+    // `--full` is load-bearing, not decoration: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so pointing at it would promise a full report the CLI cannot produce -- the elided fence middles would be exactly what a bare recall drops again.
+    const recallHint = `token-goat mcp-output ${id} --full`
+    const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}`
+
+    // Compact the envelope only when the fenced-block collapse actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE collapses to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
+    const collapsed = collapseFencedBlocks(resultText, recallHint)
+    const originalBytes = Buffer.byteLength(resultText, 'utf-8')
+    if (
+      collapsed !== resultText &&
+      isRewriteWorthwhile({
+        originalBytes,
+        rewrittenBytes: Buffer.byteLength(collapsed, 'utf-8'),
+        noticeBytes: Buffer.byteLength(notice, 'utf-8'),
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return { hookType: 'rewriteOutput', updatedOutput: `${collapsed}\n\n${notice}` }
+    }
+
+    return contextOutput(notice)
   } catch {
     return passOutput()
   }

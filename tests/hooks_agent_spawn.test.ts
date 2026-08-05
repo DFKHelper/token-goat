@@ -317,7 +317,7 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     expect(result.hookType).toBe('pass')
   })
 
-  it('caches an outlier-large Agent report and appends a recall pointer without altering the original result (regression: a subagent report must never be truncated or hidden -- this handler only ever appends via contextOutput, never rewriteOutput)', async () => {
+  it('caches an outlier-large all-prose Agent report and appends a recall pointer without altering it (regression: prose is never truncated or hidden -- with no fenced block to collapse this path stays contextOutput-only, exactly as before envelope compaction existed)', async () => {
     const largeReport = 'Detailed finding line.\n'.repeat(400) // > 8000 chars
     const result = await runHook(buildEvent('post_tool_use', postPayload(largeReport)))
     expect(result.hookType).toBe('context')
@@ -329,6 +329,47 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
       const entry = getBashOutput(m![1] as string)
       expect(entry?.output).toBe(largeReport)
     }
+  })
+
+  it('collapses the middle of an over-long fenced block, keeps both ends, and leaves every prose line byte-identical', async () => {
+    const caveat = 'Not verified: I did not re-run the full suite after the falsify cycle.'
+    const report = [
+      'Here is what I changed.',
+      '```',
+      ...Array.from({ length: 60 }, (_, i) => `gate output line ${i}`),
+      '```',
+      caveat,
+      'x'.repeat(8000),
+    ].join('\n')
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      const out = result.updatedOutput
+      // The caveat sentence is the whole reason prose is off-limits: it is what catches a subagent that shipped something it never checked.
+      expect(out).toContain(caveat)
+      expect(out).toContain('Here is what I changed.')
+      // Both ends of the fence survive; only the middle goes.
+      expect(out).toContain('gate output line 0')
+      expect(out).toContain('gate output line 59')
+      expect(out).not.toContain('gate output line 30')
+      // The `--full` suffix is load-bearing and nearly shipped missing: a bare `mcp-output <id>` render elides its own middle past the default head 30 / tail 80, so without it the marker points at a command that drops the very lines it just promised. Assert the flag, not just the id.
+      expect(out).toMatch(/\d+ lines elided -- full report via token-goat mcp-output mcp_[0-9a-f]{16} --full/)
+      // The full text stays recoverable, so nothing is actually lost.
+      const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(out)
+      expect(getBashOutput(m![1] as string)?.output).toBe(report)
+    }
+  })
+
+  it('leaves a short fenced block intact (a diff --stat table is worth more whole than elided)', async () => {
+    const report = ['Summary.', '```', ...Array.from({ length: 5 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'y'.repeat(9000)].join('\n')
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('emits an unterminated trailing fence verbatim rather than guessing where it ends', async () => {
+    const report = ['Summary.', 'z'.repeat(8100), '```', ...Array.from({ length: 60 }, (_, i) => `dangling ${i}`)].join('\n')
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('context')
   })
 
   it('passes through when sessionId is missing, even for an outlier-large report', async () => {
