@@ -3,9 +3,9 @@
  * actually handles, and must leave the catch-all everywhere narrowing would
  * silently drop a handler.
  *
- * Claude Code spawns a fresh `token-goat hook ...` process for every matcher
- * hit, and roughly 90% of that process's cost is Node startup plus evaluating
- * the ~3.2 MB bundle -- not the hook's own work. A catch-all matcher therefore
+ * Claude Code spawns a fresh hook process for every matcher hit, and roughly
+ * 90% of that process's cost is Node startup plus evaluating the ~3.2 MB bundle
+ * -- not the hook's own work. A catch-all matcher therefore
  * pays full price for every tool token-goat has no handler for, which in a real
  * session is ~15% of all tool calls.
  *
@@ -36,7 +36,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registerHook, toolMatcherFor } from '../src/hook_registry.js'
-import { installHooks } from '../src/install.js'
+import { claudeHookScriptPath, installHooks } from '../src/install.js'
 
 // Side-effect import: registers every hook handler, mirroring cli.ts's own
 // top-level `import { relay } from './relay.js'`. Without this the registry is
@@ -45,14 +45,27 @@ import '../src/relay.js'
 
 let TMP: string
 let origCwd: string
+let origHome: string | undefined
+let origUserProfile: string | undefined
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-matcher-'))
   origCwd = process.cwd()
   process.chdir(TMP)
+  // installHooks writes the generated shim under os.homedir(); pin it to the temp dir so this suite cannot touch the developer's real ~/.claude/hooks.
+  origHome = process.env['HOME']
+  origUserProfile = process.env['USERPROFILE']
+  const fakeHome = path.join(TMP, 'home')
+  fs.mkdirSync(fakeHome, { recursive: true })
+  process.env['HOME'] = fakeHome
+  process.env['USERPROFILE'] = fakeHome
 })
 
 afterEach(() => {
+  if (origHome === undefined) delete process.env['HOME']
+  else process.env['HOME'] = origHome
+  if (origUserProfile === undefined) delete process.env['USERPROFILE']
+  else process.env['USERPROFILE'] = origUserProfile
   process.chdir(origCwd)
   fs.rmSync(TMP, { recursive: true, force: true })
 })
@@ -67,7 +80,8 @@ function tokenGoatGroup(settingsPath: string, eventKey: string): HookGroup {
     hooks: Record<string, HookGroup[]>
   }
   const groups = settings.hooks[eventKey] ?? []
-  const group = groups.find((g) => g.hooks.some((h) => h.command.includes('token-goat hook')))
+  // Match on the generated shim path rather than a literal command string: the wired command bakes in this node binary and entry path, neither of which this test can spell.
+  const group = groups.find((g) => g.hooks.some((h) => h.command.includes(claudeHookScriptPath())))
   expect(group, `no token-goat group written for ${eventKey}`).toBeDefined()
   return group as HookGroup
 }

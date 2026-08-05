@@ -4,24 +4,34 @@
  * Ports the `patch_settings_json` / `unpatch_settings_json` slice of
  * `install.py` to TypeScript. Claude Code reads hook wiring from
  * `~/.claude/settings.json` (user scope) or `<project>/.claude/settings.json`
- * (project scope). Each token-goat hook is a `{ type: "command", command:
- * "token-goat hook <event>" }` entry under the matching event key.
+ * (project scope). Each token-goat hook is a `{ type: "command", command: ... }`
+ * entry under the matching event key, where the command invokes the generated
+ * shim at {@link claudeHookScriptPath} via {@link hookCommandFor} —
+ * `"<node>" "<shim>" <event> "<entry>"`.
+ *
+ * Going through the shim rather than the bare `token-goat hook <event>` PATH
+ * lookup buys two things: the shim's in-process fast path imports
+ * `dist/token-goat-hook.mjs` and calls `relayInProcess` directly instead of
+ * spawning a second process, and naming the node binary explicitly skips the
+ * npm bin wrapper (on Windows, a `cmd.exe` layer) that a PATH lookup would pay
+ * for on every single hook. Measured at ~480ms → ~324ms per invocation.
  *
  * Writes go through {@link atomicWriteText}; an absent settings file is created
  * with only the hooks section. Installation is idempotent — re-running never
- * duplicates an entry — and uninstall removes only token-goat's own entries,
- * leaving any user-authored hooks intact.
+ * duplicates an entry — and uninstall removes only token-goat's own entries
+ * plus the generated shim, leaving any user-authored hooks intact.
  */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { buildGuidanceBlock, buildGuidanceBody } from './bridges/guidance_block.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import type { HookEventName } from './types.js'
-import { atomicWriteText, ensureDirSync, escapeRegExp, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeJsonSettings } from './util.js'
+import { atomicWriteText, ensureDirSync, escapeRegExp, hookCommandFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -52,7 +62,19 @@ const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['SessionStart', 'session_start'],
 ]
 
-/** Marker substring identifying a token-goat hook command for idempotency. */
+/**
+ * Marker substring identifying the CURRENT, shim-based hook command.
+ *
+ * Deliberately `token-goat-shim` and not `token-goat-hook`: the latter is reserved
+ * in {@link LEGACY_COMMAND_MARKERS} for the dead Python-era exe wrapper, so a shim
+ * path carrying it would be classified as stale cruft and stripped on every single
+ * reinstall -- silently reverting the wiring it had just applied. `bridges/codex_install.ts`
+ * hit and solved this exact collision first (`CODEX_COMMAND_MARKER`); this is the same
+ * solution ported to the base Claude Code path.
+ */
+const SHIM_COMMAND_MARKER = 'token-goat-shim'
+
+/** Marker substring identifying the pre-shim `token-goat hook <event>` command. */
 const COMMAND_MARKER = 'token-goat hook'
 
 /**
@@ -78,24 +100,59 @@ export function anchoredMarkerPattern(marker: string): RegExp {
   return new RegExp(`(?<![a-zA-Z0-9_-])${escaped}(?![a-zA-Z0-9_-])`)
 }
 
-const HOOK_MARKER_PATTERNS = [COMMAND_MARKER, ...LEGACY_COMMAND_MARKERS].map(anchoredMarkerPattern)
+const HOOK_MARKER_PATTERNS = [SHIM_COMMAND_MARKER, COMMAND_MARKER, ...LEGACY_COMMAND_MARKERS].map(anchoredMarkerPattern)
 
-/** True when `command` is a current-or-legacy token-goat hook invocation. */
+/** True when `command` is any token-goat hook invocation: current shim, pre-shim, or legacy alias. */
 function isTokenGoatHookCommand(command: string): boolean {
   return HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(command))
 }
 
-/** Pattern matching only the current-format `token-goat hook <event>` command, never a legacy alias. */
-const CURRENT_MARKER_PATTERN = anchoredMarkerPattern(COMMAND_MARKER)
-
-/** True when `command` is a current-format (non-legacy) token-goat hook invocation. */
-function isCurrentTokenGoatHookCommand(command: string): boolean {
-  return CURRENT_MARKER_PATTERN.test(command)
+/**
+ * Absolute path to the generated Claude Code hook shim.
+ *
+ * Always under the user's home `~/.claude/hooks`, never the project's, even for a
+ * project-scope install: the shim is a generated file whose invocation bakes in
+ * absolute machine-specific paths (this node binary, this token-goat entry), so a
+ * copy inside a repo would be both useless to a teammate and an unexpected
+ * generated artifact in their working tree. A project-scope `settings.json` simply
+ * points at the home-scoped shim by absolute path.
+ */
+export function claudeHookScriptPath(): string {
+  return path.join(os.homedir(), '.claude', 'hooks', 'token-goat-shim.js')
 }
 
-/** Build the hook command string for an internal event arg. */
-function hookCommand(eventArg: string): string {
-  return `token-goat hook ${eventArg}`
+/**
+ * Does any installed scope still wire a hook command pointing at `scriptPath`?
+ *
+ * Both scopes share the single home-scoped shim, so uninstalling one must not delete
+ * the file the other still depends on. `alreadyStripped` is the in-memory hooks map of
+ * the scope currently being uninstalled, passed in because its entries have already been
+ * removed there but not yet written to disk -- re-reading that file would see the stale
+ * pre-strip content and always report the shim as still needed.
+ */
+function anyScopeReferencesShim(
+  scriptPath: string,
+  currentScope: HookScope,
+  alreadyStripped: Record<string, HookMatcherGroup[]>,
+): boolean {
+  const referencesIn = (map: Record<string, HookMatcherGroup[]> | undefined): boolean => {
+    for (const groups of Object.values(map ?? {})) {
+      for (const group of groups) {
+        for (const h of group.hooks ?? []) {
+          if (h.command.includes(scriptPath)) return true
+        }
+      }
+    }
+    return false
+  }
+  // The scope being uninstalled is judged from the in-memory post-strip map only: its file on disk still holds the pre-strip entries, so re-reading it here would always find the shim "still referenced" and no uninstall would ever remove it.
+  if (referencesIn(alreadyStripped)) return true
+  for (const scope of ['user', 'project'] as const) {
+    if (scope === currentScope) continue
+    // A scope whose settings file is missing, unreadable, or malformed is treated as not referencing the shim: uninstall must stay best-effort rather than abort on someone else's broken JSON.
+    if (referencesIn(readSettings(settingsPath(scope)).hooks)) return true
+  }
+  return false
 }
 
 /** Return the `~/.claude` or `<cwd>/.claude` settings path for `scope`. */
@@ -206,18 +263,24 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   const settings = readSettings(p, { strict: true })
   const hooks = settings.hooks ?? {}
 
-  let changed = false
+  // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
+  const scriptPath = claudeHookScriptPath()
+  ensureDirSync(path.dirname(scriptPath))
+  const scriptChanged = writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
+
+  let settingsChanged = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
+    const expectedCommand = hookCommandFor(scriptPath, eventArg)
     const existingGroups = hooks[eventKey] ?? []
 
-    // Strip any legacy-marked token-goat entries first, regardless of whether a current-format entry is also already present -- a legacy command is dead on this build, so leaving it coexisting with a current entry would violate "exactly one, working, entry per event key" just as much as leaving it in place of a missing current entry would.
+    // Strip every token-goat entry that is not byte-identical to what this build wires, whether or not a correct entry also already exists -- a wrong entry coexisting with a right one violates "exactly one, working, entry per event key" just as much as a wrong entry sitting alone does. Exact-match rather than marker-match is what makes this cover all three staleness shapes at once: a legacy alias (tokenwise/token_goat/tg-hook), a pre-shim bare `token-goat hook <event>`, and a shim command whose baked absolute paths have since moved (node upgraded, token-goat reinstalled elsewhere). A marker check would call that last one "already installed" and leave the hook pointing at a binary that no longer exists.
     const groups: HookMatcherGroup[] = []
-    let strippedLegacy = false
+    let strippedStale = false
     for (const group of existingGroups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isLegacy = isTokenGoatHookCommand(h.command) && !isCurrentTokenGoatHookCommand(h.command)
-        if (isLegacy) strippedLegacy = true
-        return !isLegacy
+        const isStale = isTokenGoatHookCommand(h.command) && h.command !== expectedCommand
+        if (isStale) strippedStale = true
+        return !isStale
       })
       if (keptHooks.length > 0) {
         groups.push({ ...group, hooks: keptHooks })
@@ -227,7 +290,8 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
       }
     }
 
-    if (groupHasTokenGoat(groups, isCurrentTokenGoatHookCommand)) {
+    const isOurs = (command: string): boolean => command === expectedCommand
+    if (groupHasTokenGoat(groups, isOurs)) {
       // Re-narrow an already-installed entry. Without this the matcher improvement
       // below would only ever reach brand-new installs: every existing user would
       // keep the catch-all they were installed with and see no benefit. Only groups
@@ -240,17 +304,16 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
           const group = groups[i]
           if (group === undefined) continue
           const ownHooks = group.hooks ?? []
-          const isOwnGroup =
-            ownHooks.length > 0 && ownHooks.every((h) => isCurrentTokenGoatHookCommand(h.command))
+          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOurs(h.command))
           if (isOwnGroup && group.matcher !== narrowed) {
             groups[i] = { ...group, matcher: narrowed }
             renarrowed = true
           }
         }
       }
-      if (strippedLegacy || renarrowed) {
+      if (strippedStale || renarrowed) {
         hooks[eventKey] = groups
-        changed = true
+        settingsChanged = true
       }
       continue
     }
@@ -262,17 +325,20 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
     // non-tool event, or a handler that really does want everything -- and the
     // catch-all is the correct answer then.
     const matcher = toolMatcherFor(eventArg as HookEventName) ?? ''
-    groups.push({ matcher, hooks: [{ type: 'command', command: hookCommand(eventArg) }] })
+    groups.push({ matcher, hooks: [{ type: 'command', command: expectedCommand }] })
     hooks[eventKey] = groups
-    changed = true
+    settingsChanged = true
   }
 
-  if (!changed) {
+  if (!settingsChanged && !scriptChanged) {
     return { scope, settingsPath: p, alreadyInstalled: true }
   }
 
-  settings.hooks = hooks
-  writeJsonSettings(p, settings)
+  // Only touch settings.json when its own content actually changed: a run that merely repaired the shim must not rewrite (and re-timestamp) a file the user may be watching or version-controlling.
+  if (settingsChanged) {
+    settings.hooks = hooks
+    writeJsonSettings(p, settings)
+  }
   return { scope, settingsPath: p, alreadyInstalled: false }
 }
 
@@ -291,7 +357,20 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
   if (hooks === undefined) return false
 
   const removed = stripOwnHooksFromMap(hooks, isTokenGoatHookCommand)
-  if (!removed) return false
+
+  // Remove the generated shim too, mirroring bridges/codex_install.ts -- but ONLY once no scope still points at it. Unlike Codex, which has a single config location, token-goat has two scopes that share one home-scoped shim: deleting it on `uninstall --project` while a user-scope install is still wired would leave every user-scope hook invoking a file that no longer exists, failing silently on every tool call. Checked after the strip above so this scope's own now-removed entries don't count as a reason to keep it.
+  const scriptPath = claudeHookScriptPath()
+  let removedScript = false
+  if (!anyScopeReferencesShim(scriptPath, scope, hooks)) {
+    try {
+      fs.unlinkSync(scriptPath)
+      removedScript = true
+    } catch {
+      // Already absent; nothing to remove.
+    }
+  }
+
+  if (!removed) return removedScript
 
   if (Object.keys(hooks).length === 0) {
     delete settings.hooks
@@ -316,8 +395,12 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   const settings = readSettings(settingsPath(scope))
   const hooks = settings.hooks
   if (hooks === undefined) return false
-  for (const [eventKey] of HOOK_EVENT_MAP) {
-    if (!groupHasTokenGoat(hooks[eventKey], isCurrentTokenGoatHookCommand)) return false
+  const scriptPath = claudeHookScriptPath()
+  // A wired command whose baked shim path no longer exists on disk cannot fire, so it must read as not-installed and let installHooks regenerate it -- otherwise a user who deleted ~/.claude/hooks would be told they are installed while every hook silently no-ops.
+  if (!fs.existsSync(scriptPath)) return false
+  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
+    const expectedCommand = hookCommandFor(scriptPath, eventArg)
+    if (!groupHasTokenGoat(hooks[eventKey], (c) => c === expectedCommand)) return false
   }
   return true
 }
