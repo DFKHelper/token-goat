@@ -34,6 +34,27 @@ function captureStdout(fn: () => void): string {
 }
 
 describe('runHintStatsCommand — human output', () => {
+  // Categories are registered statically, so an untouched store renders a full table of zeros.
+  // "0 emitted / 0 acted-on / n/a" reads as measured ineffectiveness, and the action that
+  // invites (retire the hints) is the opposite of the correct one (go collect data). The note
+  // must appear only while the store is genuinely untouched, and the table must still render --
+  // dropping it would narrow existing output.
+  it('says the zeros are absence of data when nothing has been recorded', () => {
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('No hint emissions recorded yet')
+    expect(output).toContain('not measured ineffectiveness')
+    expect(output).toContain('category')
+    expect(output).toContain('bash_redirect')
+  })
+
+  it('drops the empty-store note once a single emission exists', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, null)
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).not.toContain('No hint emissions recorded yet')
+    expect(output).toContain('bash_redirect')
+  })
+
   it('prints a header row and one row per known category, even with no data', () => {
     const output = captureStdout(() => runHintStatsCommand())
     expect(output).toContain('category')

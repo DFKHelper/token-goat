@@ -1321,6 +1321,22 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     }
   }, 30000)
 
+  // An empty cache used to render as a bare column header with zero rows, which is
+  // indistinguishable from a rendering failure or a lookup against the wrong cache root --
+  // exactly the "empty backing store looks like a populated one" class this repo has fixed
+  // three times elsewhere. Say it plainly instead, matching `stats`'s own empty-store line.
+  it('skill-list reports an empty cache instead of printing a bare header', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skilllist-empty-'))
+    try {
+      const r = runIsolated(['skill-list'], dataDir)
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('No skills cached yet.')
+      expect(r.stdout).not.toContain('Marker  Hits  Age  Status')
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
   // Regression for the acceptance test: after `skill-compact`, `skill-list` must show
   // the skill. Pre-fix skill-compact wrote only a -compact file (no meta), and listSkills
   // iterates metas, so the entry was invisible. skill-compact now also writes the body meta.

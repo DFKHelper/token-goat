@@ -1607,6 +1607,13 @@ async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promi
       return `${s.name.padEnd(25)} ${bodyKb.padStart(6)}K  ${compactKb.padStart(6)}K  ${marker}  ${s.hitCount.toString().padStart(3)}  ${age.padStart(3)}  ${staleStatus}`
     })
     const header = `${'Name'.padEnd(25)} ${'Body'.padStart(6)}  ${'Compact'.padStart(6)}  Marker  Hits  Age  Status`
+    // A bare header with no rows is indistinguishable from a rendering failure or a lookup against
+    // the wrong cache root. Say the cache is empty, matching how `stats` reports its own empty
+    // store, so the caller knows nothing is wrong and there is simply nothing cached.
+    if (skills.length === 0) {
+      out('No skills cached yet.')
+      return
+    }
     out([header, ...lines].join('\n'))
   }
 }
