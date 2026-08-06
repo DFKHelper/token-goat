@@ -280,6 +280,13 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
         lines.push(`- ${s.name} (${s.kind}) — ${loc}`)
       }
     }
+  } else {
+    // Reuses checkSymbolCount's wording (cli_doctor.ts) for the same empty-index condition, so a
+    // `map` against an unindexed project says so instead of silently omitting the whole section --
+    // otherwise the missing heading reads as "this project has no notable symbols" rather than
+    // "this project has never been indexed".
+    lines.push('')
+    lines.push("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
   }
 
   if (!compact && map.recentFiles.length > 0) {

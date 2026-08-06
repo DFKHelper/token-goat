@@ -148,7 +148,7 @@ import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnder
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
-import { runDoctorAndExit } from './cli_doctor.js'
+import { runDoctorAndExit, runDoctor } from './cli_doctor.js'
 import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import {
   collectFiles,
@@ -399,10 +399,14 @@ export async function cmdIndex(
   }
 }
 
-function cmdMap(opts: { compact?: boolean }): void {
+function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
   const map = buildProjectMap(process.cwd(), { compact: opts.compact === true })
   const text = formatProjectMap(map, map.compact)
-  out(text)
+  if (opts.json === true) {
+    out(JSON.stringify(map))
+  } else {
+    out(text)
+  }
   // `map_lookup` has carried a live entry in stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry
   // since the Python->TS port, but nothing ever called recordStat for it -- the `map`/`baseline`
   // dashboard bucket was permanently zero regardless of real usage (same class of gap fixed for
@@ -752,7 +756,7 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-async function cmdDoctor(opts: { context?: boolean }): Promise<void> {
+async function cmdDoctor(opts: { context?: boolean; json?: boolean }): Promise<void> {
   const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string } = {}
   if (opts.context === true) {
     doctorOpts.context = true
@@ -764,6 +768,18 @@ async function cmdDoctor(opts: { context?: boolean }): Promise<void> {
   const project = findProject(process.cwd())
   if (project !== null) {
     doctorOpts.rootDir = project.root
+  }
+  if (opts.json === true) {
+    // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits
+    // the same DoctorResult[] runDoctor() already computes, one entry per check with its
+    // ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify
+    // convention (no envelope) rather than inventing a new shape.
+    const results = runDoctor(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
+    out(JSON.stringify(results))
+    if (results.some((r) => r.status === 'fail')) {
+      throw new CliError('doctor checks failed')
+    }
+    return
   }
   const code = await runDoctorAndExit(doctorOpts)
   if (code !== 0) {
@@ -2799,6 +2815,7 @@ export function buildProgram(): Command {
     .command('map')
     .description('project overview')
     .option('-c, --compact', 'compact, low-token summary')
+    .option('--json', 'emit the project map as JSON instead of text')
     .action(guard(cmdMap))
 
   program
@@ -2897,7 +2914,12 @@ export function buildProgram(): Command {
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))
 
-  program.command('doctor').description('diagnose token-goat health').option('--context', 'include context footprint analysis').action(guard(cmdDoctor))
+  program
+    .command('doctor')
+    .description('diagnose token-goat health')
+    .option('--context', 'include context footprint analysis')
+    .option('--json', 'emit check results as JSON instead of text')
+    .action(guard(cmdDoctor))
   program
     .command('context-stats')
     .description('show context statistics')
