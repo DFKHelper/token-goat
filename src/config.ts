@@ -226,6 +226,27 @@ export interface HintStatsConfig {
   min_sample_size: number
 }
 
+/**
+ * Config for semantic search's path-priority reranking (rerankHits in embeddings.ts): a
+ * multiplier applied to a hit's distance so live source wins ties/near-ties against stale or
+ * archival prose (a design doc in docs/, an old plan under plans/, an archive/ folder, a
+ * CHANGELOG entry, a *.bak file), which otherwise frequently outranks the actual implementing
+ * code purely on vector similarity. Multiplier only, never a hard filter -- a genuinely much
+ * better archival match can still surface. Set a weight to 1.0 to disable its penalty entirely,
+ * e.g. for a project with a genuinely live `plans/` directory.
+ */
+export interface SemanticConfig {
+  // Multiplier (< 1 = penalty, 1.0 = no penalty) applied to a hit's similarity score for paths
+  // whose archival/superseded segment or filename pattern matches (archive, archived, old,
+  // deprecated, plans, drafts, .bak, CHANGELOG*, *.bak, *.orig). Never 0: a genuinely much
+  // better archival match can still surface, this only nudges live source ahead on ties.
+  archive_weight: number
+  // Milder multiplier (< 1 = penalty, 1.0 = no penalty) applied to general docs/markdown paths
+  // (docs/**, *.md) -- docs are often genuinely the right answer for a "how does X work" query,
+  // so this must stay closer to 1.0 than archive_weight.
+  docs_weight: number
+}
+
 export interface Config {
   compact_assist: CompactAssistConfig
   bash_compress: BashCompressConfig
@@ -249,6 +270,7 @@ export interface Config {
   context: ContextConfig
   injection: InjectionConfig
   hint_stats: HintStatsConfig
+  semantic: SemanticConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +452,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     suppress_threshold_pct: 15,
     min_sample_size: 5,
   },
+  semantic: {
+    archive_weight: 0.7,
+    docs_weight: 0.92,
+  },
 }
 
 export function getDefaultConfig(section: string): object {
@@ -460,6 +486,7 @@ export function defaultConfig(): Config {
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
     hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
+    semantic: getDefaultConfig('semantic') as SemanticConfig,
   }
 }
 
@@ -580,6 +607,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'context.model_window_tokens': {min: 10_000, max: 10_000_000},
   'hint_stats.suppress_threshold_pct': {min: 0, max: 100},
   'hint_stats.min_sample_size': {min: 1, max: 10000},
+  'semantic.archive_weight': {min: 0.05, max: 1},
+  'semantic.docs_weight': {min: 0.05, max: 1},
 }
 
 /** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/
@@ -1325,6 +1354,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, ...boundsOf('hint_stats.suppress_threshold_pct'))
   hs.min_sample_size = validatedInt(hs_raw['min_sample_size'], hs.min_sample_size, ...boundsOf('hint_stats.min_sample_size'))
 
+  const sem_raw = section(raw, 'semantic')
+  const sem = getDefaultConfig('semantic') as SemanticConfig
+  sem.archive_weight = validatedFloat(sem_raw['archive_weight'], sem.archive_weight, ...boundsOf('semantic.archive_weight'))
+  sem.docs_weight = validatedFloat(sem_raw['docs_weight'], sem.docs_weight, ...boundsOf('semantic.docs_weight'))
+
   return {
     compact_assist: ca,
     bash_compress: bc,
@@ -1348,6 +1382,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     context: ctx,
     injection: inj,
     hint_stats: hs,
+    semantic: sem,
   }
 }
 
@@ -1569,6 +1604,10 @@ export function saveConfig(config: Config): void {
     hint_stats: {
       suppress_threshold_pct: config.hint_stats.suppress_threshold_pct,
       min_sample_size: config.hint_stats.min_sample_size,
+    },
+    semantic: {
+      archive_weight: config.semantic.archive_weight,
+      docs_weight: config.semantic.docs_weight,
     },
   }
 

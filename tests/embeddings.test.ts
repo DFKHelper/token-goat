@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import * as embeddings from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
+import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 
 describe('embeddings module', () => {
   describe('isAvailable()', () => {
@@ -696,6 +697,57 @@ describe('embeddings module', () => {
       const hits = [mk('src/a.ts', 0.3, 'x'), mk('src/b.ts', 0.4, 'y'), mk('src/c.ts', 0.5, 'z')]
       const out = embeddings.rerankHits(hits, 'irrelevant', 2)
       expect(out.length).toBe(2)
+    })
+
+    describe('path-priority scoring (deprioritizes archival/superseded and docs paths)', () => {
+      afterEach(() => {
+        // Restore the default semantic weights after any test that overrides them, so a later
+        // test in this file (or another file sharing the isolated TOKEN_GOAT_HOME) never sees a
+        // config.toml left behind with a non-default archive_weight/docs_weight.
+        saveConfig(defaultConfig())
+        invalidateConfigCache()
+      })
+
+      it('ranks live source ahead of an archival hit with slightly higher raw similarity (lower distance)', () => {
+        // 'design' appears in neither text, so boost is 0 on both -- pure path-priority test.
+        // archive/old-design.md's raw distance (0.40) is better (lower) than src/thing.ts's
+        // (0.45), but the default archive_weight (0.7) demotes it: 0.40 / 0.7 = 0.5714 > 0.45.
+        const hits = [
+          mk('archive/old-design.md', 0.40, 'legacy notes about the thing'),
+          mk('src/thing.ts', 0.45, 'export function thing() {}'),
+        ]
+        const out = embeddings.rerankHits(hits, 'design', 8)
+        expect(out.map((h) => h.filePath)).toEqual(['src/thing.ts', 'archive/old-design.md'])
+        // Reordered, not dropped: the archival hit's raw distance survives untouched.
+        expect(out.map((h) => h.distance)).toEqual([0.45, 0.40])
+      })
+
+      it('still surfaces a much better archival match (nudge, not a hard filter)', () => {
+        // archive/old-design.md's raw distance (0.10) is so much better than src/thing.ts's
+        // (0.45) that even divided by archive_weight (0.10 / 0.7 = 0.1429) it still beats 0.45.
+        const hits = [
+          mk('archive/old-design.md', 0.10, 'legacy notes about the thing'),
+          mk('src/thing.ts', 0.45, 'export function thing() {}'),
+        ]
+        const out = embeddings.rerankHits(hits, 'design', 8)
+        expect(out.map((h) => h.filePath)).toEqual(['archive/old-design.md', 'src/thing.ts'])
+      })
+
+      it('disables the archive penalty when semantic.archive_weight is set to 1', () => {
+        const cfg = defaultConfig()
+        cfg.semantic.archive_weight = 1
+        saveConfig(cfg)
+        invalidateConfigCache()
+
+        // Same inputs as the first test above -- with the penalty off, pure raw-distance
+        // ordering wins and the archival hit (lower raw distance) now ranks first.
+        const hits = [
+          mk('archive/old-design.md', 0.40, 'legacy notes about the thing'),
+          mk('src/thing.ts', 0.45, 'export function thing() {}'),
+        ]
+        const out = embeddings.rerankHits(hits, 'design', 8)
+        expect(out.map((h) => h.filePath)).toEqual(['archive/old-design.md', 'src/thing.ts'])
+      })
     })
   })
 

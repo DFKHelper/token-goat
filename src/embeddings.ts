@@ -10,6 +10,7 @@ import { createRequire } from 'node:module'
 
 import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
 
+import { loadConfig } from './config.js'
 import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { registerReset } from './reset.js'
@@ -125,6 +126,29 @@ const _GENERATED_PATH_SEGMENTS = new Set([
 
 // Distance penalty added to generated/build path hits.
 const _GENERATED_PATH_PENALTY = 0.5
+
+// Path-segment fragments that mark archival/superseded content -- a design doc under docs/,
+// an old plan under plans/, an archive/ folder, or similar. Deprioritized (not dropped) via
+// semantic.archive_weight so live source wins ties/near-ties but a genuinely much better
+// archival match can still surface. See _pathPriorityMultiplier.
+const _ARCHIVE_PATH_SEGMENTS = new Set([
+  'archive',
+  'archived',
+  'old',
+  'deprecated',
+  'plans',
+  'drafts',
+])
+
+// Filename patterns (matched against the basename) that mark archival/superseded content
+// regardless of directory.
+const _ARCHIVE_FILE_RE = /(^changelog|\.bak$|\.orig$)/i
+
+// General docs/markdown paths get a milder penalty than archival content: docs are often
+// genuinely the right answer for a "how does X work" query, so this is a nudge, not a
+// suppression. See semantic.docs_weight.
+const _DOCS_FILE_RE = /\.md$/i
+const _DOCS_DIR_SEGMENT = 'docs'
 
 // Verbatim-token boost parameters.
 const _VERBATIM_TOKEN_BOOST = 0.05
@@ -783,14 +807,17 @@ export async function searchSemantic(
 }
 
 /**
- * Re-rank semantic hits by verbatim-token overlap and a generated-path penalty,
- * then truncate to `topK`. Distance is a cosine distance (smaller = closer), so
- * lower adjusted score ranks higher: a chunk whose text contains query
- * identifiers is pulled up by a bounded boost; a chunk under a generated/build
- * directory is pushed down. Each returned hit keeps its raw `distance` but also
- * gets `adjustedDistance` stamped with the rerank score, so downstream code
- * that resorts hits (e.g. mergeNearbyHits) can preserve this ordering instead
- * of silently reverting to raw-distance order.
+ * Re-rank semantic hits by verbatim-token overlap, a generated-path penalty, and a path-priority
+ * multiplier, then truncate to `topK`. Distance is a cosine distance (smaller = closer), so
+ * lower adjusted score ranks higher: a chunk whose text contains query identifiers is pulled up
+ * by a bounded boost; a chunk under a generated/build directory is pushed down additively; a
+ * chunk under an archival/superseded path (archive/, plans/, CHANGELOG*, ...) or general docs
+ * path is pushed down multiplicatively via `_pathPriorityMultiplier` (semantic.archive_weight /
+ * semantic.docs_weight) so live source wins ties/near-ties without ever excluding a genuinely
+ * much better archival or docs match. Each returned hit keeps its raw `distance` but also gets
+ * `adjustedDistance` stamped with the rerank score, so downstream code that resorts hits (e.g.
+ * mergeNearbyHits) can preserve this ordering instead of silently reverting to raw-distance
+ * order.
  */
 export function rerankHits(hits: SearchHit[], query: string, topK: number): SearchHit[] {
   const queryTokens = _extractQueryTokens(query)
@@ -807,7 +834,12 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
       boost = Math.min(matches * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)
     }
     const penalty = _isGeneratedPath(hit.filePath) ? _GENERATED_PATH_PENALTY : 0
-    return { hit, index, adjusted: hit.distance - boost + penalty }
+    // pathPriority is a similarity-score multiplier in (0, 1] (< 1 = penalty). Distance is the
+    // inverse of similarity (smaller = closer), so applying it as a divisor here has the same
+    // deprioritizing effect a multiplier would have on a similarity score: a smaller weight
+    // divides the distance up (worse rank) without ever excluding the hit.
+    const pathPriority = _pathPriorityMultiplier(hit.filePath)
+    return { hit, index, adjusted: (hit.distance - boost + penalty) / pathPriority }
   })
   scored.sort((a, b) => a.adjusted - b.adjusted || a.index - b.index)
   return scored.slice(0, topK).map((entry) => ({ ...entry.hit, adjustedDistance: entry.adjusted }))
@@ -1025,4 +1057,37 @@ function _isGeneratedPath(filePath: string): boolean {
     }
   }
   return false
+}
+
+/**
+ * Path-priority similarity multiplier applied before final ranking (rerankHits): archival/
+ * superseded paths (archive/, plans/, CHANGELOG*, *.bak, ...) get semantic.archive_weight;
+ * general docs/markdown paths get the milder semantic.docs_weight; live source gets 1 (no
+ * change). Values are in (0, 1] -- < 1 pushes a hit down in rank (applied as a divisor against
+ * distance, since distance is the inverse of similarity) without ever excluding it, so a
+ * genuinely much better archival match can still beat a mediocre source match. Weights are
+ * configurable and a weight of 1.0 fully disables that tier's penalty (e.g. for a project with
+ * a genuinely live `plans/` directory).
+ *
+ * @param filePath - Relative or absolute file path of the hit.
+ * @returns Similarity multiplier in (0, 1] to apply (as a divisor on distance) to the hit.
+ */
+function _pathPriorityMultiplier(filePath: string): number {
+  const segments = filePath.split(/[/\\]+/)
+  const basename = segments[segments.length - 1] ?? filePath
+  const weights = loadConfig().semantic
+
+  const isArchive = _ARCHIVE_FILE_RE.test(basename)
+    || segments.some((seg) => _ARCHIVE_PATH_SEGMENTS.has(seg.toLowerCase()))
+  if (isArchive) {
+    return weights.archive_weight
+  }
+
+  const isDocs = _DOCS_FILE_RE.test(basename)
+    || segments.some((seg) => seg.toLowerCase() === _DOCS_DIR_SEGMENT)
+  if (isDocs) {
+    return weights.docs_weight
+  }
+
+  return 1
 }
