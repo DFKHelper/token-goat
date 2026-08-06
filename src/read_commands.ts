@@ -531,6 +531,12 @@ function parseLineRange(spec: string): { file: string; start: number; end: numbe
   if (m === null) return null
   // If the full spec is a real file (e.g., a file literally named "notes@2024"), treat it as a plain file, not a range.
   if (fileExists(spec)) return null
+  // A `file::symbol@LINE` anchored symbol spec also matches this regex (the whole spec ends in
+  // `@<digits>`), but its `file` capture would be the bogus "file::symbol" string -- decline here
+  // so it falls through to the normal `::` symbol-spec path, which is where the anchor actually
+  // belongs (see resolveSymbolSpec's own `@<digits>` stripping). A real file-level range spec
+  // never contains `::`, so this guard cannot reject one.
+  if (m[1]!.includes('::')) return null
   const start = parseInt(m[2]!, 10)
   const end = m[3] !== undefined ? parseInt(m[3], 10) : start
   return { file: m[1]!, start, end }
@@ -669,14 +675,43 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
       `Retry with one of the qualified commands below to pick one:`,
   ]
   const fileSymCache = new Map<string, SymbolEntry[]>()
-  for (const c of candidates) {
-    let fileSyms = fileSymCache.get(c.filePath)
+  const getFileSyms = (filePath: string): SymbolEntry[] => {
+    let fileSyms = fileSymCache.get(filePath)
     if (fileSyms === undefined) {
-      fileSyms = querySymbols({ filePath: c.filePath, limit: 1000 })
-      fileSymCache.set(c.filePath, fileSyms)
+      fileSyms = querySymbols({ filePath, limit: 1000 })
+      fileSymCache.set(filePath, fileSyms)
     }
-    const parent = findParentName(c, fileSyms)
-    const qualifier = parent !== null ? `${parent}.${symbol}` : symbol
+    return fileSyms
+  }
+  // A retry only needs the `@LINE` anchor when the plain `Parent.symbol` (or bare `symbol`)
+  // qualifier would not, by itself, uniquely pick this candidate back out on resubmission. Two
+  // ways that happens: (1) two candidates in the same file render the identical qualifier string
+  // (rare -- e.g. two same-named classes each with a same-named method), caught by counting
+  // qualifier strings per file below; (2) a candidate has no parent at all, and some other
+  // candidate shares its file -- resolveSymbolSpec's bare-name lookup does not filter by parent,
+  // so retrying with the bare name re-matches every same-named row in that file, parented or not
+  // (this is the original bug: a top-level `run` alongside a `cmdUninstall.run` in the same file
+  // -- the top-level one's own name is the exact spec that was already ambiguous). A parentless
+  // candidate that is the ONLY same-named definition in its file (e.g. each side of a cross-file
+  // ambiguity) needs no anchor: the retry's file already disambiguates it.
+  const parents = candidates.map((c) => findParentName(c, getFileSyms(c.filePath)))
+  const plainQualifiers = candidates.map((c, i) => (parents[i] !== null ? `${parents[i]}.${symbol}` : symbol))
+  const qualifierCounts = new Map<string, number>()
+  const fileGroupSize = new Map<string, number>()
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!
+    const key = `${c.filePath} ${plainQualifiers[i]}`
+    qualifierCounts.set(key, (qualifierCounts.get(key) ?? 0) + 1)
+    fileGroupSize.set(c.filePath, (fileGroupSize.get(c.filePath) ?? 0) + 1)
+  }
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!
+    const parent = parents[i]!
+    const plainQualifier = plainQualifiers[i]!
+    const collides =
+      (qualifierCounts.get(`${c.filePath} ${plainQualifier}`) ?? 0) > 1 ||
+      (parent === null && (fileGroupSize.get(c.filePath) ?? 0) > 1)
+    const qualifier = collides ? `${plainQualifier}@${c.lineStart}` : plainQualifier
     // Cross-file ambiguity can't be resolved by re-typing the original (still-ambiguous) `file`
     // spec -- retarget the retry at this candidate's own indexed file path so it resolves to
     // exactly this candidate. Same-file ambiguity keeps retrying against the original `file`
@@ -689,8 +724,19 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
 }
 
 function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
-  const { file, symbol } = parseReadSpec(spec)
-  if (symbol === undefined || symbol === '') return { kind: 'none' }
+  const { file, symbol: rawSymbol } = parseReadSpec(spec)
+  if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
+
+  // A trailing `@<digits>` anchors the spec to one candidate's exact `lineStart`, for the case
+  // where no `Parent.symbol` qualifier can disambiguate a top-level definition (it has no
+  // parent, so the plain qualifier is identical to the bare name that was already ambiguous).
+  // Stripped here, before any lookup, so it composes with both the bare form (`symbol@LINE`) and
+  // the dotted form (`Parent.method@LINE`) -- everything below this point operates on the
+  // anchor-free `symbol` exactly as it did before anchors existed, and the anchor itself is only
+  // consulted once by `finalize` at the very end, to narrow whatever candidates were found.
+  const anchorMatch = /^(.+)@(\d+)$/.exec(rawSymbol)
+  const symbol = anchorMatch !== null ? anchorMatch[1]! : rawSymbol
+  const lineAnchor = anchorMatch !== null ? parseInt(anchorMatch[2]!, 10) : undefined
 
   const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
   if (forceRefresh === true) {
@@ -717,9 +763,15 @@ function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: s
       seen.add(key)
       distinct.push(c)
     }
-    if (distinct.length === 0) return { kind: 'none' }
-    if (distinct.length === 1) return { kind: 'ok', entry: distinct[0]! }
-    return { kind: 'ambiguous', symbol: displaySymbol, file, candidates: distinct }
+    // A line anchor narrows an otherwise-ambiguous (or otherwise-fine) candidate list to the one
+    // definition that starts on that exact line -- exact equality only, so it reduces to at most
+    // one candidate. No match reuses the same "not found" shape as every other no-candidates
+    // case in this function (a stale anchor from a moved/deleted definition is not a new kind of
+    // failure) rather than inventing a distinct "bad anchor" error.
+    const anchored = lineAnchor === undefined ? distinct : distinct.filter((c) => c.lineStart === lineAnchor)
+    if (anchored.length === 0) return { kind: 'none' }
+    if (anchored.length === 1) return { kind: 'ok', entry: anchored[0]! }
+    return { kind: 'ambiguous', symbol: displaySymbol, file, candidates: anchored }
   }
 
   // Some indexed symbol names legitimately contain dots (TOML sections like "tool.poetry", CSS
@@ -2522,10 +2574,13 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const resolution = resolveSymbolSpec(opts.spec)
   if (resolution.kind === 'ambiguous') {
     return {
+      // Name the command explicitly: formatAmbiguity defaults to 'read', so brief's retry lines would otherwise tell the user to run `token-goat read`, which answers a different question than the one they asked.
       text: formatAmbiguity(
         resolution.symbol,
         resolution.file,
         resolution.candidates,
+        undefined,
+        'brief',
       ),
       code: 1,
     }

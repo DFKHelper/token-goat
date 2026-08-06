@@ -3311,6 +3311,35 @@ describe('runBlame', () => {
     }
   })
 
+  it('labels output with the resolved symbol name, never echoing an @LINE anchor from the spec', () => {
+    // The anchor is addressing syntax, not part of the name, so echoing the raw spec slice would both mislabel the symbol and make the SAME symbol print differently depending on how it was addressed. Built on a real committed git repo rather than this project's own index so the assertions run unconditionally -- a conditional `if (code === 0)` guard here silently skips itself when the symbol is not in the test index, which makes the test pass against the unfixed source.
+    const repo = mkdtempSync(join(tmpdir(), 'tg-blame-label-'))
+    try {
+      writeFileSync(join(repo, 'package.json'), '{"name":"tg-blame-label-fixture"}\n')
+      const file = normalizePath(join(repo, 'anchored.ts'))
+      writeFileSync(file, ['export function target(): number {', '  return 1', '}', ''].join('\n'))
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' })
+      indexFileSync(file)
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      let code: number
+      try {
+        process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+        code = runBlame({ spec: `${file}::target@1`, cwd: repo })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      expect(captured.split('\t')[0]).toBe('target')
+      expect(captured).not.toContain('target@1')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('refuses (ambiguity error, non-zero exit, no blame output) instead of silently blaming the first same-named definition', () => {
     const { dir, file } = makeDupSymFile()
     try {

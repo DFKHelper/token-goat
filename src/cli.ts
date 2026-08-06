@@ -2672,7 +2672,7 @@ export function buildProgram(): Command {
   program
     .command('read <spec>')
     .description(
-      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files)",
+      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files)",
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
@@ -2691,7 +2691,7 @@ export function buildProgram(): Command {
   program
     .command('brief <spec>')
     .description(
-      'symbol body + callers + containing doc section in one call (spec: file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported)',
+      'symbol body + callers + containing doc section in one call (spec: file::symbol; also accepts the file::symbol@LINE anchor form documented under `read`; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported)',
     )
     .option('-j, --json', 'output as JSON')
     .option('--limit <n>', 'max callers to show (default: 20)')
@@ -3208,7 +3208,7 @@ export function buildProgram(): Command {
 
   program
     .command('similar <spec>')
-    .description('find symbols similar to a given "file::symbol" anchor using FTS')
+    .description('find symbols similar to a given "file::symbol" anchor using FTS (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('--top <n>', 'max results (default 10)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, opts: { top?: string; json?: boolean }) =>
@@ -3278,7 +3278,7 @@ export function buildProgram(): Command {
 
   program
     .command('blame <spec>')
-    .description('git blame for the line range of a symbol ("file::symbol")')
+    .description('git blame for the line range of a symbol ("file::symbol"; also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, opts: { json?: boolean }) =>
       runExit(() => runBlame({ spec, ...(opts.json === true ? { json: true } : {}) })),
@@ -3588,7 +3588,7 @@ export function buildProgram(): Command {
 
   program
     .command('diff <spec> [ref]')
-    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" HEAD~3..HEAD`')
+    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" HEAD~3..HEAD` (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, ref: string | undefined, opts: { json?: boolean }) =>
       runExit(() =>
@@ -3602,7 +3602,7 @@ export function buildProgram(): Command {
 
   program
     .command('log <spec> [ref]')
-    .description('show git commit history scoped to one symbol\'s line range, e.g. `token-goat log "file.ts::myFn" HEAD~10`')
+    .description('show git commit history scoped to one symbol\'s line range, e.g. `token-goat log "file.ts::myFn" HEAD~10` (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('--max-count <n>', 'maximum number of commits to show (default 20)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, ref: string | undefined, opts: { maxCount?: string; json?: boolean }) =>

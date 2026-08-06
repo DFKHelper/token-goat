@@ -1384,7 +1384,6 @@ export function runBlame(opts: BlameOptions): number {
     emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
     return 1
   }
-  const symbolArg = opts.spec.slice(sepIdx + 2)
   const cwd = opts.cwd ?? process.cwd()
 
   // Same ambiguity check runRead/runBrief already do -- refuse (with qualified retry
@@ -1414,11 +1413,12 @@ export function runBlame(opts: BlameOptions): number {
       if (!m) return { raw: l }
       return { commit: m[1], author: (m[2] ?? '').trim(), date: (m[3] ?? '').trim(), line: Number.parseInt(m[4] ?? '0', 10), content: m[5] }
     })
-    emit(JSON.stringify({ symbol: symbolArg, file: filePath, lines }, null, 2))
+    emit(JSON.stringify({ symbol: sym.name, file: filePath, lines }, null, 2))
     return 0
   }
 
-  emit(`${symbolArg}\t${toDisplayPath(getDisplayRoot(opts.cwd), filePath)}:${start}-${end}`)
+  // Label with the RESOLVED symbol's own name rather than the raw spec slice: a spec may carry a disambiguating qualifier or `@LINE` anchor (`cmdUninstall.run`, `run@3999`) which is addressing syntax, not part of the symbol's name.
+  emit(`${sym.name}\t${toDisplayPath(getDisplayRoot(opts.cwd), filePath)}:${start}-${end}`)
   emit(raw.trim())
   return 0
 }
