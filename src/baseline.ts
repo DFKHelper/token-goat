@@ -168,18 +168,28 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
     const refScope = projectScopeClause('file_path')
     const rows = db
       .prepare(
-        `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
-         FROM symbols s
-         LEFT JOIN (
-           SELECT name, COUNT(*) AS ref_count
-           FROM refs
-           WHERE ${refScope.clause}
-           GROUP BY name
-         ) r ON r.name = s.name
-         WHERE s.kind IN ('class', 'function', 'interface') AND ${clause}
-         ORDER BY COALESCE(r.ref_count, 0) DESC,
-                  CASE s.kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
-                  LENGTH(COALESCE(s.body, '')) DESC
+        // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
+        `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent
+         FROM (
+           SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent,
+                  COALESCE(r.ref_count, 0) * 1.0 / COUNT(*) OVER (PARTITION BY s.name) AS score,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY s.name
+                    ORDER BY LENGTH(COALESCE(s.body, '')) DESC, s.file_path
+                  ) AS rn
+           FROM symbols s
+           LEFT JOIN (
+             SELECT name, COUNT(*) AS ref_count
+             FROM refs
+             WHERE ${refScope.clause}
+             GROUP BY name
+           ) r ON r.name = s.name
+           WHERE s.kind IN ('class', 'function', 'interface') AND ${clause}
+         )
+         WHERE rn = 1
+         ORDER BY score DESC,
+                  CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
+                  LENGTH(COALESCE(body, '')) DESC
          LIMIT ?`,
       )
       .all(refScope.param(rootDir), param(rootDir), limit) as TopSymbolRow[]
