@@ -61,5 +61,13 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
     process.stdout.write(`${JSON.stringify(rows)}\n`)
     return
   }
+  // Categories are registered statically, so an untouched store still renders a full table of
+  // zeros -- which reads as "these hints fire and never work" rather than "nothing recorded yet".
+  // Those two conclusions call for opposite actions (retire the hints vs. go collect data), so
+  // say which one it is. The table still prints underneath: the registered category list is
+  // useful on its own, and dropping it would narrow existing output.
+  if (rows.every((r) => r.emitted === 0 && r.actedOn === 0)) {
+    process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
+  }
   printSummary(rows)
 }
