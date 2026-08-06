@@ -218,6 +218,48 @@ describe('buildProjectMap cross-project scoping', () => {
   })
 })
 
+describe('fetchTopSymbols ref-count ranking', () => {
+  // Regression: fetchTopSymbols used to rank purely by LENGTH(body) DESC, so a long-bodied
+  // symbol nobody ever calls (e.g. a big never-referenced class) outranked a short-bodied
+  // symbol referenced dozens of times elsewhere in the project -- actively counterproductive
+  // for orientation, since "what does the rest of the codebase actually reference" is the
+  // useful signal, not body size. Seeds one short, heavily-referenced function and one long,
+  // never-referenced class into the real (test-isolated) global.db and asserts the
+  // heavily-referenced one is ranked strictly first.
+  it('ranks a short heavily-referenced function above a long never-referenced class', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-refrank-'))
+    const filePath = `${normalizePath(root)}/a.ts`
+
+    const db = getDb(globalDbPath())
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, 'hotFn', 'function', 1, 1, 'export function hotFn() { return 1 }', '')
+
+    const longBody = Array.from({ length: 200 }, (_, i) => `  const line${i} = ${i}`).join('\n')
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, 'ColdClass', 'class', 10, 210, `class ColdClass {\n${longBody}\n}`, '')
+
+    const insertRef = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (let i = 0; i < 20; i += 1) {
+      insertRef.run(filePath, 'hotFn', 100 + i, 1, `hotFn(${i})`)
+    }
+    // ColdClass gets zero refs.
+
+    try {
+      const map = buildProjectMap(root)
+      const names = map.topSymbols.map((s) => s.name)
+      expect(names).toEqual(['hotFn', 'ColdClass'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('mapLookupBytesSaved', () => {
   // Regression: the map_lookup byte accounting deduplicated its surfaced files through a Set, but
   // fed it RELATIVE recentFiles ('a.ts') alongside ABSOLUTE, normalizePath-form topSymbols
