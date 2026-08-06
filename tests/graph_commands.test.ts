@@ -2331,6 +2331,19 @@ describe('findCycles', () => {
 
 // ---- runSimilar (integration) -----------------------------------------------
 
+/** Writes a temp file with two distinct `dupSym` definitions and indexes it, for the blame/similar ambiguity tests below -- ambiguity is caught by resolveSymbolSpecOrEmitError before any git call, so no repo/commit is needed to exercise it. */
+function makeDupSymFile(): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'tg-ambig-'))
+  writeFileSync(join(dir, 'package.json'), '{"name":"tg-ambig-fixture"}\n')
+  const file = normalizePath(join(dir, 'e.ts'))
+  writeFileSync(
+    file,
+    ['export function dupSym(): number {', '  return 1', '}', '', 'export function dupSym(): number {', '  return 2', '}', ''].join('\n'),
+  )
+  indexFileSync(file)
+  return { dir, file }
+}
+
 describe('runSimilar', () => {
   it('exits 1 when the spec has no :: separator', () => {
     const code = runSimilar({ spec: 'noseparator' })
@@ -2366,6 +2379,24 @@ describe('runSimilar', () => {
     const lines = captured.split('\n').filter((l) => l.trim())
     for (const line of lines) {
       expect(line.split('\t')[0]).not.toBe('enclosingSymbol')
+    }
+  })
+
+  it('refuses (ambiguity error, non-zero exit, no FTS results emitted) instead of silently comparing against the first same-named definition', () => {
+    const { dir, file } = makeDupSymFile()
+    try {
+      const errCaptured = captureStderr(() => {
+        const code = runSimilar({ spec: `${file}::dupSym` })
+        expect(code).toBe(1)
+      })
+      expect(errCaptured).toContain("Ambiguous symbol 'dupSym'")
+      expect(errCaptured).toContain('(line 1)')
+      expect(errCaptured).toContain('(line 5)')
+      // Retry lines must name `similar`, not `read` -- this command's own retry, not read's.
+      expect(errCaptured).toContain('token-goat similar')
+      expect(errCaptured).not.toContain('token-goat read')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
@@ -3277,6 +3308,29 @@ describe('runBlame', () => {
     } else {
       // Symbol not in index or not a git repo - graceful failure is acceptable
       expect(code).toBe(1)
+    }
+  })
+
+  it('refuses (ambiguity error, non-zero exit, no blame output) instead of silently blaming the first same-named definition', () => {
+    const { dir, file } = makeDupSymFile()
+    try {
+      let stdout = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { stdout += String(chunk); return true }
+      const errCaptured = captureStderr(() => {
+        const code = runBlame({ spec: `${file}::dupSym` })
+        expect(code).toBe(1)
+      })
+      process.stdout.write = origWrite
+      expect(stdout).toBe('')
+      expect(errCaptured).toContain("Ambiguous symbol 'dupSym'")
+      expect(errCaptured).toContain('(line 1)')
+      expect(errCaptured).toContain('(line 5)')
+      // Retry lines must name `blame`, not `read` -- this command's own retry, not read's.
+      expect(errCaptured).toContain('token-goat blame')
+      expect(errCaptured).not.toContain('token-goat read')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
