@@ -27,7 +27,7 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { unsupportedLanguageName } from './parser_types.js'
 import { loadConfig } from './config.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
-import { resolveCallers } from './graph_commands.js'
+import { resolveCallers, enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import type { CallerEntry } from './graph_commands.js'
 import { queryCsv, formatCsvTable, parseWhereSpecs, profileCsv, formatCsvProfile } from './csv_query.js'
 import { outlineJson, formatJsonOutline, queryJson } from './json_query.js'
@@ -3378,6 +3378,7 @@ export interface GrepOptions {
   json?: boolean
   recursive?: boolean
   context?: number
+  symbol?: boolean
 }
 
 interface GrepHit {
@@ -3385,6 +3386,7 @@ interface GrepHit {
   line: number
   text: string
   context?: Array<{ line: number; text: string }>
+  symbol?: { name: string; kind: string; lineStart: number; lineEnd: number } | null
 }
 
 /** Handle ``token-goat grep <pattern>``. */
@@ -3465,6 +3467,20 @@ export function runGrep(opts: GrepOptions): number {
 
   const truncated = hits.slice(0, maxLines)
 
+  if (opts.symbol === true) {
+    // Memoize querySymbols per file so N hits in the same file cost one DB query, not N.
+    const symbolsByFile = new Map<string, ReturnType<typeof querySymbols>>()
+    for (const hit of truncated) {
+      let syms = symbolsByFile.get(hit.file)
+      if (syms === undefined) {
+        syms = querySymbols({ filePath: resolveIndexPath(hit.file), limit: ALL_SYMBOLS_IN_FILE_LIMIT })
+        symbolsByFile.set(hit.file, syms)
+      }
+      const enc = enclosingSymbol(syms, hit.line)
+      hit.symbol = enc === null ? null : { name: enc.name, kind: enc.kind, lineStart: enc.lineStart, lineEnd: enc.lineEnd }
+    }
+  }
+
   if (opts.json === true) {
     // Same {items, truncated, totalCount} envelope guardJsonRows uses for symbol/refs/skeleton/
     // outline's --json mode -- a bare truncated array here would silently hand a JSON consumer
@@ -3476,16 +3492,17 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   for (const hit of truncated) {
+    const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${hit.symbol.name} (${hit.symbol.kind})]` : ''
     if (hit.context !== undefined) {
       for (const ctxLine of hit.context) {
         if (ctxLine.line === hit.line) {
-          emit(`${hit.file}:${ctxLine.line}: ${ctxLine.text}`)
+          emit(`${hit.file}:${ctxLine.line}: ${ctxLine.text}${symbolTag}`)
         } else {
           emit(`${hit.file}-${ctxLine.line}- ${ctxLine.text}`)
         }
       }
     } else {
-      emit(`${hit.file}:${hit.line}: ${hit.text}`)
+      emit(`${hit.file}:${hit.line}: ${hit.text}${symbolTag}`)
     }
   }
 
@@ -3771,6 +3788,13 @@ export function extractExportNames(text: string, ext: string): string[] {
 export function runExports(opts: ImportsExportsOptions): number {
   const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
   const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
+  // Unlike kindOf's loose `?? 'export'` fallback, an unmatched name (one that only came from the
+  // source-text scan, with no corresponding index row) must report no location at all -- never a
+  // fabricated value borrowed from an unrelated symbol.
+  const locOf = (name: string): { lineStart: number; lineEnd: number } | null => {
+    const s = symbols.find((sym) => sym.name === name)
+    return s === undefined ? null : { lineStart: s.lineStart, lineEnd: s.lineEnd }
+  }
 
   // Index-side heuristic: catches languages whose stored body keeps the `export`/`pub`/`public` modifier, and the mocked unit tests.
   const names: string[] = []
@@ -3806,13 +3830,24 @@ export function runExports(opts: ImportsExportsOptions): number {
   const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    const jsonText = JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2)
+    const jsonText = JSON.stringify(
+      names.map((n) => {
+        const loc = locOf(n)
+        return { name: n, kind: kindOf(n), lineStart: loc?.lineStart ?? null, lineEnd: loc?.lineEnd ?? null }
+      }),
+      null,
+      2,
+    )
     emit(jsonText)
     recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
     return 0
   }
 
-  const outLines = names.map((n) => `${kindOf(n).padEnd(10)} ${n}`)
+  const outLines = names.map((n) => {
+    const loc = locOf(n)
+    const locSuffix = loc === null ? '' : ` (${loc.lineStart}-${loc.lineEnd})`
+    return `${kindOf(n).padEnd(10)} ${n}${locSuffix}`
+  })
   for (const line of outLines) {
     emit(line)
   }
