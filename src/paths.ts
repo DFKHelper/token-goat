@@ -188,7 +188,8 @@ export function toDisplayPath(root: string | undefined, target: string): string 
   // SAME query differently depending on where it was run from, is ambiguous once printed, and
   // cannot be resolved from anywhere else -- strictly worse than the absolute path it replaced.
   if (root === undefined) return target
-  const rel = path.relative(root, target).replace(/\\/g, '/')
+  // Normalize BOTH sides first. Indexed paths are stored normalized, but a root reaches here however its caller spelled it, and path.relative compares text: a Windows 8.3 segment (RUNNER~1) against its long form, or macOS /var against /private/var, share no prefix, so the relative walk escapes upward and the whole absolute path gets printed instead of a location you can feed back to `read`. Both spellings are what normalizePath exists to collapse.
+  const rel = path.relative(normalizePath(root), normalizePath(target)).replace(/\\/g, '/')
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     return rel === '' ? '.' : target
   }
