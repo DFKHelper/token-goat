@@ -7,5 +7,10 @@
  */
 
 import { run } from './cli.js'
+import { installEpipeGuard } from './util.js'
+
+// Must be installed before any output is produced: a consumer that closes early (`| head -2`) makes
+// the very first large write fail with EPIPE, which is an unhandled 'error' event and a crash.
+installEpipeGuard()
 
 void run()
