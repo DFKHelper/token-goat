@@ -180,6 +180,8 @@ export interface CallersOptions {
   limit?: number
   /** `-C, --context <n>`: lines of real call-site source to show either side of each caller, in `grep -C`'s framing. Defaults to 0, in which case output is byte-for-byte unchanged. */
   context?: number
+  /** `--exclude-tests`: drop callers whose call site lives in a test file (per isTestFile). Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
 
 export interface CallerEntry {
@@ -231,7 +233,7 @@ function filterRefsForSymbol(
  * project shares `name`, so a caller of the other symbol isn't misattributed. Omitted by the
  * bare `token-goat callers <name>` CLI path, which intentionally reports every reference to
  * `name` project-wide regardless of which same-named definition it targets. */
-export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string): CallerEntry[] {
+export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string, excludeTests?: boolean): CallerEntry[] {
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts); scope the ref lookup to the current project root so callers of a same-named
   // symbol in an unrelated project on the same machine don't leak into this project's results.
@@ -239,7 +241,13 @@ export function resolveCallers(name: string, limit?: number, filePath?: string, 
   // it to shorten the printed paths for HUMAN output) passes it in so this doesn't shell out to
   // git a second time for the same value.
   const resolvedRootDir = rootDir ?? resolveProjectRoot({ project: process.cwd() })
-  const refs = queryRefs({ name, limit: limit ?? 500, rootDir: resolvedRootDir })
+  // When excludeTests is set, the requested `limit` (or the 500 default) must apply AFTER
+  // test-file refs are dropped, not before -- querying with the requested limit first would
+  // silently under-return whenever test refs occupy slots that would otherwise hold production
+  // callers. UNBOUNDED_REF_LIMIT scans everything in-project so the caller (runCallers) has full
+  // headroom to filter by entry.file and re-slice to the requested limit itself.
+  const queryLimit = excludeTests === true ? UNBOUNDED_REF_LIMIT : (limit ?? 500)
+  const refs = queryRefs({ name, limit: queryLimit, rootDir: resolvedRootDir })
   const getSyms = buildFileSymCache()
   const scoped = filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms)
 
@@ -273,8 +281,19 @@ export function runCallers(opts: CallersOptions): number {
     emitErr(`Symbol '${name}' not found in '${file}'`)
     return 1
   }
-  const entries = resolveCallers(name, opts.limit, fileHint, rootDir)
+  const resolved = resolveCallers(name, opts.limit, fileHint, rootDir, opts.excludeTests)
+  // Filter target is the caller's call SITE, not the resolved symbol's own definition site --
+  // resolveCallers already queried unbounded (full headroom) when excludeTests is set, so
+  // slicing to the requested limit happens here, AFTER filtering, matching this file's other
+  // --exclude-tests sites (never slice before the filter, or the flag silently under-returns).
+  const suppressed = opts.excludeTests === true ? resolved.filter((e) => isTestFile(e.file)).length : 0
+  const entries = opts.excludeTests === true ? resolved.filter((e) => !isTestFile(e.file)).slice(0, opts.limit ?? 500) : resolved
   if (entries.length === 0) {
+    // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
+    if (opts.excludeTests === true && suppressed > 0) {
+      emitErr(`No non-test references found for '${opts.symbol}' (${suppressed} in test files hidden by --exclude-tests)`)
+      return 1
+    }
     emitErr(`No references found for '${opts.symbol}'`)
     return 1
   }
@@ -289,6 +308,12 @@ export function runCallers(opts: CallersOptions): number {
       : entries
     emit(JSON.stringify(payload, null, 2))
     return 0
+  }
+
+  // Additive note only: printed solely when --exclude-tests actually hid something, so default
+  // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
+  if (opts.excludeTests === true && suppressed > 0) {
+    emit(`${entries.length} callers found (${suppressed} in test files hidden by --exclude-tests)`)
   }
 
   for (const e of entries) {
@@ -545,6 +570,8 @@ export interface DeadOptions {
   includePrivate?: boolean
   top?: number
   json?: boolean
+  /** `--exclude-tests`: drop dead symbols DEFINED in a test file (per isTestFile), not ones merely referenced there. Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
 
 export function runDead(opts: DeadOptions): number {
@@ -566,6 +593,7 @@ export function runDead(opts: DeadOptions): number {
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
 
+  let suppressed = 0
   for (const sym of syms) {
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
     // limit raised from 1 to 500 (matching resolveCallers' default cap): a bare-name existence
@@ -581,6 +609,16 @@ export function runDead(opts: DeadOptions): number {
       const ownScope = enclosingNamedScope(getSyms(sym.filePath), sym.lineStart)
       if (ownScope !== null && hasAncestorDispatchRef(sym.name, ownScope.name, sym.filePath, rootDir)) continue
     }
+    // Filter target is the symbol's own DEFINITION site, not a reference site -- a dead
+    // symbol defined in a test file (fixture, test helper) is what --exclude-tests hides here,
+    // unlike refs/callers which filter on where a REFERENCE occurs. Applied only once the
+    // symbol is confirmed dead, so `suppressed` counts dead symbols hidden, not every test-file
+    // symbol scanned. Also applied before the --top slice below, or the flag would silently
+    // under-return by leaving suppressed test entries occupying slots ahead of the cutoff.
+    if (opts.excludeTests === true && isTestFile(sym.filePath)) {
+      suppressed += 1
+      continue
+    }
     results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
 
@@ -592,8 +630,19 @@ export function runDead(opts: DeadOptions): number {
   }
 
   if (sliced.length === 0) {
-    emit('No dead symbols found.')
+    // When --exclude-tests filtered EVERYTHING out, a bare "No dead symbols found." is indistinguishable from a genuinely clean codebase, so the agent concludes there is nothing to do while findings sit hidden behind the flag. Say what was suppressed. Flag-absent output is untouched: suppressed is always 0 then.
+    if (opts.excludeTests === true && suppressed > 0) {
+      emit(`No dead symbols found (${suppressed} in test files hidden by --exclude-tests).`)
+    } else {
+      emit('No dead symbols found.')
+    }
     return 0
+  }
+
+  // Additive note only: printed solely when --exclude-tests actually hid something, so default
+  // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
+  if (opts.excludeTests === true && suppressed > 0) {
+    emit(`${sliced.length} dead symbols (${suppressed} in test files hidden by --exclude-tests)`)
   }
 
   for (const r of sliced) {

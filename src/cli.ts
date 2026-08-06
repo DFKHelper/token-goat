@@ -2840,7 +2840,8 @@ export function buildProgram(): Command {
     )
     .option('-C, --context <n>', 'lines of call-site source to show before and after each reference (default 0)')
     .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean }) =>
+    .option('--exclude-tests', 'hide references whose call site lives in a test file (opt-in; default output is unchanged)')
+    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean }) =>
       runExit(() =>
         runRefs({
           spec,
@@ -2849,6 +2850,7 @@ export function buildProgram(): Command {
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
@@ -3198,13 +3200,15 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('-l, --limit <n>', 'max references to scan')
     .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
-    .action((symbol: string, opts: { json?: boolean; limit?: string; context?: string }) =>
+    .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
+    .action((symbol: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean }) =>
       runExit(() =>
         runCallers({
           symbol,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
@@ -3246,13 +3250,15 @@ export function buildProgram(): Command {
     .option('--include-private', 'include _-prefixed names')
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { kind?: string; includePrivate?: boolean; top?: string; json?: boolean }) =>
+    .option('--exclude-tests', 'hide dead symbols defined in a test file (opt-in; default output is unchanged)')
+    .action((opts: { kind?: string; includePrivate?: boolean; top?: string; json?: boolean; excludeTests?: boolean }) =>
       runExit(() =>
         runDead({
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
