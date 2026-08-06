@@ -373,6 +373,28 @@ describe('runGit', () => {
     expect(args).toEqual(expect.arrayContaining(['diff', '--no-ext-diff', '--no-textconv', '--stat', 'HEAD']))
   })
 
+  it('passes --no-optional-locks before the subcommand, so a killed status call cannot orphan .git/index.lock', () => {
+    // Every git call here runs against someone else's working repo, and a
+    // `status` that refreshes the index writes .git/index.lock. The hint paths
+    // spawn under a short timeout, so being killed mid-call is expected rather
+    // than exceptional; on 2026-08-05 that left an orphaned lock that blocked
+    // every commit in the target repo until a human deleted it.
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['status', '--porcelain'])
+    const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
+    expect(args?.[0]).toBe('--no-optional-locks')
+    // It is a git-level flag, not a status-level one: after the subcommand it is
+    // rejected as an unknown option.
+    expect(args?.indexOf('--no-optional-locks')).toBeLessThan(args?.indexOf('status') ?? -1)
+  })
+
+  it('passes --no-optional-locks for a diff subcommand too', () => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['diff', '--stat', 'HEAD'])
+    const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
+    expect(args?.[0]).toBe('--no-optional-locks')
+  })
+
   it('does not inject diff-only flags for a non-diff subcommand (they are not valid options there)', () => {
     vi.mocked(childProcess.spawnSync).mockClear()
     runGit(['status', '--porcelain'])
