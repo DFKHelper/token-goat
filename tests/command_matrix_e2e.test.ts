@@ -106,6 +106,14 @@ beforeAll(() => {
     '# Fixture\n\n## Install\n\nRun npm install to set up the project.\n',
   )
   fs.writeFileSync(path.join(repo, 'pkg.json'), '{\n  "version": "3.2.1"\n}\n')
+  // Same-file ambiguous symbol (a top-level function and an unrelated class method share the
+  // name 'dup') so the `read` case below can exercise the `file::symbol@LINE` anchor form
+  // against the real built bundle, not just the in-process unit tests.
+  fs.writeFileSync(
+    path.join(repo, 'dupfile.ts'),
+    'export class DupHolder {\n  dup(): number {\n    return 10\n  }\n}\n' +
+      'export function dup(): number {\n  return 20\n}\n',
+  )
 
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
@@ -193,6 +201,19 @@ const cases: Record<string, () => void | Promise<void>> = {
     const stats = run(['read', 'src/mod.ts::alphaSym', '--stats'])
     expect(stats.status, stats.stderr).toBe(0)
     expect(stats.stdout).toMatch(/\[\d+ refs, (un)?documented\]/)
+    // file::symbol@LINE anchor, round-tripped through the real built bundle. `dupfile.ts`
+    // deliberately has two definitions named 'dup' (a class method and a top-level function) --
+    // the ambiguity error's own suggested retry is parsed out and re-run rather than hardcoding
+    // an assumed line number, since that suggestion IS the anchor form under test.
+    const ambiguous = run(['read', 'dupfile.ts::dup'])
+    expect(ambiguous.status).toBe(1)
+    expect(ambiguous.stderr).toContain("Ambiguous symbol 'dup'")
+    const anchoredRetry = /token-goat read "(dupfile\.ts::dup@\d+)"/.exec(ambiguous.stderr)
+    expect(anchoredRetry, ambiguous.stderr).not.toBeNull()
+    const anchored = run(['read', anchoredRetry![1]!])
+    expect(anchored.status, anchored.stderr).toBe(0)
+    expect(anchored.stdout).toContain('return 20')
+    expect(anchored.stdout).not.toContain('return 10')
   },
   section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this

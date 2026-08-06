@@ -827,6 +827,122 @@ describe('read_commands', () => {
         expect(results[2]!.text).not.toContain('A:compress')
         expect(results[2]!.text).not.toContain('B:compress')
       })
+
+      it('a parentless top-level candidate sharing its file with a parented sibling (the original bug: cli.ts::run) gets an @LINE-anchored retry, while the parented sibling keeps its plain qualifier', () => {
+        // Reproduces the reported defect literally: a class method `cmdUninstall.run` (has a
+        // parent) and a top-level function `run` (no parent) both named 'run' in the same file.
+        // Before the fix, the top-level one's suggested retry was the bare 'run' qualifier --
+        // byte-identical to the spec that was already ambiguous, an infinite retry loop.
+        const cmdUninstall: MockSymbol = { name: 'cmdUninstall', kind: 'class', filePath: 'src/cli.ts', lineStart: 680, lineEnd: 720, body: '', docstring: '', parent: '' }
+        const parentedRun: MockSymbol = { name: 'run', kind: 'method', filePath: 'src/cli.ts', lineStart: 691, lineEnd: 695, body: 'cmdUninstall.run body', docstring: '', parent: 'cmdUninstall' }
+        const topLevelRun: MockSymbol = { name: 'run', kind: 'function', filePath: 'src/cli.ts', lineStart: 3999, lineEnd: 4010, body: 'top-level run body', docstring: '', parent: '' }
+        poolMock([cmdUninstall, parentedRun, topLevelRun])
+
+        const { text: stdout, code } = runRead({ spec: 'src/cli.ts::run' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'run'")
+        // Parented candidate: plain qualifier, unchanged.
+        expect(stdout).toContain('  - cmdUninstall.run (line 691)  ->  token-goat read "src/cli.ts::cmdUninstall.run"')
+        // Parentless candidate: anchored qualifier, not the bare (already-failed) 'run' spec.
+        expect(stdout).toContain('  - run@3999 (line 3999)  ->  token-goat read "src/cli.ts::run@3999"')
+        expect(stdout).not.toMatch(/->\s+token-goat read "src\/cli\.ts::run"\s*$/m)
+
+        // The anchored suggestion must actually round-trip to exactly the top-level candidate.
+        const anchored = runRead({ spec: 'src/cli.ts::run@3999' })
+        expect(anchored.code).toBe(0)
+        expect(anchored.text).toContain('top-level run body')
+        expect(anchored.text).not.toContain('cmdUninstall.run body')
+        // And the parented suggestion still round-trips to its own candidate, unchanged.
+        const parented = runRead({ spec: 'src/cli.ts::cmdUninstall.run' })
+        expect(parented.code).toBe(0)
+        expect(parented.text).toContain('cmdUninstall.run body')
+        expect(parented.text).not.toContain('top-level run body')
+      })
+
+      it('two same-file candidates that would render the identical Parent.symbol qualifier (two classes literally both named Foo) both get distinct, working @LINE anchors', () => {
+        const fooClass1: MockSymbol = { name: 'Foo', kind: 'class', filePath: 'src/dup.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' }
+        const fooClass2: MockSymbol = { name: 'Foo', kind: 'class', filePath: 'src/dup.ts', lineStart: 20, lineEnd: 30, body: '', docstring: '', parent: '' }
+        const bar1: MockSymbol = { name: 'bar', kind: 'method', filePath: 'src/dup.ts', lineStart: 3, lineEnd: 5, body: 'first bar body', docstring: '', parent: 'Foo' }
+        const bar2: MockSymbol = { name: 'bar', kind: 'method', filePath: 'src/dup.ts', lineStart: 22, lineEnd: 24, body: 'second bar body', docstring: '', parent: 'Foo' }
+        poolMock([fooClass1, fooClass2, bar1, bar2])
+
+        const { text: stdout, code } = runRead({ spec: 'src/dup.ts::bar' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Ambiguous symbol 'bar'")
+        expect(stdout).toContain('  - Foo.bar@3 (line 3)  ->  token-goat read "src/dup.ts::Foo.bar@3"')
+        expect(stdout).toContain('  - Foo.bar@22 (line 22)  ->  token-goat read "src/dup.ts::Foo.bar@22"')
+
+        const first = runRead({ spec: 'src/dup.ts::Foo.bar@3' })
+        expect(first.code).toBe(0)
+        expect(first.text).toContain('first bar body')
+        expect(first.text).not.toContain('second bar body')
+        const second = runRead({ spec: 'src/dup.ts::Foo.bar@22' })
+        expect(second.code).toBe(0)
+        expect(second.text).toContain('second bar body')
+        expect(second.text).not.toContain('first bar body')
+      })
+    })
+
+    describe('symbol spec line anchors (@LINE)', () => {
+      it('file::symbol@LINE selects the top-level candidate a bare qualifier could never uniquely address', () => {
+        const cmdUninstall: MockSymbol = { name: 'cmdUninstall', kind: 'class', filePath: 'src/cli.ts', lineStart: 680, lineEnd: 720, body: '', docstring: '', parent: '' }
+        const parentedRun: MockSymbol = { name: 'run', kind: 'method', filePath: 'src/cli.ts', lineStart: 691, lineEnd: 695, body: 'cmdUninstall.run body', docstring: '', parent: 'cmdUninstall' }
+        const topLevelRun: MockSymbol = { name: 'run', kind: 'function', filePath: 'src/cli.ts', lineStart: 3999, lineEnd: 4010, body: 'top-level run body', docstring: '', parent: '' }
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = [cmdUninstall, parentedRun, topLevelRun]
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+
+        const { text: stdout, code } = runRead({ spec: 'src/cli.ts::run@3999' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('top-level run body')
+        expect(stdout).not.toContain('cmdUninstall.run body')
+      })
+
+      it('Parent.method@LINE (combined dotted + anchor form) resolves the exact candidate', () => {
+        const classA: MockSymbol = { name: 'ClassA', kind: 'class', filePath: 'src/comp.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '' }
+        const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: 'src/comp.ts', lineStart: 20, lineEnd: 30, body: '', docstring: '' }
+        const renderInA: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 3, lineEnd: 5, body: 'ClassA.render body', docstring: '' }
+        const renderInB: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 22, lineEnd: 24, body: 'ClassB.render body', docstring: '' }
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = [classA, classB, renderInA, renderInB]
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+
+        const { text: stdout, code } = runRead({ spec: 'src/comp.ts::ClassB.render@22' })
+        expect(code).toBe(0)
+        expect(stdout).toContain('ClassB.render body')
+        expect(stdout).not.toContain('ClassA.render body')
+      })
+
+      it('an anchor that matches no candidate errors with the same "not found" wording used by every other no-match case', () => {
+        const topLevelRun: MockSymbol = { name: 'run', kind: 'function', filePath: 'src/cli.ts', lineStart: 3999, lineEnd: 4010, body: 'top-level run body', docstring: '', parent: '' }
+        mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
+          let rows = [topLevelRun]
+          if (opts.name !== undefined) rows = rows.filter((r) => r.name === opts.name)
+          if (opts.filePath !== undefined) rows = rows.filter((r) => r.filePath === opts.filePath)
+          return rows as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+
+        const { text: stdout, code } = runRead({ spec: 'src/cli.ts::run@1' })
+        expect(code).toBe(1)
+        expect(stdout).toContain("Symbol 'run@1' not found in 'src/cli.ts'")
+      })
+
+      it('a real file@N-M line-range spec still parses as a range, not a symbol anchor, even though it also ends in @<digits>', () => {
+        const f = path.join(tempDir, 'anchor-collision.txt')
+        fs.writeFileSync(f, 'one\ntwo\nthree\nfour\nfive\n')
+        const { text: stdout, code } = runRead({ spec: `${f}@2-4` })
+        expect(code).toBe(0)
+        expect(stdout).toContain('two\nthree\nfour')
+        expect(stdout).not.toContain('one')
+        expect(stdout).not.toContain('five')
+        expect(mockQuerySymbols).not.toHaveBeenCalled()
+      })
     })
 
     it('splits on the LAST :: so a file path containing a literal :: still resolves the correct symbol (#m2)', () => {
@@ -2062,6 +2178,20 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([])
       const code = runBrief({ spec: 'f.ts::missing' })
       expect(code).toBe(1)
+    })
+
+    it('ambiguity retry lines name brief itself, not read', () => {
+      // formatAmbiguity defaults its commandName to 'read', so an unparameterized call site sends the user to a command that answers a different question than the one they asked.
+      const candA: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' }
+      const candB: MockSymbol = { name: 'render', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 23, body: '', docstring: '', parent: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([candA, candB] as any)
+      const { stderr } = capture(() => {
+        expect(runBrief({ spec: 'a.ts::render' })).toBe(1)
+      })
+      expect(stderr).toContain("Ambiguous symbol 'render'")
+      expect(stderr).toContain('token-goat brief "')
+      expect(stderr).not.toContain('token-goat read "')
     })
 
     // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own
