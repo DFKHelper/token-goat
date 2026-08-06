@@ -143,29 +143,46 @@ interface TopSymbolRow {
 }
 
 /**
- * Fetch headline symbols from the index: classes first, then functions, by
- * body length (a rough proxy for significance). Returns `[]` when the index is
- * empty or unavailable so `map` works before any indexing has happened.
+ * Fetch headline symbols from the index: ranked by how often they're
+ * referenced elsewhere in the project (most-referenced first), with the
+ * class/interface/function kind ordering and body length as tie-breaks.
+ * Reference count is a much better orientation signal than body length --
+ * a heavily-called function matters more than a long, never-referenced
+ * class. Returns `[]` when the index is empty or unavailable so `map` works
+ * before any indexing has happened.
  *
  * `global.db` is a single machine-wide index keyed by absolute path across every
  * project ever indexed (see constants.ts), so this query MUST be scoped to
  * `rootDir` via {@link projectScopeClause} -- otherwise `map` mixes in headline
  * symbols from unrelated projects that happen to share the same index.
+ *
+ * `refs` rows carry only a `name` (no target-symbol column), so the ref count
+ * is aggregated once per name in a subquery -- scoped to the same project via
+ * `projectScopeClause('file_path')` -- and left-joined onto `symbols`, rather
+ * than joining the raw `refs` table per symbol row.
  */
 function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): SymbolEntry[] {
   try {
     const db = getDb(dbPath)
     const { clause, param } = projectScopeClause('file_path')
+    const refScope = projectScopeClause('file_path')
     const rows = db
       .prepare(
-        `SELECT file_path, name, kind, line_start, line_end, body, docstring, parent
-         FROM symbols
-         WHERE kind IN ('class', 'function', 'interface') AND ${clause}
-         ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
-                  LENGTH(COALESCE(body, '')) DESC
+        `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
+         FROM symbols s
+         LEFT JOIN (
+           SELECT name, COUNT(*) AS ref_count
+           FROM refs
+           WHERE ${refScope.clause}
+           GROUP BY name
+         ) r ON r.name = s.name
+         WHERE s.kind IN ('class', 'function', 'interface') AND ${clause}
+         ORDER BY COALESCE(r.ref_count, 0) DESC,
+                  CASE s.kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 ELSE 2 END,
+                  LENGTH(COALESCE(s.body, '')) DESC
          LIMIT ?`,
       )
-      .all(param(rootDir), limit) as TopSymbolRow[]
+      .all(refScope.param(rootDir), param(rootDir), limit) as TopSymbolRow[]
     return rows.map((r) => ({
       filePath: r.file_path,
       name: r.name,
