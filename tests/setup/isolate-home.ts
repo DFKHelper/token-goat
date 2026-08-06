@@ -24,8 +24,26 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+// Unique per TEST FILE, not per worker process. setupFiles runs once per test file, but
+// `pool: 'forks'` REUSES a fork across many files, so keying these dirs on process.pid alone
+// handed consecutive files in the same fork one shared global.db. That is cross-file state
+// leakage, not contention: which files land in which fork varies run to run, so different files
+// failed each run and every one passed in isolation. Reproduced deterministically by running
+// `db.test.ts` then `cli_note.test.ts` in a single fork -- the notes db.test.ts left behind made
+// cli_note's `not.toContain('[STALE]')` fail. A per-file suffix restores the isolation this
+// file's docblock already claimed.
+const workerScope = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+// A TOKEN_GOAT_HOME inherited from the ENVIRONMENT (a developer or CI exporting one) must still
+// win. A TOKEN_GOAT_HOME left in process.env by a PREVIOUS test file in this same reused fork
+// must not -- that is the leak. The sentinel distinguishes the two, which a bare presence check
+// cannot.
+if (process.env['TG_TEST_HOME_MANAGED'] === '1') {
+  delete process.env['TOKEN_GOAT_HOME']
+}
 if (!process.env['TOKEN_GOAT_HOME']) {
-  const dir = path.join(os.tmpdir(), `tg-test-home-${process.pid}`)
+  process.env['TG_TEST_HOME_MANAGED'] = '1'
+  const dir = path.join(os.tmpdir(), `tg-test-home-${workerScope}`)
   try {
     fs.mkdirSync(dir, { recursive: true })
   } catch {
@@ -42,7 +60,7 @@ if (!process.env['TOKEN_GOAT_HOME']) {
 }
 
 // Data-dir isolation is unconditional: the system LOCALAPPDATA is always set on Windows, so a presence guard would never isolate it and tests would keep hitting the real global.db. Point both platform env vars at a per-worker temp dir before any token-goat module caches DATA_DIR (setupFiles run before the test module graph imports constants.ts, so the cached value picks this up).
-const dataHome = path.join(os.tmpdir(), `tg-test-data-${process.pid}`)
+const dataHome = path.join(os.tmpdir(), `tg-test-data-${workerScope}`)
 try {
   fs.mkdirSync(dataHome, { recursive: true })
 } catch {
