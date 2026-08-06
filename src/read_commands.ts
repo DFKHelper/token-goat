@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, type SourceContextLine } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -1303,6 +1303,8 @@ export interface RefsOptions {
    * byte -- text and JSON alike -- is unchanged.
    */
   context?: number
+  /** `--exclude-tests`: drop references whose call site lives in a test file (per isTestFile). Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
 
 /**
@@ -1407,9 +1409,18 @@ export function runRefs(opts: RefsOptions): number {
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only.
-    if (opts.limit !== undefined) queryOpts.limit = opts.limit
+    if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
-    const results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
+    let results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
+    let suppressed = 0
+    let filteredTotal: number | undefined
+    if (opts.excludeTests === true) {
+      const f = applyExcludeTestsFilter(results)
+      suppressed = f.suppressed
+      filteredTotal = f.refs.length
+      results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+    }
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
@@ -1419,23 +1430,28 @@ export function runRefs(opts: RefsOptions): number {
         // `results` is already truncated by queryRefs's own SQL `LIMIT` (opts.limit, or the
         // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
         // is not the real number of matching refs -- countRefs reruns the same filters with no
-        // LIMIT to report an honest total (same fix as runSymbol's countSymbols call).
+        // LIMIT to report an honest total (same fix as runSymbol's countSymbols call). Under
+        // --exclude-tests, countRefs has no isTestFile predicate to rerun, so filteredTotal (the
+        // pre-slice filtered count, already scanned with full headroom above) is the honest total.
         const capped = guardJsonRows(results)
-        const trueTotal = countRefs(queryOpts)
+        const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
         jsonOut[sym] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
     if (results.length === 0) {
-      lines.push(`${sym}: (no references found)`)
+      // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
+      lines.push(opts.excludeTests === true && suppressed > 0 ? `${sym}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${sym}: (no references found)`)
       continue
     }
     lines.push(`${sym}:`)
     if (opts.top !== undefined) {
-      lines.push(...renderTopFilesSummary(results, opts.top))
+      lines.push(...renderTopFilesSummary(results, opts.top, undefined, suppressed))
     } else if (opts.callers === true) {
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
       lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
     } else {
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
       for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
     }
   }
@@ -1465,9 +1481,18 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     const key = keyFor({ file, symbol })
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
     // Same reasoning as runRefs's per-symbol loop above: the pair's `file` only disambiguates which same-named symbol this is, by its defining file, via applyTypedRefsTier below -- it must never be passed to queryRefs/countRefs, which would wrongly narrow every result to same-file references only.
-    if (opts.limit !== undefined) queryOpts.limit = opts.limit
+    if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
-    const results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
+    let results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
+    let suppressed = 0
+    let filteredTotal: number | undefined
+    if (opts.excludeTests === true) {
+      const f = applyExcludeTestsFilter(results)
+      suppressed = f.suppressed
+      filteredTotal = f.refs.length
+      results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+    }
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
     if (opts.json === true) {
@@ -1475,22 +1500,26 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
         jsonOut[key] = topFilesJsonPayload(results, opts.top)
       } else {
         // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
+        // Same --exclude-tests honest-total reasoning as runRefs's per-symbol branch above.
         const capped = guardJsonRows(results)
-        const trueTotal = countRefs(queryOpts)
+        const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
         jsonOut[key] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
     if (results.length === 0) {
-      lines.push(`${key}: (no references found)`)
+      // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
+      lines.push(opts.excludeTests === true && suppressed > 0 ? `${key}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${key}: (no references found)`)
       continue
     }
     lines.push(`${key}:`)
     if (opts.top !== undefined) {
-      lines.push(...renderTopFilesSummary(results, opts.top))
+      lines.push(...renderTopFilesSummary(results, opts.top, undefined, suppressed))
     } else if (opts.callers === true) {
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
       lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
     } else {
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
       for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
     }
   }
@@ -1515,12 +1544,26 @@ function runRefsSingle(opts: RefsOptions): number {
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // `file` in `file::symbol` names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call below, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result to same-file references only.
   const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
-  if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+  else if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
 
-  const results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
+  let results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
+  let suppressed = 0
+  let filteredTotal: number | undefined
+  if (opts.excludeTests === true) {
+    const f = applyExcludeTestsFilter(results)
+    suppressed = f.suppressed
+    filteredTotal = f.refs.length
+    results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+  }
 
   if (results.length === 0) {
+    // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
+    if (opts.excludeTests === true && suppressed > 0) {
+      emitErr(`No non-test references found for '${symName}' (${suppressed} in test files hidden by --exclude-tests)`)
+      return 1
+    }
     emitErr(`No references found for '${symName}'`)
     return 1
   }
@@ -1533,8 +1576,9 @@ function runRefsSingle(opts: RefsOptions): number {
       payload = topFilesJsonPayload(results, opts.top)
     } else {
       // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
+      // Same --exclude-tests honest-total reasoning as runRefs's per-symbol branch above.
       const capped = guardJsonRows(results)
-      const trueTotal = countRefs(queryOpts)
+      const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
       payload = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     const text = JSON.stringify(payload, null, 2)
@@ -1546,10 +1590,10 @@ function runRefsSingle(opts: RefsOptions): number {
   const displayRoot = getDisplayRoot()
   const lines =
     opts.top !== undefined
-      ? renderTopFilesSummary(results, opts.top, displayRoot)
+      ? renderTopFilesSummary(results, opts.top, displayRoot, suppressed)
       : opts.callers === true
-        ? renderCallerGroups(results, displayRoot, opts.context ?? 0)
-        : results.flatMap((ref) => renderRefLines(ref, displayRoot, opts.context ?? 0, ''))
+        ? [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...renderCallerGroups(results, displayRoot, opts.context ?? 0)]
+        : [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...results.flatMap((ref) => renderRefLines(ref, displayRoot, opts.context ?? 0, ''))]
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -1559,6 +1603,12 @@ function runRefsSingle(opts: RefsOptions): number {
 interface FileRefCount {
   readonly file: string
   readonly count: number
+}
+
+/** `--exclude-tests`: drops references whose call site is a test file, per {@link isTestFile}. Callers must query with enough headroom (REFS_TOP_SCAN_LIMIT) for this to run BEFORE any `--limit`/`--top` slicing, or the flag silently under-returns by letting suppressed test refs occupy slots ahead of the cutoff. */
+function applyExcludeTestsFilter(refs: RefEntry[]): { refs: RefEntry[]; suppressed: number } {
+  const filtered = refs.filter((r) => !isTestFile(r.filePath))
+  return { refs: filtered, suppressed: refs.length - filtered.length }
 }
 
 /** Groups `refs` by file, counting occurrences per file and sorting by count descending (ties broken alphabetically by path for stable output). */
@@ -1571,11 +1621,12 @@ function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
     .sort((a, b) => b.count - a.count || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }
 
-/** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). */
-function renderTopFilesSummary(refs: RefEntry[], topN: number, displayRoot?: string): string[] {
+/** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). `suppressed`, when > 0, appends an additive note naming how many test-file references `--exclude-tests` hid -- omitted entirely (byte-identical to today) whenever it's 0/undefined. */
+function renderTopFilesSummary(refs: RefEntry[], topN: number, displayRoot?: string, suppressed?: number): string[] {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
-  const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})`]
+  const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${suppressed} in test files hidden by --exclude-tests)` : ''
+  const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})${suppressedNote}`]
   for (const { file, count } of shown) lines.push(`  ${count}  ${toDisplayPath(displayRoot, file)}`)
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {

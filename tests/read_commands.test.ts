@@ -5367,6 +5367,132 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
   })
 })
 
+describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // vi.clearAllMocks() clears calls but not a prior test's mockReturnValue implementation --
+    // an earlier describe block in this file leaves mockLoadConfig pinned to a small
+    // overflow_guard.max_tokens, which would otherwise truncate this block's small fixtures.
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('hides refs whose call site is a test file, leaving default (flag-absent) output byte-identical', () => {
+    const rows = [
+      ref('src/auth.ts', 10, 'login()'),
+      ref('tests/auth.test.ts', 5, 'login()'),
+      ref('tests/auth2.test.ts', 9, 'login()'),
+    ]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+
+    const withoutFlag = capture(() => {
+      const code = runRefs({ spec: 'login' })
+      expect(code).toBe(0)
+    }).stdout
+    // Pinned expectation: unflagged output is exactly today's 3-line dump, both test paths present.
+    expect(withoutFlag.trim().split('\n')).toEqual(['src/auth.ts:10: login()', 'tests/auth.test.ts:5: login()', 'tests/auth2.test.ts:9: login()'])
+
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'login', excludeTests: true })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withFlag).toContain('src/auth.ts:10: login()')
+    expect(withFlag).not.toContain('tests/auth.test.ts')
+    expect(withFlag).not.toContain('tests/auth2.test.ts')
+    expect(withFlag).toContain('1 references (2 in test files hidden by --exclude-tests)')
+    expect(withFlag).not.toEqual(withoutFlag)
+  })
+
+  it('--json keeps the items/truncated/totalCount shape, with an exact 1-of-3 filtered totalCount', () => {
+    const rows = [
+      ref('src/auth.ts', 10, 'login()'),
+      ref('tests/auth.test.ts', 5, 'login()'),
+      ref('tests/auth2.test.ts', 9, 'login()'),
+    ]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+
+    const withoutFlag = JSON.parse(capture(() => runRefs({ spec: 'login', json: true })).stdout) as { items: unknown[]; totalCount: number }
+    expect(withoutFlag.items).toHaveLength(3)
+    expect(withoutFlag.totalCount).toBe(3)
+
+    const withFlag = JSON.parse(capture(() => runRefs({ spec: 'login', json: true, excludeTests: true })).stdout) as { items: unknown[]; totalCount: number; truncated: boolean }
+    expect(withFlag.items).toHaveLength(1)
+    expect(withFlag.totalCount).toBe(1)
+    expect(withFlag.truncated).toBe(false)
+  })
+})
+
+describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('filters test-file refs on the distinct runRefsCrossFile path too (not just runRefsSingle), with exact per-symbol counts', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'runSection') {
+        return [ref('src/cli.ts', 5, 'runSection(x)'), ref('tests/cli.test.ts', 1, 'runSection(x)')]
+      }
+      if (opts.name === 'installHooks') {
+        return [ref('src/cli.ts', 491, 'installHooks()'), ref('tests/install.test.ts', 12, 'installHooks()'), ref('tests/install2.test.ts', 2, 'installHooks()')]
+      }
+      return []
+    })
+    const withoutFlag = capture(() => {
+      const code = runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks' })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withoutFlag).toContain('tests/cli.test.ts:1: runSection(x)')
+    expect(withoutFlag).toContain('tests/install.test.ts:12: installHooks()')
+    expect(withoutFlag).toContain('tests/install2.test.ts:2: installHooks()')
+
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'src/read_commands.ts::runSection,src/install.ts::installHooks', excludeTests: true })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withFlag).toContain('src/cli.ts:5: runSection(x)')
+    expect(withFlag).toContain('src/cli.ts:491: installHooks()')
+    expect(withFlag).not.toContain('tests/cli.test.ts')
+    expect(withFlag).not.toContain('tests/install.test.ts')
+    expect(withFlag).not.toContain('tests/install2.test.ts')
+    expect(withFlag).toContain('1 in test files hidden by --exclude-tests')
+    expect(withFlag).toContain('2 in test files hidden by --exclude-tests')
+    expect(withFlag).not.toEqual(withoutFlag)
+  })
+
+  // A symbol referenced ONLY from tests must not report as unreferenced. Both the single-spec and cross-file paths previously emitted a bare "no references found" once the filter emptied the set, which reads as "this symbol is dead" and invites deleting live code -- the same empty-store-renders-as-absence class already fixed for map/doctor/hint-stats here.
+  it('says references were suppressed rather than "no references found" when every ref was a test ref', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => (opts.name === 'onlyTested' ? [ref('tests/a.test.ts', 3, 'onlyTested()'), ref('tests/b.test.ts', 9, 'onlyTested()')] : []))
+
+    const withoutFlag = capture(() => runRefs({ spec: 'onlyTested' }))
+    expect(withoutFlag.stdout).toContain('tests/a.test.ts')
+
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'onlyTested', excludeTests: true })
+      expect(code).toBe(1)
+    })
+    const all = withFlag.stdout + withFlag.stderr
+    expect(all).toContain('No non-test references found')
+    expect(all).toContain('2 in test files hidden by --exclude-tests')
+  })
+
+  it('says the same on the cross-file path when one spec is left with nothing', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'realUse') return [ref('src/cli.ts', 5, 'realUse()')]
+      if (opts.name === 'testOnly') return [ref('tests/x.test.ts', 2, 'testOnly()')]
+      return []
+    })
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::realUse,src/b.ts::testOnly', excludeTests: true })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withFlag).toContain('no non-test references found')
+    expect(withFlag).toContain('1 in test files hidden by --exclude-tests')
+    expect(withFlag).not.toContain('(no references found)')
+  })
+})
+
 // getDisplayRoot()/toDisplayPath() wiring: runRefsSingle never resolved its own project root
 // before this fix, so plain (non --top/--callers) `refs` output always printed the raw absolute
 // filePath. process.cwd() in this test process is this repo's own root (no chdir happens

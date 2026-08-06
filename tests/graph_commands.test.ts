@@ -1115,6 +1115,123 @@ describe('runCallers file::symbol spec', () => {
   })
 })
 
+// ---- runCallers --exclude-tests (additive opt-in) ---------------------------
+
+describe('runCallers --exclude-tests', () => {
+  // A symbol called ONLY from tests must not report as uncalled. A bare "No references found" plus exit 1 reads as "this symbol is dead" and invites deleting live code.
+  it('names the suppressed count instead of reporting no references when every caller was a test', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-empty-'))
+    try {
+      const defFile = join(root, 'excl-empty-def.ts')
+      const testFile = join(root, 'excl-empty-caller.test.ts')
+      writeFileSync(defFile, 'export function exclOnlyTested7w2() { return 1 }\n')
+      writeFileSync(testFile, 'function onlyTestCaller7w2() { exclOnlyTested7w2() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => { expect(runCallers({ symbol: 'exclOnlyTested7w2' })).toBe(0) })
+        expect(withoutFlag).toContain('onlyTestCaller7w2')
+
+        const errs: string[] = []
+        const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => { errs.push(String(c)); return true })
+        try {
+          const out = captureStdout(() => { expect(runCallers({ symbol: 'exclOnlyTested7w2', excludeTests: true })).toBe(1) })
+          const all = out + errs.join('\n')
+          expect(all).toContain('No non-test references found')
+          expect(all).toContain('1 in test files hidden by --exclude-tests')
+        } finally {
+          errSpy.mockRestore()
+        }
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('hides callers whose call site is a test file, leaves default output untouched, and reports exact filtered/suppressed counts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-'))
+    try {
+      const defFile = join(root, 'excl-def.ts')
+      const prodFile = join(root, 'excl-prod-caller.ts')
+      const testFileA = join(root, 'excl-caller-a.test.ts')
+      const testFileB = join(root, 'excl-caller-b.test.ts')
+      writeFileSync(defFile, 'export function exclCallersFn5k1() { return 1 }\n')
+      writeFileSync(prodFile, 'function prodCallerXk1() { exclCallersFn5k1() }\n')
+      writeFileSync(testFileA, 'function testCallerAXk1() { exclCallersFn5k1() }\n')
+      writeFileSync(testFileB, 'function testCallerBXk1() { exclCallersFn5k1() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(prodFile))
+      indexFileSync(normalizePath(testFileA))
+      indexFileSync(normalizePath(testFileB))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Flag absent: byte-identical to today -- all 3 callers, both test paths present.
+        const withoutFlag = captureStdout(() => {
+          expect(runCallers({ symbol: 'exclCallersFn5k1' })).toBe(0)
+        })
+        expect(withoutFlag).toContain('prodCallerXk1')
+        expect(withoutFlag).toContain('testCallerAXk1')
+        expect(withoutFlag).toContain('testCallerBXk1')
+        expect(withoutFlag.trim().split('\n')).toHaveLength(3)
+
+        // Flag present: exactly 1 caller left (the production one), both test callers gone.
+        const withFlag = captureStdout(() => {
+          expect(runCallers({ symbol: 'exclCallersFn5k1', excludeTests: true })).toBe(0)
+        })
+        expect(withFlag).toContain('prodCallerXk1')
+        expect(withFlag).not.toContain('testCallerAXk1')
+        expect(withFlag).not.toContain('testCallerBXk1')
+        expect(withFlag.toLowerCase()).not.toContain(testFileA.toLowerCase())
+        expect(withFlag.toLowerCase()).not.toContain(testFileB.toLowerCase())
+        // Additive suppressed-count note, plus the 1 real caller line.
+        expect(withFlag).toContain('2 in test files hidden by --exclude-tests')
+
+        expect(withFlag).not.toEqual(withoutFlag)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('--json shape is unchanged, just fewer items, and matches the exact 1-of-3 filtered count', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-json-'))
+    try {
+      const defFile = join(root, 'excl-json-def.ts')
+      const prodFile = join(root, 'excl-json-prod.ts')
+      const testFile = join(root, 'excl-json.test.ts')
+      writeFileSync(defFile, 'export function exclCallersJsonFn2m9() { return 1 }\n')
+      writeFileSync(prodFile, 'function jsonProdCaller() { exclCallersJsonFn2m9() }\n')
+      writeFileSync(testFile, 'function jsonTestCallerA() { exclCallersJsonFn2m9() }\nfunction jsonTestCallerB() { exclCallersJsonFn2m9() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(prodFile))
+      indexFileSync(normalizePath(testFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => { runCallers({ symbol: 'exclCallersJsonFn2m9', json: true }) })
+        const parsedWithout = JSON.parse(withoutFlag) as Array<{ caller: string; file: string }>
+        expect(parsedWithout).toHaveLength(3)
+
+        const withFlag = captureStdout(() => { runCallers({ symbol: 'exclCallersJsonFn2m9', json: true, excludeTests: true }) })
+        const parsedWith = JSON.parse(withFlag) as Array<{ caller: string; file: string }>
+        expect(parsedWith).toHaveLength(1)
+        expect(parsedWith[0]?.caller).toBe('jsonProdCaller')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- resolveCallers/runCallers cross-project scoping (regression) -----------
 
 describe('resolveCallers cross-project scoping', () => {
@@ -1378,6 +1495,75 @@ describe('runDead virtual-dispatch rescue', () => {
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === factoryFile)).toBe(false)
         expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === factoryFile)).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runDead --exclude-tests (additive opt-in) ------------------------------
+
+describe('runDead --exclude-tests', () => {
+  it('a dead function defined ONLY in a test file is present without the flag and absent with it (definition-site predicate, not a reference-site one)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-exclude-'))
+    try {
+      const prodDeadFile = join(root, 'excl-dead-prod.ts')
+      const testDeadFile = join(root, 'excl-dead.test.ts')
+      writeFileSync(prodDeadFile, 'export function exclDeadProdFn8q4() { return 1 }\n')
+      writeFileSync(testDeadFile, 'export function exclDeadTestFn8q4() { return 1 }\n')
+      indexFileSync(normalizePath(prodDeadFile))
+      indexFileSync(normalizePath(testDeadFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = JSON.parse(
+          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) }),
+        ) as Array<{ name: string }>
+        const prodPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadProdFn8q4')
+        const testPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadTestFn8q4')
+        expect(prodPresentWithout).toBe(true)
+        // Byte-identical-to-today guarantee: the test-defined dead symbol is present when the
+        // flag is absent, exactly like it is today.
+        expect(testPresentWithout).toBe(true)
+
+        const withFlag = JSON.parse(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, excludeTests: true })).toBe(0) }),
+        ) as Array<{ name: string }>
+        const prodPresentWith = withFlag.some((r) => r.name === 'exclDeadProdFn8q4')
+        const testPresentWith = withFlag.some((r) => r.name === 'exclDeadTestFn8q4')
+        expect(prodPresentWith).toBe(true)
+        expect(testPresentWith).toBe(false)
+
+        // Exact-count differential: excluding tests must strictly shrink the set here.
+        expect(withFlag.length).toBeLessThan(withoutFlag.length)
+        expect(withoutFlag.length - withFlag.length).toBe(1)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('text output prints the suppressed-count note only when the flag is set and something was hidden', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-exclude-text-'))
+    try {
+      const testDeadFile = join(root, 'excl-dead-note.test.ts')
+      writeFileSync(testDeadFile, 'export function exclDeadNoteFn3p7() { return 1 }\n')
+      indexFileSync(normalizePath(testDeadFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => { runDead({ kind: 'function', top: 500 }) })
+        expect(withoutFlag).not.toContain('hidden by --exclude-tests')
+
+        const withFlag = captureStdout(() => { runDead({ kind: 'function', top: 500, excludeTests: true }) })
+        expect(withFlag).not.toContain('exclDeadNoteFn3p7')
+        // The positive half this test's own title claims. Without it the note could never be emitted at all and this stayed green -- the vacuous-half shape that has shipped past every gate here before.
+        expect(withFlag).toContain('hidden by --exclude-tests')
       } finally {
         cwdSpy.mockRestore()
       }

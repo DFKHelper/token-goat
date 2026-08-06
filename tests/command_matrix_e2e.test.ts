@@ -108,6 +108,26 @@ beforeAll(() => {
     "import { refHelper } from './caller.js'\n" +
       'export function useRefHelper(): number {\n  return refHelper()\n}\n',
   )
+  // Fixture for `refs`/`callers` --exclude-tests: one production call site and two test-file
+  // call sites of the same symbol, plus a dead symbol defined ONLY in a test file (for `dead
+  // --exclude-tests`, which filters on the DEFINITION site rather than a reference site).
+  fs.writeFileSync(
+    path.join(repo, 'exclhelper.ts'),
+    'export function exclHelperFn(): number {\n  return 1\n}\n',
+  )
+  fs.writeFileSync(
+    path.join(repo, 'exclprod.ts'),
+    'export function exclProdCaller(): number {\n  return exclHelperFn()\n}\n',
+  )
+  fs.writeFileSync(
+    path.join(repo, 'exclcaller.test.ts'),
+    'export function exclTestCallerA(): number {\n  return exclHelperFn()\n}\n' +
+      'export function exclTestCallerB(): number {\n  return exclHelperFn()\n}\n',
+  )
+  fs.writeFileSync(
+    path.join(repo, 'excldead.test.ts'),
+    'export function exclDeadOnlyInTest(): number {\n  return 99\n}\n',
+  )
   fs.writeFileSync(
     path.join(repo, 'README.md'),
     '# Fixture\n\n## Install\n\nRun npm install to set up the project.\n',
@@ -356,6 +376,25 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(ctx.stdout).toContain('return refHelper() + refHelper()')
     const zero = run(['refs', 'caller.ts::refHelper', '-C', '0'])
     expect(zero.stdout).toBe(plain.stdout)
+
+    // --exclude-tests: opt-in, additive. Absent the flag, both test-file callers are present
+    // (byte-identical to today); with it, only the production caller remains and the two test
+    // paths are gone -- proves the flag is actually threaded through, not just registered.
+    const withoutFlag = run(['refs', 'exclhelper.ts::exclHelperFn'])
+    expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
+    expect(withoutFlag.stdout).toContain('exclprod.ts')
+    expect(withoutFlag.stdout).toContain('exclcaller.test.ts')
+    const withFlag = run(['refs', 'exclhelper.ts::exclHelperFn', '--exclude-tests'])
+    expect(withFlag.status, withFlag.stderr).toBe(0)
+    expect(withFlag.stdout).toContain('exclprod.ts')
+    expect(withFlag.stdout).not.toContain('exclcaller.test.ts')
+    expect(withFlag.stdout).toContain('hidden by --exclude-tests')
+
+    // Cross-file spec path (runRefsCrossFile) is a distinct code path from the single-symbol
+    // spec above -- exercise it against the real built bundle too.
+    const crossWithFlag = run(['refs', 'exclhelper.ts::exclHelperFn,src/mod.ts::alphaSym', '--exclude-tests'])
+    expect(crossWithFlag.status, crossWithFlag.stderr).toBe(0)
+    expect(crossWithFlag.stdout).not.toContain('exclcaller.test.ts')
   },
   exports: () => {
     expectRead(['exports', 'src/mod.ts'], 'alphaSym')
@@ -1608,6 +1647,21 @@ const cases: Record<string, () => void | Promise<void>> = {
     const ctx = run(['callers', 'refHelper', '-C', '1'])
     expect(ctx.status, ctx.stderr).toBe(0)
     expect(ctx.stdout).toContain('return refHelper() + refHelper()')
+
+    // --exclude-tests: opt-in, additive. exclHelperFn has one production caller
+    // (exclProdCaller) and two test-file callers (exclcaller.test.ts); absent the flag both
+    // test callers surface (unchanged from today), with it only the production one remains.
+    const withoutFlag = run(['callers', 'exclhelper.ts::exclHelperFn'])
+    expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
+    expect(withoutFlag.stdout).toContain('exclProdCaller')
+    expect(withoutFlag.stdout).toContain('exclTestCallerA')
+    expect(withoutFlag.stdout).toContain('exclTestCallerB')
+    const withFlag = run(['callers', 'exclhelper.ts::exclHelperFn', '--exclude-tests'])
+    expect(withFlag.status, withFlag.stderr).toBe(0)
+    expect(withFlag.stdout).toContain('exclProdCaller')
+    expect(withFlag.stdout).not.toContain('exclTestCallerA')
+    expect(withFlag.stdout).not.toContain('exclTestCallerB')
+    expect(withFlag.stdout).toContain('hidden by --exclude-tests')
   },
   'call-chain': () => {
     // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
@@ -1636,6 +1690,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // --exclude-tests: opt-in, additive, and filters on the symbol's own DEFINITION site (not a
+    // reference site, unlike refs/callers). exclDeadOnlyInTest is defined in excldead.test.ts and
+    // never called anywhere -- present without the flag (byte-identical to today), gone with it.
+    const withoutFlag = run(['dead', '--top', '500', '--json'])
+    expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
+    const withoutParsed = JSON.parse(withoutFlag.stdout) as Array<{ name: string }>
+    expect(withoutParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(true)
+    const withFlag = run(['dead', '--top', '500', '--json', '--exclude-tests'])
+    expect(withFlag.status, withFlag.stderr).toBe(0)
+    const withParsed = JSON.parse(withFlag.stdout) as Array<{ name: string }>
+    expect(withParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(false)
   },
   deps: () => {
     // app.ts imports from ./src/mod.js — deps must list that as an internal dep.
