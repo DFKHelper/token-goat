@@ -258,6 +258,44 @@ describe('fetchTopSymbols ref-count ranking', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // Regression: ranking by a raw ref count credited every same-named definition with the WHOLE
+  // project-wide count for that name, because refs carry only a bare name and no target. A generic
+  // helper defined seven times therefore both outranked genuinely hot symbols and occupied seven of
+  // the ten slots -- the real `map --compact` output was literally `apply` seven times. The count is
+  // now divided across the same-named definitions and only one representative per name is kept.
+  it('discounts a name defined many times and keeps one row per name', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-refdup-'))
+    const rootUri = normalizePath(root)
+
+    const db = getDb(globalDbPath())
+    const insertSym = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    const insertRef = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+
+    // `dupHelper` is defined in three files and referenced 90 times in total, so its raw count beats
+    // `soloFn`'s 40 -- but no single dupHelper definition owns those 90, so its share is 90/3 = 30.
+    for (let f = 0; f < 3; f += 1) {
+      const filePath = `${rootUri}/dup${f}.ts`
+      insertSym.run(filePath, 'dupHelper', 'function', 1, 1, `function dupHelper() { return ${f} }`, '')
+      for (let i = 0; i < 30; i += 1) insertRef.run(filePath, 'dupHelper', 100 + i, 1, 'dupHelper()')
+    }
+
+    const soloPath = `${rootUri}/solo.ts`
+    insertSym.run(soloPath, 'soloFn', 'function', 1, 1, 'function soloFn() { return 1 }', '')
+    for (let i = 0; i < 40; i += 1) insertRef.run(soloPath, 'soloFn', 100 + i, 1, 'soloFn()')
+
+    try {
+      const names = buildProjectMap(root).topSymbols.map((s) => s.name)
+      expect(names).toEqual(['soloFn', 'dupHelper'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('mapLookupBytesSaved', () => {
