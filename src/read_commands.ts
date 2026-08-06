@@ -3096,6 +3096,46 @@ export function parseDiffHunks(diffText: string): Map<string, Array<{ start: num
   return hunksByFile
 }
 
+// Git's well-known empty-tree object hash — always resolvable, used as a diff base when a
+// repo has too few commits for any `HEAD~n` (n >= 1) to resolve.
+const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+// Builds an extra hint line for a `git diff <ref>` failure caused by the repo simply not
+// having enough commits for `ref` to resolve (the default `HEAD~5`, or any positional/--since
+// ref a caller passed that outruns history depth). Returns null when the ref failure is not a
+// depth issue (e.g. a genuinely malformed ref name), so callers that got a real error don't
+// see a misleading suggestion.
+function buildChangedRefHint(cwd: string, ref: string): string | null {
+  const countResult = runGit(['rev-list', '--count', 'HEAD'], { cwd })
+  if (countResult.exitCode !== 0) {
+    return null
+  }
+  const commitCount = Number.parseInt(countResult.stdout.trim(), 10)
+  if (!Number.isFinite(commitCount) || commitCount < 1) {
+    return null
+  }
+  const refResolves = runGit(['rev-parse', '--verify', '--quiet', ref], { cwd })
+  if (refResolves.exitCode === 0) {
+    // The ref itself is fine — the git diff failure must be something else, don't guess.
+    return null
+  }
+  let suggestedRef: string | null = null
+  for (let n = commitCount - 1; n >= 1; n--) {
+    const candidate = `HEAD~${n}`
+    const candidateResolves = runGit(['rev-parse', '--verify', '--quiet', candidate], { cwd })
+    if (candidateResolves.exitCode === 0) {
+      suggestedRef = candidate
+      break
+    }
+  }
+  if (suggestedRef === null) {
+    // Even HEAD~1 doesn't resolve (a 1-commit repo) — the empty tree is always valid.
+    suggestedRef = EMPTY_TREE_HASH
+  }
+  const commitWord = commitCount === 1 ? '1 commit' : `${commitCount} commits`
+  return `Hint: this repo has only ${commitWord}; '${ref}' does not exist. Try: token-goat changed --since ${suggestedRef}`
+}
+
 /** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
 export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
@@ -3114,6 +3154,10 @@ export function runChanged(opts: ChangedOptions = {}): number {
     const result = runGit(['diff', ref, '--name-only'], { cwd })
     if (result.exitCode !== 0) {
       emitErr(`git diff failed: ${result.stderr}`)
+      const hint = buildChangedRefHint(cwd, ref)
+      if (hint !== null) {
+        emitErr(hint)
+      }
       return 1
     }
     changedFiles = result.stdout.trim().split(/\r?\n/).filter(Boolean)

@@ -3659,15 +3659,15 @@ export function buildProgram(): Command {
     .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdHistory(opts))())
 
   program
-    .command('changed')
+    .command('changed [ref]')
     .description('list files or symbols changed since a git ref')
     .option('--since <ref>', 'git ref to compare against (default: HEAD~5)')
     .option('--symbol', 'list symbols instead of files')
     .option('-j, --json', 'output as JSON')
-    .action((opts: { since?: string; symbol?: boolean; json?: boolean }) =>
+    .action((ref: string | undefined, opts: { since?: string; symbol?: boolean; json?: boolean }) =>
       runExit(() =>
         runChanged({
-          ref: opts.since ?? 'HEAD~5',
+          ref: opts.since ?? ref ?? 'HEAD~5',
           ...(opts.symbol === true ? { symbolMode: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),

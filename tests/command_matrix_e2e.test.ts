@@ -475,6 +475,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rs.stdout).toContain('gammaSym')
     expect(rs.stdout).not.toContain('alphaSym')
     expect(rs.stdout).not.toContain('betaSym')
+    // Regression: `changed <ref>` positional form (README-documented) must reach the same
+    // resolution as `--since <ref>` through the built bundle, not be silently dropped.
+    const rPositional = run(['changed', 'HEAD~1'])
+    expect(rPositional.status, rPositional.stderr).toBe(0)
+    expect(rPositional.stdout).toMatch(/mod\.ts/)
+    // Regression: bare `changed` in this fixture's 2-commit shallow repo must fail against
+    // the default HEAD~5 with the hint appended, instead of a bare unexplained git error.
+    const rBareShallow = run(['changed'])
+    expect(rBareShallow.status).toBe(1)
+    expect(rBareShallow.stderr).toContain('git diff failed')
+    expect(rBareShallow.stderr).toMatch(/Hint: this repo has only 2 commits/)
+    expect(rBareShallow.stderr).toContain('token-goat changed --since HEAD~1')
   },
   diff: () => {
     // gammaSym was added by the second commit; alphaSym/betaSym are untouched by it.
