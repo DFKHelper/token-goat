@@ -22,7 +22,7 @@ import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
-import { normalizePath } from './paths.js'
+import { normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
@@ -272,13 +272,17 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
   if (map.topSymbols.length > 0) {
     lines.push('')
     lines.push('## Top symbols')
+    // Name the file in BOTH modes. Compact used to omit it entirely, and since
+    // repomap.compact_file_threshold defaults to 50, compact is what every real project actually
+    // renders -- so in practice a top symbol was never addressable without a follow-up `symbol`
+    // call, which is worst for exactly the generic names this list surfaces (`out`, `file`,
+    // `matches`). Full mode named only path.basename(), which is ambiguous across directories
+    // (every project has several index.ts) and is not a resolvable spec. A root-relative display
+    // path is, so `- normalizePath (function) — src/paths.ts:12-23` can be fed straight back in as
+    // `read "src/paths.ts::normalizePath"`. Costs ~10 tokens a line and saves a round trip each.
     for (const s of map.topSymbols) {
-      if (compact) {
-        lines.push(`- ${s.name} (${s.kind})`)
-      } else {
-        const loc = `${path.basename(s.filePath)}:${s.lineStart}-${s.lineEnd}`
-        lines.push(`- ${s.name} (${s.kind}) — ${loc}`)
-      }
+      const loc = `${toDisplayPath(map.rootDir, s.filePath)}:${s.lineStart}-${s.lineEnd}`
+      lines.push(`- ${s.name} (${s.kind}) — ${loc}`)
     }
   } else {
     // Reuses checkSymbolCount's wording (cli_doctor.ts) for the same empty-index condition, so a
