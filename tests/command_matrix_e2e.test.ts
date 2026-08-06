@@ -767,6 +767,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(compact.status, compact.stderr).toBe(0)
     expect(compact.stdout).toContain('alphaSym')
     expect(compact.stdout.length).toBeLessThan(r.stdout.length)
+
+    const json = run(['map', '--json'])
+    expect(json.status, json.stderr).toBe(0)
+    const parsed = JSON.parse(json.stdout) as { fileCount: number; topSymbols: Array<{ name: string }> }
+    expect(parsed.fileCount).toBeGreaterThan(0)
+    expect(parsed.topSymbols.some((s) => s.name === 'alphaSym')).toBe(true)
   },
   'bridges-status': () => {
     const r = run(['bridges-status'])
@@ -873,6 +879,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status).not.toBeNull()
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+
+    const json = run(['doctor', '--json'])
+    expect(json.status).not.toBeNull()
+    const results = JSON.parse(json.stdout) as Array<{ name: string; status: string; message: string }>
+    expect(results.length).toBeGreaterThan(0)
+    for (const check of results) {
+      expect(['ok', 'warn', 'fail']).toContain(check.status)
+    }
   },
   'context-stats': () => {
     const r = run(['context-stats'])

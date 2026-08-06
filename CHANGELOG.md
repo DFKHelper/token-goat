@@ -5,6 +5,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ## [Unreleased]
 
 ### Added
+- **`--json` on `map` and `doctor`.** `token-goat map --json` emits the project map (file count, languages, top symbols, recent files) as JSON. `token-goat doctor --json` emits the check results as a JSON array, one entry per check with its `ok`/`warn`/`fail` status. Text output is unchanged when the flag is omitted. See [src/cli.ts](src/cli.ts).
+- **`map` now says when the index is empty** instead of silently dropping the "Top symbols" section. A project with no indexed files gets an explicit marker line telling you to run `token-goat index .`, instead of the heading just vanishing. See [src/baseline.ts](src/baseline.ts).
 - **Path-priority scoring for `semantic`.** Results are re-ranked with a multiplier so live source wins ties/near-ties against stale or archival prose that otherwise outranks it on raw vector similarity: `archive/`, `archived/`, `old/`, `deprecated/`, `plans/`, `drafts/`, `CHANGELOG*`, `*.bak`, `*.orig` get a stronger penalty, and general docs (`docs/**`, `*.md`) get a milder one. It's a nudge, not a hard filter — a genuinely much better archival match still surfaces. Configurable via `semantic.archive_weight` / `semantic.docs_weight`; set either to `1` to disable that penalty. See [src/embeddings.ts](src/embeddings.ts), [src/config.ts](src/config.ts).
 
 ## [2.6.24] - 2026-08-05

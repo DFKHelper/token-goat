@@ -174,6 +174,45 @@ describe('formatProjectMap', () => {
     expect(text).toContain(`Files: ${map.fileCount}`)
     expect(text).toContain('typescript')
   })
+
+  // Regression: an empty/unindexed project silently dropped the whole "## Top symbols" section
+  // (baseline.ts:272 gated it on `topSymbols.length > 0`), which reads as "this project has no
+  // notable symbols" rather than "this project was never indexed". Assert the marker line takes
+  // its place, reusing checkSymbolCount's wording (cli_doctor.ts) verbatim.
+  it('emits an explicit marker line instead of omitting the section when topSymbols is empty', () => {
+    write('a.ts', 'export const x = 1\n')
+    const map = buildProjectMap(TMP)
+    expect(map.topSymbols).toEqual([])
+    const text = formatProjectMap(map, false)
+    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
+    expect(text).not.toContain('## Top symbols\n')
+  })
+
+  // Companion to the above: the populated case must render byte-for-byte the same "## Top
+  // symbols" heading and list format it always has -- the marker line is additive only for the
+  // empty case, never a substitute when symbols exist.
+  it('still renders the existing "## Top symbols" heading unchanged when symbols are present', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-topsym-'))
+    const filePath = `${normalizePath(root)}/a.ts`
+    const db = getDb(globalDbPath())
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, 'hotFn', 'function', 1, 1, 'export function hotFn() { return 1 }', '')
+
+    try {
+      const map = buildProjectMap(root)
+      expect(map.topSymbols.length).toBeGreaterThan(0)
+      const text = formatProjectMap(map, true)
+      const lines = text.split('\n')
+      const headingIdx = lines.indexOf('## Top symbols')
+      expect(headingIdx).toBeGreaterThanOrEqual(0)
+      expect(lines[headingIdx + 1]).toBe('- hotFn (function)')
+      expect(text).not.toContain('## Top symbols: none')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('buildProjectMap cross-project scoping', () => {
