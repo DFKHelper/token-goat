@@ -34,6 +34,7 @@ import { getFileEntry } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { resolveIndexPath } from './paths.js'
+import { resolveProjectRoot } from './project.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { relay } from './relay.js'
 import {
@@ -2672,18 +2673,26 @@ export function buildProgram(): Command {
     .option('-l, --limit <n>', 'max results')
     .option('-f, --file <path>', 'restrict to one file')
     .option('-k, --kind <kind>', 'restrict to one kind (function, class, ...)')
+    .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
     .option('-j, --json', 'output as JSON')
-    .action((name: string, opts: { limit?: string; file?: string; kind?: string; json?: boolean }) =>
-      runExitText(() =>
+    .action((name: string, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean }) => {
+      let projectRoot: string | undefined
+      if (opts.project === true) {
+        projectRoot = resolveProjectRoot({ project: process.cwd() })
+      } else if (typeof opts.project === 'string') {
+        projectRoot = resolveProjectRoot({ project: opts.project })
+      }
+      return runExitText(() =>
         runSymbol({
           name,
           limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
           ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(projectRoot !== undefined ? { projectRoot } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
-      ),
-    )
+      )
+    })
 
   program
     .command('read <spec>')
@@ -3079,7 +3088,8 @@ export function buildProgram(): Command {
     .option('--max-lines <n>', 'max matching lines to print')
     .option('--no-recursive', 'do not descend into subdirectories')
     .option('-C, --context <n>', 'lines of context to show before and after each match')
-    .action((pattern: string, paths: string[] | undefined, opts: { json?: boolean; maxLines?: string; recursive?: boolean; context?: string }) =>
+    .option('--symbol', 'annotate each hit with its enclosing symbol (name and kind)')
+    .action((pattern: string, paths: string[] | undefined, opts: { json?: boolean; maxLines?: string; recursive?: boolean; context?: string; symbol?: boolean }) =>
       runExit(() =>
         runGrep({
           pattern,
@@ -3088,6 +3098,7 @@ export function buildProgram(): Command {
           ...(opts.maxLines !== undefined ? { maxLines: requirePositiveInt('--max-lines', opts.maxLines) } : {}),
           ...(opts.recursive === false ? { recursive: false } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
+          ...(opts.symbol === true ? { symbol: true } : {}),
         }),
       ),
     )

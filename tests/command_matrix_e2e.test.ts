@@ -115,6 +115,30 @@ beforeAll(() => {
       'export function dup(): number {\n  return 20\n}\n',
   )
 
+  // Fixture for `grep --symbol`: two distinct functions each containing a match (proves the
+  // annotation isn't hardcoded to symbols[0]), plus one match at module/top-level scope outside
+  // any function (proves an out-of-scope hit gets no symbol tag rather than the nearest one).
+  fs.writeFileSync(
+    path.join(repo, 'grepsym.ts'),
+    'export function grepsymFirst(): number {\n' +
+      '  // grepsymmarker inside first\n' +
+      '  return 1\n' +
+      '}\n' +
+      'export function grepsymSecond(): number {\n' +
+      '  // grepsymmarker inside second\n' +
+      '  return 2\n' +
+      '}\n' +
+      '// grepsymmarker module top level\n',
+  )
+  // Fixture for `exports` location: one export the parser indexes (has a symbol row) and one
+  // re-export form extractExportNames catches from source text but querySymbols never indexes
+  // (it isn't declared in this file, only re-exported).
+  fs.writeFileSync(
+    path.join(repo, 'exportsloc.ts'),
+    'export function indexedExportLoc(): number {\n  return 42\n}\n' +
+      "export { reExportedOnlyLoc } from './somewhere'\n",
+  )
+
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
   }
@@ -180,7 +204,17 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Indexed \d+ files/)
   },
-  symbol: () => expectRead(['symbol', 'alphaSym'], 'alphaSym'),
+  symbol: () => {
+    expectRead(['symbol', 'alphaSym'], 'alphaSym')
+    // --project (no value) scopes the search to cwd's project root; the fixture repo only has
+    // one project so both bare and --project must still find the match.
+    const scoped = run(['symbol', 'alphaSym', '--project', '--json'])
+    expect(scoped.status, scoped.stderr).toBe(0)
+    const scopedPayload = JSON.parse(scoped.stdout) as { items: Array<{ name: string; filePath: string }> }
+    expect(scopedPayload.items.length).toBe(1)
+    expect(scopedPayload.items[0]?.name).toBe('alphaSym')
+    expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toContain('src/mod.ts')
+  },
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
     // Comma-separated multi-symbol form against the real built bundle -- proves the shipping CLI path, not just the in-process unit tests.
@@ -273,14 +307,65 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(top.status, top.stderr).toBe(0)
     expect(top.stdout).toMatch(/references across \d+ files? \(showing top 1\)/)
   },
-  exports: () => expectRead(['exports', 'src/mod.ts'], 'alphaSym'),
+  exports: () => {
+    expectRead(['exports', 'src/mod.ts'], 'alphaSym')
+    const plain = run(['exports', 'exportsloc.ts'])
+    expect(plain.status, plain.stderr).toBe(0)
+    // Indexed export gets a location suffix; the unindexed re-export does not.
+    expect(plain.stdout).toMatch(/indexedExportLoc \(\d+-\d+\)/)
+    expect(plain.stdout).toMatch(/^\S+\s+reExportedOnlyLoc\s*$/m)
+
+    const j = run(['exports', 'exportsloc.ts', '--json'])
+    expect(j.status, j.stderr).toBe(0)
+    const items = JSON.parse(j.stdout) as Array<{ name: string; lineStart: number | null; lineEnd: number | null }>
+    const indexed = items.find((i) => i.name === 'indexedExportLoc')
+    const unindexed = items.find((i) => i.name === 'reExportedOnlyLoc')
+    expect(indexed?.lineStart).toBe(1)
+    expect(indexed?.lineEnd).toBe(3)
+    // Cross-check against a second command rather than eyeballing.
+    const outlineJson = run(['outline', 'exportsloc.ts', '--json'])
+    expect(outlineJson.status, outlineJson.stderr).toBe(0)
+    const outlineItems = JSON.parse(outlineJson.stdout) as { items: Array<{ name: string; lineStart: number; lineEnd: number }> }
+    const outlineSym = outlineItems.items.find((s) => s.name === 'indexedExportLoc')
+    expect(outlineSym?.lineStart).toBe(indexed?.lineStart)
+    expect(outlineSym?.lineEnd).toBe(indexed?.lineEnd)
+    expect(unindexed?.lineStart).toBe(null)
+    expect(unindexed?.lineEnd).toBe(null)
+  },
   imports: () => {
     const r = run(['imports', 'app.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod/)
   },
   find: () => expectRead(['find', 'alphaSym'], 'mod'),
-  grep: () => expectRead(['grep', 'alphamarker', '.'], 'alphamarker'),
+  grep: () => {
+    expectRead(['grep', 'alphamarker', '.'], 'alphamarker')
+
+    // Plain grep (no --symbol) must be byte-identical to the pre-change baseline output.
+    const plain = run(['grep', 'grepsymmarker', 'grepsym.ts'])
+    expect(plain.status, plain.stderr).toBe(0)
+    expect(plain.stdout).not.toContain('[')
+
+    const withSymbol = run(['grep', 'grepsymmarker', 'grepsym.ts', '--symbol'])
+    expect(withSymbol.status, withSymbol.stderr).toBe(0)
+    const lines = withSymbol.stdout.trim().split(/\r?\n/)
+    expect(lines.length).toBe(3)
+    // Order matches file order: first function, second function, then the trailing
+    // module/top-level comment (outside any function's line range).
+    expect(lines[0]).toContain('[grepsymFirst (function)]')
+    expect(lines[1]).toContain('[grepsymSecond (function)]')
+    expect(lines[2]).not.toMatch(/\[/)
+
+    const withSymbolJson = run(['grep', 'grepsymmarker', 'grepsym.ts', '--symbol', '--json'])
+    expect(withSymbolJson.status, withSymbolJson.stderr).toBe(0)
+    const items = (JSON.parse(withSymbolJson.stdout) as { items: Array<{ line: number; symbol: { name: string; kind: string } | null }> }).items
+    expect(items.length).toBe(3)
+    expect(items[0]?.symbol?.name).toBe('grepsymFirst')
+    expect(items[0]?.symbol?.kind).toBe('function')
+    expect(items[1]?.symbol?.name).toBe('grepsymSecond')
+    expect(items[1]?.symbol?.kind).toBe('function')
+    expect(items[2]?.symbol).toBe(null)
+  },
   changed: () => {
     const r = run(['changed', '--since', 'HEAD~1'])
     expect(r.status, r.stderr).toBe(0)
