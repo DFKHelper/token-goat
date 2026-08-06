@@ -130,7 +130,7 @@ const _GENERATED_PATH_PENALTY = 0.5
 // Path-segment fragments that mark archival/superseded content -- a design doc under docs/,
 // an old plan under plans/, an archive/ folder, or similar. Deprioritized (not dropped) via
 // semantic.archive_weight so live source wins ties/near-ties but a genuinely much better
-// archival match can still surface. See _pathPriorityMultiplier.
+// archival match can still surface. See _pathPriorityPenalty.
 const _ARCHIVE_PATH_SEGMENTS = new Set([
   'archive',
   'archived',
@@ -812,7 +812,7 @@ export async function searchSemantic(
  * lower adjusted score ranks higher: a chunk whose text contains query identifiers is pulled up
  * by a bounded boost; a chunk under a generated/build directory is pushed down additively; a
  * chunk under an archival/superseded path (archive/, plans/, CHANGELOG*, ...) or general docs
- * path is pushed down multiplicatively via `_pathPriorityMultiplier` (semantic.archive_weight /
+ * path is pushed down via `_pathPriorityPenalty` (semantic.archive_weight /
  * semantic.docs_weight) so live source wins ties/near-ties without ever excluding a genuinely
  * much better archival or docs match. Each returned hit keeps its raw `distance` but also gets
  * `adjustedDistance` stamped with the rerank score, so downstream code that resorts hits (e.g.
@@ -838,8 +838,8 @@ export function rerankHits(hits: SearchHit[], query: string, topK: number): Sear
     // inverse of similarity (smaller = closer), so applying it as a divisor here has the same
     // deprioritizing effect a multiplier would have on a similarity score: a smaller weight
     // divides the distance up (worse rank) without ever excluding the hit.
-    const pathPriority = _pathPriorityMultiplier(hit.filePath)
-    return { hit, index, adjusted: (hit.distance - boost + penalty) / pathPriority }
+    const pathPenalty = _pathPriorityPenalty(hit.filePath)
+    return { hit, index, adjusted: hit.distance - boost + penalty + pathPenalty }
   })
   scored.sort((a, b) => a.adjusted - b.adjusted || a.index - b.index)
   return scored.slice(0, topK).map((entry) => ({ ...entry.hit, adjustedDistance: entry.adjusted }))
@@ -1072,7 +1072,8 @@ function _isGeneratedPath(filePath: string): boolean {
  * @param filePath - Relative or absolute file path of the hit.
  * @returns Similarity multiplier in (0, 1] to apply (as a divisor on distance) to the hit.
  */
-function _pathPriorityMultiplier(filePath: string): number {
+// Returns an ADDITIVE distance penalty in [0, 1), derived from the configured weight. It is deliberately not applied as a divisor: `distance - boost` goes negative whenever a near-verbatim hit scores below _MAX_VERBATIM_BOOST, and dividing a negative number by a weight < 1 makes it *more* negative, so the penalty would silently become a bonus for exactly the strongest matches. Adding matches how _GENERATED_PATH_PENALTY already works here and stays monotone across the whole range.
+function _pathPriorityPenalty(filePath: string): number {
   const segments = filePath.split(/[/\\]+/)
   const basename = segments[segments.length - 1] ?? filePath
   const weights = loadConfig().semantic
@@ -1080,14 +1081,14 @@ function _pathPriorityMultiplier(filePath: string): number {
   const isArchive = _ARCHIVE_FILE_RE.test(basename)
     || segments.some((seg) => _ARCHIVE_PATH_SEGMENTS.has(seg.toLowerCase()))
   if (isArchive) {
-    return weights.archive_weight
+    return 1 - weights.archive_weight
   }
 
   const isDocs = _DOCS_FILE_RE.test(basename)
     || segments.some((seg) => seg.toLowerCase() === _DOCS_DIR_SEGMENT)
   if (isDocs) {
-    return weights.docs_weight
+    return 1 - weights.docs_weight
   }
 
-  return 1
+  return 0
 }

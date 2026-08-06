@@ -711,7 +711,7 @@ describe('embeddings module', () => {
       it('ranks live source ahead of an archival hit with slightly higher raw similarity (lower distance)', () => {
         // 'design' appears in neither text, so boost is 0 on both -- pure path-priority test.
         // archive/old-design.md's raw distance (0.40) is better (lower) than src/thing.ts's
-        // (0.45), but the default archive_weight (0.7) demotes it: 0.40 / 0.7 = 0.5714 > 0.45.
+        // (0.45), but the default archive_weight (0.7) demotes it: 0.40 + (1 - 0.7) = 0.70 > 0.45.
         const hits = [
           mk('archive/old-design.md', 0.40, 'legacy notes about the thing'),
           mk('src/thing.ts', 0.45, 'export function thing() {}'),
@@ -724,13 +724,29 @@ describe('embeddings module', () => {
 
       it('still surfaces a much better archival match (nudge, not a hard filter)', () => {
         // archive/old-design.md's raw distance (0.10) is so much better than src/thing.ts's
-        // (0.45) that even divided by archive_weight (0.10 / 0.7 = 0.1429) it still beats 0.45.
+        // (0.45) that even penalized by archive_weight (0.10 + 0.30 = 0.40) it still beats 0.45.
         const hits = [
           mk('archive/old-design.md', 0.10, 'legacy notes about the thing'),
           mk('src/thing.ts', 0.45, 'export function thing() {}'),
         ]
         const out = embeddings.rerankHits(hits, 'design', 8)
         expect(out.map((h) => h.filePath)).toEqual(['archive/old-design.md', 'src/thing.ts'])
+      })
+
+      // Regression: the penalty was first applied as a DIVISOR on `distance - boost`. That term goes
+      // negative whenever a hit's raw distance falls below _MAX_VERBATIM_BOOST (0.25), which any
+      // near-verbatim match does, and dividing a negative number by a weight < 1 makes it MORE
+      // negative -- so the archival penalty silently became an archival BONUS for exactly the
+      // strongest matches, the ones most likely to be followed. Both hits below share the query
+      // tokens, so both earn the same full boost and the ONLY difference is the path penalty.
+      it('still demotes an archival hit when the verbatim boost drives the score negative', () => {
+        const text = 'compact session manifest token budget'
+        const hits = [
+          mk('archive/old-design.md', 0.20, text),
+          mk('src/thing.ts', 0.22, text),
+        ]
+        const out = embeddings.rerankHits(hits, text, 8)
+        expect(out.map((h) => h.filePath)).toEqual(['src/thing.ts', 'archive/old-design.md'])
       })
 
       it('disables the archive penalty when semantic.archive_weight is set to 1', () => {
