@@ -99,6 +99,15 @@ export function foldCase(s: string): string {
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
   const fullArgs = [
+    // Never take an optional lock. Every git call here is on someone else's
+    // working repo, and a `status` that refreshes the index writes
+    // `.git/index.lock`; if this process is killed mid-call -- which the hint
+    // paths deliberately invite, since they spawn under a short timeout -- the
+    // orphaned lock blocks every subsequent commit in that repo until a human
+    // deletes it. Observed doing exactly that on 2026-08-05. `--no-optional-
+    // locks` suppresses only locks git considers optional, so write commands
+    // that genuinely need one are unaffected.
+    '--no-optional-locks',
     '-c', 'core.fsmonitor=',
     '-c', 'core.quotepath=false',
     ...subArgs,
