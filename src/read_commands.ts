@@ -340,6 +340,76 @@ function formatBareNameSpecError(command: string, name: string, projectRoot?: st
   return lines.join('\n')
 }
 
+// Cross-file "did you mean" lead for the file::symbol not-found path: `formatBareNameSpecError`
+// already does a name-keyed, project-scoped lookup for the no-`::`-separator case, but the
+// same wrong-file mistake (right symbol name, wrong file in the spec) only got a file-scoped
+// same-file fallback -- which can never find a symbol that isn't in that file at all. This
+// reuses `formatBareNameSpecError`'s exact query shape/wording so the two "here's the runnable
+// spec" messages in this file don't drift into a third dialect. Returns '' if the name isn't
+// indexed anywhere.
+function formatCrossFileLead(command: string, name: string, excludeFilePath: string, projectRoot?: string): string {
+  // Same cwd fallback the sibling same-file lookup a few lines below each call site already
+  // uses (`resolveIndexPath(file, opts.projectRoot ?? process.cwd())`) -- deliberately not
+  // resolveProjectRoot's own git-toplevel lookup, which would add an unconditional `git
+  // rev-parse` call to a path that previously never shelled out at all.
+  const rootDir = projectRoot ?? process.cwd()
+  const matches = querySymbols({ name, limit: 50, rootDir })
+  const excludeResolved = resolveIndexPath(excludeFilePath, rootDir)
+  const seen = new Set<string>()
+  const specs: string[] = []
+  for (const m of matches) {
+    if (foldPath(m.filePath) === foldPath(excludeResolved)) continue
+    const spec = `${toDisplayPath(rootDir, m.filePath)}::${m.name}`
+    if (seen.has(spec)) continue
+    seen.add(spec)
+    specs.push(spec)
+  }
+  if (specs.length === 0) return ''
+  const firstSpec = specs[0]
+  const lines = [`'${name}' is defined in ${firstSpec !== undefined ? firstSpec.split('::')[0] : ''}`]
+  for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
+    lines.push(`  - token-goat ${command} "${spec}"`)
+  }
+  if (specs.length > DIDYOUMEAN_LIMIT) {
+    lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
+  }
+  return lines.join('\n')
+}
+
+// Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
+//
+// Containment rule (documented per the semantic-fields task): a symbol is a candidate only if
+// `symbol.lineStart <= chunk.startLine <= symbol.lineEnd` -- the chunk's START line must fall
+// strictly inside the symbol's own indexed range. This deliberately does NOT use "nearest
+// symbol by start line": a top-of-file chunk (imports/module header, before any symbol starts)
+// would otherwise get wrongly labelled with whatever symbol happens to sit below it, even
+// though it isn't inside that symbol at all. Chunk boundaries don't always align with symbol
+// boundaries (embeddings.ts's chunkFile folds short boundary ranges into neighbors and can
+// merge across gaps), so a chunk may overlap zero, one, or several symbols -- using the START
+// line is the same "does this line belong to a definition" question `read`/`skeleton` already
+// answer elsewhere in this file, and needs no separate end-line/overlap policy.
+//
+// Among all containing candidates, innermost wins: the smallest range (fewest lines) is
+// preferred, e.g. a method chunk resolves to the method itself, not its enclosing class.
+function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { name: string; kind: string } | null {
+  // No rootDir scope here: filePath alone already narrows to the exact file the hit came from
+  // (an absolute path from the embeddings index), so an additional project-prefix filter is
+  // redundant and, worse, can spuriously exclude the very row being looked up whenever the
+  // stored/queried root strings don't normalize identically (e.g. a symlinked or 8.3-short
+  // temp path) -- the same file_path equality check every other exact-file lookup in this
+  // file already relies on without a rootDir filter (see the `resolved` lookups above).
+  const symbols = querySymbols({ filePath, limit: 100_000 }, globalDbPath())
+  let best: SymbolEntry | null = null
+  for (const s of symbols) {
+    if (s.lineStart <= chunkStartLine && chunkStartLine <= s.lineEnd) {
+      if (best === null || s.lineEnd - s.lineStart < best.lineEnd - best.lineStart) {
+        best = s
+      }
+    }
+  }
+  return best === null ? null : { name: best.name, kind: best.kind }
+}
+
 function trimBlankLines(lines: string[]): string[] {
   let start = 0
   let end = lines.length
@@ -917,6 +987,8 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
       return runLineRange({ file, start: lineSpec.start, end: lineSpec.end }, opts)
     }
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
+    if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
@@ -3076,6 +3148,8 @@ export function resolveSymbolSpecOrEmitError(
   if (resolution.kind === 'none') {
     // Same "not found" + did-you-mean shape as runRead's none branch.
     const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
+    if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
     const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) messages.push(didYouMean(closes))
@@ -4406,11 +4480,12 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   )
   const hits = mergeNearbyHits(rawHits).slice(0, n)
   if (hits.length > 0) {
+    const enclosing = hits.map((h) => resolveEnclosingSymbol(h.filePath, h.startLine))
     if (opts.json === true) {
-      const items = hits.map((h) => ({
+      const items = hits.map((h, i) => ({
         filePath: h.filePath,
-        name: null,
-        kind: null,
+        name: enclosing[i]?.name ?? null,
+        kind: enclosing[i]?.kind ?? null,
         startLine: h.startLine,
         endLine: h.endLine,
         distance: h.distance,
@@ -4426,9 +4501,11 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
-    const blocks = hits.map(
-      (h) => `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
-    )
+    const blocks = hits.map((h, i) => {
+      const enc = enclosing[i] ?? null
+      const suffix = enc !== null ? ` — inside ${enc.name} (${enc.kind})` : ''
+      return `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})${suffix}\n${previewLines(h.text, 3)}`
+    })
     const text = guardText(blocks.join('\n\n'), 'semantic')
     recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
     return { text, code: 0 }

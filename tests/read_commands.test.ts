@@ -523,6 +523,59 @@ describe('read_commands', () => {
       expect(text).not.toContain('Invalid spec')
     })
 
+    // Cross-file "did you mean": `walkProject` is guessed against the wrong file (`src/util.ts`)
+    // but is actually defined in `src/baseline.ts`. The new lead line must name that file and
+    // spec BEFORE the existing (unchanged) same-file "Did you mean" list.
+    it('leads with the cross-file spec when the symbol name exists in a different, indexed file', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'walkProject' && opts?.filePath === undefined) {
+          return [{ name: 'walkProject', kind: 'function', filePath: 'src/baseline.ts', lineStart: 10, lineEnd: 20, body: '', docstring: '', parent: '' }]
+        }
+        if (opts?.name === 'walkProject' && opts?.filePath !== undefined) {
+          return []
+        }
+        if (opts?.filePath !== undefined) {
+          return [
+            { name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
+            { name: 'isWindows', kind: 'function', filePath: 'src/util.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' },
+          ]
+        }
+        return []
+      })
+      const { text, code } = runRead({ spec: 'src/util.ts::walkProject' })
+      expect(code).toBe(1)
+      expect(text).toContain("Symbol 'walkProject' not found in 'src/util.ts'")
+      expect(text).toContain("'walkProject' is defined in src/baseline.ts")
+      expect(text).toContain('token-goat read "src/baseline.ts::walkProject"')
+      // Existing same-file did-you-mean list stays present and unchanged underneath.
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('sleepSync')
+      expect(text).toContain('isWindows')
+      const leadIdx = text.indexOf("is defined in")
+      const sameFileIdx = text.indexOf('Did you mean:')
+      expect(leadIdx).toBeGreaterThan(-1)
+      expect(sameFileIdx).toBeGreaterThan(-1)
+      expect(leadIdx).toBeLessThan(sameFileIdx)
+    })
+
+    it('a symbol name that exists nowhere still gets the plain not-found message plus the unchanged same-file list only', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'totallyMissingEverywhere') return []
+        if (opts?.filePath !== undefined) {
+          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { text, code } = runRead({ spec: 'src/util.ts::totallyMissingEverywhere' })
+      expect(code).toBe(1)
+      expect(text).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
+      expect(text).not.toContain('is defined in')
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('sleepSync')
+    })
+
     // Regression: a bare symbol name with no `::` used to say "Could not read: <name>" once
     // readFileText failed, which frames a spec-format mistake as a filesystem problem and
     // sends an agent hunting for a file that was never the argument's intent. When the bare
@@ -4642,6 +4695,51 @@ describe('read_commands', () => {
       })
       expect(stderr).toContain("Symbol 'missingSym' not found in 'a.ts'")
       expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    // Second call site for the cross-file lead: resolveSymbolSpecOrEmitError, shared by
+    // runDiff/runLog. Same shape as runRead's own cross-file test above.
+    it('leads with the cross-file spec (runDiff, second call site) when the symbol exists in a different indexed file', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'walkProject' && opts?.filePath === undefined) {
+          return [{ name: 'walkProject', kind: 'function', filePath: 'src/baseline.ts', lineStart: 10, lineEnd: 20, body: '', docstring: '', parent: '' }]
+        }
+        if (opts?.name === 'walkProject' && opts?.filePath !== undefined) {
+          return []
+        }
+        if (opts?.filePath !== undefined) {
+          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'src/util.ts::walkProject' })).toBe(1)
+      })
+      expect(stderr).toContain("Symbol 'walkProject' not found in 'src/util.ts'")
+      expect(stderr).toContain("'walkProject' is defined in src/baseline.ts")
+      expect(stderr).toContain('token-goat diff "src/baseline.ts::walkProject"')
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('sleepSync')
+      expect(mockRunGit).not.toHaveBeenCalled()
+    })
+
+    it('a symbol name that exists nowhere (runDiff) still gets the plain not-found message plus the unchanged same-file list only', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'totallyMissingEverywhere') return []
+        if (opts?.filePath !== undefined) {
+          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'src/util.ts::totallyMissingEverywhere' })).toBe(1)
+      })
+      expect(stderr).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
+      expect(stderr).not.toContain('is defined in')
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('sleepSync')
     })
 
     it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
