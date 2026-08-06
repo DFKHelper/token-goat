@@ -102,10 +102,16 @@ export function checkDbExists(dataDir: string): DoctorResult {
         `re-embeds every indexed file across every project and can take a long time on a large multi-project index`,
     }
   }
+  // Name the resolved path even when healthy. The warn branch above already does, and the
+  // asymmetry actively misleads: TOKEN_GOAT_HOME and the data dir resolve independently, so
+  // exporting both to point at a scratch directory does NOT guarantee a command reads the
+  // isolated index. Without the path here, a dogfood run against the real global index is
+  // indistinguishable from an isolated one, and "which index am I actually on" is the first
+  // question worth answering when a command returns surprising output.
   return {
     name: 'Database',
     status: 'ok',
-    message: `global.db exists (${toKB(sizeBytes)} KB)`,
+    message: `global.db exists (${toKB(sizeBytes)} KB) at ${dbPath}`,
   }
 }
 
@@ -213,6 +219,19 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
         name: 'Symbols',
         status: 'warn',
         message: `${fileCount} file(s) indexed but 0 symbols extracted — the parser may not be running (check the worker log); try 'token-goat index --force'`,
+      }
+    }
+    // An existing-but-empty index is not healthy, it is unindexed: every surgical-read command
+    // (symbol, read, skeleton, semantic) returns nothing, which reads as a real "not found"
+    // answer rather than as missing data. This is the failure mode a scratch/isolated
+    // TOKEN_GOAT_HOME hits, so say so instead of reporting 0 of everything as ok.
+    if (fileCount === 0 && symbolCount === 0) {
+      return {
+        name: 'Symbols',
+        status: 'warn',
+        message:
+          `no files indexed for this project — every read command will return empty, which looks ` +
+          `like a genuine "not found" rather than a missing index; run 'token-goat index .' here`,
       }
     }
     return {
