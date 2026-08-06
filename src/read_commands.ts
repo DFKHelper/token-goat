@@ -661,7 +661,7 @@ function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string 
  * A mixed list (some candidates share a same-file parent, others don't, across multiple files)
  * gets file-prefixed labels for every candidate, each with its own working, distinct retry.
  */
-function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string): string {
+function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
   const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
@@ -683,7 +683,7 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
     // string, unchanged from the pre-fix behavior.
     const retryFile = multiFile ? toDisplayPath(displayRoot, c.filePath) : file
     const label = multiFile ? `${toDisplayPath(displayRoot, c.filePath)}::${qualifier}` : qualifier
-    lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat read "${retryFile}::${qualifier}"`)
+    lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat ${commandName} "${retryFile}::${qualifier}"`)
   }
   return lines.join('\n')
 }
@@ -2990,7 +2990,7 @@ function splitDiffHunks(diffText: string): {
  * standard ambiguous/did-you-mean error (same shape as runRead's own branches) on failure.
  * Returns null on any failure so callers can just `if (r === null) return 1`.
  */
-function resolveSymbolSpecOrEmitError(
+export function resolveSymbolSpecOrEmitError(
   commandName: string,
   spec: string,
   projectRoot: string | undefined,
@@ -3012,6 +3012,7 @@ function resolveSymbolSpecOrEmitError(
         resolution.file,
         resolution.candidates,
         projectRoot,
+        commandName,
       ),
     )
     return null

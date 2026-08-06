@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor, findSpecSeparator } from './read_commands.js'
+import { extractImports, importsExtensionFor, findSpecSeparator, resolveSymbolSpecOrEmitError } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage } from './util.js'
@@ -1075,17 +1075,12 @@ export function runSimilar(opts: SimilarOptions): number {
     emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
     return 1
   }
-  const fileArg = opts.spec.slice(0, sepIdx)
-  const symbolArg = opts.spec.slice(sepIdx + 2)
   const top = opts.top ?? 10
 
-  const filePath = resolveIndexPath(fileArg)
-  const anchors = querySymbols({ name: symbolArg, filePath })
-  if (anchors.length === 0) {
-    emitErr(`Symbol '${symbolArg}' not found in '${fileArg}'`)
-    return 1
-  }
-  const anchor = anchors[0]!
+  // Same ambiguity check runRead/runBrief already do -- refuse (with qualified retry
+  // suggestions) instead of silently comparing against the first same-named definition.
+  const anchor = resolveSymbolSpecOrEmitError('similar', opts.spec, undefined)
+  if (anchor === null) return 1
 
   const words = [anchor.name, ...(anchor.docstring ?? '').split(/\s+/).filter((w) => w.length > 4)]
   const query = words.slice(0, 8).join(' ')
@@ -1389,17 +1384,14 @@ export function runBlame(opts: BlameOptions): number {
     emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
     return 1
   }
-  const fileArg = opts.spec.slice(0, sepIdx)
   const symbolArg = opts.spec.slice(sepIdx + 2)
   const cwd = opts.cwd ?? process.cwd()
 
-  const filePath = resolveIndexPath(fileArg)
-  const syms = querySymbols({ name: symbolArg, filePath })
-  if (syms.length === 0) {
-    emitErr(`Symbol '${symbolArg}' not found in '${fileArg}'`)
-    return 1
-  }
-  const sym = syms[0]!
+  // Same ambiguity check runRead/runBrief already do -- refuse (with qualified retry
+  // suggestions) instead of silently blaming the first same-named definition in the file.
+  const sym = resolveSymbolSpecOrEmitError('blame', opts.spec, undefined)
+  if (sym === null) return 1
+  const filePath = sym.filePath
   const start = sym.lineStart
   const end = sym.lineEnd
 
