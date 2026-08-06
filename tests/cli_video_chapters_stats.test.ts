@@ -42,10 +42,18 @@ describe('`token-goat video-chapters` stat recording', () => {
   })
 
   it('records a video_chapters stat row through the real global stats DB', async () => {
+    // Dispatch on the ARGS, not on call order. `isFfprobeAvailable()` memoizes its result in a
+    // module-level variable, so whether the `-version` probe actually runs depends on whether
+    // anything already imported video_chapters.js in this fork -- and any other spawnSync on the
+    // `run()` path would shift a positional mock too. With mockReturnValueOnce chaining, a skipped
+    // or extra call handed the real chapter probe `{status: 0}` with no stdout, JSON.parse threw,
+    // recordStat never ran, and this test failed intermittently under full-suite load only.
     spawnSyncMock.mockReset()
-    spawnSyncMock
-      .mockReturnValueOnce({ status: 0 }) // ffprobe -version availability probe
-      .mockReturnValueOnce({ status: 0, stdout: ffprobeJson() }) // the real chapter/stream probe
+    spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown) => {
+      const argv = Array.isArray(args) ? (args as string[]) : []
+      if (argv.includes('-version')) return { status: 0 }
+      return { status: 0, stdout: ffprobeJson() }
+    })
 
     const { run } = await import('../src/cli.js')
     const { summarize } = await import('../src/stats.js')

@@ -835,6 +835,22 @@ export function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length)
 }
 
+/** Swallow EPIPE on the process's stdio streams so piping into an early-closing consumer (`| head -2`, `| grep -q`, a pager the user quits) ends quietly instead of crashing. Without this, Node's default `error` handling on the stream throws an unhandled 'error' event and the CLI dies with a stack trace and a nonzero exit -- `token-goat grep ... | head -2` was a hard crash, and piping to `head` is one of the most common agent invocation shapes. Only EPIPE is absorbed: any other stream error still surfaces. Returns the streams it attached to so a test can assert the wiring. */
+export function installEpipeGuard(streams?: Array<NodeJS.WriteStream | undefined>): Array<NodeJS.WriteStream> {
+  const targets = (streams ?? [process.stdout, process.stderr]).filter((s): s is NodeJS.WriteStream => s !== undefined)
+  for (const stream of targets) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EPIPE') {
+        // The consumer is gone; there is nothing left to write and nothing to report to.
+        process.exitCode = 0
+        return
+      }
+      throw err
+    })
+  }
+  return targets
+}
+
 /** Normalize path and convert backslashes to forward slashes. Extracted from 3 call sites in compact.ts. */
 export function normalizePathForwardSlash(p: string, toLowerCase?: boolean): string {
   let result = normalizePath(p).replace(/\\/g, '/')
