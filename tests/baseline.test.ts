@@ -207,8 +207,36 @@ describe('formatProjectMap', () => {
       const lines = text.split('\n')
       const headingIdx = lines.indexOf('## Top symbols')
       expect(headingIdx).toBeGreaterThanOrEqual(0)
-      expect(lines[headingIdx + 1]).toBe('- hotFn (function)')
+      // Compact used to print '- hotFn (function)' with no location. Since
+      // repomap.compact_file_threshold defaults to 50, compact is the form every real project
+      // renders, so a top symbol was never addressable without a follow-up `symbol` call.
+      expect(lines[headingIdx + 1]).toBe('- hotFn (function) — a.ts:1-1')
       expect(text).not.toContain('## Top symbols: none')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Full mode named only path.basename(filePath), which is ambiguous across directories -- every
+  // project has several index.ts -- and is not a spec you can feed back to `read`. A root-relative
+  // display path is, and it stays identical no matter which directory the command ran from.
+  it('locates top symbols by root-relative path, not basename, in both modes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-toploc-'))
+    const filePath = `${normalizePath(root)}/src/deep/nested.ts`
+    const db = getDb(globalDbPath())
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(filePath, 'deepFn', 'function', 7, 9, 'export function deepFn() { return 1 }', '')
+
+    try {
+      const map = buildProjectMap(root)
+      for (const compact of [true, false]) {
+        const lines = formatProjectMap(map, compact).split('\n')
+        const headingIdx = lines.indexOf('## Top symbols')
+        expect(headingIdx).toBeGreaterThanOrEqual(0)
+        expect(lines[headingIdx + 1]).toBe('- deepFn (function) — src/deep/nested.ts:7-9')
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
