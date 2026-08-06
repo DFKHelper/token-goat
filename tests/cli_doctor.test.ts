@@ -57,6 +57,12 @@ describe('cli_doctor', () => {
       const result = checkDbExists(tempDir)
       expect(result.status).toBe('ok')
       expect(result.message).toContain('global.db exists')
+      // The healthy message must name the resolved path, exactly as the oversized-db warn branch
+      // already does. TOKEN_GOAT_HOME and the data dir resolve independently, so without the path
+      // a run against the real global index is indistinguishable from an isolated scratch one --
+      // which is how a dogfood claim of "verified against the isolated index" once stood despite
+      // that index holding zero rows.
+      expect(result.message).toContain(dbPath)
     })
 
     it('returns warn when database missing', () => {
@@ -131,11 +137,18 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('1 symbol')
     })
 
-    it('returns ok when the database is empty (no files indexed yet, nothing to expect)', () => {
+    // Previously reported ok ("no files indexed yet, nothing to expect"). That is the wrong
+    // reading: an existing-but-empty index makes every read command return empty, which an agent
+    // reads as a genuine "not found" rather than as missing data. A whole verification pass was
+    // once accepted on an empty scratch index for exactly this reason -- semantic printed
+    // "no matches" and that looked like a result. Warn and name the remedy instead.
+    it('warns when the database exists but nothing is indexed', () => {
       const dbPath = path.join(tempDir, 'global.db')
       getDb(dbPath) // creates the schema but inserts nothing
       const result = checkSymbolCount(dbPath)
-      expect(result.status).toBe('ok')
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('no files indexed')
+      expect(result.message).toContain('token-goat index .')
     })
 
     it('warns when files are indexed but the symbols table is empty (stub-callback regression)', () => {
