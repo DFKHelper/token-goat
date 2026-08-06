@@ -101,6 +101,13 @@ beforeAll(() => {
     "import { alphaSym } from './src/mod.js'\n" +
       'export function useAlpha(): number {\n  return alphaSym()\n}\n',
   )
+  // Second importer with a DISJOINT module specifier, so `imports "a,b"` can be asserted on a
+  // specifier unique to each file rather than on mere non-emptiness.
+  fs.writeFileSync(
+    path.join(repo, 'ctximporter.ts'),
+    "import { refHelper } from './caller.js'\n" +
+      'export function useRefHelper(): number {\n  return refHelper()\n}\n',
+  )
   fs.writeFileSync(
     path.join(repo, 'README.md'),
     '# Fixture\n\n## Install\n\nRun npm install to set up the project.\n',
@@ -292,12 +299,30 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['skeleton', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs/)
+    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
+    const multi = run(['skeleton', 'src/mod.ts,caller.ts'])
+    expect(multi.status, multi.stderr).toBe(0)
+    expect(multi.stdout).toContain('# Skeleton: src/mod.ts')
+    expect(multi.stdout).toContain('# Skeleton: caller.ts')
+    expect(multi.stdout).toContain('alphaSym')
+    expect(multi.stdout).toContain('refDriver')
   },
   outline: () => {
     expectRead(['outline', 'src/mod.ts'], 'alphaSym')
     const r = run(['outline', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs/)
+    // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
+    const multi = run(['outline', 'src/mod.ts,caller.ts'])
+    expect(multi.status, multi.stderr).toBe(0)
+    expect(multi.stdout).toContain('# Outline: src/mod.ts')
+    expect(multi.stdout).toContain('# Outline: caller.ts')
+    expect(multi.stdout).toContain('alphaSym')
+    expect(multi.stdout).toContain('refDriver')
+    // Extra space-separated file arguments are named, not silently dropped.
+    const extra = run(['outline', 'src/mod.ts', 'caller.ts'])
+    expect(extra.status, extra.stderr).toBe(0)
+    expect(extra.stdout).toContain('token-goat outline "src/mod.ts,caller.ts"')
   },
   brief: () => {
     const r = run(['brief', 'src/mod.ts::alphaSym'])
@@ -321,6 +346,16 @@ const cases: Record<string, () => void | Promise<void>> = {
     const top = run(['refs', 'caller.ts::refHelper', '--top', '1'])
     expect(top.status, top.stderr).toBe(0)
     expect(top.stdout).toMatch(/references across \d+ files? \(showing top 1\)/)
+
+    // -C renders real call-site source; omitting it leaves output byte-identical.
+    const plain = run(['refs', 'caller.ts::refHelper'])
+    expect(plain.status, plain.stderr).toBe(0)
+    expect(plain.stdout).not.toContain('return refHelper() + refHelper()')
+    const ctx = run(['refs', 'caller.ts::refHelper', '-C', '1'])
+    expect(ctx.status, ctx.stderr).toBe(0)
+    expect(ctx.stdout).toContain('return refHelper() + refHelper()')
+    const zero = run(['refs', 'caller.ts::refHelper', '-C', '0'])
+    expect(zero.stdout).toBe(plain.stdout)
   },
   exports: () => {
     expectRead(['exports', 'src/mod.ts'], 'alphaSym')
@@ -351,6 +386,13 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['imports', 'app.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod/)
+    // Comma-separated multi-file spec: one headed block per file.
+    const multi = run(['imports', 'app.ts,ctximporter.ts'])
+    expect(multi.status, multi.stderr).toBe(0)
+    expect(multi.stdout).toContain('# Imports: app.ts')
+    expect(multi.stdout).toContain('# Imports: ctximporter.ts')
+    expect(multi.stdout).toContain('./src/mod.js')
+    expect(multi.stdout).toContain('./caller.js')
   },
   find: () => expectRead(['find', 'alphaSym'], 'mod'),
   grep: () => {
@@ -1561,6 +1603,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     const rSpec = run(['callers', 'caller.ts::refHelper'])
     expect(rSpec.status, rSpec.stderr).toBe(0)
     expect(rSpec.stdout).toMatch(/refDriver|caller\.ts/)
+    // -C renders real call-site source; omitting it does not.
+    expect(r.stdout).not.toContain('return refHelper() + refHelper()')
+    const ctx = run(['callers', 'refHelper', '-C', '1'])
+    expect(ctx.status, ctx.stderr).toBe(0)
+    expect(ctx.stdout).toContain('return refHelper() + refHelper()')
   },
   'call-chain': () => {
     // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
@@ -1623,6 +1670,17 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['context-for', 'parse symbols'])
     expect(r.status).not.toBeNull()
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    // Every emitted suggestion carries the `@LINE` anchor and actually runs.
+    const hit = run(['context-for', 'alphaSym'])
+    expect(hit.status, hit.stderr).toBe(0)
+    const suggestions = hit.stdout.trim().split('\n').filter((l) => l.startsWith('token-goat read '))
+    expect(suggestions.length).toBeGreaterThan(0)
+    for (const line of suggestions) {
+      const spec = /^token-goat read "(.+)"$/.exec(line)?.[1]
+      expect(spec, `malformed suggestion: ${line}`).toMatch(/@\d+$/)
+      const exec = run(['read', spec!])
+      expect(exec.status, `suggestion failed: ${line}\n${exec.stderr}`).toBe(0)
+    }
   },
   'test-for': () => {
     const r = run(['test-for', 'caller.ts'])

@@ -77,6 +77,7 @@ import {
   runRefs,
   runSkeleton,
   runOutline,
+  extraFileArgsNote,
   runChanged,
   runDiff,
   runLog,
@@ -1458,6 +1459,31 @@ function runExitText(fn: () => { text: string; code: number }): void {
   }
 }
 
+/**
+ * `outline`/`skeleton`/`exports`/`imports` each take a single file, but nothing stopped a caller
+ * from passing several space-separated ones -- commander bound the first and dropped the rest in
+ * silence, so an agent could believe it had seen files it never got. These two helpers surface the
+ * dropped arguments and name the comma-separated form that actually reads them all. The extras are
+ * still not read (that would change what the invocation returns); the note just makes the drop
+ * visible. `noteExtraFileArgs` prepends to a `{text, code}` result, `emitExtraFileArgsNote` prints
+ * ahead of an emit-directly command.
+ */
+function noteExtraFileArgs(
+  command: string,
+  first: string,
+  extras: string[] | undefined,
+  fn: () => { text: string; code: number },
+): { text: string; code: number } {
+  const result = fn()
+  if (extras === undefined || extras.length === 0) return result
+  return { text: `${extraFileArgsNote(command, first, extras)}\n${result.text}`, code: result.code }
+}
+
+function emitExtraFileArgsNote(command: string, first: string, extras: string[] | undefined): void {
+  if (extras === undefined || extras.length === 0) return
+  out(extraFileArgsNote(command, first, extras))
+}
+
 // Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
 function cmdCompress(opts: {
   cmd: string
@@ -2727,12 +2753,14 @@ export function buildProgram(): Command {
     )
     .option('-j, --json', 'output as JSON')
     .option('--limit <n>', 'max callers to show (default: 20)')
-    .action((spec: string, opts: { json?: boolean; limit?: string }) =>
+    .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
+    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string }) =>
       runExit(() =>
         runBrief({
           spec,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
         }),
       ),
     )
@@ -2758,42 +2786,46 @@ export function buildProgram(): Command {
     .action(guard(cmdSemantic))
 
   program
-    .command('skeleton <file>')
-    .description('list all symbols in a file without bodies')
+    .command('skeleton <file> [more...]')
+    .description('list all symbols in a file without bodies (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
-      (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+      (file: string, more: string[], opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
         runExitText(() =>
-          runSkeleton({
-            file,
-            ...(opts.json === true ? { json: true } : {}),
-            ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
-            ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-            ...(opts.stats === true ? { stats: true } : {}),
-          }),
+          noteExtraFileArgs('skeleton', file, more, () =>
+            runSkeleton({
+              file,
+              ...(opts.json === true ? { json: true } : {}),
+              ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
+              ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(opts.stats === true ? { stats: true } : {}),
+            }),
+          ),
         ),
     )
 
   program
-    .command('outline <file>')
-    .description('list symbols with line ranges and docstrings')
+    .command('outline <file> [more...]')
+    .description('list symbols with line ranges and docstrings (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
-      (file: string, opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+      (file: string, more: string[], opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
         runExitText(() =>
-          runOutline({
-            file,
-            ...(opts.json === true ? { json: true } : {}),
-            ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
-            ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-            ...(opts.stats === true ? { stats: true } : {}),
-          }),
+          noteExtraFileArgs('outline', file, more, () =>
+            runOutline({
+              file,
+              ...(opts.json === true ? { json: true } : {}),
+              ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
+              ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(opts.stats === true ? { stats: true } : {}),
+            }),
+          ),
         ),
     )
 
@@ -2806,8 +2838,9 @@ export function buildProgram(): Command {
       '--top <n>',
       'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
     )
+    .option('-C, --context <n>', 'lines of call-site source to show before and after each reference (default 0)')
     .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; json?: boolean }) =>
+    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean }) =>
       runExit(() =>
         runRefs({
           spec,
@@ -2815,6 +2848,7 @@ export function buildProgram(): Command {
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
         }),
       ),
     )
@@ -3058,19 +3092,25 @@ export function buildProgram(): Command {
     .action(guard(cmdMcpOutput))
 
   program
-    .command('exports <file>')
-    .description('list exported (public) symbols in a file')
+    .command('exports <file> [more...]')
+    .description('list exported (public) symbols in a file (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
-    .action((file: string, opts: { json?: boolean }) =>
-      runExit(() => runExports({ file, ...(opts.json === true ? { json: true } : {}) })),
+    .action((file: string, more: string[], opts: { json?: boolean }) =>
+      runExit(() => {
+        emitExtraFileArgsNote('exports', file, more)
+        return runExports({ file, ...(opts.json === true ? { json: true } : {}) })
+      }),
     )
 
   program
-    .command('imports <file>')
-    .description('list the modules a file imports')
+    .command('imports <file> [more...]')
+    .description('list the modules a file imports (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
-    .action((file: string, opts: { json?: boolean }) =>
-      runExit(() => runImports({ file, ...(opts.json === true ? { json: true } : {}) })),
+    .action((file: string, more: string[], opts: { json?: boolean }) =>
+      runExit(() => {
+        emitExtraFileArgsNote('imports', file, more)
+        return runImports({ file, ...(opts.json === true ? { json: true } : {}) })
+      }),
     )
 
   program
@@ -3157,12 +3197,14 @@ export function buildProgram(): Command {
     .description('find all callers of a symbol, resolved to their enclosing function (accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('-j, --json', 'output as JSON')
     .option('-l, --limit <n>', 'max references to scan')
-    .action((symbol: string, opts: { json?: boolean; limit?: string }) =>
+    .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
+    .action((symbol: string, opts: { json?: boolean; limit?: string; context?: string }) =>
       runExit(() =>
         runCallers({
           symbol,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
         }),
       ),
     )

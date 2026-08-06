@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, resolveSymbolSpecOrEmitError } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
@@ -178,6 +178,8 @@ export interface CallersOptions {
   symbol: string
   json?: boolean
   limit?: number
+  /** `-C, --context <n>`: lines of real call-site source to show either side of each caller, in `grep -C`'s framing. Defaults to 0, in which case output is byte-for-byte unchanged. */
+  context?: number
 }
 
 export interface CallerEntry {
@@ -277,13 +279,23 @@ export function runCallers(opts: CallersOptions): number {
     return 1
   }
 
+  const contextLines = opts.context ?? 0
+
   if (opts.json === true) {
-    emit(JSON.stringify(entries, null, 2))
+    // `contextLines` is added alongside the existing fields, never in place of any of them, so a
+    // consumer that ignores it sees today's payload verbatim.
+    const payload = contextLines > 0
+      ? entries.map((e) => ({ ...e, contextLines: buildContextWindow(e.file, e.line, contextLines) ?? [] }))
+      : entries
+    emit(JSON.stringify(payload, null, 2))
     return 0
   }
 
   for (const e of entries) {
-    emit(`${e.caller}\t${toDisplayPath(rootDir, e.file)}:${e.line}`)
+    const displayPath = toDisplayPath(rootDir, e.file)
+    emit(`${e.caller}\t${displayPath}:${e.line}`)
+    const window = buildContextWindow(e.file, e.line, contextLines)
+    if (window !== null) for (const l of renderContextWindow(displayPath, e.line, window, '', '    ')) emit(l)
   }
   return 0
 }
@@ -1125,7 +1137,12 @@ export function runContextFor(opts: ContextForOptions): number {
     return 1
   }
 
-  interface ContextEntry { file: string; symbol: string; kind: string; readCmd: string }
+  // `line` (and the matching `@LINE` anchor on every emitted readCmd) is what makes these
+  // suggestions actually runnable: two same-named symbols in one file produce two byte-identical
+  // `read "file::name"` commands, and running either one fails with "Ambiguous symbol". The
+  // anchor grammar (`file::symbol@LINE`, see resolveSymbolSpec) disambiguates both the emitted
+  // text and the JSON entries.
+  interface ContextEntry { file: string; symbol: string; kind: string; line: number; readCmd: string }
   const entries: ContextEntry[] = []
   let tokensSoFar = 0
 
@@ -1139,14 +1156,14 @@ export function runContextFor(opts: ContextForOptions): number {
     // entries regardless.
     if (budget !== undefined && tokensSoFar + bodyTokens > budget) continue
     tokensSoFar += bodyTokens
-    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, readCmd: `token-goat read "${h.filePath}::${h.name}"` })
+    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` })
   }
 
   if (opts.json === true) {
     emit(JSON.stringify(entries, null, 2))
     return 0
   }
-  for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}"`)
+  for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}@${e.line}"`)
   return 0
 }
 
@@ -1447,8 +1464,11 @@ export function runAsk(opts: AskOptions): number {
   const BACKEND_ENV = 'TOKEN_GOAT_ASK_BACKEND'
   const backendLabel = process.env[BACKEND_ENV] ?? ''
 
-  interface AskEntry { file: string; symbol: string; kind: string; readCmd: string }
-  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, readCmd: `token-goat read "${h.filePath}::${h.name}"` }))
+  // Same reasoning as runContextFor's ContextEntry: without the `@LINE` anchor these suggestions
+  // are unrunnable for any symbol name that has more than one definition in its file, and two
+  // such entries are indistinguishable from each other in --json.
+  interface AskEntry { file: string; symbol: string; kind: string; line: number; readCmd: string }
+  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` }))
 
   const degrade = (): number => {
     if (opts.json === true) {
@@ -1456,7 +1476,7 @@ export function runAsk(opts: AskOptions): number {
       return 0
     }
     emit(`[degraded mode - set ${BACKEND_ENV}=claude|codex for LLM synthesis]`)
-    for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}"`)
+    for (const e of entries) emit(`token-goat read "${toDisplayPath(rootDir, e.file)}::${e.symbol}@${e.line}"`)
     return 0
   }
 
