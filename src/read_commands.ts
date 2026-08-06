@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -593,6 +593,30 @@ function parseCrossFileMultiSpec(spec: string): { file: string; symbol: string }
     if (currentFile !== undefined && seg.length > 0) pairs.push({ file: currentFile, symbol: seg })
   }
   return pairs.length > 1 ? pairs : null
+}
+
+/**
+ * Bare multi-FILE spec: `src/a.ts,src/b.ts`. The file-list counterpart of
+ * {@link parseCrossFileMultiSpec} (which handles the `file::symbol` pair form) -- this is the one
+ * splitter shared by `outline`/`skeleton`/`exports`/`imports`, none of which take a `::` symbol
+ * part at all.
+ *
+ * Declines (returns null, leaving the single-file path byte-for-byte unchanged) when: there is no
+ * comma; the spec as written is itself an existing file (a real path may legitimately contain a
+ * comma, and that reading must win); any segment carries a `::` (that is the symbol-spec grammar,
+ * not a file list); or fewer than two non-empty segments survive trimming.
+ */
+export function parseMultiFileSpec(spec: string): string[] | null {
+  if (!spec.includes(',')) return null
+  if (fileExists(spec)) return null
+  if (findSpecSeparator(spec) !== -1) return null
+  const parts = spec.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+  return parts.length > 1 ? parts : null
+}
+
+/** The note `outline`/`skeleton`/`exports`/`imports` print when extra positional file arguments were supplied. Space-separated extras were previously dropped in silence -- an agent would believe it had seen every file it named. Naming the comma form here is the whole point: it is the grammar that actually reads them all. */
+export function extraFileArgsNote(command: string, first: string, extras: readonly string[]): string {
+  return `Note: ${extras.length} extra file argument(s) ignored (${extras.join(', ')}). ${command} reads one file, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
 }
 
 // A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read.
@@ -1271,6 +1295,33 @@ export interface RefsOptions {
    * caller-grouped per-line view; the choice is between them, not a composition of both).
    */
   top?: number
+  /**
+   * `-C, --context <n>`: lines of real source text to show either side of each reference. The
+   * existing per-reference line already answers *where* a symbol is used and names the enclosing
+   * symbol, but never shows the call site itself; this adds the surrounding source in `grep -C`'s
+   * exact framing (see {@link renderContextWindow}). Defaults to 0, in which case every output
+   * byte -- text and JSON alike -- is unchanged.
+   */
+  context?: number
+}
+
+/**
+ * One reference rendered as `path:line: <enclosing symbol>` (today's line, always emitted
+ * verbatim), optionally followed by its `-C` source window. Shared by all three `refs` rendering
+ * paths (single, multi-symbol, cross-file) so `-C` cannot drift between them.
+ */
+function renderRefLines(ref: RefEntry, displayRoot: string | undefined, contextLines: number, indent = '  '): string[] {
+  const displayPath = toDisplayPath(displayRoot, ref.filePath)
+  const base = `${indent}${displayPath}:${ref.line}: ${ref.context}`
+  const window = buildContextWindow(ref.filePath, ref.line, contextLines)
+  if (window === null) return [base]
+  return [base, ...renderContextWindow(displayPath, ref.line, window, '', `${indent}  `)]
+}
+
+/** Attaches a `contextLines` array to each JSON reference item when `-C` was requested. The pre-existing `context` field (the enclosing symbol NAME) is left untouched -- these are different things and consumers already depend on the old one. */
+function withContextLines<T extends RefEntry>(items: T[], contextLines: number): (T & { contextLines?: SourceContextLine[] })[] {
+  if (!(contextLines > 0)) return items
+  return items.map((r) => ({ ...r, contextLines: buildContextWindow(r.filePath, r.line, contextLines) ?? [] }))
 }
 
 /**
@@ -1371,7 +1422,7 @@ export function runRefs(opts: RefsOptions): number {
         // LIMIT to report an honest total (same fix as runSymbol's countSymbols call).
         const capped = guardJsonRows(results)
         const trueTotal = countRefs(queryOpts)
-        jsonOut[sym] = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+        jsonOut[sym] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
@@ -1383,9 +1434,9 @@ export function runRefs(opts: RefsOptions): number {
     if (opts.top !== undefined) {
       lines.push(...renderTopFilesSummary(results, opts.top))
     } else if (opts.callers === true) {
-      lines.push(...renderCallerGroups(results))
+      lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
     } else {
-      for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
+      for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
     }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
@@ -1426,7 +1477,7 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
         // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
         const capped = guardJsonRows(results)
         const trueTotal = countRefs(queryOpts)
-        jsonOut[key] = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+        jsonOut[key] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
@@ -1438,9 +1489,9 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     if (opts.top !== undefined) {
       lines.push(...renderTopFilesSummary(results, opts.top))
     } else if (opts.callers === true) {
-      lines.push(...renderCallerGroups(results))
+      lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
     } else {
-      for (const ref of results) lines.push(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
+      for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
     }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
@@ -1484,7 +1535,7 @@ function runRefsSingle(opts: RefsOptions): number {
       // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
       const capped = guardJsonRows(results)
       const trueTotal = countRefs(queryOpts)
-      payload = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+      payload = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     const text = JSON.stringify(payload, null, 2)
     emit(text)
@@ -1497,8 +1548,8 @@ function runRefsSingle(opts: RefsOptions): number {
     opts.top !== undefined
       ? renderTopFilesSummary(results, opts.top, displayRoot)
       : opts.callers === true
-        ? renderCallerGroups(results, displayRoot)
-        : results.map((ref) => `${toDisplayPath(displayRoot, ref.filePath)}:${ref.line}: ${ref.context}`)
+        ? renderCallerGroups(results, displayRoot, opts.context ?? 0)
+        : results.flatMap((ref) => renderRefLines(ref, displayRoot, opts.context ?? 0, ''))
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -1550,7 +1601,7 @@ function topFilesJsonPayload(refs: RefEntry[], topN: number): RefsTopJsonEntry {
 
 type RefsJsonEntry = { items: RefEntry[]; truncated: boolean; totalCount: number } | RefsTopJsonEntry
 
-function renderCallerGroups(refs: RefEntry[], displayRoot?: string): string[] {
+function renderCallerGroups(refs: RefEntry[], displayRoot?: string, contextLines = 0): string[] {
   const byFile = new Map<string, RefEntry[]>()
   for (const ref of refs) {
     const bucket = byFile.get(ref.filePath)
@@ -1562,9 +1613,12 @@ function renderCallerGroups(refs: RefEntry[], displayRoot?: string): string[] {
   }
   const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
-    lines.push(`${toDisplayPath(displayRoot, file)}:`)
+    const displayPath = toDisplayPath(displayRoot, file)
+    lines.push(`${displayPath}:`)
     for (const ref of fileRefs) {
       lines.push(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
+      const window = buildContextWindow(file, ref.line, contextLines)
+      if (window !== null) lines.push(...renderContextWindow(displayPath, ref.line, window, '', '    '))
     }
   }
   return lines
@@ -1698,8 +1752,33 @@ function prepareSymbolListing(
   return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
 }
 
-/** Handle ``token-goat skeleton file``. */
+/**
+ * Runs a per-file `{text, code}` command once for each file of a comma-separated multi-file spec
+ * and joins the blocks with a blank line. Shared by `skeleton` and `outline` so both get the same
+ * ordering, the same block separator, and the same exit rule: 0 when at least one file produced
+ * output, 1 only when every file failed (a single unreadable file must not suppress the rest).
+ * Each block keeps its own `# Skeleton:`/`# Outline:` header, which is what identifies the file
+ * it belongs to.
+ */
+function runPerFileListing(
+  files: string[],
+  run: (file: string) => { text: string; code: number },
+): { text: string; code: number } {
+  const blocks: string[] = []
+  let anyOk = false
+  for (const file of files) {
+    const r = run(file)
+    if (r.code === 0) anyOk = true
+    blocks.push(r.text)
+  }
+  return { text: blocks.join('\n\n'), code: anyOk ? 0 : 1 }
+}
+
+/** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
+  const multiFiles = parseMultiFileSpec(opts.file)
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file }))
+
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
@@ -1756,8 +1835,11 @@ export interface OutlineOptions {
   projectRoot?: string
 }
 
-/** Handle ``token-goat outline file``. */
+/** Handle ``token-goat outline file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
+  const multiFiles = parseMultiFileSpec(opts.file)
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file }))
+
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
@@ -2629,6 +2711,8 @@ interface BriefOptions {
   spec: string
   limit?: number
   json?: boolean
+  /** `-C, --context <n>`: lines of real call-site source around each entry of the caller block, in `grep -C`'s framing. Defaults to 0 (output unchanged). */
+  context?: number
   /** Internal only -- set by {@link runBriefMulti} on each per-symbol recursive `runBriefCore` call so the single-symbol path skips its own `recordReadStat`, same convention as {@link ReadOptions.suppressStat} for `runReadMulti`. Not a CLI/MCP-facing option. */
   suppressStat?: boolean
 }
@@ -2692,7 +2776,9 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   if (opts.json === true) {
     const result: BriefResult = {
       symbol: match,
-      callers: shown,
+      callers: (opts.context ?? 0) > 0
+        ? shown.map((c) => ({ ...c, contextLines: buildContextWindow(c.file, c.line, opts.context ?? 0) ?? [] }))
+        : shown,
       totalCallers,
       truncated,
       section,
@@ -2713,7 +2799,12 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
 
   lines.push(`Callers (${totalCallers}):`)
   for (const c of shown) {
-    lines.push(`  ${c.caller}\t${toDisplayPath(rootDir, c.file)}:${c.line}`)
+    const callerDisplayPath = toDisplayPath(rootDir, c.file)
+    lines.push(`  ${c.caller}\t${callerDisplayPath}:${c.line}`)
+    // brief's caller block is its OWN rendering site, not a call into runCallers -- `-C` has to be
+    // threaded here separately or the flag would silently do nothing for `brief`.
+    const window = buildContextWindow(c.file, c.line, opts.context ?? 0)
+    if (window !== null) lines.push(...renderContextWindow(callerDisplayPath, c.line, window, '', '    '))
   }
   if (truncated) {
     lines.push(`  ...(${totalCallers - shown.length} more elided)`)
@@ -3494,13 +3585,8 @@ export function runGrep(opts: GrepOptions): number {
   for (const hit of truncated) {
     const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${hit.symbol.name} (${hit.symbol.kind})]` : ''
     if (hit.context !== undefined) {
-      for (const ctxLine of hit.context) {
-        if (ctxLine.line === hit.line) {
-          emit(`${hit.file}:${ctxLine.line}: ${ctxLine.text}${symbolTag}`)
-        } else {
-          emit(`${hit.file}-${ctxLine.line}- ${ctxLine.text}`)
-        }
-      }
+      // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.
+      for (const line of renderContextWindow(hit.file, hit.line, hit.context, symbolTag)) emit(line)
     } else {
       emit(`${hit.file}:${hit.line}: ${hit.text}${symbolTag}`)
     }
@@ -3784,8 +3870,28 @@ export function extractExportNames(text: string, ext: string): string[] {
   return names
 }
 
-/** Handle ``token-goat exports file``. */
+/**
+ * Multi-file dispatcher for the two emit-directly listing commands (`exports`, `imports`).
+ * Unlike `skeleton`/`outline` these print as they go rather than returning text, so each block is
+ * headed by an explicit `# <Label>: <file>` line here -- without it the concatenated single-file
+ * output gives no way to tell which file a given row came from. Exit 0 when any file succeeded,
+ * mirroring {@link runPerFileListing}.
+ */
+function runPerFileEmitting(files: string[], label: string, run: (file: string) => number): number {
+  let anyOk = false
+  files.forEach((file, i) => {
+    if (i > 0) emit('')
+    emit(`# ${label}: ${file}`)
+    if (run(file) === 0) anyOk = true
+  })
+  return anyOk ? 0 : 1
+}
+
+/** Handle ``token-goat exports file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runExports(opts: ImportsExportsOptions): number {
+  const multiFiles = parseMultiFileSpec(opts.file)
+  if (multiFiles !== null) return runPerFileEmitting(multiFiles, 'Exports', (file) => runExports({ ...opts, file }))
+
   const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
   const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
   // Unlike kindOf's loose `?? 'export'` fallback, an unmatched name (one that only came from the
@@ -4360,8 +4466,11 @@ export function importsExtensionFor(filePath: string): string {
   return path.extname(filePath)
 }
 
-/** Handle ``token-goat imports file``. */
+/** Handle ``token-goat imports file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runImports(opts: ImportsExportsOptions): number {
+  const multiFiles = parseMultiFileSpec(opts.file)
+  if (multiFiles !== null) return runPerFileEmitting(multiFiles, 'Imports', (file) => runImports({ ...opts, file }))
+
   const text = readFileText(opts.file)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
