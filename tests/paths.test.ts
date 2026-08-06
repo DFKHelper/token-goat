@@ -372,6 +372,13 @@ describe('toDisplayPath', () => {
     expect(toDisplayPath('/home/user/repo/', '/home/user/repo/src/foo.ts')).toBe('src/foo.ts')
   })
 
+  // Indexed paths are stored normalized but a root arrives however its caller spelled it, and path.relative compares text. When the two spellings differ the relative walk escapes upward and the caller prints a whole absolute path instead of a location you can feed back to `read`. This bit CI on Windows (8.3 short name RUNNER~1 vs its long form) and macOS (/var vs /private/var) while passing locally, because those are exactly the spellings normalizePath collapses and a developer path usually has neither. Backslashes are the one such spelling reproducible on every platform.
+  it('strips the root even when the two sides are spelled differently', () => {
+    // An extended-length prefix is a spelling path.relative cannot reconcile on any platform but normalizePath collapses, so it reproduces the CI failure everywhere. The two spellings that actually bit CI are platform-gated inside normalizePath (8.3 expansion needs a real Windows fs call, the /private alias only applies on darwin) and so cannot be synthesized in a cross-platform unit test; tests/baseline.test.ts covers those legs end to end.
+    expect(toDisplayPath('\\\\?\\C:\\proj', 'c:/proj/src/foo.ts')).toBe('src/foo.ts')
+    expect(toDisplayPath('C:/proj', '\\\\?\\C:\\proj\\src\\foo.ts')).toBe('src/foo.ts')
+  })
+
   describe('cross-drive (win32-gated)', () => {
     const realPlatform = process.platform
     const setPlatform = (p: string): void => {
