@@ -206,8 +206,23 @@ const cases: Record<string, () => void | Promise<void>> = {
   },
   symbol: () => {
     expectRead(['symbol', 'alphaSym'], 'alphaSym')
-    // --project (no value) scopes the search to cwd's project root; the fixture repo only has
-    // one project so both bare and --project must still find the match.
+    // A SECOND project sharing this global index and defining the same symbol name is what makes
+    // this falsifiable. With only the one fixture repo, bare and --project return the same single
+    // row, so the assertions pass even when the CLI registers --project and never forwards
+    // projectRoot -- verified: severing that wiring while leaving the flag registered left the
+    // whole matrix green. Two projects make the counts differ, so the wiring itself is pinned.
+    const otherRepo = mkIsolated('tg-matrix-other-')
+    fs.writeFileSync(path.join(otherRepo, 'other.ts'), 'export function alphaSym(): number {\n  return 9\n}\n')
+    const otherIdx = run(['index', '.', '--walk'], { cwd: otherRepo })
+    expect(otherIdx.status, `index of second project failed: ${otherIdx.stderr}`).toBe(0)
+
+    const global = run(['symbol', 'alphaSym', '--json'])
+    expect(global.status, global.stderr).toBe(0)
+    const globalItems = (JSON.parse(global.stdout) as { items: Array<{ filePath: string }> }).items
+    const globalFiles = globalItems.map((i) => i.filePath.replace(/\\/g, '/')).sort()
+    expect(globalFiles.length).toBe(2)
+    expect(globalFiles.some((f) => f.includes('other.ts'))).toBe(true)
+
     const scoped = run(['symbol', 'alphaSym', '--project', '--json'])
     expect(scoped.status, scoped.stderr).toBe(0)
     const scopedPayload = JSON.parse(scoped.stdout) as { items: Array<{ name: string; filePath: string }> }
