@@ -21,7 +21,7 @@ import { loadConfig } from './config.js'
 import { detectFromCommand, hasBareBackgroundOrNewline, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
-import { statSync, existsSync } from 'node:fs'
+import { statSync, existsSync, readFileSync } from 'node:fs'
 import { isUnderSystemTemp } from './project.js'
 import { runGit } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -675,6 +675,45 @@ function extractTasksOutput(cmd: string): { id: string; path: string; n?: number
   return null
 }
 
+/** Extracts file path from `cat`, `tail` commands on tool-results/*.txt. Returns { path } for valid matches. */
+function extractToolResultsFile(cmd: string): { path: string } | null {
+  const toolResultsRe = /[/\\]tool-results[/\\]([a-z0-9-]+)\.txt$/i
+
+  // cat command (same regex structure as extractCatFile, checked before isTempPath)
+  const catM = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  if (catM) {
+    const fp = catM[1] ?? catM[2] ?? catM[3]
+    if (fp) {
+      const m = toolResultsRe.exec(fp)
+      if (m) return { path: fp }
+    }
+  }
+
+  // tail command — handles -n (line-count) and -c (byte-count) modes; excludes -f follow and +N offset
+  if (!/-f\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+    // Standard line-count tail: -n N or -N or no count
+    const tailM = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+    if (tailM) {
+      const fp = tailM[3] ?? tailM[4] ?? tailM[5]
+      if (fp) {
+        const m = toolResultsRe.exec(fp)
+        if (m) return { path: fp }
+      }
+    }
+    // Byte-mode tail: -c N
+    const byteTailM = /^tail\s+-c\s+\d+\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+    if (byteTailM) {
+      const fp = byteTailM[1] ?? byteTailM[2] ?? byteTailM[3]
+      if (fp) {
+        const m = toolResultsRe.exec(fp)
+        if (m) return { path: fp }
+      }
+    }
+  }
+
+  return null
+}
+
 /**
  * Returns true when the command is a directory listing (eza --long or ls … | head)
  * for which `token-goat map --compact` is a cheaper alternative.
@@ -1256,9 +1295,31 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (taskOutput !== null) {
     const { id, path: outPath, n } = taskOutput
     recordStat('session_hint', 0, 0)
-    const tail = n ?? 50
-    return denyOutput(
-      'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
+    // Only deny if the file actually starts with `{` (genuine JSONL transcript); plain-text logs pass through
+    try {
+      const firstByte = readFileSync(outPath, { encoding: 'utf8', flag: 'r' }).slice(0, 1)
+      const trimmed = firstByte.trim()
+      if (trimmed !== '{') {
+        // Not a JSONL file; fall through to normal handling
+      } else {
+        // Genuine JSONL transcript; deny with the transcript-specific hint
+        const tail = n ?? 50
+        return denyOutput(
+          'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
+        )
+      }
+    } catch {
+      // File missing or unreadable; fall through to normal handling
+    }
+  }
+
+  // Item 3b: tool-results plain-text file — cached tool output, recall with bash-output
+  const toolResults = extractToolResultsFile(cmd)
+  if (toolResults !== null) {
+    const { path: outPath } = toolResults
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Tool output ' + outPath + ' is a plain-text artifact. Use `token-goat bash-output --file "' + outPath + '"` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
     )
   }
 
