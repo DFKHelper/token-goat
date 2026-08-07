@@ -31,6 +31,7 @@ import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/ses
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
+import * as pathsModule from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
@@ -1378,6 +1379,63 @@ describe('preBashHandler — task output file interception', () => {
       }
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // Converts a Windows-native path to its Git Bash / MSYS spelling (C:\Users\x -> /c/Users/x), the form the dominant shell in this environment actually produces.
+  function toGitBashPath(winPath: string): string {
+    return winPath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_m, d: string) => '/' + d.toLowerCase())
+  }
+
+  // Regression for f8f3cc39: readFileSync(outPath) with no normalization threw ENOENT on Git Bash's /c/... spelling (Node on Windows cannot resolve it), and the catch fell through to "pass" for every tasks/*.output file -- silently disabling the JSONL-transcript deny on the dominant shell. Gated to win32 because a real end-to-end fs read requires the host's actual Windows-drive filesystem; the platform-independent normalizePath invocation is covered separately below so this case is never silently uncovered off-Windows.
+  ;(process.platform === 'win32' ? it : it.skip)('denies cat on a genuine JSONL tasks transcript file using Git-Bash /c/... path spelling', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'gb111.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    try {
+      const gitBashPath = toGitBashPath(jsonlFile)
+      const result = preBashHandler(makeBashEvent(`cat "${gitBashPath}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('JSONL agent transcript')
+        expect(result.message).toContain('--transcript')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  ;(process.platform === 'win32' ? it : it.skip)('passes through cat on a plain-text tasks output file using Git-Bash /c/... path spelling', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const plainTextFile = join(tasksDir, 'gb222.output')
+    writeFileSync(plainTextFile, 'done plain text not jsonl\n')
+    try {
+      const gitBashPath = toGitBashPath(plainTextFile)
+      const result = preBashHandler(makeBashEvent(`cat "${gitBashPath}"`))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('normalizes the tasks output path through normalizePath before reading it, on every platform (never-skip companion to the win32-gated /c/... e2e cases above; fail-on-buggy: routing outPath straight to readFileSync without this call is exactly the f8f3cc39 regression)', () => {
+    const normalizeSpy = vi.spyOn(pathsModule, 'normalizePath')
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'gb333.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      expect(normalizeSpy).toHaveBeenCalledWith(jsonlFile)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+      normalizeSpy.mockRestore()
     }
   })
 
