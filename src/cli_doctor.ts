@@ -12,6 +12,7 @@ import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor } from './worker.js'
 import { getDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
+import { emptyIndexMessage } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
@@ -229,9 +230,7 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
       return {
         name: 'Symbols',
         status: 'warn',
-        message:
-          `no files indexed for this project — every read command will return empty, which looks ` +
-          `like a genuine "not found" rather than a missing index; run 'token-goat index .' here`,
+        message: emptyIndexMessage(rootDir ?? process.cwd()),
       }
     }
     return {

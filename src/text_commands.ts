@@ -1518,7 +1518,7 @@ interface IgnoresReport {
   excludeTests: boolean
 }
 
-function detectWalkMode(cwd: string): 'git' | 'non-git' {
+export function detectWalkMode(cwd: string): 'git' | 'non-git' {
   const project = findProject(cwd)
   if (project?.marker === '.git') return 'git'
   // walk up to see if there's a .git folder
