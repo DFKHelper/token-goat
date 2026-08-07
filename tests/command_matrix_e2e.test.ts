@@ -777,6 +777,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Pages: 1')
     expect(r.stdout).toContain('Text layer: yes')
+
+    const rj = run(['pdf-meta', pdfPath, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const meta = JSON.parse(rj.stdout) as { pageCount: number; title: string | null; author: string | null; hasTextLayer: boolean }
+    expect(meta.pageCount).toBe(1)
+    // hasTextLayer is the field a caller acts on -- it decides whether pdf-extract is worth running.
+    // In text it is a prose sentence you have to substring-match; here it must be a real boolean.
+    expect(meta.hasTextLayer).toBe(true)
+    // An absent title must come back as null, not the literal string "(none)" the text form prints:
+    // that rendering cannot be told apart from a PDF actually titled "(none)".
+    expect(meta.title).toBeNull()
+    expect(meta.author).toBeNull()
   },
   'sharepoint-resolve': () => {
     const home = mkIsolated('tg-matrix-sphome-')
