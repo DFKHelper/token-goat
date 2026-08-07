@@ -98,6 +98,7 @@ describe('document-extraction CLI stat recording', () => {
       () => ['transcript-outline', join(root, 'meeting.vtt'), '--json'],
       'transcript_outline',
     ],
+    ['xlsx-sheets --json', () => ['xlsx-sheets', join(root, 'book.xlsx'), '--json'], 'xlsx_sheets'],
   ] as const)('`token-goat %s` records a %s stat row through the real global stats DB', async (_cmd, argsFn, kind) => {
     const before = summarize(30).by_kind[kind]
     const beforeEvents = before?.events ?? 0
