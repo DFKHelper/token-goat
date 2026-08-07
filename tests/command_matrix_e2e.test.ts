@@ -1716,10 +1716,20 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(withParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(false)
   },
   deps: () => {
-    // app.ts imports from ./src/mod.js — deps must list that as an internal dep.
+    // app.ts imports from ./src/mod.js — deps must list that as an internal dep, rendered as a
+    // root-relative path (not an absolute Windows path) so it can be fed straight back into
+    // `outline`/`read`/`skeleton`.
     const r = run(['deps', 'app.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod|internal/)
+    expect(r.stdout).toContain('  src/mod.ts')
+    expect(r.stdout).not.toContain('\\')
+
+    const rJson = run(['deps', 'app.ts', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout) as { file: string; internal: string[]; external: string[] }
+    expect(parsed.internal).toContain('src/mod.ts')
+    for (const entry of parsed.internal) expect(entry).not.toContain('\\')
   },
   types: () => {
     // The fixture is tiny and may have no type declarations; accept exit 0 or 1 but never a crash.

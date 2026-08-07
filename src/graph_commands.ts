@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
-import { resolveIndexPath, toDisplayPath } from './paths.js'
+import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, resolveSymbolSpecOrEmitError } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
@@ -734,14 +734,21 @@ export function runDeps(opts: DepsOptions): number {
     }
   }
 
+  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  // Only resolved entries are absolute filesystem paths; unresolved specifiers and Python
+  // bare module names (pushed above as-is) aren't real paths and must pass through unchanged.
+  // Normalize before handing to toDisplayPath, which returns the target verbatim when it cannot relativize (a file outside this project). Without this the fallback keeps native backslashes while the payload's own `file` field is forward-slash, so the two disagree in exactly the case the relative form cannot cover. Unresolved specifiers and bare module names are not paths and pass through untouched.
+  const displayInternal = internal.map((i) => (path.isAbsolute(i) ? toDisplayPath(rootDir, normalizePath(i)) : i))
+
   if (opts.json === true) {
-    emit(JSON.stringify({ file: opts.file, internal, external }, null, 2))
+    // `file` echoed the argument verbatim, so an absolute or backslash-spelled argument produced a payload whose own two path fields disagreed no matter how `internal` was rendered. Relative arguments -- the common case -- are unchanged by normalizePath.
+    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: displayInternal, external }, null, 2))
     return 0
   }
 
   if (internal.length > 0) {
     emit('internal:')
-    for (const i of internal) emit(`  ${i}`)
+    for (const i of displayInternal) emit(`  ${i}`)
   }
   if (external.length > 0) {
     emit('external:')

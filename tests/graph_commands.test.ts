@@ -1599,6 +1599,60 @@ describe('runDeps integration', () => {
     expect(Array.isArray(parsed.external)).toBe(true)
   })
 
+  it('renders internal deps as root-relative forward-slash paths in both text and --json output, matching the file field spelling', () => {
+    const rootDir = normalizePath(resolve(__dirname, '..'))
+
+    const jsonCaptured = captureStdout(() => {
+      const code = runDeps({ file: 'src/read_commands.ts', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(jsonCaptured) as { file: string; internal: string[]; external: string[] }
+    expect(parsed.internal.length).toBeGreaterThan(0)
+    // Exact equality against the root-relative spelling, not a substring check -- a leftover
+    // absolute path would still contain "baseline.ts" and pass a toContain assertion.
+    expect(parsed.internal).toEqual(expect.arrayContaining(['src/baseline.ts', 'src/index_reader.ts', 'src/paths.ts']))
+    for (const entry of parsed.internal) {
+      // Negative assertion: no drive-letter/absolute prefix, no backslash. On POSIX this
+      // pair is vacuous (no drive letters ever appear there), which is exactly why the
+      // exact-equality check above -- not this one -- is what actually carries on Linux/macOS.
+      expect(entry).not.toMatch(/^[A-Za-z]:/)
+      expect(entry).not.toContain('\\')
+      // JSON self-consistency: every internal entry must be spelled the same way (root-relative)
+      // as the payload's own `file` field, so the two can never drift apart again.
+      expect(entry.startsWith(rootDir) || entry.includes(':\\')).toBe(false)
+    }
+    expect(parsed.file).toBe('src/read_commands.ts')
+
+    const textCaptured = captureStdout(() => {
+      const code = runDeps({ file: 'src/read_commands.ts' })
+      expect(code).toBe(0)
+    })
+    expect(textCaptured).toContain('  src/baseline.ts')
+    expect(textCaptured).not.toMatch(/^[A-Za-z]:\\/m)
+    expect(textCaptured).not.toContain('\\')
+  })
+
+  // A file outside this project cannot be made root-relative, so toDisplayPath returns it verbatim. That fallback must still agree with the payload's own `file` field on separator: `file` is forward-slash, so a backslash-spelled `internal` entry beside it means the two disagree in precisely the case the relative form cannot cover, which is when a consumer most needs them comparable.
+  it('keeps the absolute fallback spelled like the file field when the target is outside this project', () => {
+    const other = mkdtempSync(join(tmpdir(), 'tg-deps-cross-'))
+    try {
+      writeFileSync(join(other, 'b.ts'), 'export function crossB() { return 1 }\n')
+      writeFileSync(join(other, 'a.ts'), 'import { crossB } from "./b.js"\nexport function crossA() { return crossB() }\n')
+
+      const captured = captureStdout(() => {
+        const code = runDeps({ file: join(other, 'a.ts'), json: true })
+        expect(code).toBe(0)
+      })
+      const parsed = JSON.parse(captured) as { file: string; internal: string[] }
+      expect(parsed.internal.length).toBe(1)
+      expect(parsed.internal[0]).not.toContain('\\')
+      expect(parsed.internal[0]).toBe(`${normalizePath(other)}/b.ts`)
+      expect(parsed.file).not.toContain('\\')
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+
   it('classifies Python relative imports ("from . import foo", "from ..pkg import bar") as internal, not external', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-deps-py-'))
     try {
@@ -1637,7 +1691,8 @@ describe('runDeps integration', () => {
         expect(code).toBe(0)
       })
       const parsed = JSON.parse(captured) as { internal: string[] }
-      expect(parsed.internal).toContain(depFile)
+      // Rendered paths are normalized now, so compare against the normalized fixture path rather than the native one this test used to assert. What it pins -- that the .js specifier resolves to the real .ts file rather than staying an unresolved literal -- is unchanged.
+      expect(parsed.internal).toContain(normalizePath(depFile))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1657,7 +1712,7 @@ describe('runDeps integration', () => {
         expect(code).toBe(0)
       })
       const parsed = JSON.parse(captured) as { internal: string[] }
-      expect(parsed.internal).toContain(indexFile)
+      expect(parsed.internal).toContain(normalizePath(indexFile))
       expect(parsed.internal).not.toContain('./utils')
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1676,7 +1731,7 @@ describe('runDeps integration', () => {
         expect(code).toBe(0)
       })
       const parsed = JSON.parse(captured) as { internal: string[] }
-      expect(parsed.internal).toContain(depFile)
+      expect(parsed.internal).toContain(normalizePath(depFile))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1723,7 +1778,7 @@ describe('runDeps integration', () => {
         expect(code).toBe(0)
       })
       const parsed = JSON.parse(captured) as { internal: string[] }
-      expect(parsed.internal).toContain(indexTs)
+      expect(parsed.internal).toContain(normalizePath(indexTs))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
