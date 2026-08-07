@@ -60,6 +60,97 @@ describe('skill-history / skill-diff against a never-created cache', () => {
     setSkillOutputsDirForTesting(missingSkillsDir())
     expect(await exitCodeOf(['skill-diff', 'no-such-skill'])).toBe(0)
   })
+
+  // Exit 0 alone was never enough: the pre-fix command printed the column header and nothing else, which is a populated table that happens to have no rows -- unreadable as "the store is empty" and indistinguishable from a lookup against the wrong cache root. The header must not be the whole payload.
+  it('skill-history says the store is empty instead of printing a bare header', async () => {
+    setSkillOutputsDirForTesting(missingSkillsDir())
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-history'])
+    })
+    expect(output).toContain('No cached skill versions yet.')
+    expect(output).not.toContain('Output ID')
+  })
+
+  // The JSON form was already unambiguous ([] cannot be mistaken for a populated result) and must stay machine-parseable rather than inheriting the prose message.
+  it('skill-history --json still emits an empty array, not the prose message', async () => {
+    setSkillOutputsDirForTesting(missingSkillsDir())
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-history', '--json'])
+    })
+    expect(JSON.parse(output)).toEqual([])
+  })
+
+  // The populated path must keep rendering the table: a guard that only checks the empty case would pass just as happily if the fix had swallowed every listing.
+  it('still prints the header and a row once a version is cached', async () => {
+    setSkillOutputsDirForTesting(mkdtempSync(join(tmpdir(), 'tg-history-full-')))
+    await storeOutput('sess-hist', 'demoskill', 'body text')
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-history'])
+    })
+    expect(output).toContain('Output ID')
+    expect(output).toContain('demoskill')
+    expect(output).not.toContain('No cached skill versions yet.')
+  })
+})
+
+// Regression guard: a `--session-id` filter that hides every cached skill must not be reported as an
+// empty cache. "No skills cached yet." for a cache that holds skills under a different session is the
+// same defect `refs --exclude-tests` had -- a filtered view rendered as a definitive absence -- and it
+// sends the caller off to re-cache work that is already there. The unfiltered path must stay untouched.
+describe('skill-list / skill-size under a --session-id filter that hides everything', () => {
+  async function cacheOneSkillUnder(sessionId: string): Promise<void> {
+    setSkillOutputsDirForTesting(mkdtempSync(join(tmpdir(), 'tg-session-filter-')))
+    await storeOutput(sessionId, 'demoskill', 'body text')
+  }
+
+  it('skill-list names the skills the session filter hid', async () => {
+    await cacheOneSkillUnder('sess-alpha')
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-list', '--session-id', 'sess-beta'])
+    })
+    expect(output).toContain('sess-beta')
+    expect(output).toContain('1 cached under other sessions')
+    expect(output).not.toContain('No skills cached yet.')
+  })
+
+  it('skill-list still reports a genuinely empty cache as empty', async () => {
+    setSkillOutputsDirForTesting(missingSkillsDir())
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-list', '--session-id', 'sess-beta'])
+    })
+    expect(output).toContain('No skills cached yet.')
+    expect(output).not.toContain('cached under other sessions')
+  })
+
+  it('skill-list without a filter is unchanged', async () => {
+    await cacheOneSkillUnder('sess-alpha')
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-list'])
+    })
+    expect(output).toContain('demoskill')
+    expect(output).not.toContain('cached under other sessions')
+  })
+
+  it('skill-size names the skills the session filter hid and drops the empty breakdown heading', async () => {
+    await cacheOneSkillUnder('sess-alpha')
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-size', '--session-id', 'sess-beta'])
+    })
+    expect(output).toContain('(0 skills)')
+    expect(output).toContain('1 cached under other sessions, hidden by --session-id sess-beta')
+    expect(output).not.toContain('## Per-skill breakdown')
+  })
+
+  it('skill-size keeps the breakdown heading and row when skills match', async () => {
+    await cacheOneSkillUnder('sess-alpha')
+    const output = await captureStdout(async () => {
+      await run(['node', 'token-goat', 'skill-size', '--session-id', 'sess-alpha'])
+    })
+    expect(output).toContain('(1 skills)')
+    expect(output).toContain('## Per-skill breakdown')
+    expect(output).toContain('demoskill')
+    expect(output).not.toContain('cached under other sessions')
+  })
 })
 
 // Regression guard: `skill-diff`'s TOCTOU race. listOutputs() can find 2+ cached versions of a

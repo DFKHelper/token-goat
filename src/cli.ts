@@ -1608,6 +1608,12 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
   out(`Cached compact for skill '${cacheName}'.`)
 }
 
+/** How many skills a `--session-id` filter hid, for use when the filtered view came back empty. Reporting a filtered-to-nothing view as "nothing cached" is the same mistake `refs --exclude-tests` made: it turns "you asked the wrong question" into "there is no answer", and the caller stops looking. Returns 0 when no filter was given, and only ever runs the extra directory scan once the filtered result is already empty, so the populated path pays nothing. */
+async function countSkillsHiddenBySession(sessionId: string | undefined): Promise<number> {
+  if (sessionId === undefined) return 0
+  return (await listSkills()).length
+}
+
 async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promise<void> {
   const skills = await listSkills(opts.sessionId)
   if (opts.json === true) {
@@ -1637,6 +1643,11 @@ async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promi
     // the wrong cache root. Say the cache is empty, matching how `stats` reports its own empty
     // store, so the caller knows nothing is wrong and there is simply nothing cached.
     if (skills.length === 0) {
+      const hidden = await countSkillsHiddenBySession(opts.sessionId)
+      if (hidden > 0) {
+        out(`No skills cached for session '${opts.sessionId}' (${hidden} cached under other sessions).`)
+        return
+      }
       out('No skills cached yet.')
       return
     }
@@ -1657,10 +1668,17 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
     `Body:    ${totalBody} bytes`,
     `Compact: ${totalCompact} bytes`,
   ]
+  // A zero-count report under a --session-id filter describes the cache as empty when it is merely filtered, so name what the filter hid. Without a filter this is always 0 and the report is byte-identical to before.
+  const hiddenBySession = skills.length === 0 ? await countSkillsHiddenBySession(opts.sessionId) : 0
+  if (hiddenBySession > 0) {
+    lines.push(`(${hiddenBySession} cached under other sessions, hidden by --session-id ${opts.sessionId})`)
+  }
 
-  // Add per-skill table.
-  lines.push('')
-  lines.push('## Per-skill breakdown')
+  // Add per-skill table. Skip the heading entirely when there are no rows: a heading followed by nothing reads as truncated output rather than as an empty cache.
+  if (skills.length > 0) {
+    lines.push('')
+    lines.push('## Per-skill breakdown')
+  }
   for (const skill of skills) {
     const bodyKb = (skill.bodyLen / 1024).toFixed(1)
     const compactKb = skill.compactLen > 0 ? (skill.compactLen / 1024).toFixed(1) : '-'
@@ -1702,6 +1720,11 @@ async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
       return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
     })
     const header = `${'Output ID'.padEnd(40)} ${'Skill'.padEnd(25)} ${'Bytes'.padStart(8)}  Timestamp`
+    // A bare header with no rows is indistinguishable from a rendering failure or a lookup against the wrong cache root, the same gap `skill-list` closed above and `skill-diff` closed with its own no-versions message. Say the store is empty.
+    if (metas.length === 0) {
+      out('No cached skill versions yet.')
+      return
+    }
     out([header, ...lines].join('\n'))
   }
 }
