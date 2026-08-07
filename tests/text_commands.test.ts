@@ -624,11 +624,14 @@ describe('logfold command', () => {
   })
 
   it('--tail N restricts input to last N lines', () => {
-    const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')
+    // Letters, not bare integers, so this fixture stays independent of the bare-integer
+    // normalization rule (which would otherwise fold "line 7"/"line 8"/"line 9" together).
+    const letters = 'abcdefghij'.split('')
+    const lines = letters.map((c) => `line ${c}`).join('\n')
     const r = run(['logfold', '--tail', '3'], { input: lines })
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toContain('line 9')
-    expect(r.stdout).not.toContain('line 0')
+    expect(r.stdout).toContain('line j')
+    expect(r.stdout).not.toContain('line a')
   })
 
   // Regression: a non-numeric or negative --tail value fell through Number.parseInt's NaN
@@ -668,6 +671,95 @@ describe('logfold command', () => {
     const r = run(['logfold', src])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('alpha')
+  })
+
+  it('folds consecutive lines that differ only by a bare integer (counter/PID/port/line-number/byte-count style)', () => {
+    const input = 'Retry 1 failed\nRetry 2 failed\nRetry 3 failed\n'
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('(x3)')
+    // The printed line is the first real occurrence, not the placeholder form.
+    expect(r.stdout).toContain('Retry 1 failed')
+    expect(r.stdout).not.toContain('[N]')
+  })
+
+  it('control: already-identical consecutive lines still fold (bare-integer rule did not break this)', () => {
+    const input = 'same line here\nsame line here\nsame line here\n'
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('same line here  (x3)')
+  })
+
+  it('bare-integer normalization does not let the IP or timestamp rules lose priority to it (ordering fixture)', () => {
+    const input = [
+      '[12:00:01] req 1 from 10.0.0.1',
+      '[12:00:02] req 2 from 10.0.0.1',
+      'uuid a1b2c3d4-e5f6-7890-abcd-ef1234567890 seen 1 times',
+      'uuid a1b2c3d4-e5f6-7890-abcd-ef1234567890 seen 2 times',
+      'hex deadbeefcafe0001 count 1',
+      'hex deadbeefcafe0001 count 2',
+      '',
+    ].join('\n')
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    // Each pair differs only in a value covered by an earlier rule plus a bare integer -- all
+    // three pairs should fold to (x2), which only happens if IP/UUID/HEX are still normalized
+    // (otherwise the differing IP/UUID/HEX text alone would keep each pair distinct).
+    const x2Count = (r.stdout.match(/\(x2\)/g) ?? []).length
+    expect(x2Count).toBe(3)
+  })
+
+  it('does not normalize digits embedded in a longer alphanumeric token (v2, utf8, x86_64, sha256, test_3_case)', () => {
+    const input = ['build v2 ok', 'build v3 ok', 'encode utf8 done', 'encode utf16 done', ''].join('\n')
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    // v2/v3 and utf8/utf16 must NOT fold -- the digit is part of the token, not a bare integer.
+    expect(r.stdout).not.toMatch(/\(x2\)/)
+    expect(r.stdout).toContain('build v2 ok')
+    expect(r.stdout).toContain('build v3 ok')
+  })
+
+  it('does not normalize digits flanked by underscores (x86_64, test_3_case, sha256)', () => {
+    const input = ['arch x86_64 build', 'arch x86_32 build', 'running test_3_case', 'running test_4_case', 'hash sha256 sum', ''].join(
+      '\n',
+    )
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toMatch(/\(x2\)/)
+    expect(r.stdout).toContain('arch x86_64 build')
+    expect(r.stdout).toContain('running test_3_case')
+    expect(r.stdout).toContain('hash sha256 sum')
+  })
+
+  it('bare integer normalization is bypassed by --no-normalize', () => {
+    const input = 'Retry 1 failed\nRetry 2 failed\n'
+    const r = run(['logfold', '--no-normalize'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toMatch(/\(x2\)/)
+  })
+
+  it('--fold-repeats folds non-adjacent duplicates, attributing the total count to the first occurrence', () => {
+    const input = 'boom\nnoise\nboom\nnoise\nboom\n'
+    const r = run(['logfold', '--fold-repeats'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = run(['logfold', '--fold-repeats', '--json'], { input })
+    const lines = (JSON.parse(parsed.stdout) as { lines: Array<{ text: string; count: number }> }).lines
+    // Trailing newline in the input yields one more (empty) line from the raw split; it is its
+    // own distinct key and folds to a trailing count-1 entry alongside boom/noise.
+    expect(lines).toEqual([
+      { text: 'boom', count: 3 },
+      { text: 'noise', count: 2 },
+      { text: '', count: 1 },
+    ])
+  })
+
+  it('without --fold-repeats, the same interleaved input folds nothing (default stays consecutive-only)', () => {
+    const input = 'boom\nnoise\nboom\nnoise\nboom\n'
+    const r = run(['logfold', '--json'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    const lines = (JSON.parse(r.stdout) as { lines: Array<{ text: string; count: number }> }).lines
+    expect(lines.every((l) => l.count === 1)).toBe(true)
+    expect(lines.length).toBe(6)
   })
 })
 

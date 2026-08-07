@@ -680,6 +680,8 @@ const VOLATILE_SUBS: Array<{ re: RegExp; placeholder: string }> = [
   { re: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, placeholder: '[UUID]' },
   { re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, placeholder: '[IP]' },
   { re: /\b[0-9a-f]{8,}\b/g, placeholder: '[HEX]' },
+  // Bare integers (counters, PIDs, ports, line numbers, byte counts, elapsed-ms values). Must run last: it operates on a string that has already had HH:MM:SS/UUID/IP/HEX replaced with their placeholders, so it never competes with those rules for the same digits. The lookbehind/lookahead exclude letters, digits AND underscore (not just \b, which treats underscore as a word character) so a digit run embedded in a longer token like v2, utf8, x86_64, sha256, or test_3_case is left untouched.
+  { re: /(?<![A-Za-z0-9_])\d+(?![A-Za-z0-9_])/g, placeholder: '[N]' },
 ]
 
 function normalizeVolatile(line: string): string {
@@ -695,7 +697,10 @@ interface FoldedLine {
   count: number
 }
 
-function applyFiltersAndFold(lines: string[], noNormalize: boolean): FoldedLine[] {
+// logfold has no pre-existing line/byte cap of its own (--tail bounds input length, but that's an opt-in slice, not a safety cap), so this is a new bound introduced specifically for --fold-repeats: the seen-key map is capped at this many distinct keys, and lines that would grow it past the cap fall back to consecutive-only folding instead of growing unbounded.
+const MAX_FOLD_REPEATS_KEYS = 20_000
+
+function applyFiltersAndFold(lines: string[], noNormalize: boolean, foldRepeats: boolean): FoldedLine[] {
   const dropped: string[] = []
   for (const raw of lines) {
     let cur: string | null = raw
@@ -709,26 +714,53 @@ function applyFiltersAndFold(lines: string[], noNormalize: boolean): FoldedLine[
   }
 
   const folded: FoldedLine[] = []
-  let prevKey: string | null = null
-  let lastText = ''
-  let count = 0
 
+  if (!foldRepeats) {
+    // Default: consecutive-only folding. A suppressed line must immediately follow its match.
+    let prevKey: string | null = null
+    let lastText = ''
+    let count = 0
+    for (const line of dropped) {
+      const key = noNormalize ? line : normalizeVolatile(line)
+      if (key === prevKey) {
+        count++
+      } else {
+        if (prevKey !== null) folded.push({ text: lastText, count })
+        prevKey = key
+        lastText = line
+        count = 1
+      }
+    }
+    if (prevKey !== null) folded.push({ text: lastText, count })
+    return folded
+  }
+
+  // --fold-repeats: a line whose key has already been seen anywhere earlier (not just immediately before) is suppressed, and its count is attributed to the first occurrence.
+  const keyIndex = new Map<string, number>()
+  let prevKey: string | null = null
   for (const line of dropped) {
     const key = noNormalize ? line : normalizeVolatile(line)
-    if (key === prevKey) {
-      count++
+    const seenIdx = keyIndex.get(key)
+    if (seenIdx !== undefined) {
+      const entry = folded[seenIdx]
+      if (entry !== undefined) entry.count++
+    } else if (key === prevKey && folded.length > 0) {
+      // Past the cap this key isn't tracked in keyIndex, so fall back to folding it against whatever line immediately preceded it (consecutive-only behavior for this key).
+      const entry = folded[folded.length - 1]
+      if (entry !== undefined) entry.count++
     } else {
-      if (prevKey !== null) folded.push({ text: lastText, count })
-      prevKey = key
-      lastText = line
-      count = 1
+      folded.push({ text: line, count: 1 })
+      if (keyIndex.size < MAX_FOLD_REPEATS_KEYS) keyIndex.set(key, folded.length - 1)
     }
+    prevKey = key
   }
-  if (prevKey !== null) folded.push({ text: lastText, count })
   return folded
 }
 
-export function cmdLogfold(src: string | undefined, opts: { tail?: string | undefined; noNormalize?: boolean; json?: boolean | undefined }): void {
+export function cmdLogfold(
+  src: string | undefined,
+  opts: { tail?: string | undefined; noNormalize?: boolean; foldRepeats?: boolean | undefined; json?: boolean | undefined },
+): void {
   const text = readInput(src)
   let lines = splitLines(text)
   if (opts.tail !== undefined) {
@@ -736,7 +768,7 @@ export function cmdLogfold(src: string | undefined, opts: { tail?: string | unde
     lines = lines.slice(Math.max(0, lines.length - n))
   }
 
-  const folded = applyFiltersAndFold(lines, opts.noNormalize === true)
+  const folded = applyFiltersAndFold(lines, opts.noNormalize === true, opts.foldRepeats === true)
 
   if (opts.json === true) {
     process.stdout.write(JSON.stringify({ lines: folded }, null, 2) + '\n')

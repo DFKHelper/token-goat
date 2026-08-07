@@ -2015,6 +2015,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     // npm-summary line should be dropped; identical normalised lines should fold
     expect(r.stdout).not.toContain('added 5 packages')
     expect(r.stdout).toMatch(/hit/)
+    // --fold-repeats folds non-adjacent duplicates too, attributing the total count to the
+    // first occurrence.
+    const r2 = run(['logfold', '--fold-repeats'], { input: 'boom\nnoise\nboom\n' })
+    expect(r2.status, r2.stderr).toBe(0)
+    expect(r2.stdout).toContain('(x2)')
   },
   lockdeps: () => {
     // token-goat ships a package-lock.json; run against the repo root.
