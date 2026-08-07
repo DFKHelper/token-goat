@@ -12,7 +12,7 @@ import { contextOutput, denyOutput, passOutput, extractToolResponseField, OUTPUT
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
-import { resolveIndexPath } from './paths.js'
+import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand, commandHash, summarizeOutputDelta } from './bash_output_cache.js'
@@ -1296,8 +1296,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { id, path: outPath, n } = taskOutput
     recordStat('session_hint', 0, 0)
     // Only deny if the file actually starts with `{` (genuine JSONL transcript); plain-text logs pass through
+    // Normalize first: Git Bash yields /c/Users/... and WSL yields /mnt/c/Users/..., neither of which Node can resolve on Windows, so an unnormalized read always throws ENOENT and silently disables the deny for those shells
     try {
-      const firstByte = readFileSync(outPath, { encoding: 'utf8', flag: 'r' }).slice(0, 1)
+      const firstByte = readFileSync(normalizePath(outPath), { encoding: 'utf8', flag: 'r' }).slice(0, 1)
       const trimmed = firstByte.trim()
       if (trimmed !== '{') {
         // Not a JSONL file; fall through to normal handling
