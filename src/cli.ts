@@ -3604,9 +3604,13 @@ export function buildProgram(): Command {
     .description('apply log-noise filters then fold consecutive duplicate lines')
     .option('--tail <n>', 'only process the last N lines of input')
     .option('--no-normalize', 'skip volatile-token normalization (still applies filters and folds)')
+    .option('--fold-repeats', 'also fold non-consecutive duplicate lines, attributing the total count to the first occurrence')
     .option('-j, --json', 'output as JSON')
-    .action((src: string | undefined, opts: { tail?: string; normalize?: boolean; json?: boolean }) =>
-      guard(() => cmdLogfold(src, { tail: opts.tail, noNormalize: opts.normalize === false, json: opts.json }))(),
+    .action(
+      (src: string | undefined, opts: { tail?: string; normalize?: boolean; foldRepeats?: boolean; json?: boolean }) =>
+        guard(() =>
+          cmdLogfold(src, { tail: opts.tail, noNormalize: opts.normalize === false, foldRepeats: opts.foldRepeats, json: opts.json }),
+        )(),
     )
 
   program
