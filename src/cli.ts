@@ -1112,7 +1112,7 @@ async function cmdPdfOutline(file: string, opts: { json?: boolean }) {
   recordStat('pdf_outline', bytesSaved, Math.round(bytesSaved / 4))
 }
 
-async function cmdPdfMeta(file: string) {
+async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}) {
   const meta = await runPdfMeta(file)
   const lines = [
     `Pages: ${meta.pageCount}`,
@@ -1120,7 +1120,10 @@ async function cmdPdfMeta(file: string) {
     `Author: ${meta.author ?? '(none)'}`,
     `Text layer: ${meta.hasTextLayer ? 'yes' : 'no (likely scanned/image-only; pdf-extract will return little or no text)'}`,
   ]
-  const text = lines.join('\n')
+  // The text form cannot be parsed back reliably: `Title: (none)` is indistinguishable from a PDF whose title is literally "(none)", a title or author containing a newline or a colon breaks the line-oriented `key: value` shape outright, and hasTextLayer -- the one field a caller acts on, since it decides whether pdf-extract is worth running -- is buried in a prose sentence that has to be substring-matched. JSON carries the nulls and the boolean as themselves.
+  const text = opts.json === true
+    ? JSON.stringify({ pageCount: meta.pageCount, title: meta.title, author: meta.author, hasTextLayer: meta.hasTextLayer }, null, 2)
+    : lines.join('\n')
   out(text)
   // Same registry/producer desync as cmdPdfExtract above -- see the comment there.
   const fullSourceBytes = fileSizeOrZero(file)
@@ -3754,6 +3757,7 @@ export function buildProgram(): Command {
   program
     .command('pdf-meta <file>')
     .description('page count, title/author, and whether a PDF has an extractable text layer')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdPdfMeta))
 
   program
