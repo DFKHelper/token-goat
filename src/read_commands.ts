@@ -1700,6 +1700,10 @@ export interface SkeletonOptions {
  * "token-goat can't parse this language at all yet" from a plain empty-index result.
  */
 function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
+  // A path that does not exist reads as "this file has no symbols", so a typo or a stale path guess looks like a definitive answer about a real file and the caller stops looking instead of fixing the path. Checked before the language branch: a missing `foo.scala` is a wrong path, not an unsupported extractor. Wording is `exports`/`imports`/`deps`/`test-for`' verbatim, which already close this same gap.
+  if (!fs.existsSync(resolvedPath)) {
+    return `Could not read: ${displayPath}`
+  }
   const lang = unsupportedLanguageName(resolvedPath)
   if (lang !== undefined) {
     return `No indexed symbols found in '${displayPath}' -- ${lang} has no symbol extractor yet, so this file always indexes to 0 symbols regardless of its contents`

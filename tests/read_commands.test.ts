@@ -152,6 +152,19 @@ type MockSymbol = {
 describe('read_commands', () => {
   let tempDir: string
 
+  /**
+   * An empty real file with the given extension, inside this test's temp dir. Several tests below
+   * assert on the message an *empty index result* produces, and used to pass a bare name like
+   * `missing.scala` that never existed on disk. A nonexistent path is now reported as unreadable --
+   * which outranks every language branch -- so those tests would have kept passing while pinning
+   * nothing about the branch they were named for.
+   */
+  function emptyFixture(ext: string): string {
+    const file = path.join(tempDir, `fixture${ext}`)
+    fs.writeFileSync(file, '')
+    return file
+  }
+
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-cmds-'))
     vi.clearAllMocks()
@@ -1801,7 +1814,9 @@ describe('read_commands', () => {
 
     it('distinguishes a recognized-but-unsupported language from a plain empty index (regression: Scala/Lua/etc. are indistinguishable from an empty file)', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { text, code } = runSkeleton({ file: 'missing.scala' })
+      // The file has to exist on disk: a path that does not is now reported as unreadable, which
+      // outranks every language branch, so a nonexistent fixture would pass this for the wrong reason.
+      const { text, code } = runSkeleton({ file: emptyFixture('.scala') })
       expect(code).toBe(1)
       // Scala now has an extractor, so empty file gets the standard message
       expect(text).toContain('No indexed symbols found')
@@ -1809,8 +1824,11 @@ describe('read_commands', () => {
 
     it('does not claim an unsupported language for a plain empty result on a supported extension', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { text } = runSkeleton({ file: 'missing.ts' })
+      // Existing file again -- this assertion is a not-contains, so an unreadable-path message
+      // would satisfy it vacuously and stop pinning the language branch at all.
+      const { text } = runSkeleton({ file: emptyFixture('.ts') })
       expect(text).not.toContain('no symbol extractor yet')
+      expect(text).toContain('No indexed symbols found')
     })
 
     it('prints skeleton header with symbol count', () => {
@@ -1951,7 +1969,7 @@ describe('read_commands', () => {
   describe('runOutline', () => {
     it('returns 1 and reports no symbols for an empty file in a supported language', () => {
       mockQuerySymbols.mockReturnValue([])
-      const { text, code } = runOutline({ file: 'empty.dart' })
+      const { text, code } = runOutline({ file: emptyFixture('.dart') })
       expect(code).toBe(1)
       // Dart now has a symbol extractor, so it just reports "no symbols found"
       expect(text).toContain('No indexed symbols found')

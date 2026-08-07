@@ -895,6 +895,11 @@ export function runTypes(opts: TypesOptions): number {
   )
 
   if (results.length === 0) {
+    // A path that does not exist reads as "this file declares no types", so a typo or a stale path guess looks like a definitive answer about a real file and the caller stops looking. Only distinguishable here, after the query came back empty: an existing-but-unindexed file must keep the message below. Wording is `runDeps`/`runExports`' verbatim, which already close this same gap.
+    if (opts.file !== undefined && !fs.existsSync(opts.file)) {
+      emitErr(`Could not read: ${opts.file}`)
+      return 1
+    }
     const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
     emitErr(`No type declarations found${ctx}`)
     return 1
