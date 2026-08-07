@@ -449,7 +449,7 @@ function _totalsLines(summary: StatsSummary): string[] {
  * terminal, sending colorized box-table output through what test/log
  * consumers expect to be plain text.
  */
-function _useRichStats(): boolean {
+export function _useRichStats(): boolean {
   if (process.env['NO_COLOR']) return false
   if (process.stdout.isTTY === true) return true
   return process.stdout.isTTY === undefined && !process.env['CI']
