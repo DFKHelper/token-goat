@@ -892,7 +892,7 @@ function cmdMcpAudit(opts: { project?: string; json?: boolean } = {}): Promise<v
   })
 }
 
-function cmdRecall(query: string, opts: { type?: string; limit?: string; json?: boolean } = {}): void {
+function cmdRecall(query: string | undefined, opts: { type?: string; limit?: string; json?: boolean } = {}): void {
   let type: RecallCacheType | undefined
   if (opts.type !== undefined) {
     if (!isRecallCacheType(opts.type)) {
@@ -3059,8 +3059,8 @@ export function buildProgram(): Command {
     .action(guard(cmdMcpAudit))
 
   program
-    .command('recall <query>')
-    .description('search across every cached bash-output, web-output, and mcp-output entry (full-text)')
+    .command('recall [query]')
+    .description('search across every cached bash-output, web-output, and mcp-output entry (full-text); with no query, list them newest-first')
     .option('--type <type>', 'filter to one cache type: bash, web, or mcp')
     .option('--limit <n>', 'max results to return (default: 10)')
     .option('--json', 'output JSON')

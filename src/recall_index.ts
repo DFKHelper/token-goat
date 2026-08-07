@@ -223,9 +223,36 @@ export function likeSearchForTesting(query: string, type?: RecallCacheType, limi
 }
 
 /**
+ * Browse the cross-cache recall index with no query: every cached entry, newest
+ * first, optionally narrowed to one cache type. This is the browse counterpart to
+ * {@link searchRecall}, and it exists for the same reason `recall` does at all --
+ * an agent that doesn't know which cache type holds a result shouldn't have to run
+ * `bash-history`, `web-history`, and `mcp-history` in turn. Snippets are built with
+ * an empty query, which {@link buildSnippet} renders as a leading extract.
+ * Fail-soft like the rest of this module: any query-time failure yields no rows
+ * rather than surfacing an error for a best-effort lookup.
+ */
+export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
+  const limit = opts.limit ?? 10
+  const columns = `SELECT entry_id AS id, cache_type AS cacheType, label, content, stored_at AS storedAt FROM cache_recall`
+  try {
+    const db = getDb(globalDbPath())
+    const rows = (
+      opts.type !== undefined
+        ? db.prepare(`${columns} WHERE cache_type = ? ORDER BY stored_at DESC LIMIT ?`).all(opts.type, limit)
+        : db.prepare(`${columns} ORDER BY stored_at DESC LIMIT ?`).all(limit)
+    ) as Array<{ id: string; cacheType: string; label: string | null; content: string | null; storedAt: number | null }>
+    return mapRowsToHits(rows, '')
+  } catch {
+    return []
+  }
+}
+
+/**
  * Search the cross-cache recall index. Empty/whitespace-only `query` returns no
- * hits (never throws, never returns every entry -- there is no "list all"
- * mode here, use `bash-history`/`web-history`/`mcp-history` for that).
+ * hits (never throws, never returns every entry) -- {@link listRecentRecall} is
+ * the deliberate "list all" entry point, so that a caller asking to *search* for
+ * nothing never silently receives everything.
  */
 export function searchRecall(query: string, opts: RecallSearchOptions = {}): RecallHit[] {
   const limit = opts.limit ?? 10

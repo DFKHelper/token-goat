@@ -1306,6 +1306,16 @@ const cases: Record<string, () => void | Promise<void>> = {
     const rBadType = run(['recall', nonce, '--type', 'nope'])
     expect(rBadType.status).not.toBe(0)
     expect(rBadType.stdout + rBadType.stderr).toContain('--type must be one of')
+
+    // The browse form: no query at all must list rather than error out on a missing argument.
+    // This is the CLI-layer wiring ([query] vs <query>) that no unit test can pin.
+    const rBrowse = run(['recall', '--limit', '3'])
+    expect(rBrowse.status, rBrowse.stderr).toBe(0)
+    expect(rBrowse.stdout + rBrowse.stderr).not.toMatch(/missing required argument|unknown command/)
+
+    const rBrowseJson = run(['recall', '--limit', '3', '--json'])
+    expect(rBrowseJson.status, rBrowseJson.stderr).toBe(0)
+    expect(Array.isArray(JSON.parse(rBrowseJson.stdout))).toBe(true)
   },
 
   'hint-stats': () => {
