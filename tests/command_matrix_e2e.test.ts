@@ -820,11 +820,36 @@ const cases: Record<string, () => void | Promise<void>> = {
       const ws = wb.addWorksheet('People');
       ws.addRow(['name','age']);
       ws.addRow(['Alice','30']);
+      const ws2 = wb.addWorksheet('Q1  Draft');
+      ws2.addRow(['x']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
     `])
     const r = run(['xlsx-sheets', xlsxPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('People')
+
+    const rj = run(['xlsx-sheets', xlsxPath, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const sheets = JSON.parse(rj.stdout) as Array<{ name: string; ref: string; rows: number; cols: number }>
+    expect(sheets.map((s) => s.name)).toContain('People')
+    expect(typeof sheets[0]?.rows).toBe('number')
+    expect(typeof sheets[0]?.ref).toBe('string')
+
+    // The point of the flag: a sheet name taken straight from the JSON has to be accepted by the
+    // sibling command whose --sheet help text says "see xlsx-sheets". Parsing it back out of the
+    // padded text line was the step this removes, so the round-trip is what actually needs pinning.
+    const rHead = run(['xlsx-head', xlsxPath, '--sheet', sheets[0]!.name])
+    expect(rHead.status, rHead.stderr).toBe(0)
+    expect(rHead.stdout).toContain('Alice')
+
+    // Excel allows consecutive spaces in a sheet name, and the text form separates its columns with
+    // two spaces -- so `Q1  Draft  A1:A1  (1 rows x 1 cols)` cannot be split back into fields at all.
+    // That makes this a correctness gap in the text handoff, not just an ergonomic one: JSON must
+    // return the name byte-exact, and it has to still drive --sheet.
+    const awkward = sheets.find((s) => s.name.includes('  '))
+    expect(awkward?.name).toBe('Q1  Draft')
+    const rAwkward = run(['xlsx-head', xlsxPath, '--sheet', awkward!.name])
+    expect(rAwkward.status, rAwkward.stderr).toBe(0)
   },
   'xlsx-head': () => {
     const dir = mkIsolated('tg-matrix-xlsxh-')

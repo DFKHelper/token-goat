@@ -1195,9 +1195,10 @@ function recordXlsxStat(kind: string, file: string, emitted: string): void {
   recordStat(kind, bytesSaved, Math.round(bytesSaved / 4))
 }
 
-async function cmdXlsxSheets(file: string) {
+async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}) {
   const sheets = await xlsxListSheets(file)
-  const text = sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
+  // Three sibling commands (xlsx-head, xlsx-range, xlsx-query) take a --sheet whose help text says "see xlsx-sheets", so this output exists to be fed straight back -- but the sheet name had to be copied out of a padded prose line that also carries the range and the dimensions. --json hands over the same {name, ref, rows, cols} the extractor already returns.
+  const text = opts.json === true ? JSON.stringify(sheets.map((s) => ({ name: s.name, ref: s.ref, rows: s.rows, cols: s.cols })), null, 2) : sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n')
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
@@ -3768,6 +3769,7 @@ export function buildProgram(): Command {
   program
     .command('xlsx-sheets <file>')
     .description('list sheet names + used range/dimensions in an Excel workbook instead of a raw Read')
+    .option('-j, --json', 'output as JSON')
     .action(guard(cmdXlsxSheets))
 
   program
