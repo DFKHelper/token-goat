@@ -12,6 +12,7 @@
  */
 
 import { Command } from 'commander'
+import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import { homedir } from 'os'
@@ -4132,7 +4133,12 @@ export async function run(argv: string[] = process.argv): Promise<void> {
       return
     }
     if (code === 'commander.unknownCommand' || code === 'commander.missingArgument') {
-      // Commander already wrote its diagnostic to stderr.
+      // Commander already wrote its diagnostic to stderr. Its "(Did you mean X?)" is edit distance over the registered names, which misfires on a conceptual miss rather than a typo -- `search` resolves to `arch`. Append an intent-based pointer for the handful of names a caller reaches for when they know what they want but not what it is called; commander's own line is left exactly as it was.
+      if (code === 'commander.unknownCommand') {
+        const attempted = attemptedCommandName(argv)
+        const hint = attempted === null ? null : suggestForUnknownCommand(attempted)
+        if (hint !== null) err(`Looking for that? Try ${hint}.`)
+      }
       process.exitCode = 1
       return
     }

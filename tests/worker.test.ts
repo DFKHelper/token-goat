@@ -141,11 +141,45 @@ describe('isWorkerRunning', () => {
   })
 })
 
+/**
+ * Wait, briefly and synchronously, for a just-spawned detached daemon to become visible to
+ * `pidAlive`. Returns true as soon as it is. On timeout it returns the worker's own error log
+ * instead of false, so a real spawn failure reports its cause rather than collapsing into an
+ * inscrutable boolean -- the assertion still fails either way, this only decides what it prints.
+ * Busy-waits deliberately: the surrounding test is synchronous, and the loop exits on first success.
+ */
+function waitForWorkerAlive(dir: string, timeoutMs = 5000): true | string {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (isWorkerRunning(dir)) return true
+  }
+  let log = '(no worker-errors.log written)'
+  try {
+    log = fs.readFileSync(path.join(dir, 'worker-errors.log'), 'utf8').trim() || log
+  } catch {
+    // The daemon never got far enough to write one; the default message already says so.
+  }
+  const pid = fs.existsSync(workerPidPath(dir)) ? fs.readFileSync(workerPidPath(dir), 'utf8').trim() : '(no pid file)'
+  return `worker pid ${pid} never became visible within ${timeoutMs}ms; worker-errors.log: ${log}`
+}
+
 describe('ensureWorkerAlive (auto-heal regression)', () => {
   // Regression: before ensureWorkerAlive, startDetachedWorker was only ever invoked from the
   // `worker start` CLI command -- nothing anywhere restarted a daemon that died (crash, a manual
   // taskkill, a machine sleep/wake race, anything). A dead worker stayed dead indefinitely, with
   // no automatic recovery, until a human happened to notice and ran `worker start` by hand.
+
+  // The helper's failure path runs only when something has already gone wrong, so nothing would
+  // otherwise exercise it -- and a helper that threw while building its diagnostic would turn a
+  // legible flake into an inscrutable crash. Drive it directly against a pid that will never be alive.
+  it('waitForWorkerAlive reports the pid and the worker log instead of a bare false', () => {
+    fs.writeFileSync(workerPidPath(DIR), '999999999\n')
+    const result = waitForWorkerAlive(DIR, 50)
+    expect(result).not.toBe(true)
+    expect(String(result)).toContain('999999999')
+    expect(String(result)).toContain('never became visible')
+    expect(String(result)).toContain('no worker-errors.log written')
+  })
 
   it('does nothing when a live worker is already running', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
@@ -159,10 +193,17 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     ensureWorkerAlive(DIR)
     try {
-      // A real detached daemon was spawned and claimed the pid-file slot with a live pid --
-      // distinct from the stale one that was there before.
-      expect(isWorkerRunning(DIR)).toBe(true)
+      // Claiming the slot is synchronous in the PARENT (startDetachedWorker writes the pid file
+      // itself, right after spawn returns), so this half is deterministic and asserted first.
       expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe('999999999')
+      // Liveness is not: the pid names a real detached OS process that the scheduler creates
+      // independently, and `pidAlive` -> process.kill(pid, 0) can report not-yet-visible during
+      // that window. Under full-suite load (8 vitest forks, several of them spawning their own
+      // children) the window widens enough to lose the race, which made this assertion fail
+      // roughly one run in five with a bare `expected true to be false` and nothing to act on.
+      // Polling does not weaken it -- a daemon that genuinely failed to start still fails here,
+      // now with the worker's own error log attached so the next occurrence says why.
+      expect(waitForWorkerAlive(DIR)).toBe(true)
     } finally {
       // Stop the real spawned daemon before DIR is torn down in afterEach -- otherwise it keeps
       // polling a directory that no longer exists.
