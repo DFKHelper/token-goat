@@ -604,22 +604,25 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace zero matches reports a CRLF-vs-LF near-match diagnostic', () => {
+    it('replace auto-heals a CRLF-file/LF-old-text near-match instead of erroring (the reported case)', () => {
+      // Regression: replace used to diagnose "a near-match exists that differs only by line
+      // endings" and then still error out, forcing the caller to manually re-encode. It should
+      // instead perform the replacement, writing the new text back in CRLF (the file's EOL at
+      // that location) and leaving the rest of the file's CRLF endings untouched.
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-new-${Date.now()}.txt`)
-      fs.writeFileSync(tmp, 'alpha\r\nbeta\r\ngamma\r\n', 'utf8')
-      fs.writeFileSync(oldFile, 'beta\ngamma', 'utf8')
-      fs.writeFileSync(newFile, 'BETA\nGAMMA', 'utf8')
+      fs.writeFileSync(tmp, Buffer.from('alpha\r\nbeta\r\ngamma\r\n', 'utf8'))
+      fs.writeFileSync(oldFile, Buffer.from('beta\ngamma', 'utf8'))
+      fs.writeFileSync(newFile, Buffer.from('BETA\nGAMMA', 'utf8'))
       try {
         const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
-        expect(r.status).toBe(1)
-        expect(r.stderr).toContain('old string not found')
-        expect(r.stderr).toContain('near-match')
-        expect(r.stderr).toContain('line endings')
-        expect(r.stderr).toContain('CRLF')
-        // Diagnostic only — the file must be left untouched.
-        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\r\nbeta\r\ngamma\r\n')
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+        expect(r.stdout).toContain('line-ending normalized')
+        // Raw-byte assertion — a string comparison would silently normalize \r\n itself.
+        const result = fs.readFileSync(tmp)
+        expect(result.equals(Buffer.from('alpha\r\nBETA\r\nGAMMA\r\n', 'utf8'))).toBe(true)
       } finally {
         fs.rmSync(tmp, { force: true })
         fs.rmSync(oldFile, { force: true })
@@ -627,22 +630,64 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace zero matches reports a CRLF-vs-LF near-match diagnostic (opposite direction)', () => {
+    it('replace auto-heals an LF-file/CRLF-old-text near-match instead of erroring (mirror case)', () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-opp-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-new-${Date.now()}.txt`)
-      fs.writeFileSync(tmp, 'alpha\nbeta\ngamma\n', 'utf8')
-      fs.writeFileSync(oldFile, 'beta\r\ngamma', 'utf8')
-      fs.writeFileSync(newFile, 'BETA\r\nGAMMA', 'utf8')
+      fs.writeFileSync(tmp, Buffer.from('alpha\nbeta\ngamma\n', 'utf8'))
+      fs.writeFileSync(oldFile, Buffer.from('beta\r\ngamma', 'utf8'))
+      fs.writeFileSync(newFile, Buffer.from('BETA\r\nGAMMA', 'utf8'))
       try {
         const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+        expect(r.stdout).toContain('line-ending normalized')
+        // Raw-byte assertion — the healed text must land as LF (the file's convention at that
+        // location), not the CRLF it was supplied in, and no stray \r must be introduced.
+        const result = fs.readFileSync(tmp)
+        expect(result.equals(Buffer.from('alpha\nBETA\nGAMMA\n', 'utf8'))).toBe(true)
+        expect(result.includes(0x0d)).toBe(false)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace reports how many places matched when the EOL-normalized match is ambiguous', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-ambig-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, Buffer.from('one\r\ntwo\r\none\r\ntwo\r\n', 'utf8'))
+      const oldB64 = Buffer.from('one\ntwo', 'utf8').toString('base64')
+      const newB64 = Buffer.from('ONE\nTWO', 'utf8').toString('base64')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('old string not found')
-        expect(r.stderr).toContain('near-match')
+        expect(r.stderr).toContain('2')
         expect(r.stderr).toContain('line endings')
-        expect(r.stderr).toContain('LF')
-        // Diagnostic only — the file must be left untouched.
-        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+        // Ambiguous — the file must be left untouched.
+        expect(fs.readFileSync(tmp).equals(Buffer.from('one\r\ntwo\r\none\r\ntwo\r\n', 'utf8'))).toBe(true)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('replace EOL auto-heal preserves a literal $, $$ and $& in the new text', () => {
+      // Regression guard: String.replace/replaceAll treat $, $$ and $& as special replacement-
+      // pattern sequences even for a plain-string search. The auto-heal path must build the
+      // healed buffer via Buffer.concat, never String.replace, so a literal dollar sign in the
+      // caller-supplied new text survives untouched.
+      const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-dollar-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, Buffer.from('alpha\r\nbeta\r\ngamma\r\n', 'utf8'))
+      fs.writeFileSync(oldFile, Buffer.from('beta\ngamma', 'utf8'))
+      fs.writeFileSync(newFile, Buffer.from('cost is $5, $$, and $&', 'utf8'))
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status, r.stderr).toBe(0)
+        const result = fs.readFileSync(tmp)
+        expect(result.equals(Buffer.from('alpha\r\ncost is $5, $$, and $&\r\n', 'utf8'))).toBe(true)
       } finally {
         fs.rmSync(tmp, { force: true })
         fs.rmSync(oldFile, { force: true })
@@ -846,7 +891,12 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('replace without --normalize-newlines still reports the CRLF near-match (flag is opt-in)', () => {
+    it('replace auto-heals a CRLF old/new snippet against an LF target without requiring --normalize-newlines', () => {
+      // Superseded expectation: this used to assert that omitting --normalize-newlines left the
+      // near-match unresolved (the flag was required to opt in). The unique-normalized-match
+      // auto-heal now handles this by default, so the flag is no longer required for this case
+      // — --normalize-newlines still exists for the (rarer) case of forcing normalization
+      // proactively even when a byte-exact match would otherwise have been found.
       const tmp = path.join(os.tmpdir(), `tg-rpl-normeol-off-${Date.now()}.txt`)
       const oldFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-old-${Date.now()}.txt`)
       const newFile = path.join(os.tmpdir(), `tg-rpl-normeol-off-new-${Date.now()}.txt`)
@@ -855,9 +905,9 @@ describe('token-goat CLI', () => {
       fs.writeFileSync(newFile, 'BETA\r\nGAMMA\r\n', 'utf8')
       try {
         const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
-        expect(r.status).toBe(1)
-        expect(r.stderr).toContain('near-match')
-        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout).toContain('line-ending normalized')
+        expect(fs.readFileSync(tmp).equals(Buffer.from('alpha\nBETA\nGAMMA\n', 'utf8'))).toBe(true)
       } finally {
         fs.rmSync(tmp, { force: true })
         fs.rmSync(oldFile, { force: true })

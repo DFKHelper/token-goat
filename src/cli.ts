@@ -2165,14 +2165,13 @@ function detectDominantEol(buf: Buffer): '\r\n' | '\n' {
 }
 
 /**
- * Converts `source`'s line endings to match `reference`'s dominant line ending. Operates on
- * raw bytes (never decodes to a string): CR (0x0D) and LF (0x0A) can only appear as
- * standalone single-byte characters in valid UTF-8, never as a multi-byte sequence's
- * continuation byte, so rewriting them byte-by-byte is safe even on non-UTF-8 content —
- * preserving the same byte-exactness guarantee as the rest of `cmdReplace`.
+ * Converts `source`'s line endings to `eol`. Operates on raw bytes (never decodes to a
+ * string): CR (0x0D) and LF (0x0A) can only appear as standalone single-byte characters in
+ * valid UTF-8, never as a multi-byte sequence's continuation byte, so rewriting them
+ * byte-by-byte is safe even on non-UTF-8 content — preserving the same byte-exactness
+ * guarantee as the rest of `cmdReplace`.
  */
-function normalizeEolToMatch(source: Buffer, reference: Buffer): Buffer {
-  const eol = detectDominantEol(reference)
+function convertEolTo(source: Buffer, eol: '\r\n' | '\n'): Buffer {
   const CR = 0x0d
   const LF = 0x0a
   const collapsed: number[] = []
@@ -2187,6 +2186,113 @@ function normalizeEolToMatch(source: Buffer, reference: Buffer): Buffer {
     else expanded.push(b)
   }
   return Buffer.from(expanded)
+}
+
+/** Converts `source`'s line endings to match `reference`'s dominant line ending. */
+function normalizeEolToMatch(source: Buffer, reference: Buffer): Buffer {
+  return convertEolTo(source, detectDominantEol(reference))
+}
+
+/**
+ * Collapses `buf`'s CRLF sequences down to LF, returning the collapsed bytes alongside a
+ * map from each collapsed-byte index back to the original byte offset it came from (plus a
+ * trailing sentinel entry at `buf.length`, so a half-open `[origStart[i], origStart[i+len])`
+ * range recovers the exact original byte span a collapsed-space match of length `len`
+ * starting at `i` corresponds to). Byte-level, not string-level, for the same non-UTF-8
+ * safety reason as `convertEolTo`.
+ */
+function buildEolCollapsedView(buf: Buffer): { collapsed: Buffer; origStart: number[] } {
+  const CR = 0x0d
+  const LF = 0x0a
+  const bytes: number[] = []
+  const origStart: number[] = []
+  let i = 0
+  while (i < buf.length) {
+    if (buf[i] === CR && buf[i + 1] === LF) {
+      bytes.push(LF)
+      origStart.push(i)
+      i += 2
+    } else {
+      bytes.push(buf[i]!)
+      origStart.push(i)
+      i += 1
+    }
+  }
+  origStart.push(buf.length)
+  return { collapsed: Buffer.from(bytes), origStart }
+}
+
+/**
+ * Finds every place `old` occurs in `target` once both are EOL-collapsed (CRLF and LF treated
+ * as equivalent), and maps each hit back to the real byte span in `target` — which may be
+ * longer or shorter than `old.length` since the matched region can use a different EOL style
+ * than `old` itself. This is how `cmdReplace` turns a "differs only by line endings" near-miss
+ * into an actual fix instead of just diagnosing it.
+ */
+function findEolCollapsedMatches(target: Buffer, old: Buffer): { start: number; end: number }[] {
+  const { collapsed: oldCollapsed } = buildEolCollapsedView(old)
+  if (oldCollapsed.length === 0) return []
+  const { collapsed: targetCollapsed, origStart } = buildEolCollapsedView(target)
+  const spans: { start: number; end: number }[] = []
+  let cursor = 0
+  while ((cursor = targetCollapsed.indexOf(oldCollapsed, cursor)) !== -1) {
+    spans.push({ start: origStart[cursor]!, end: origStart[cursor + oldCollapsed.length]! })
+    cursor += oldCollapsed.length
+  }
+  return spans
+}
+
+/**
+ * Detects the EOL style actually used within `span` of `buf` — "at that location" rather than
+ * file-wide — so a healed replacement matches its immediate surroundings instead of the file's
+ * overall dominant convention. Falls back to `wholeFileFallback`'s dominant EOL when `span`
+ * itself contains no line break to judge from (e.g. a single-line match).
+ */
+function localEolStyle(buf: Buffer, span: { start: number; end: number }, wholeFileFallback: Buffer): '\r\n' | '\n' {
+  const slice = buf.subarray(span.start, span.end)
+  let crlf = 0
+  let lfOnly = 0
+  for (let i = 0; i < slice.length; i++) {
+    if (slice[i] === 0x0a) {
+      if (i > 0 && slice[i - 1] === 0x0d) crlf++
+      else lfOnly++
+    }
+  }
+  if (crlf === 0 && lfOnly === 0) return detectDominantEol(wholeFileFallback)
+  return crlf > lfOnly ? '\r\n' : '\n'
+}
+
+/**
+ * Shared write path for `cmdReplace`'s two success branches (byte-exact and EOL-healed):
+ * re-checks the optimistic-concurrency guard, writes atomically, and enqueues the dirty-reindex
+ * queue entry. Throws on a concurrent-modification or write failure; the caller prints its own
+ * success message afterward since the two branches word it differently.
+ */
+function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs.Stats | undefined): void {
+  if (preWriteStat !== undefined) {
+    // Test-only seam: widens the read->re-stat window so a regression test can deterministically force a concurrent modification to land inside it, instead of relying on OS timing jitter. No-op unless a test explicitly sets this env var; never set in normal operation.
+    const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
+    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
+      // Deterministic readiness signal for the regression test: emitted only under the same test-only env var, right as the delay window opens, so the test can land its concurrent write inside the window instead of guessing at CLI startup latency.
+      process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
+      sleepSync(testDelayMs)
+    }
+    let preRenameStat: fs.Stats | undefined
+    try {
+      preRenameStat = fs.statSync(file)
+    } catch {
+      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
+    }
+    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
+      throw new CliError(`${file} changed on disk while replace was running -- the file was modified concurrently, so the replace was NOT applied. Retry the replace.`)
+    }
+  }
+  try {
+    atomicWriteBuffer(file, replacedBuf)
+  } catch (e) {
+    mapFsError(e, undefined, file)
+  }
+  enqueueDirtyPathSafe(file)
 }
 
 // Bounds the cost of the closest-match scan below (worst case targetLines * windowSize
@@ -2287,6 +2393,24 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   const occurrences = matches.length
 
   if (occurrences === 0) {
+    // Auto-heal: the exact byte match failed, but if a match exists once CRLF/LF differences
+    // are collapsed away — and that match is unique — perform the replacement instead of just
+    // diagnosing it, writing the new text back in the file's EOL style at that location so the
+    // file is never left with mixed endings.
+    const eolMatches = findEolCollapsedMatches(targetBuf, normalizedOldBytes)
+    if (eolMatches.length === 1) {
+      const span = eolMatches[0]!
+      const healedNewBytes = convertEolTo(normalizedNewBytes, localEolStyle(targetBuf, span, targetBuf))
+      const healedBuf = Buffer.concat([targetBuf.subarray(0, span.start), healedNewBytes, targetBuf.subarray(span.end)])
+      writeReplacedBuffer(file, healedBuf, preWriteStat)
+      out(`replaced 1 occurrence in ${file} (line-ending normalized to match the file at that location)`)
+      return
+    }
+    if (eolMatches.length > 1) {
+      throw new CliError(
+        `old string not found in ${file} — ${eolMatches.length} near-matches exist that differ only by line endings; provide a more specific match`,
+      )
+    }
     // Diagnostic only: decoding lossily here is fine — it only shapes the human-readable near-miss
     // hint and never feeds back into what gets matched or written.
     const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), normalizedOldBytes.toString('utf8'))
@@ -2320,31 +2444,7 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   parts.push(targetBuf.subarray(prevEnd))
   const replacedBuf = Buffer.concat(parts)
 
-  if (preWriteStat !== undefined) {
-    // Test-only seam: widens the read->re-stat window so a regression test can deterministically force a concurrent modification to land inside it, instead of relying on OS timing jitter. No-op unless a test explicitly sets this env var; never set in normal operation.
-    const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
-    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
-      // Deterministic readiness signal for the regression test: emitted only under the same test-only env var, right as the delay window opens, so the test can land its concurrent write inside the window instead of guessing at CLI startup latency.
-      process.stderr.write('TOKEN_GOAT_TEST_REPLACE_DELAY_READY\n')
-      sleepSync(testDelayMs)
-    }
-    let preRenameStat: fs.Stats | undefined
-    try {
-      preRenameStat = fs.statSync(file)
-    } catch {
-      // Vanished between the read and the write -- let atomicWriteBuffer surface the real error.
-    }
-    if (preRenameStat !== undefined && (preRenameStat.mtimeMs !== preWriteStat.mtimeMs || preRenameStat.size !== preWriteStat.size)) {
-      throw new CliError(`${file} changed on disk while replace was running -- the file was modified concurrently, so the replace was NOT applied. Retry the replace.`)
-    }
-  }
-
-  try {
-    atomicWriteBuffer(file, replacedBuf)
-  } catch (e) {
-    mapFsError(e, undefined, file)
-  }
-  enqueueDirtyPathSafe(file)
+  writeReplacedBuffer(file, replacedBuf, preWriteStat)
   out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
 }
 
