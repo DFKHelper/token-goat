@@ -187,4 +187,15 @@ describe('empty-index hint', () => {
     expect(r.out).toContain('Symbol not found: noSuchSymbol')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
+
+  // `symbol` ends its miss with `Try: token-goat semantic "<name>"`. On an empty index semantic fails exactly as symbol just did, so that line sends the caller into a second dead end before they reach the hint naming the real fix. It must be suppressed in that case only -- with any index at all it is still the right next step, which the second assertion pins.
+  it('symbol: suppresses the semantic fallback on an empty index, keeps it on a populated one', () => {
+    const empty = run(['symbol', 'noSuchSymbol'], nonGitProjectDir, homeDir)
+    expect(empty.out).toContain(EMPTY_INDEX_SNIPPET)
+    expect(empty.out).not.toContain('Try: token-goat semantic')
+
+    const populated = run(['symbol', 'noSuchSymbol'], indexedProjectDir, homeDir)
+    expect(populated.out).not.toContain(EMPTY_INDEX_SNIPPET)
+    expect(populated.out).toContain('Try: token-goat semantic')
+  })
 })
