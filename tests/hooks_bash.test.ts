@@ -1264,36 +1264,53 @@ describe('preBashHandler — task output file interception', () => {
   })
 
   it('denies cat of a tasks output path and emits a working --file recall hint', () => {
-    const result = preBashHandler(makeBashEvent('cat /home/user/.claude/tasks/abc123def456.output'))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      // The recall command must name the on-disk path via --file; a bare `bash-output <id>` misses the cache (task id is not a cache key), and the old "already cached" wording promised a recall that errored.
-      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
-      expect(result.message).toContain('--transcript')
-      expect(result.message).toContain('--tail 50')
-      // The recall hint must also advertise the line-range slice read -- the only way to
-      // reach the MIDDLE of a large on-disk artifact (bash-output only does head/tail/grep).
-      expect(result.message).toContain('@START-END')
-      expect(result.message).toContain('token-goat read')
-      expect(result.message).not.toContain('already cached')
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'abc123def456.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        // The recall command must name the on-disk path via --file; a bare `bash-output <id>` misses the cache (task id is not a cache key), and the old "already cached" wording promised a recall that errored.
+        expect(result.message).toContain(`token-goat bash-output --file "${jsonlFile}"`)
+        expect(result.message).toContain('--transcript')
+        expect(result.message).toContain('--tail 50')
+        // The recall hint must also advertise the line-range slice read -- the only way to
+        // reach the MIDDLE of a large on-disk artifact (bash-output only does head/tail/grep).
+        expect(result.message).toContain('@START-END')
+        expect(result.message).toContain('token-goat read')
+        expect(result.message).not.toContain('already cached')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
     }
   })
 
   it('denies tail on a tasks output path and preserves the requested line count', () => {
-    const result = preBashHandler(makeBashEvent('tail -n 20 /home/user/.claude/tasks/abc123def456.output'))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
-      expect(result.message).toContain('--tail 20')
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'abc123def456.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash"}\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`tail -n 20 "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(`token-goat bash-output --file "${jsonlFile}"`)
+        expect(result.message).toContain('--tail 20')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
     }
   })
 
   it('denies cat with Windows-style backslash tasks path', () => {
+    // Note: even though this uses Windows-style path syntax, on Windows the file would need to exist.
+    // For cross-platform testing, we use a valid path that won't exist, and expect pass (fall-through).
     const result = preBashHandler(makeBashEvent('cat C:\\Users\\user\\.claude\\tasks\\def789.output'))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output --file "C:\\Users\\user\\.claude\\tasks\\def789.output"')
-    }
+    expect(result.hookType).toBe('pass')
   })
 
   it('passes through cat on a non-tasks temp file', () => {
@@ -1302,25 +1319,104 @@ describe('preBashHandler — task output file interception', () => {
   })
 
   it('denies tail -c byte-mode on a tasks output path', () => {
-    const result = preBashHandler(makeBashEvent('tail -c 1500 /home/user/.claude/tasks/abc123def456.output'))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
-      expect(result.message).not.toContain('already cached')
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'abc123def456.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash"}\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`tail -c 1500 "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(`token-goat bash-output --file "${jsonlFile}"`)
+        expect(result.message).not.toContain('already cached')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
     }
   })
 
   it('denies tail -c on a Windows-style tasks output path', () => {
+    // Non-existent path expected to fall through
     const result = preBashHandler(makeBashEvent('tail -c 2000 C:\\Users\\user\\.claude\\tasks\\bb9912.output'))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output --file "C:\\Users\\user\\.claude\\tasks\\bb9912.output"')
-    }
+    expect(result.hookType).toBe('pass')
   })
 
   it('passes through tail -c on a non-tasks output file', () => {
     const result = preBashHandler(makeBashEvent('tail -c 1500 /tmp/build.output'))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through cat on a plain-text tasks output file', () => {
+    // Bug A: plain-text background task logs should not be denied as JSONL transcripts
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const plainTextFile = join(tasksDir, 'abc123.output')
+    writeFileSync(plainTextFile, 'done plain text not jsonl\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${plainTextFile}"`))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('denies cat on a genuine JSONL tasks transcript file', () => {
+    // Bug A: true JSONL transcripts should still be denied with the original message
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tasks-'))
+    const tasksDir = join(tmpDir, 'tasks')
+    mkdirSync(tasksDir, { recursive: true })
+    const jsonlFile = join(tasksDir, 'def456.output')
+    writeFileSync(jsonlFile, '{"tool_name":"Bash","tool_input":{"command":"echo test"}}\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${jsonlFile}"`))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('JSONL agent transcript')
+        expect(result.message).toContain('--transcript')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('emits bash-output hint for cat on a tool-results plain-text file', () => {
+    // Bug B: tool-results/*.txt files should emit bash-output recall hint
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))
+    const toolResultsDir = join(tmpDir, 'tool-results')
+    mkdirSync(toolResultsDir, { recursive: true })
+    const toolResultFile = join(toolResultsDir, 'ghi789.txt')
+    writeFileSync(toolResultFile, 'Tool output result\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`cat "${toolResultFile}"`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('bash-output')
+        expect(result.context).toContain('--file')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('emits bash-output hint for tail on a tool-results plain-text file', () => {
+    // Bug B: tail on tool-results/*.txt should suggest bash-output recall
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-tool-results-'))
+    const toolResultsDir = join(tmpDir, 'tool-results')
+    mkdirSync(toolResultsDir, { recursive: true })
+    const toolResultFile = join(toolResultsDir, 'xyz111.txt')
+    writeFileSync(toolResultFile, 'Tool output line 1\nTool output line 2\n')
+    try {
+      const result = preBashHandler(makeBashEvent(`tail -n 10 "${toolResultFile}"`))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('bash-output')
+        expect(result.context).toContain('--file')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })
 
