@@ -24,6 +24,8 @@ import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
+import { globalDbPath } from './constants.js'
+import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -295,6 +297,10 @@ export function runCallers(opts: CallersOptions): number {
       return 1
     }
     emitErr(`No references found for '${opts.symbol}'`)
+    // Only paid after the query already came back empty, and only in text mode -- this branch
+    // already emits plain prose regardless of --json (see runRefsSingle's sibling comment), so
+    // there's no JSON envelope here to protect either way.
+    if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
 
@@ -360,10 +366,14 @@ export function runCallChain(opts: CallChainOptions): number {
     // A `file::symbol` spec names a specific definition, so the existence check must be scoped to that file too -- matching refs'/brief's own "Symbol 'X' not found in 'Y'" wording verbatim rather than the generic message below, which stays reserved for the bare-name path.
     if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
       emitErr(`Symbol '${name}' not found in '${file}'`)
+      // Only paid after the query already came back empty, and only in text mode -- this branch
+      // already emits plain prose regardless of --json, matching runRefsSingle's convention.
+      if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
     }
   } else if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
     emitErr(`Symbol not found: ${opts.symbol}`)
+    if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
 
@@ -636,6 +646,9 @@ export function runDead(opts: DeadOptions): number {
     } else {
       emit('No dead symbols found.')
     }
+    // Only paid after the query already came back empty (this branch is only reached once the
+    // --json path above has already returned, so this is always text mode).
+    if (isIndexEmptyForProject(globalDbPath(), rootDir)) emit(emptyIndexMessage(rootDir))
     return 0
   }
 
@@ -902,6 +915,9 @@ export function runTypes(opts: TypesOptions): number {
     }
     const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
     emitErr(`No type declarations found${ctx}`)
+    // Only paid after the query already came back empty, and only in text mode -- this branch
+    // already emits plain prose regardless of --json, matching runRefsSingle's convention.
+    if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
 

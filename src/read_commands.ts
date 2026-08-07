@@ -56,6 +56,7 @@ import { takeScreenshot } from './screenshot.js'
 import { recordStat } from './stats.js'
 import { WHOLE_FILE_NOTE_SYMBOL, getNote, isNoteStale, listNotes } from './notes.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
+import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -500,6 +501,15 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
           return a < b ? -1 : a > b ? 1 : 0
         })
       text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : `\nTry: token-goat semantic "${opts.name}"`
+    }
+    // Only pay this DB read after the query already came back empty, and only in text mode --
+    // --json's zero-result string isn't real JSON either way (see the comment above), so
+    // appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
+    if (opts.json !== true) {
+      const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+      if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
+        text += `\n${emptyIndexMessage(rootDir)}`
+      }
     }
     return { text, code: 1 }
   }
@@ -1565,6 +1575,13 @@ function runRefsSingle(opts: RefsOptions): number {
       return 1
     }
     emitErr(`No references found for '${symName}'`)
+    // Only paid after the query already came back empty, and only in text mode -- this branch
+    // already emits plain prose regardless of --json (there's no separate opts.json check
+    // here), so there's no JSON envelope to protect either way.
+    if (opts.json !== true) {
+      const rootDir = resolveProjectRoot({ project: process.cwd() })
+      if (isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+    }
     return 1
   }
 
@@ -2802,6 +2819,16 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
     // resolves to nothing keeps the original wording below, untouched.
     if (findSpecSeparator(opts.spec) === -1) {
       return { text: formatBareNameSpecError('brief', opts.spec), code: 1 }
+    }
+    // Only paid after the query already came back empty, and only in text mode -- this branch's
+    // text is emitted verbatim via emitErr regardless of --json (no separate opts.json check
+    // exists in runBrief's caller for this path), so there's no JSON envelope to protect either
+    // way.
+    if (opts.json !== true) {
+      const rootDir = resolveProjectRoot({ project: process.cwd() })
+      if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
+        return { text: `Symbol not found: ${opts.spec}\n${emptyIndexMessage(rootDir)}`, code: 1 }
+      }
     }
     return { text: `Symbol not found: ${opts.spec}`, code: 1 }
   }
@@ -4759,11 +4786,22 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // distance threshold.
   const results = searchSymbolsFts(query, n, undefined, rootDir)
   if (results.length === 0) {
+    // Only paid after both the embedding search and the FTS fallback already came back empty.
+    const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
     if (opts.json === true) {
-      const text = JSON.stringify({ source: 'fts', items: [], truncated: false, totalCount: 0 }, null, 2)
+      // A dedicated field, never prose folded into an existing string field -- same "add a field,
+      // don't rewrite an existing one" convention doctor's own {status, message} shape follows,
+      // and consistent with this payload's own {source, items, truncated, totalCount} envelope.
+      const payload = indexEmpty
+        ? { source: 'fts', items: [], truncated: false, totalCount: 0, indexEmpty: true, hint: emptyIndexMessage(rootDir) }
+        : { source: 'fts', items: [], truncated: false, totalCount: 0 }
+      const text = JSON.stringify(payload, null, 2)
       return { text, code: 1 }
     }
-    return { text: `token-goat: no matches for '${query}'`, code: 1 }
+    const text = indexEmpty
+      ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
+      : `token-goat: no matches for '${query}'`
+    return { text, code: 1 }
   }
   if (opts.json === true) {
     const items = results.map((s) => ({
