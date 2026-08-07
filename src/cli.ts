@@ -21,7 +21,7 @@ import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
-import { formatLocalTimestamp, recordStat } from './stats.js'
+import { formatLocalTimestamp, recordStat, _useRichStats } from './stats.js'
 import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { ENV_KEYS, globalDbPath, VERSION } from './constants.js'
@@ -329,7 +329,27 @@ export async function cmdIndex(
   let failed = 0
   let skipped = 0
   const failureGroups = new Map<string, { example: string; count: number }>()
+  // Manual `index` runs can take minutes on a real repo with nothing printed until the very end, which looks hung on a real terminal but must stay perfectly silent for pipes/CI/hook invocations that parse stdout -- reuse _useRichStats' exact TTY/NO_COLOR/CI gate (Claude Code's own terminal reports isTTY===undefined, not false) so the same rule that governs rich stats output governs this progress line. Progress is written to stderr only and throttled to ~10 repaints/sec so a large repo does not hammer the terminal with one line per file.
+  const showProgress = _useRichStats()
+  const progressStart = Date.now()
+  let lastProgressPaintAt = 0
+  let lastProgressLineLen = 0
+  const totalFiles = files.length
+  let fileIdx = 0
+  function paintProgress(phase: string): void {
+    if (!showProgress) return
+    const now = Date.now()
+    if (now - lastProgressPaintAt < 100) return
+    lastProgressPaintAt = now
+    const elapsedSec = ((now - progressStart) / 1000).toFixed(1)
+    const text = `${fileIdx}/${totalFiles} files -- ${phase} -- ${elapsedSec}s elapsed`
+    const trailingPad = text.length < lastProgressLineLen ? ' '.repeat(lastProgressLineLen - text.length) : ''
+    lastProgressLineLen = text.length
+    process.stderr.write(`\r${text}${trailingPad}`)
+  }
   for (const f of files) {
+    fileIdx += 1
+    paintProgress('scanning')
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
     // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from
@@ -361,6 +381,7 @@ export async function cmdIndex(
     }
 
     if (!parseUnchanged) {
+      paintProgress('parsing')
       try {
         indexFileSync(key, dbPath)
       } catch (e) {
@@ -377,10 +398,15 @@ export async function cmdIndex(
       }
     }
     if (!embedUnchanged) {
+      paintProgress('embedding')
       // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses.
       await indexFileEmbeddings(key, dbPath, sha ?? undefined)
     }
     indexed += 1
+  }
+  // Clear the progress line before any further stderr writes (failure summaries below) or the final stdout summary, so nothing is left overwritten or trailing on the terminal.
+  if (showProgress && lastProgressLineLen > 0) {
+    process.stderr.write(`\r${' '.repeat(lastProgressLineLen)}\r`)
   }
   for (const [message, group] of failureGroups) {
     err(
