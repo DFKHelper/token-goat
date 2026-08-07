@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+- **`deps` printed absolute paths you could not feed back into another command.** The whole point of `deps` is to list a file's imports so you can then read one, but the imports came out as full machine-specific paths (`C:\Projects\token-goat\src\baseline.ts`) while every sibling command prints paths relative to the project root. Under `--json` the payload contradicted itself: `file` was root-relative while `internal` was absolute. Both are root-relative now, and a dependency outside the project — which cannot be made relative — is spelled the same way in both fields instead of one using backslashes and the other forward slashes. See [src/graph_commands.ts](src/graph_commands.ts).
+- **`skill-history` printed a column header and nothing else when nothing was cached.** An empty table with its header still showing reads as a populated result that happened to return no rows, or as a lookup against the wrong cache directory — the same gap `skill-list` and `skill-diff` had already closed. It now says the store is empty. `--json` still emits `[]`. See [src/cli.ts](src/cli.ts).
+- **`skill-list --session-id` and `skill-size --session-id` reported a filtered view as an empty cache.** Asking for a session with no cached skills said "No skills cached yet." even when skills were cached under other sessions, so the caller concluded the cache was empty and re-did work that was already there. Both now say how many the filter hid. Output without `--session-id` is unchanged. See [src/cli.ts](src/cli.ts).
+
 ## [2.6.25] - 2026-08-06
 
 ### Fixed
