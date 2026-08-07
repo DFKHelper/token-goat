@@ -8,7 +8,7 @@
  * recall_index.ts; this module is presentation only.
  */
 
-import { searchRecall, type RecallCacheType, type RecallHit } from './recall_index.js'
+import { listRecentRecall, searchRecall, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
 
 export interface RecallCommandOptions {
@@ -28,10 +28,11 @@ const RECALL_COMMAND: Record<RecallCacheType, string> = {
 
 
 
-function printHits(query: string, hits: readonly RecallHit[]): void {
+function printHits(query: string | undefined, hits: readonly RecallHit[]): void {
   const w = (text: string) => { process.stdout.write(text) }
   if (hits.length === 0) {
-    w(`No cache entries match: ${query}\n`)
+    // Browsing an empty cache and searching a populated one for a term that isn't there are different answers, and collapsing them into one message sends the caller off to refine a query against a store that holds nothing.
+    w(query === undefined ? 'No cache entries yet.\n' : `No cache entries match: ${query}\n`)
     return
   }
   for (const hit of hits) {
@@ -42,17 +43,19 @@ function printHits(query: string, hits: readonly RecallHit[]): void {
   }
 }
 
-/** Run the `token-goat recall <query>` command. */
-export function runRecallCommand(query: string, opts: RecallCommandOptions = {}): void {
-  const hits = searchRecall(query, {
+/** Run the `token-goat recall [query]` command. With no query, browse the index newest-first instead of searching it -- see {@link listRecentRecall}. A whitespace-only query is treated as no query rather than as a search that can only ever match nothing. */
+export function runRecallCommand(query: string | undefined, opts: RecallCommandOptions = {}): void {
+  const browse = query === undefined || query.trim() === ''
+  const scope = {
     ...(opts.type !== undefined ? { type: opts.type } : {}),
     ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
-  })
+  }
+  const hits = browse ? listRecentRecall(scope) : searchRecall(query, scope)
 
   if (opts.json === true) {
     process.stdout.write(`${JSON.stringify(hits)}\n`)
     return
   }
 
-  printHits(query, hits)
+  printHits(browse ? undefined : query, hits)
 }
