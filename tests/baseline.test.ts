@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -184,8 +185,18 @@ describe('formatProjectMap', () => {
     const map = buildProjectMap(TMP)
     expect(map.topSymbols).toEqual([])
     const text = formatProjectMap(map, false)
-    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
+    // TMP is a plain temp folder, not a git repo, so the suggested command must be the --walk form: a bare `token-goat index .` refuses outright outside a git repo, which is exactly where this branch fires.
+    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index . --walk'")
     expect(text).not.toContain('## Top symbols\n')
+  })
+
+  // The git half of the same branch. Without this, a fix that hardcoded the --walk form for every project would pass the assertion above and still print a command that cannot run inside a real repo.
+  it('suggests the plain index command instead of --walk when the project is a git repo', () => {
+    write('a.ts', 'export const x = 1\n')
+    execFileSync('git', ['init', '-q', '.'], { cwd: TMP })
+    const text = formatProjectMap(buildProjectMap(TMP), false)
+    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
+    expect(text).not.toContain('--walk')
   })
 
   // Companion to the above: the populated case must render byte-for-byte the same "## Top

@@ -468,14 +468,17 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   if (results.length === 0) {
     let text = `No matches for '${opts.name ?? '*'}'`
+    // Resolved once here, before the near-name scan, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty, and only in text mode: --json's zero-result string isn't real JSON either way (see the comment below), so appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
+    const emptyIndexRoot = opts.json !== true ? (opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : null
+    const indexEmpty = emptyIndexRoot !== null && isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
     // --json callers parse this string as an error message, not human-facing prose -- keep it
     // byte-identical to before and only append the suggestion in text mode.
-    if (opts.name !== undefined && opts.json !== true) {
+    if (opts.name !== undefined && emptyIndexRoot !== null) {
       // Same near-name mechanism as `find`: scan the index and match by case-insensitive
       // substring in either direction, so a typo'd or partial name still gets a cheap next
       // step instead of dead-ending into a full-file Read or a wide Grep.
       const nameLower = opts.name.toLowerCase()
-      const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+      const rootDir = emptyIndexRoot
       const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
       const candidates = [
         ...new Set(
@@ -500,16 +503,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
           if (diff !== 0) return diff
           return a < b ? -1 : a > b ? 1 : 0
         })
-      text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : `\nTry: token-goat semantic "${opts.name}"`
+      // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
+      text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
     }
-    // Only pay this DB read after the query already came back empty, and only in text mode --
-    // --json's zero-result string isn't real JSON either way (see the comment above), so
-    // appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
-    if (opts.json !== true) {
-      const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
-      if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
-        text += `\n${emptyIndexMessage(rootDir)}`
-      }
+    if (indexEmpty && emptyIndexRoot !== null) {
+      text += `\n${emptyIndexMessage(emptyIndexRoot)}`
     }
     return { text, code: 1 }
   }

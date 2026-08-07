@@ -14,6 +14,16 @@ vi.mock('../src/index_reader.js', () => ({
   queryRefCounts: vi.fn(() => new Map()),
 }))
 
+// Stubbed for the same reason as the index_reader stub above: the empty-index check is a real DB count, and these tests drive the query layer through mocks, so without this every miss would look like an unindexed project.
+vi.mock('../src/index_health.js', () => ({
+  isIndexEmptyForProject: vi.fn(() => false),
+  emptyIndexMessage: vi.fn(
+    () =>
+      'no files indexed for this project — every read command will return empty, which looks like a genuine "not found" rather than a missing index; run \'token-goat index .\' here',
+  ),
+  suggestedIndexCommand: vi.fn(() => 'token-goat index .'),
+}))
+
 vi.mock('../src/section_reader.js', () => ({
   readSection: vi.fn(() => null),
   listSections: vi.fn(() => []),
@@ -99,11 +109,13 @@ import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
 import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
+import { isIndexEmptyForProject } from '../src/index_health.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 // The real querySymbols() takes an optional opts param; mockImplementation callbacks below narrow it to a required object (never actually called with none/undefined by read_commands.ts) so their bodies can access opts.name/opts.filePath directly.
 type QuerySymbolsOpts = NonNullable<Parameters<typeof querySymbols>[0]>
 const mockCountSymbols = vi.mocked(countSymbols)
+const mockIsIndexEmptyForProject = vi.mocked(isIndexEmptyForProject)
 const mockAppendDirtyPath = vi.mocked(enqueueDirtyPathSafe)
 const mockQueryRefCounts = vi.mocked(queryRefCounts)
 const mockGetFileEntry = vi.mocked(getFileEntry)
@@ -239,10 +251,21 @@ describe('read_commands', () => {
 
     it('points at semantic search when a miss has no near-name candidates', () => {
       mockQuerySymbols.mockReturnValue([])
+      // The fallback is suppressed on a genuinely empty index, where semantic would fail the same way symbol just did. This test is about the populated-index branch -- a miss with no near-name candidates -- so the emptiness check has to be pinned false, otherwise the mocked empty querySymbols makes the project look unindexed and the test passes or fails for the wrong reason.
+      mockIsIndexEmptyForProject.mockReturnValue(false)
       const { text, code } = runSymbol({ name: 'zzz_totally_gibberish' })
       expect(code).toBe(1)
       expect(text).not.toContain('Did you mean:')
       expect(text).toContain('token-goat semantic "zzz_totally_gibberish"')
+    })
+
+    // The other half of the same branch: with no candidates AND no index, the semantic pointer is a second dead end and must be replaced by the note naming the real fix.
+    it('suppresses the semantic pointer when the project has no indexed files', () => {
+      mockQuerySymbols.mockReturnValue([])
+      mockIsIndexEmptyForProject.mockReturnValue(true)
+      const { text } = runSymbol({ name: 'zzz_totally_gibberish' })
+      expect(text).not.toContain('token-goat semantic')
+      expect(text).toContain('no files indexed for this project')
     })
 
     it('leaves --json output on a miss unchanged by the Did you mean suggestion', () => {

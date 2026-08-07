@@ -20,6 +20,7 @@ import { getDb } from './db.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
+import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { isTestFile } from './util.js'
 import { normalizePath, toDisplayPath } from './paths.js'
@@ -285,12 +286,9 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
       lines.push(`- ${s.name} (${s.kind}) — ${loc}`)
     }
   } else {
-    // Reuses checkSymbolCount's wording (cli_doctor.ts) for the same empty-index condition, so a
-    // `map` against an unindexed project says so instead of silently omitting the whole section --
-    // otherwise the missing heading reads as "this project has no notable symbols" rather than
-    // "this project has never been indexed".
+    // Reuses checkSymbolCount's wording (cli_doctor.ts) for the same empty-index condition, so a `map` against an unindexed project says so instead of silently omitting the whole section -- otherwise the missing heading reads as "this project has no notable symbols" rather than "this project has never been indexed". The command is built by suggestedIndexCommand rather than hardcoded: a bare `token-goat index .` refuses outright in a non-git folder, which is exactly the case this branch fires in most, so the hardcoded form printed a command that could not run as shown.
     lines.push('')
-    lines.push("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
+    lines.push(`## Top symbols: none — no files indexed for this project; run '${suggestedIndexCommand(map.rootDir)}'`)
   }
 
   if (!compact && map.recentFiles.length > 0) {
