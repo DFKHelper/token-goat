@@ -388,6 +388,50 @@ describe('extractSection — unambiguous prefix redirect (#92)', () => {
   })
 })
 
+describe('extractSection — widened suffix/word-subset match (#defect-2)', () => {
+  const MD_WIDEN = [
+    '# Getting Started',
+    'body start',
+    '',
+    '# Installation and Setup',
+    'body setup',
+    '',
+    '# Configuration Options',
+    'body config',
+    '',
+    '# Advanced Tuning',
+    'body tuning',
+    '',
+  ].join('\n')
+
+  it('resolves a distinctive suffix query to the lone heading containing it', () => {
+    const result = extractSection(MD_WIDEN, 'Setup')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Installation and Setup')
+    expect(result?.redirectedFrom).toBe('Setup')
+    expect(result?.content).toContain('body setup')
+  })
+
+  it('resolves a word-subset query to the lone heading containing every word', () => {
+    const result = extractSection(MD_WIDEN, 'Config Options')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Configuration Options')
+    expect(result?.redirectedFrom).toBe('Config Options')
+  })
+
+  it('does NOT widen-match when the query is an exact heading (precedence: exact wins)', () => {
+    const md = ['# Setup', 'exact body', '', '# Installation and Setup', 'other body', ''].join('\n')
+    const result = extractSection(md, 'Setup')
+    expect(result?.heading).toBe('Setup')
+    expect(result?.redirectedFrom).toBeUndefined()
+  })
+
+  it('does NOT guess when the widened rule matches 2+ headings — reports a miss instead', () => {
+    const md = ['# Database Setup', 'a', '', '# Cache Setup', 'b', ''].join('\n')
+    expect(extractSection(md, 'Setup')).toBeNull()
+  })
+})
+
 describe('readSection', () => {
   it('reads a section from a real temp file', () => {
     const file = tmpFile('readme.md', MD)

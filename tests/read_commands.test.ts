@@ -1571,24 +1571,59 @@ describe('read_commands', () => {
       expect(stderr).not.toContain("Section 'Some Heading' not found")
     })
 
+    // Updated for the similarity filter (defect-1 fix): every listed heading now shares the
+    // query word "Setup" so all 7 pass the filter and the DIDYOUMEAN_LIMIT cap is still the
+    // thing under test, instead of an unrelated query ('Nonexistent') that the filter would
+    // now correctly drop to zero candidates.
     it('caps the heading list on section miss at DIDYOUMEAN_LIMIT (5), matching runRead\'s "did you mean" cap, instead of dumping every heading (regression: unbounded "Available sections" dump)', () => {
       mockReadSection.mockReturnValue(null)
+      // Distinct, strictly increasing lengths so the similarity ranking (closest length to the
+      // query first) has no ties to break -- which 5 of the 7 survive the cap is deterministic.
       mockListSections.mockReturnValue([
-        'Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing', 'License',
+        'Setup1', 'Setup12', 'Setup123', 'Setup1234', 'Setup12345', 'Setup123456', 'Setup1234567',
       ])
-      const { text: stderr } = runSection({ spec: 'README.md::Nonexistent' })
+      const { text: stderr } = runSection({ spec: 'README.md::Setup' })
       expect(stderr).toContain('Did you mean')
-      expect(stderr).toContain('Title')
-      expect(stderr).toContain('Introduction')
-      expect(stderr).toContain('Installation')
-      expect(stderr).toContain('Usage')
-      expect(stderr).toContain('API Reference')
-      // Only the first 5 candidates are shown — 'Contributing' and 'License' are suppressed.
-      expect(stderr).not.toContain('Contributing')
-      expect(stderr).not.toContain('License')
+      expect(stderr).toContain('Setup1')
+      expect(stderr).toContain('Setup12')
+      expect(stderr).toContain('Setup123')
+      expect(stderr).toContain('Setup1234')
+      expect(stderr).toContain('Setup12345')
+      // Only the 5 closest-in-length candidates are shown — the 2 longest are suppressed.
+      expect(stderr).not.toContain('Setup123456')
+      expect(stderr).not.toContain('Setup1234567')
       // Regression: the cap used to be silent, giving no indication that 2 more headings
       // existed beyond the 5 shown.
       expect(stderr).toContain('(2 more not shown)')
+    })
+
+    it('filters the suggestion list by similarity to the query instead of dumping every heading verbatim (defect-1 regression: a query with no plausible relation to any heading printed the exact same "Did you mean" list as a near-miss query)', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue(['Getting Started', 'Installation and Setup', 'Configuration Options', 'Advanced Tuning'])
+      const nearMiss = runSection({ spec: 'README.md::Install' })
+      expect(nearMiss.text).toContain('Did you mean')
+      expect(nearMiss.text).toContain('Installation and Setup')
+      expect(nearMiss.text).not.toContain('Getting Started')
+      expect(nearMiss.text).not.toContain('Configuration Options')
+      expect(nearMiss.text).not.toContain('Advanced Tuning')
+
+      const noRelation = runSection({ spec: 'README.md::zzzz' })
+      expect(noRelation.text).not.toContain('Did you mean')
+      expect(noRelation.text).not.toContain('Getting Started')
+      expect(noRelation.text).not.toContain('Installation and Setup')
+      expect(noRelation.text).not.toContain('Configuration Options')
+      expect(noRelation.text).not.toContain('Advanced Tuning')
+    })
+
+    it('on an ambiguous widened-rule miss, lists exactly the matching candidates and no unrelated headings', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue(['Database Setup', 'Cache Setup', 'Getting Started', 'Advanced Tuning'])
+      const { text: stderr } = runSection({ spec: 'README.md::Setup' })
+      expect(stderr).toContain('Did you mean')
+      expect(stderr).toContain('Database Setup')
+      expect(stderr).toContain('Cache Setup')
+      expect(stderr).not.toContain('Getting Started')
+      expect(stderr).not.toContain('Advanced Tuning')
     })
 
     it('prints section content when found', () => {
