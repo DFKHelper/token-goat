@@ -311,6 +311,47 @@ export function dedupeFencedBlocks(collapsed: string, original: string, recallHi
   return dedupedAny ? out.join('\n') : collapsed
 }
 
+/** Number of consecutive blank lines kept when a longer run is collapsed -- fixed, not configurable: this is deliberately the "safe half" of blank-line handling with no tunable surface. */
+const BLANK_RUN_KEEP = 2
+
+// Collapse runs of MORE THAN two blank lines to exactly two, but ONLY inside fenced blocks -- never
+// touching prose, which stays byte-identical per the core design rule. No count marker (a blank
+// line carries no evidence or caveat worth pointing a recall hint at) and no recomputation of
+// anything: this deliberately runs LAST, after collapseFencedBlocks and dedupeFencedBlocks have
+// already finished, on their combined output -- never before slicing -- so it can never perturb the
+// bodyLines count collapseFencedBlocks used to decide what to elide, nor the
+// `keep_lines <= floor((min_lines-1)/2)` clamp that keeps that math from going negative (see
+// config.ts). Explicitly NOT dedupeConsecutive (src/tool_filters/helpers.ts): that helper's default
+// `${line}  (×${count})` formatter would inject a token-goat annotation into a region this design
+// promises stays byte-identical.
+export function collapseBlankRunsInFences(text: string): string {
+  const lines = text.split('\n')
+  const blocks = findFencedBlockLines(lines)
+  if (blocks.length === 0) return text
+  const out: string[] = []
+  let cursor = 0
+  let changedAny = false
+  for (const { fenceStart, closerIndex } of blocks) {
+    out.push(...lines.slice(cursor, fenceStart + 1))
+    let blankRun = 0
+    for (let i = fenceStart + 1; i < closerIndex; i++) {
+      const line = lines[i]!
+      if (line === '') {
+        blankRun++
+        if (blankRun <= BLANK_RUN_KEEP) out.push(line)
+        else changedAny = true
+      } else {
+        blankRun = 0
+        out.push(line)
+      }
+    }
+    out.push(lines[closerIndex]!)
+    cursor = closerIndex + 1
+  }
+  out.push(...lines.slice(cursor))
+  return changedAny ? out.join('\n') : text
+}
+
 function postAgentHandler(event: HookEvent): HookOutput {
   try {
     if (event.toolName !== 'Agent' || !event.sessionId) return passOutput()
@@ -332,20 +373,22 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const recallHint = `token-goat mcp-output ${id} --full`
     const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}`
 
-    // Compact the envelope only when the combined rewrite (fence collapse, then intra-report cross-fence dedup) actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
+    // Compact the envelope only when the combined rewrite (fence collapse, then intra-report cross-fence dedup, then blank-run collapse) actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
     const collapsed = collapseFencedBlocks(resultText, recallHint, agentReportCfg.fence_collapse_min_lines, agentReportCfg.fence_collapse_keep_lines)
-    // Dedup runs AFTER collapse, on collapse's own output -- see dedupeFencedBlocks's comment for why -- and both rewrites are judged by ONE combined net-benefit check below, not two independent gates: two sub-threshold rewrites could each decline alone when their sum would pass, and if both fired separately the notice cost would be charged twice.
+    // Dedup runs AFTER collapse, on collapse's own output -- see dedupeFencedBlocks's comment for why.
     const deduped = dedupeFencedBlocks(collapsed, resultText, recallHint)
+    // Blank-run collapse runs LAST, on the combined output of both -- see collapseBlankRunsInFences's comment for why. All three rewrites are judged by ONE combined net-benefit check below, not separate gates: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it.
+    const final = collapseBlankRunsInFences(deduped)
     const originalBytes = Buffer.byteLength(resultText, 'utf-8')
-    if (deduped !== resultText) {
+    if (final !== resultText) {
       const worthwhile = isRewriteWorthwhile({
         originalBytes,
-        rewrittenBytes: Buffer.byteLength(deduped, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(final, 'utf-8'),
         noticeBytes: Buffer.byteLength(notice, 'utf-8'),
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
       if (worthwhile) {
-        const updatedOutput = `${deduped}\n\n${notice}`
+        const updatedOutput = `${final}\n\n${notice}`
         // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the rewritten body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
         const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
         if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, Math.round(savedBytes / 4))
