@@ -12,7 +12,7 @@ import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
-import { collapseFencedBlocks, dedupeFencedBlocks } from '../src/hooks_agent_spawn.js'
+import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences } from '../src/hooks_agent_spawn.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
 // over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
@@ -769,6 +769,72 @@ describe('Intra-report cross-fence dedup (dedupeFencedBlocks, direct)', () => {
       const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
       expect(m).not.toBeNull()
       expect(getBashOutput(m![1] as string)?.output).toBe(report)
+    }
+  })
+})
+
+describe('Blank-run collapse inside fences (collapseBlankRunsInFences, direct)', () => {
+  it('collapses a run of more than two blank lines inside a fence down to two, with no count marker', () => {
+    const report = ['PROSE:before', '```', 'first', '', '', '', '', '', 'second', '```', 'PROSE:after'].join('\n')
+    const output = collapseBlankRunsInFences(report)
+    expect(output).not.toBe(report)
+    const lines = output.split('\n')
+    const firstIdx = lines.indexOf('first')
+    const secondIdx = lines.indexOf('second')
+    // Exactly two blank lines remain between 'first' and 'second'.
+    expect(secondIdx - firstIdx - 1).toBe(2)
+    expect(lines.slice(firstIdx + 1, secondIdx)).toEqual(['', ''])
+    // No injected annotation of any kind -- a blank line carries no evidence to point a recall hint at.
+    expect(output).not.toMatch(/×\d+/)
+    expect(output).not.toContain('token-goat:')
+  })
+
+  it('leaves exactly two or fewer consecutive blank lines inside a fence untouched', () => {
+    const report = ['```', 'a', '', '', 'b', '```'].join('\n')
+    const output = collapseBlankRunsInFences(report)
+    expect(output).toBe(report)
+  })
+
+  it('never touches blank lines OUTSIDE a fence, even a long run (prose stays byte-identical, the core design rule)', () => {
+    const report = ['PROSE:a', '', '', '', '', '', 'PROSE:b', '```', 'body', '```'].join('\n')
+    const output = collapseBlankRunsInFences(report)
+    expect(output).toBe(report)
+  })
+
+  it('does not use dedupeConsecutive-style annotation formatting anywhere in its output', () => {
+    const report = ['```', ...Array.from({ length: 3 }, () => 'x'), '', '', '', '', 'y', '```'].join('\n')
+    const output = collapseBlankRunsInFences(report)
+    // dedupeConsecutive's default formatter is `${line}  (×${count})` -- this transform must never produce that shape.
+    expect(output).not.toMatch(/\(×\d+\)/)
+  })
+
+  it('runs as the final step in postAgentHandler, after collapse and dedup, without disturbing the elision or dedup markers', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+      const noisyBody = ['head'].concat(Array.from({ length: 60 }, (_, i) => (i % 10 === 0 ? '' : `gate line ${i}`))).concat(['tail']).join('\n')
+      const report = ['PROSE.', '```', noisyBody, '```', 'z'.repeat(8000)].join('\n')
+      const payload = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report }
+      const result = await runHook(buildEvent('post_tool_use', payload))
+      expect(result.hookType).toBe('rewriteOutput')
+      if (result.hookType === 'rewriteOutput') {
+        expect(result.updatedOutput).toMatch(/\d+ lines elided -- full report via token-goat mcp-output mcp_[0-9a-f]{16} --full/)
+        // Even after blank-run collapse ran, the elision marker and recall pointer are intact and well-formed.
+        const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
+        expect(getBashOutput(m![1] as string)?.output).toBe(report)
+      }
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
     }
   })
 })
