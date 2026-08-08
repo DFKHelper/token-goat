@@ -297,6 +297,45 @@ function endsWithPathBoundary(full: string, suffix: string): boolean {
   return boundaryChar === '/' || boundaryChar === '\\'
 }
 
+// Minimum length for a query word to count towards word-level similarity below -- below this,
+// short words like "a"/"of" would match almost any candidate. Mirrors MIN_REVERSE_MATCH_LEN's
+// role for whole-string reverse containment.
+const MIN_WORD_SIMILARITY_LEN = 3
+
+/**
+ * Filter and rank `available` headings by similarity to `query` before handing them to
+ * {@link didYouMean}. Unfiltered, every heading in the file was shown regardless of relevance
+ * -- a query for "zzzz" printed the exact same candidate list as a genuine near-miss like
+ * "Setup", which isn't a "did you mean" suggestion at all, just the full heading dump.
+ * Similarity mirrors {@link resolveHeaderPos}'s widened tier in section_reader.ts (a heading
+ * is similar if it contains the query as a substring, or every query word is a substring of
+ * some word in the heading), so a heading the widened tier would resolve to, or find
+ * ambiguous among, always shows up here as a suggestion too. Ranked by
+ * closeness in length to the query, same tiebreak as the near-name scan in the `symbol`
+ * miss path. Callers pass the ranked result straight to didYouMean, which already caps at
+ * DIDYOUMEAN_LIMIT -- no second cap here.
+ */
+function filterSimilarHeadings(available: string[], query: string): string[] {
+  const queryLower = query.toLowerCase()
+  const queryWords = queryLower.split(/[^a-z0-9]+/).filter((w) => w.length >= MIN_WORD_SIMILARITY_LEN)
+  return available
+    .filter((heading) => {
+      const headingLower = heading.toLowerCase()
+      if (headingLower.includes(queryLower)) return true
+      if (queryLower.length >= MIN_WORD_SIMILARITY_LEN && queryLower.includes(headingLower)) return true
+      if (queryWords.length === 0) return false
+      const headingWords = headingLower.split(/[^a-z0-9]+/).filter((w) => w.length > 0)
+      // Forward containment only -- see resolveHeaderPos's widened tier in section_reader.ts
+      // for why a reverse check would false-positive on unrelated words.
+      return queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
+    })
+    .sort((a, b) => {
+      const diff = Math.abs(a.length - query.length) - Math.abs(b.length - query.length)
+      if (diff !== 0) return diff
+      return a < b ? -1 : a > b ? 1 : 0
+    })
+}
+
 export function didYouMean(candidates: string[]): string {
   if (candidates.length === 0) return ''
   const lines = ['Did you mean:']
@@ -1177,7 +1216,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       return { text: `File not found: '${filePath}'`, code: 1 }
     }
     const messages = [`Section '${heading}' not found in '${filePath}'`]
-    const available = listSections(filePath)
+    const available = filterSimilarHeadings(listSections(filePath), heading)
     if (available.length > 0) messages.push(didYouMean(available))
     return { text: messages.join('\n'), code: 1 }
   }

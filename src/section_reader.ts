@@ -107,6 +107,10 @@ function normalizeHeadingStrip(s: string): string {
   return n.replace(/\s+/g, ' ').trim()
 }
 
+// Minimum length for a query word to count in the widened suffix/word-subset match tier in
+// resolveHeaderPos -- below this, short words like "a"/"of" would match almost any heading.
+const MIN_WIDEN_WORD_LEN = 3
+
 const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
 // TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids.
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
@@ -417,10 +421,35 @@ function resolveHeaderPos(
       if (prefixPos === -1) prefixPos = i
     }
   }
-  if (distinct.size !== 1 || prefixPos === -1) return null
-  const chosen = headers[prefixPos]
-  if (chosen === undefined) return null
-  return { headerPos: prefixPos, redirectedFrom: base }
+  if (distinct.size === 1 && prefixPos !== -1) {
+    const chosen = headers[prefixPos]
+    if (chosen === undefined) return null
+    return { headerPos: prefixPos, redirectedFrom: base }
+  }
+  // Still no match. Last-resort tier: a distinctive suffix or word-subset query, e.g. "Setup"
+  // for "Installation and Setup", or "Config Options" for "Configuration Options". Every
+  // normalized query word must be a substring (either direction) of some word in the heading.
+  // Reached only once exact/normalized/stripped/prefix have all missed, so it can never divert
+  // an exact-text query away from its own heading. Ambiguous across 2+ distinct headings is
+  // still refused, same as the prefix tier above -- the caller reports a miss and lets the
+  // (filtered) "did you mean" suggestions surface the candidates instead of guessing.
+  const queryWords = normalizedTarget.split(/\s+/).filter((w) => w.length >= MIN_WIDEN_WORD_LEN)
+  if (queryWords.length === 0) return null
+  const widenedMatches: number[] = []
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i]
+    if (h === undefined) continue
+    const headingWords = normalizeHeading(h.heading).toLowerCase().split(/\s+/)
+    // Forward containment only (heading word contains the query word, not the reverse) -- a
+    // reverse check would let a short heading word like "title" match an unrelated longer
+    // query word that merely happens to contain it (e.g. "subtitle" contains "title").
+    const allWordsMatch = queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
+    if (allWordsMatch) widenedMatches.push(i)
+  }
+  if (widenedMatches.length !== 1) return null
+  const widenedPos = widenedMatches[0]
+  if (widenedPos === undefined) return null
+  return { headerPos: widenedPos, redirectedFrom: base }
 }
 
 /**
