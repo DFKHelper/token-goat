@@ -73,11 +73,16 @@ describe('skeleton/outline symbol-cap honesty (real pipeline, no injected callba
       const { text, code } = runOutline({ file, json: true })
       expect(code).toBe(0)
       const parsed = JSON.parse(text) as { items: Array<{ name: string }>; truncated: boolean; totalCount: number }
-      // outline JSON rows carry the full symbol body, so 600 of them exceed the token budget and
-      // the overflow guard honestly caps the *items* -- but totalCount must still report the true
-      // 600, not the pre-fix 500 (which was a lie: it hid symbols 501..600 entirely).
+      // totalCount must report the true 600, not the pre-fix 500 (which was a lie: it hid symbols
+      // 501..600 entirely). This asserted truncated:true while outline JSON rows still carried the
+      // full symbol body, which made 600 rows overflow the byte budget -- but that was the bloat
+      // being measured, not the honesty property this test is named for. With bodies gone the whole
+      // file fits, so assert the stronger thing its skeleton sibling already does: the tail symbols
+      // are actually present, which is what being past the old cap was supposed to mean.
       expect(parsed.totalCount).toBeGreaterThanOrEqual(n)
-      expect(parsed.truncated).toBe(true)
+      const names = new Set(parsed.items.map((i) => i.name))
+      expect(names.has('genFn0')).toBe(true)
+      expect(names.has('genFn599')).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
