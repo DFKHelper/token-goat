@@ -249,6 +249,35 @@ describe('read_commands', () => {
       expect(runSymbolIdx).toBeLessThan(runIdx)
     })
 
+    // Substring ranking cannot reach a typo that DROPS or SWAPS a character: `parseConfg` is neither a substring of `parseConfig` nor the reverse, so every candidate is filtered out and the caller is sent to outline for a name one keystroke away. A bounded edit-distance pass runs only when substring matching found nothing, so it can add an answer where there was none but can never reorder or displace a substring match.
+    it('surfaces a one-character-typo symbol that substring matching cannot reach', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name !== undefined) return []
+        return [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
+        ]
+      })
+      mockIsIndexEmptyForProject.mockReturnValue(false)
+      const { text } = runSymbol({ name: 'parseConfg' })
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('parseConfig')
+    })
+
+    // The edit-distance pass must stay a fallback rather than a net: a query far from every candidate still yields no suggestion, so the block never fills with noise simply because the substring pass came back empty.
+    it('still suggests nothing when no candidate is within the typo threshold', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name !== undefined) return []
+        return [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
+        ]
+      })
+      mockIsIndexEmptyForProject.mockReturnValue(false)
+      const { text } = runSymbol({ name: 'zzzzzzzzzz' })
+      expect(text).not.toContain('Did you mean:')
+    })
+
     it('points at semantic search when a miss has no near-name candidates', () => {
       mockQuerySymbols.mockReturnValue([])
       // The fallback is suppressed on a genuinely empty index, where semantic would fail the same way symbol just did. This test is about the populated-index branch -- a miss with no near-name candidates -- so the emptiness check has to be pinned false, otherwise the mocked empty querySymbols makes the project look unindexed and the test passes or fails for the wrong reason.
