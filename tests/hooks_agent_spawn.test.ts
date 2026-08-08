@@ -12,7 +12,7 @@ import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
-import { collapseFencedBlocks } from '../src/hooks_agent_spawn.js'
+import { collapseFencedBlocks, dedupeFencedBlocks } from '../src/hooks_agent_spawn.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
 // over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
@@ -641,6 +641,134 @@ describe('Fence-collapse invariant corpus (collapseFencedBlocks, direct)', () =>
       if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
       else process.env['XDG_DATA_HOME'] = prevXdg
       _resetDataDirCacheForTesting()
+    }
+  })
+})
+
+describe('Intra-report cross-fence dedup (dedupeFencedBlocks, direct)', () => {
+  const RECALL_HINT = 'token-goat mcp-output mcp_deadbeefdeadbeef --full'
+
+  it('replaces a LATER byte-identical fenced block with a byte-comparison marker, keeping the first occurrence intact', () => {
+    const body = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n')
+    const report = ['PROSE:a', '```', body, '```', 'PROSE:b', '```', body, '```', 'PROSE:c'].join('\n')
+    const collapsed = collapseFencedBlocks(report, RECALL_HINT, 20, 6) // under min_lines: collapse alone leaves this untouched
+    expect(collapsed).toBe(report)
+    const deduped = dedupeFencedBlocks(collapsed, report, RECALL_HINT)
+    expect(deduped).not.toBe(report)
+    // First block survives whole.
+    expect(deduped).toContain('line 0')
+    expect(deduped).toContain('line 9')
+    // Marker is worded as a byte comparison, never as "ran it once" / "same output as before" language, and never addresses "block N" -- mcp-output has no per-block addressing.
+    expect(deduped).toContain('[token-goat: identical bytes to an earlier block in this report -- full report via ' + RECALL_HINT + ']')
+    expect(deduped).not.toMatch(/block \d/)
+    // Only ONE copy of the body text remains (the second was replaced, not merely annotated).
+    expect(deduped.split('line 0').length - 1).toBe(1)
+    expect(deduped).toContain('PROSE:a')
+    expect(deduped).toContain('PROSE:b')
+    expect(deduped).toContain('PROSE:c')
+  })
+
+  it('does not touch two fenced blocks that differ by even one byte', () => {
+    const report = ['```', 'aaa', '```', '```', 'aab', '```'].join('\n')
+    const collapsed = collapseFencedBlocks(report, RECALL_HINT, 20, 6)
+    const deduped = dedupeFencedBlocks(collapsed, report, RECALL_HINT)
+    expect(deduped).toBe(report)
+  })
+
+  it('leaves a report with only one fenced block untouched (nothing to dedup against)', () => {
+    const report = ['```', 'solo body', '```'].join('\n')
+    const deduped = dedupeFencedBlocks(report, report, RECALL_HINT)
+    expect(deduped).toBe(report)
+  })
+
+  it('dedups a THIRD occurrence against the first as well, not just pairwise-adjacent duplicates', () => {
+    const body = 'shared block body\nsecond line'
+    const report = ['```', body, '```', 'PROSE', '```', body, '```', 'PROSE', '```', body, '```'].join('\n')
+    const deduped = dedupeFencedBlocks(report, report, RECALL_HINT)
+    expect(deduped.match(/identical bytes to an earlier block/g)).toHaveLength(2)
+    expect(deduped.split('shared block body').length - 1).toBe(1)
+  })
+
+  it('runs dedup on the COLLAPSED text but hashes bodies from the ORIGINAL text, so a duplicate whose middle collapseFencedBlocks already elided still gets its marker (proves the mandated ordering: dedup after collapse, hashed pre-collapse)', () => {
+    const bigBody = Array.from({ length: 50 }, (_, i) => `dup line ${i}`).join('\n')
+    const report = ['PROSE:one', '```', bigBody, '```', 'PROSE:two', '```', bigBody, '```', 'PROSE:three'].join('\n')
+    const collapsed = collapseFencedBlocks(report, RECALL_HINT, 20, 6)
+    expect(collapsed).not.toBe(report) // collapse DID elide both blocks' middles first
+    const deduped = dedupeFencedBlocks(collapsed, report, RECALL_HINT)
+    // First (collapsed) block still present with its own elision marker; second block replaced entirely by the dedup marker, not by a second copy of the collapse-elision marker.
+    expect(deduped.match(/lines elided --/g)).toHaveLength(1)
+    expect(deduped.match(/identical bytes to an earlier block/g)).toHaveLength(1)
+  })
+
+  it('is intra-report only: two SEPARATE Agent reports with identical fenced content each get compacted independently, never deduped against each other', async () => {
+    const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+    const bigBody = Array.from({ length: 50 }, (_, i) => `shared cross-report line ${i}`).join('\n')
+    const report1 = ['Report one.', '```', bigBody, '```', 'x'.repeat(8000)].join('\n')
+    const report2 = ['Report two.', '```', bigBody, '```', 'y'.repeat(8000)].join('\n')
+
+    const payload1 = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report1 }
+    const result1 = await runHook(buildEvent('post_tool_use', payload1))
+    expect(result1.hookType).toBe('rewriteOutput')
+    if (result1.hookType === 'rewriteOutput') {
+      // Report one has no earlier block in ITS OWN report to dedup against -- the fence survives via
+      // the ordinary collapse path (elided middle), not the dedup marker.
+      expect(result1.updatedOutput).toContain('lines elided --')
+      expect(result1.updatedOutput).not.toContain('identical bytes to an earlier block')
+    }
+
+    const payload2 = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report2 }
+    const result2 = await runHook(buildEvent('post_tool_use', payload2))
+    expect(result2.hookType).toBe('rewriteOutput')
+    if (result2.hookType === 'rewriteOutput') {
+      // Report two's identical fence body must ALSO be collapsed on its own merits (elided-middle
+      // marker), never silently pointed at report one's cache id -- cross-report dedup is out of scope.
+      expect(result2.updatedOutput).toContain('lines elided --')
+      expect(result2.updatedOutput).not.toContain('identical bytes to an earlier block')
+    }
+  })
+
+  it('records exactly one agent_report_compact event (not two) for a report where both collapse and dedup fire, proving the single combined net-benefit gate', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      const bigBody = Array.from({ length: 50 }, (_, i) => `dup line ${i} with some padding to make it worth eliding`).join('\n')
+      const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+      const report = ['PROSE one.', '```', bigBody, '```', 'PROSE two.', '```', bigBody, '```', 'PROSE three.', 'z'.repeat(4000)].join('\n')
+      const payload = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report }
+      const before = summarize(3650).by_kind['agent_report_compact']?.events ?? 0
+      const result = await runHook(buildEvent('post_tool_use', payload))
+      expect(result.hookType).toBe('rewriteOutput')
+      if (result.hookType === 'rewriteOutput') {
+        expect(result.updatedOutput).toContain('lines elided --')
+        expect(result.updatedOutput).toContain('identical bytes to an earlier block')
+      }
+      const after = summarize(3650).by_kind['agent_report_compact']?.events ?? 0
+      expect(after - before).toBe(1)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
+  })
+
+  it('the dedup marker\'s recall pointer resolves to the exact original report bytes, including the deduped block -- lossless recall is the whole point', async () => {
+    const bigBody = Array.from({ length: 50 }, (_, i) => `dup line ${i} with some padding to make it worth eliding`).join('\n')
+    const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+    const report = ['PROSE one.', '```', bigBody, '```', 'PROSE two.', '```', bigBody, '```', 'PROSE three.', 'z'.repeat(4000)].join('\n')
+    const payload = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report }
+    const result = await runHook(buildEvent('post_tool_use', payload))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
+      expect(m).not.toBeNull()
+      expect(getBashOutput(m![1] as string)?.output).toBe(report)
     }
   })
 })
