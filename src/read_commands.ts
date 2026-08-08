@@ -61,6 +61,10 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 // ---- constants --------------------------------------------------------------
 
 const DIDYOUMEAN_LIMIT = 5
+// A query this long or longer gets a 2-edit typo budget; below it, 1. See typoBudget.
+const TYPO_TWO_EDIT_MIN_LEN = 8
+// Past this length a near-miss is no longer plausibly a typo of the same name, so the edit-distance fallback is skipped entirely.
+const TYPO_MAX_QUERY_LEN = 64
 const MIN_REVERSE_MATCH_LEN = 3 // reverse ("query contains symbol") containment only -- below this, short indexed names like `b`/`n` match nearly any query
 const GREP_MAX_LINES = 200
 // Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
@@ -328,12 +332,43 @@ function sortByLengthCloseness(items: string[], query: string): string[] {
  * lists. Factored out so `read`, `openapi-op`, and `zip-read` misses all get real ranking too,
  * not just `symbol`.
  */
+// Levenshtein distance, but bounded: it returns as soon as every cell in a row exceeds `max`, so a comparison against a wildly different name costs a couple of rows instead of a full matrix. Two rolling rows rather than a full grid -- the distance is all that is wanted, never the alignment.
+function withinEditDistance(a: string, b: string, max: number): boolean {
+  if (Math.abs(a.length - b.length) > max) return false
+  if (a === b) return true
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let rowMin = i
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      const v = Math.min((cur[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost)
+      cur.push(v)
+      if (v < rowMin) rowMin = v
+    }
+    if (rowMin > max) return false
+    prev = cur
+  }
+  return (prev[b.length] ?? Number.MAX_SAFE_INTEGER) <= max
+}
+
+// One edit for a short query, two once it is long enough that two typos stay unambiguous. Scaling with length matters because a fixed budget of 2 would make almost every 4-character name a neighbour of every other.
+function typoBudget(queryLen: number): number {
+  return queryLen >= TYPO_TWO_EDIT_MIN_LEN ? 2 : 1
+}
+
 function rankSimilarNames(candidates: string[], query: string): string[] {
   const queryLower = query.toLowerCase()
   const filtered = candidates.filter((c) => {
     const cLower = c.toLowerCase()
     return cLower.includes(queryLower) || (cLower.length >= MIN_REVERSE_MATCH_LEN && queryLower.includes(cLower))
   })
+  // Substring containment cannot reach a typo that drops, swaps, or mistypes a character -- `parseConfg` is neither a substring of `parseConfig` nor the reverse -- which is the single most common way a caller misses a name they already know. The edit-distance pass runs ONLY when containment found nothing, so it can supply an answer where there was none but can never reorder or displace a containment match; a query near nothing still yields nothing, keeping the block a suggestion rather than a net. Queries past TYPO_MAX_QUERY_LEN skip it: at that length a couple of edits no longer means "same name, mistyped", and the scan is not worth paying for.
+  if (filtered.length === 0 && queryLower.length <= TYPO_MAX_QUERY_LEN) {
+    const budget = typoBudget(queryLower.length)
+    const near = candidates.filter((c) => withinEditDistance(c.toLowerCase(), queryLower, budget))
+    return sortByLengthCloseness([...new Set(near)], query)
+  }
   return sortByLengthCloseness([...new Set(filtered)], query)
 }
 
