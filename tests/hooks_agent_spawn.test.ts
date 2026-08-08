@@ -30,10 +30,11 @@ vi.mock('../src/baseline.js', async (importOriginal) => {
     ...original,
     formatProjectMap: (...args: unknown[]) => {
       if (_hugeProjectMapOverride) {
-        // Sized so map+reminder alone fits BRIEFING_TARGET_TOKENS but map+cache-ids+reminder
-        // does not -- exercises the "drop cache-ids first, keep the reminder" path specifically,
-        // not the further last-resort tail-trim fallback for a still-oversized map alone.
-        return 'huge-project-map-line '.repeat(38)
+        // Sized so map+reminder+report-contract alone fits BRIEFING_TARGET_TOKENS but
+        // map+cache-ids+reminder+report-contract does not -- exercises the "drop cache-ids first,
+        // keep the reminder and report contract" path specifically, not the further last-resort
+        // tail-trim fallback for a still-oversized map alone.
+        return 'huge-project-map-line '.repeat(40)
       }
       if (_realisticProjectMapOverride) {
         // A fixed, realistic mid-size project's compact map (measured ~140 tokens): together with
@@ -149,6 +150,13 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
       expect(updatedPrompt).toContain('Before your first read of any file')
       expect(updatedPrompt).toContain('instead of a full-file read or wide grep')
       expect(updatedPrompt).toContain('is a violation, not an oversight')
+      // Report contract: pin by concept (cite evidence by handle, fence only when load-bearing,
+      // state unverified claims explicitly), not by exact wording -- brittle-string-coupling
+      // lesson from this repo's own hint-text tests.
+      expect(updatedPrompt).toContain('Report contract')
+      expect(updatedPrompt).toContain('cite evidence')
+      expect(updatedPrompt).toContain('load-bearing')
+      expect(updatedPrompt).toContain('state every unverified claim explicitly')
     }
   })
 
@@ -222,6 +230,9 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         expect(typeof updatedPrompt).toBe('string')
         expect(updatedPrompt).toContain('token-goat bash-output')
         expect(updatedPrompt).toContain('Cached outputs this session')
+        // At a realistic mid-size project's map, there is still enough headroom for the report
+        // contract to survive alongside the cache-ids block -- it is not the first thing dropped.
+        expect(updatedPrompt).toContain('Report contract')
       }
     } finally {
       _realisticProjectMapOverride = false
@@ -294,9 +305,11 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         const updatedPrompt = result.updatedInput['prompt'] as string
         expect(typeof updatedPrompt).toBe('string')
         expect(updatedPrompt).toContain(prompt)
-        // The load-bearing gate reminder must survive even though the briefing overall had to be
-        // trimmed to fit budget.
+        // The load-bearing gate reminder and report contract must survive even though the
+        // briefing overall had to be trimmed to fit budget: they sit in the same tail unit, one
+        // priority tier above the cache-ids block.
         expect(updatedPrompt).toContain('Before your first read of any file')
+        expect(updatedPrompt).toContain('Report contract')
         // The nice-to-have cache-ids hint is the sacrificial section, so it's the one dropped.
         expect(updatedPrompt).not.toContain('Cached outputs this session')
       }
