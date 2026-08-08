@@ -93,3 +93,134 @@ describe('compressMcpResult', () => {
     }
   })
 })
+
+describe('compressMcpResult -- empty-value pruning path', () => {
+  it('drops null, empty string, empty array, and empty object values from a large nested object and appends a summary line', () => {
+    const payload = {
+      id: 'resource-123',
+      description: null,
+      subtitle: null,
+      summary: null,
+      owner: null,
+      parent: null,
+      tags: [],
+      labels: [],
+      categories: [],
+      metadata: {},
+      settings: {},
+      title: '',
+      notes: '',
+      nested: {
+        a: null,
+        b: 'kept-value',
+        c: { d: null, e: [] },
+        f: [null, '', {}, []],
+      },
+    }
+    const text = JSON.stringify(payload)
+    const compressed = compressMcpResult(text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      expect(compressed).not.toContain('"description"')
+      expect(compressed).not.toContain('"tags"')
+      expect(compressed).not.toContain('"metadata"')
+      expect(compressed).not.toContain('"title"')
+      expect(compressed).toContain('"b":"kept-value"')
+      expect(compressed).toContain('resource-123')
+      // Nested container that becomes empty after its own children are dropped collapses too (fixed point).
+      expect(compressed).not.toContain('"c"')
+      expect(compressed).not.toContain('"f"')
+      // Visibility: a one-line summary naming what was removed.
+      const lastLine = compressed.split('\n').at(-1)
+      expect(lastLine).toMatch(/dropped \d+ empty value/)
+      expect(compressed.length).toBeLessThan(text.length)
+    }
+  })
+
+  it('preserves 0 and false -- they are meaningful values, not emptiness', () => {
+    const payload = {
+      id: 'resource-456',
+      count: 0,
+      enabled: false,
+      description: null,
+      subtitle: null,
+      summary: null,
+      owner: null,
+      parent: null,
+      tags: [],
+      labels: [],
+      categories: [],
+      metadata: {},
+      settings: {},
+      empty: '',
+      notes: '',
+    }
+    const text = JSON.stringify(payload)
+    const compressed = compressMcpResult(text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      expect(compressed).toContain('"count":0')
+      expect(compressed).toContain('"enabled":false')
+      expect(compressed).not.toContain('"description"')
+      expect(compressed).not.toContain('"empty"')
+    }
+  })
+
+  it('returns null when nothing droppable is present, even for a large object payload (no fake savings from re-serializing whitespace)', () => {
+    const payload = {
+      id: 'resource-789',
+      count: 42,
+      enabled: true,
+      description: 'a real value',
+      filler: 'z'.repeat(2500),
+    }
+    const text = JSON.stringify(payload)
+    expect(compressMcpResult(text)).toBeNull()
+  })
+
+  it('returns null when pruning does not meet the net-savings ratio', () => {
+    const payload = { id: 'x', description: null }
+    const text = JSON.stringify(payload)
+    expect(compressMcpResult(text)).toBeNull()
+  })
+
+  it('prunes an array-rooted payload the same way as an object-rooted one (elements have mismatched key sets, so the table pass rejects the shape and defers to prune-empty)', () => {
+    const payload = [
+      { id: 1, note: null, tags: [], owner: null, meta: {} },
+      { id: 2, note: 'kept', tags: [], owner: null, meta: {}, extra: null },
+      { id: 3, note: null, tags: ['x'], owner: null, meta: {} },
+      { id: 4, note: null, tags: [], owner: null, meta: {} },
+      { id: 5, note: null, tags: [], owner: null, meta: {} },
+      { id: 6, note: null, tags: [], owner: null, meta: {} },
+    ]
+    const text = JSON.stringify(payload)
+    const compressed = compressMcpResult(text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      expect(compressed).not.toContain('"note":null')
+      expect(compressed).toContain('kept')
+      expect(compressed).toMatch(/dropped \d+ empty value/)
+    }
+  })
+
+  it('does not recurse unbounded on a pathologically deep payload -- bails to null instead of blowing the stack', () => {
+    // Built via string concatenation (not JSON.stringify on a nested object) so the test itself
+    // does not depend on the native stringifier's own recursion depth, only on compressMcpResult's.
+    const depth = 5000
+    const text = '{"child":'.repeat(depth) + '{"value":null}' + '}'.repeat(depth)
+    expect(() => compressMcpResult(text)).not.toThrow()
+  })
+
+  it('leaves the table path unaffected: an existing table-shaped payload compresses identically before and after the empty-pruning path was added', () => {
+    const rows = homogeneousRows(50)
+    const text = JSON.stringify(rows)
+    const compressed = compressMcpResult(text)
+    expect(compressed).not.toBeNull()
+    if (compressed !== null) {
+      const lines = compressed.split('\n')
+      expect(lines[0]).toBe('constant: status=active')
+      expect(lines[1]).toBe('id\tname\turl')
+      expect(lines.length).toBe(rows.length + 2)
+    }
+  })
+})
