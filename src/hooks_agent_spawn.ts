@@ -10,6 +10,7 @@
  * through unchanged, never blocking a subagent spawn.
  */
 
+import { createHash } from 'node:crypto'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { passOutput, contextOutput, extractToolResultText } from './hooks_common.js'
@@ -207,10 +208,16 @@ function preAgentHandler(event: HookEvent): HookOutput {
 // A fence line per CommonMark: up to 3 leading spaces, then a run of 3+ backticks or 3+ tildes, then an optional info string. Capturing the run (not just "starts with ```") is what makes nesting safe -- see collapseFencedBlocks.
 const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 
-// Collapse the middle of over-long fenced code blocks, leaving every non-fenced line byte-identical. Fence matching follows CommonMark rather than a naive ```-toggle, because agent reports routinely quote markdown AT us: a report that pastes a snippet containing its own ``` fence, or wraps an example in a 4-backtick fence, would close a toggle at the wrong line and mis-slice the surrounding prose. A block therefore ends only at a fence of the SAME character, at least as long as the opener, carrying no info string; anything else inside is content. An unterminated fence at end-of-text is emitted verbatim rather than collapsed, since without a closing marker there is no way to tell a code block from prose that merely began with a fence.
-export function collapseFencedBlocks(text: string, recallHint: string, minLines: number, keepLines: number): string {
-  const lines = text.split('\n')
-  const out: string[] = []
+interface FencedBlockLines {
+  /** Line index of the opening fence marker. */
+  fenceStart: number
+  /** Line index of the closing fence marker (inclusive). */
+  closerIndex: number
+}
+
+// Shared CommonMark-following fence scanner used by both collapseFencedBlocks and dedupeFencedBlocks, so both stay in agreement about where a complete fenced block begins and ends: an unterminated trailing fence (no closer) is deliberately NOT reported as a block by either caller -- see collapseFencedBlocks's own comment for why.
+function findFencedBlockLines(lines: readonly string[]): FencedBlockLines[] {
+  const blocks: FencedBlockLines[] = []
   let fenceStart = -1
   let openMarker = ''
   for (let i = 0; i < lines.length; i++) {
@@ -220,8 +227,6 @@ export function collapseFencedBlocks(text: string, recallHint: string, minLines:
       if (match !== null) {
         fenceStart = i
         openMarker = match[1]!
-      } else {
-        out.push(line)
       }
       continue
     }
@@ -231,20 +236,79 @@ export function collapseFencedBlocks(text: string, recallHint: string, minLines:
       match[1]!.length >= openMarker.length &&
       match[2]!.trim() === ''
     if (!isCloser) continue
-    // Closing marker reached: `fenceStart`..`i` is one complete block, body exclusive of both markers.
-    const bodyLines = i - fenceStart - 1
+    blocks.push({ fenceStart, closerIndex: i })
+    fenceStart = -1
+  }
+  return blocks
+}
+
+// Collapse the middle of over-long fenced code blocks, leaving every non-fenced line byte-identical. Fence matching follows CommonMark rather than a naive ```-toggle, because agent reports routinely quote markdown AT us: a report that pastes a snippet containing its own ``` fence, or wraps an example in a 4-backtick fence, would close a toggle at the wrong line and mis-slice the surrounding prose. A block therefore ends only at a fence of the SAME character, at least as long as the opener, carrying no info string; anything else inside is content. An unterminated fence at end-of-text is emitted verbatim rather than collapsed, since without a closing marker there is no way to tell a code block from prose that merely began with a fence.
+export function collapseFencedBlocks(text: string, recallHint: string, minLines: number, keepLines: number): string {
+  const lines = text.split('\n')
+  const blocks = findFencedBlockLines(lines)
+  const out: string[] = []
+  let cursor = 0
+  for (const { fenceStart, closerIndex } of blocks) {
+    out.push(...lines.slice(cursor, fenceStart))
+    const bodyLines = closerIndex - fenceStart - 1
     if (bodyLines > minLines) {
       out.push(...lines.slice(fenceStart, fenceStart + 1 + keepLines))
       out.push(`[token-goat: ${bodyLines - keepLines * 2} lines elided -- full report via ${recallHint}]`)
-      out.push(...lines.slice(i - keepLines, i + 1))
+      out.push(...lines.slice(closerIndex - keepLines, closerIndex + 1))
     } else {
-      out.push(...lines.slice(fenceStart, i + 1))
+      out.push(...lines.slice(fenceStart, closerIndex + 1))
     }
-    fenceStart = -1
+    cursor = closerIndex + 1
   }
-  // An unterminated trailing fence is emitted verbatim rather than collapsed: with no closing marker there is no way to tell a real code block from prose that merely began with a backtick line, and this handler never guesses at the parent's expense.
-  if (fenceStart !== -1) out.push(...lines.slice(fenceStart))
+  // Whatever follows the last complete block -- including an unterminated trailing fence -- is emitted verbatim: with no closing marker there is no way to tell a real code block from prose that merely began with a backtick line, and this handler never guesses at the parent's expense.
+  out.push(...lines.slice(cursor))
   return out.join('\n')
+}
+
+// Intra-report cross-fence dedup: when the SAME complete fenced-block body (byte-for-byte) appears
+// more than once in one report, every occurrence after the first is replaced with a marker pointing
+// at the cached full report -- never at "block N", since mcp-output has no way to address an
+// individual block. Deliberately intra-report only: comparing across sessions/reports would be "the
+// gate was not re-run", the exact admission this design exists to preserve, not a savings
+// opportunity. Body hashes are computed from `original` (pre-collapse) so two blocks that only look
+// alike after collapseFencedBlocks elided their middles are never mistaken for duplicates; block
+// BOUNDARIES for the actual replacement are read from `collapsed` (post-collapse) so a marker never
+// points at a block whose visible content collapseFencedBlocks already elided out from under it --
+// running dedup after collapse, on collapse's own output, is what keeps that in sync.
+export function dedupeFencedBlocks(collapsed: string, original: string, recallHint: string): string {
+  const originalLines = original.split('\n')
+  const originalBlocks = findFencedBlockLines(originalLines)
+  if (originalBlocks.length < 2) return collapsed
+
+  const collapsedLines = collapsed.split('\n')
+  const collapsedBlocks = findFencedBlockLines(collapsedLines)
+  // Structural mismatch (should not happen: collapseFencedBlocks never adds or removes fence
+  // boundaries) -- fail safe by declining to touch anything rather than guessing at an index.
+  if (collapsedBlocks.length !== originalBlocks.length) return collapsed
+
+  const bodyHashes = originalBlocks.map(({ fenceStart, closerIndex }) =>
+    createHash('sha256').update(originalLines.slice(fenceStart + 1, closerIndex).join('\n')).digest('hex'),
+  )
+
+  const firstOccurrenceOf = new Map<string, number>()
+  const out: string[] = []
+  let cursor = 0
+  let dedupedAny = false
+  for (let i = 0; i < collapsedBlocks.length; i++) {
+    const { fenceStart, closerIndex } = collapsedBlocks[i]!
+    const hash = bodyHashes[i]!
+    if (!firstOccurrenceOf.has(hash)) {
+      firstOccurrenceOf.set(hash, i)
+      out.push(...collapsedLines.slice(cursor, closerIndex + 1))
+    } else {
+      out.push(...collapsedLines.slice(cursor, fenceStart))
+      out.push(`[token-goat: identical bytes to an earlier block in this report -- full report via ${recallHint}]`)
+      dedupedAny = true
+    }
+    cursor = closerIndex + 1
+  }
+  out.push(...collapsedLines.slice(cursor))
+  return dedupedAny ? out.join('\n') : collapsed
 }
 
 function postAgentHandler(event: HookEvent): HookOutput {
@@ -268,24 +332,26 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const recallHint = `token-goat mcp-output ${id} --full`
     const notice = `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}`
 
-    // Compact the envelope only when the fenced-block collapse actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE collapses to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
+    // Compact the envelope only when the combined rewrite (fence collapse, then intra-report cross-fence dedup) actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
     const collapsed = collapseFencedBlocks(resultText, recallHint, agentReportCfg.fence_collapse_min_lines, agentReportCfg.fence_collapse_keep_lines)
+    // Dedup runs AFTER collapse, on collapse's own output -- see dedupeFencedBlocks's comment for why -- and both rewrites are judged by ONE combined net-benefit check below, not two independent gates: two sub-threshold rewrites could each decline alone when their sum would pass, and if both fired separately the notice cost would be charged twice.
+    const deduped = dedupeFencedBlocks(collapsed, resultText, recallHint)
     const originalBytes = Buffer.byteLength(resultText, 'utf-8')
-    if (collapsed !== resultText) {
+    if (deduped !== resultText) {
       const worthwhile = isRewriteWorthwhile({
         originalBytes,
-        rewrittenBytes: Buffer.byteLength(collapsed, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(deduped, 'utf-8'),
         noticeBytes: Buffer.byteLength(notice, 'utf-8'),
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
       if (worthwhile) {
-        const updatedOutput = `${collapsed}\n\n${notice}`
-        // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the collapsed body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
+        const updatedOutput = `${deduped}\n\n${notice}`
+        // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the rewritten body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
         const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
         if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, Math.round(savedBytes / 4))
         return { hookType: 'rewriteOutput', updatedOutput }
       }
-      // The gate declined: fences collapsed but the net savings did not clear the notice cost. Record this at (0, 0) -- like the sibling session_hint event above -- so hit-rate and near-misses are visible instead of the gate's declines being invisible, without inflating any savings total with a non-saving.
+      // The gate declined: collapse and/or dedup rewrote something but the net savings did not clear the notice cost. Record this at (0, 0) -- like the sibling session_hint event above -- so hit-rate and near-misses are visible instead of the gate's declines being invisible, without inflating any savings total with a non-saving.
       recordStat('agent_report_compact_declined', 0, 0)
     }
 
