@@ -152,6 +152,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   secret_redacted: SOURCE_OTHER,
   // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.
   agent_report_compact: SOURCE_CONTENT,
+  // Decline counterpart to agent_report_compact: the fence-collapse net-benefit gate ran and found at least one over-long fence, but declined to rewrite because net savings did not clear the notice cost. Always recorded at (0, 0) -- see the recordStat call site -- so it never contributes to any savings total; it exists purely to make gate hit-rate and near-misses visible instead of the decline being invisible.
+  agent_report_compact_declined: SOURCE_CONTENT,
   content_compress: SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,

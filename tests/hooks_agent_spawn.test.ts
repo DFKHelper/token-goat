@@ -453,6 +453,35 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     }
   })
 
+  it('records a decline stat (0 bytes) when the fence-collapse gate runs but the net savings do not clear the notice cost (regression: image_shrink_skipped shipped registered/rendered but never recordStat\'d anywhere -- a decline kind needs a shipping-path test that actually drives postAgentHandler, not just a unit test of isRewriteWorthwhile)', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      // A fence body just 1 line over fence_collapse_min_lines (20) elides only 21-6*2=9 single-char
+      // lines: real savings are a handful of bytes, dwarfed by the ~100+ byte recall notice, so the
+      // shared net-benefit gate declines even though collapseFencedBlocks() DID rewrite the fence.
+      const report = ['Intro.', '```', ...Array.from({ length: 21 }, (_, i) => `${i}`), '```', 'z'.repeat(8000)].join('\n')
+      const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+      expect(result.hookType).toBe('context')
+      const kind = summarize(3650).by_kind['agent_report_compact_declined']
+      expect(kind?.events ?? 0).toBeGreaterThanOrEqual(1)
+      // A decline must never carry nonzero bytes -- that would inflate the headline savings number
+      // with a non-saving, the exact desync class this codebase keeps having to fix.
+      expect(kind?.bytes_saved ?? 0).toBe(0)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
+  })
+
   it('emits an unterminated trailing fence verbatim rather than guessing where it ends', async () => {
     const report = ['Summary.', 'z'.repeat(8100), '```', ...Array.from({ length: 60 }, (_, i) => `dangling ${i}`)].join('\n')
     const result = await runHook(buildEvent('post_tool_use', postPayload(report)))

@@ -271,20 +271,22 @@ function postAgentHandler(event: HookEvent): HookOutput {
     // Compact the envelope only when the fenced-block collapse actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE collapses to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
     const collapsed = collapseFencedBlocks(resultText, recallHint, agentReportCfg.fence_collapse_min_lines, agentReportCfg.fence_collapse_keep_lines)
     const originalBytes = Buffer.byteLength(resultText, 'utf-8')
-    if (
-      collapsed !== resultText &&
-      isRewriteWorthwhile({
+    if (collapsed !== resultText) {
+      const worthwhile = isRewriteWorthwhile({
         originalBytes,
         rewrittenBytes: Buffer.byteLength(collapsed, 'utf-8'),
         noticeBytes: Buffer.byteLength(notice, 'utf-8'),
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
-    ) {
-      const updatedOutput = `${collapsed}\n\n${notice}`
-      // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the collapsed body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
-      const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
-      if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, Math.round(savedBytes / 4))
-      return { hookType: 'rewriteOutput', updatedOutput }
+      if (worthwhile) {
+        const updatedOutput = `${collapsed}\n\n${notice}`
+        // Record the REAL saving, measured against the envelope the parent actually receives (notice included), not against the collapsed body alone -- the notice is part of what is spent to buy the compaction. The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.
+        const savedBytes = originalBytes - Buffer.byteLength(updatedOutput, 'utf-8')
+        if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, Math.round(savedBytes / 4))
+        return { hookType: 'rewriteOutput', updatedOutput }
+      }
+      // The gate declined: fences collapsed but the net savings did not clear the notice cost. Record this at (0, 0) -- like the sibling session_hint event above -- so hit-rate and near-misses are visible instead of the gate's declines being invisible, without inflating any savings total with a non-saving.
+      recordStat('agent_report_compact_declined', 0, 0)
     }
 
     return contextOutput(notice)
