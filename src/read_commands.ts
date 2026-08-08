@@ -1878,10 +1878,17 @@ function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { na
  * `--stats` ref-count lookup. Both commands share this exact sequence verbatim; only their JSON
  * row shape and text-line formatting differ, so those stay in each command's own function.
  */
+// A file whose symbols were ALL removed by a filter renders as "(0 symbols)", which is the same thing an unindexed or symbol-less file shows -- except that case gets noSymbolsMessage explaining itself, and this one silently looked like a definitive answer about the file. Emitted only when the file genuinely had symbols before filtering, so the honest empty case keeps its own dedicated message untouched.
+function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefined): string {
+  const plural = preFilterCount === 1 ? 'symbol' : 'symbols'
+  const cause = minLines !== undefined ? `--min-lines ${minLines}` : 'the active filter'
+  return `  (all ${preFilterCount} indexed ${plural} were filtered out by ${cause}; the file is indexed -- widen or drop the filter to see them)`
+}
+
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
+): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -1920,7 +1927,7 @@ function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
+  return { kind: 'ok', resolved, filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
 }
 
 /**
@@ -1954,7 +1961,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
+  const { resolved, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
     const rows = filtered.map((s) => ({
@@ -1979,6 +1986,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
   const lines: string[] = [`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`]
+  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines))
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
     const statsStr = formatStatsSuffix(refCounts, sym)
@@ -2015,7 +2023,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
+  const { resolved, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
     const rows =
@@ -2038,6 +2046,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   }
 
   const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
+  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines))
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
