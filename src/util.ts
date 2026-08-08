@@ -752,6 +752,23 @@ export function toKB(bytes: number): number {
   return Math.round(bytes / 1024)
 }
 
+/**
+ * Compiles a `--grep` pattern into a predicate, following the convention every existing
+ * `--grep` flag already uses: treat it as a regex, and fall back to a literal substring
+ * match when it does not compile. An agent that writes `--grep "config("` means the text,
+ * not a syntax error, and erroring there would cost a round trip to learn nothing useful.
+ * Case-sensitive, matching the other `--grep` flags -- callers wanting otherwise pass an
+ * inline `(?i)`-style alternation or a broader pattern.
+ */
+export function compileGrepMatcher(pattern: string): (candidate: string) => boolean {
+  try {
+    const re = new RegExp(pattern)
+    return (candidate) => re.test(candidate)
+  } catch {
+    return (candidate) => candidate.includes(pattern)
+  }
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

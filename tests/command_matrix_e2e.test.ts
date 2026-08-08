@@ -320,6 +320,10 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs/)
     // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
+    // Same flag on skeleton, exercised on the shipping bundle rather than only in unit tests.
+    const skGrep = run(['skeleton', 'src/mod.ts', '--grep', 'alphaSym'])
+    expect(skGrep.status, skGrep.stderr).toBe(0)
+    expect(skGrep.stdout).toContain('alphaSym')
     const multi = run(['skeleton', 'src/mod.ts,caller.ts'])
     expect(multi.status, multi.stderr).toBe(0)
     expect(multi.stdout).toContain('# Skeleton: src/mod.ts')
@@ -339,6 +343,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('# Outline: caller.ts')
     expect(multi.stdout).toContain('alphaSym')
     expect(multi.stdout).toContain('refDriver')
+    // --grep narrows by symbol name against the real built binary, and an all-filtered result names the filter instead of looking like an empty file.
+    const grepped = run(['outline', 'src/mod.ts', '--grep', 'alphaSym'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    expect(grepped.stdout).toContain('alphaSym')
+    const grepMiss = run(['outline', 'src/mod.ts', '--grep', 'zzzzNoSuchSymbol'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchSymbol')
+    expect(grepMiss.stdout).toContain('filtered out')
     // Extra space-separated file arguments are named, not silently dropped.
     const extra = run(['outline', 'src/mod.ts', 'caller.ts'])
     expect(extra.status, extra.stderr).toBe(0)
