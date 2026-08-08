@@ -1799,6 +1799,8 @@ export interface SkeletonOptions {
   minLines?: number
   /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
+  /** Internal. Set only by the multi-file path, where several files merge into one payload and each row needs to name its own file. Single-file callers already know the file they asked for, and every extra field per row costs rows under the byte cap. */
+  includeFilePath?: boolean
   forceRefresh?: boolean
   stats?: boolean
   /**
@@ -1895,7 +1897,7 @@ function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefi
 function prepareSymbolListing(
   file: string,
   opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
-): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
+): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; displayRoot: string | undefined; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
     indexFileSync(resolved, globalDbPath())
@@ -1937,7 +1939,7 @@ function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
+  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: symbols.length, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount }
 }
 
 /**
@@ -2003,16 +2005,18 @@ function mergeListingJson(files: string[], blocks: string[], anyOk: boolean): { 
 /** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file }), opts.json === true)
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file, includeFilePath: true }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
+  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
+    // filePath appears when, and only when, the payload can hold more than one file. It identifies which file a row came from -- without it two merged rows both reading lineStart 3 are indistinguishable while meaning different files -- but a single-file caller already knows the file it named, and every field costs rows: guardJsonRows caps by BYTES, so an unconditional path per row pushes real symbols out of a large file listing (the same lever that removing `body` pulled in the other direction). Rendered through toDisplayPath so it is root-relative and reproducible rather than absolute and specific to this machine and drive-letter casing.
     const rows = filtered.map((s) => ({
+      ...(opts.includeFilePath === true ? { filePath: toDisplayPath(displayRoot, s.filePath) } : {}),
       name: s.name,
       kind: s.kind,
       lineStart: s.lineStart,
@@ -2053,6 +2057,8 @@ export interface OutlineOptions {
   minLines?: number
   /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
+  /** Internal. Set only by the multi-file path, where several files merge into one payload and each row needs to name its own file. Single-file callers already know the file they asked for, and every extra field per row costs rows under the byte cap. */
+  includeFilePath?: boolean
   forceRefresh?: boolean
   stats?: boolean
   /**
@@ -2067,18 +2073,18 @@ export interface OutlineOptions {
 /** Handle ``token-goat outline file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
   const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file }), opts.json === true)
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file, includeFilePath: true }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {
     return { text: prep.text, code: 1 }
   }
-  const { resolved, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
+  const { resolved, displayRoot, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
     // Project explicitly instead of spreading the row. The spread carried `body` -- the full source of every symbol -- into a payload for the one command whose entire purpose is to map a file WITHOUT its bodies. On src/cli.ts that was 45 KB of the 87 KB payload, and because guardJsonRows caps by bytes, the bodies crowded out symbols: 164 of 504 survived, so asking for machine-readable output silently returned under a third of the map the text form prints in full. An explicit projection also closes the trap that let it in -- a spread type-checks against SymbolEntry no matter what fields get added to it later, so the next new column would have leaked in just as quietly.
     const rows = filtered.map((s) => ({
-      filePath: s.filePath,
+      ...(opts.includeFilePath === true ? { filePath: toDisplayPath(displayRoot, s.filePath) } : {}),
       name: s.name,
       kind: s.kind,
       lineStart: s.lineStart,

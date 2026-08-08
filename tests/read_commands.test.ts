@@ -1621,6 +1621,29 @@ describe('read_commands', () => {
 
   // ---- runSection ---------------------------------------------------------
 
+  describe('listing --json filePath identity', () => {
+    // Merging a comma-separated spec into one payload made the per-row file identifier load-bearing: skeleton projected only name/kind/lineStart/lineEnd, so two rows reading lineStart 3 were indistinguishable while meaning different files.
+    it('identifies which file each merged skeleton row came from', () => {
+      mockQuerySymbols.mockImplementation((opts?: { filePath?: string }) => {
+        const f = String(opts?.filePath ?? '')
+        if (f.includes('b.ts')) return [{ name: 'shared', kind: 'function', filePath: 'b.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' }] as never
+        return [{ name: 'shared', kind: 'function', filePath: 'a.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' }] as never
+      })
+      const { text } = runSkeleton({ file: 'a.ts,b.ts', json: true })
+      const payload = JSON.parse(text) as { items: { filePath: string }[] }
+      expect(payload.items).toHaveLength(2)
+      expect(payload.items.map((i) => i.filePath)).toEqual(['a.ts', 'b.ts'])
+    })
+
+    // An absolute path renders the same query differently on every machine (and on Windows differs by drive-letter casing), so it cannot be compared across runs or fed back verbatim. toDisplayPath is what the rest of the codebase already uses for this.
+    it('renders outline filePath relative to the project root, not as an absolute path', () => {
+      mockQuerySymbols.mockReturnValue([{ name: 'sym', kind: 'function', filePath: path.resolve(process.cwd(), 'sub/a.ts'), lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never)
+      const { text } = runOutline({ file: 'sub/a.ts,other.ts', json: true, projectRoot: process.cwd() })
+      const payload = JSON.parse(text) as { items: { filePath: string }[] }
+      expect(payload.items[0]?.filePath).toBe('sub/a.ts')
+    })
+  })
+
   describe('multi-file listing --json', () => {
     // Text blocks are joined with a blank line, which for --json produced N complete documents back to back -- no parser accepts that, so the flag failed outright on exactly the input it exists to serve.
     it('returns one parseable document for a comma-separated spec, not concatenated ones', () => {
@@ -1714,9 +1737,10 @@ describe('read_commands', () => {
         lineStart: 1,
         lineEnd: 3,
         docstring: 'docs here',
-        filePath: 'a.ts',
       })
       expect(payload.totalCount).toBe(1)
+      // filePath is omitted for a single file: the caller named it, and every per-row field costs rows under the byte cap. The multi-file suite covers its presence where it is load-bearing.
+      expect(payload.items[0]).not.toHaveProperty('filePath')
     })
 
     // --stats adds its two columns to the projected row rather than being lost with the spread it replaced.
