@@ -1621,6 +1621,55 @@ describe('read_commands', () => {
 
   // ---- runSection ---------------------------------------------------------
 
+  describe('filtered-to-empty listings', () => {
+    // A filter that removes every symbol used to render exactly like a file with no symbols at all -- "(0 symbols)" and nothing else -- except the genuinely-empty case gets noSymbolsMessage explaining itself, so the filtered case was the one that read as a definitive answer about the file when it was really a statement about the filter.
+    it('outline says the filter emptied the listing rather than implying the file has no symbols', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+          { name: 'beta', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text, code } = runOutline({ file: 'a.ts', minLines: 9999 })
+      expect(code).toBe(0)
+      expect(text).toContain('--min-lines 9999')
+      expect(text).toContain('all 2 indexed symbols were filtered out')
+    })
+
+    it('skeleton says the same for the same reason', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+          { name: 'beta', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text, code } = runSkeleton({ file: 'a.ts', minLines: 9999 })
+      expect(code).toBe(0)
+      expect(text).toContain('all 2 indexed symbols were filtered out')
+    })
+
+    // Control: with no filter emptying it, the listing is byte-unchanged -- the notice must not leak into an ordinary populated outline.
+    it('does not add the notice when the filter kept symbols', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+          { name: 'beta', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts' })
+      expect(text).not.toContain('filtered out')
+      expect(text).toContain('alpha')
+    })
+
+    // Control for the class this fix belongs to: when there was nothing to filter in the first place, the dedicated empty-result message stands on its own and must not be relabelled as a filtering artefact, even though --min-lines was passed.
+    it('keeps the dedicated empty-result message when there was nothing to filter', () => {
+      mockQuerySymbols.mockReturnValue([] as never)
+      const { text } = runOutline({ file: 'a.ts', minLines: 9999 })
+      expect(text).not.toContain('filtered out')
+      expect(text).toContain('Could not read')
+    })
+  })
+
   describe('runSection', () => {
     it('returns 1 for invalid spec without ::', () => {
       const { code } = runSection({ spec: 'no-separator' })
