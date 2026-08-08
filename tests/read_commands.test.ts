@@ -572,9 +572,12 @@ describe('read_commands', () => {
           return []
         }
         if (opts?.filePath !== undefined) {
+          // Similar (not just any) names, so the fixed ranking still surfaces them -- an
+          // unrelated same-file candidate would now correctly be filtered out, defeating this
+          // test's actual point (lead-line ordering ahead of the same-file did-you-mean list).
           return [
-            { name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
-            { name: 'isWindows', kind: 'function', filePath: 'src/util.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' },
+            { name: 'walkProjectSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' },
+            { name: 'walkProjectHelper', kind: 'function', filePath: 'src/util.ts', lineStart: 3, lineEnd: 4, body: '', docstring: '', parent: '' },
           ]
         }
         return []
@@ -586,8 +589,8 @@ describe('read_commands', () => {
       expect(text).toContain('token-goat read "src/baseline.ts::walkProject"')
       // Existing same-file did-you-mean list stays present and unchanged underneath.
       expect(text).toContain('Did you mean:')
-      expect(text).toContain('sleepSync')
-      expect(text).toContain('isWindows')
+      expect(text).toContain('walkProjectSync')
+      expect(text).toContain('walkProjectHelper')
       const leadIdx = text.indexOf("is defined in")
       const sameFileIdx = text.indexOf('Did you mean:')
       expect(leadIdx).toBeGreaterThan(-1)
@@ -600,7 +603,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'totallyMissingEverywhere') return []
         if (opts?.filePath !== undefined) {
-          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+          // Similar to the query so it survives the similarity ranking -- see the comment above.
+          return [{ name: 'totallyMissingEverywhereToo', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
         }
         return []
       })
@@ -609,7 +613,53 @@ describe('read_commands', () => {
       expect(text).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
       expect(text).not.toContain('is defined in')
       expect(text).toContain('Did you mean:')
-      expect(text).toContain('sleepSync')
+      expect(text).toContain('totallyMissingEverywhereToo')
+    })
+
+    // Defect fix: the did-you-mean list used to be an arbitrary same-file dump regardless of
+    // relevance to the query. When nothing in the file resembles the query, point at `outline`
+    // (the command that lists the file's real symbols) instead of dead-ending silently.
+    it('points at outline when a symbol miss has no similar same-file candidates', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'zzz_totally_unrelated') return []
+        if (opts?.filePath !== undefined) {
+          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { text, code } = runRead({ spec: 'src/util.ts::zzz_totally_unrelated' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('Did you mean:')
+      expect(text).toContain('token-goat outline src/util.ts')
+    })
+
+    // The database-layer cap used to be applied BEFORE ranking (querySymbols({ limit:
+    // DIDYOUMEAN_LIMIT })), so on a file with many symbols the true near-match could be
+    // outside the arbitrary storage-order first-N and never even considered for ranking.
+    // Fixed by scanning a bounded superset (FIND_SCAN_LIMIT) and ranking BEFORE capping.
+    // Query is 'parseConf' (a genuine forward-substring prefix of 'parseConfig'), not a typo
+    // like 'parseConfg' -- the reused substring-based matcher (same one runSymbol already
+    // uses) does not catch a missing-interior-character typo, only real substring relations.
+    it('finds the true near-match even when it is not among the first DIDYOUMEAN_LIMIT symbols in storage order (defect-B regression)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'parseConf') return []
+        if (opts?.filePath !== undefined) {
+          // Twelve unrelated names first (storage order), then the true near-match last --
+          // capping at DIDYOUMEAN_LIMIT (5) before ranking would never see it.
+          const unrelated = Array.from({ length: 12 }, (_, i) => ({
+            name: `alpha${i + 1}`, kind: 'function', filePath: 'src/util.ts', lineStart: i + 1, lineEnd: i + 1, body: '', docstring: '', parent: '',
+          }))
+          return [...unrelated, { name: 'parseConfig', kind: 'function', filePath: 'src/util.ts', lineStart: 100, lineEnd: 105, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { text, code } = runRead({ spec: 'src/util.ts::parseConf' })
+      expect(code).toBe(1)
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('parseConfig')
+      expect(text).not.toContain('alpha')
     })
 
     // Regression: a bare symbol name with no `::` used to say "Could not read: <name>" once
@@ -4804,7 +4854,9 @@ describe('read_commands', () => {
           return []
         }
         if (opts?.filePath !== undefined) {
-          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+          // Similar to the query so it survives the similarity ranking -- see the comment on
+          // runRead's equivalent test above.
+          return [{ name: 'walkProjectSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
         }
         return []
       })
@@ -4815,7 +4867,7 @@ describe('read_commands', () => {
       expect(stderr).toContain("'walkProject' is defined in src/baseline.ts")
       expect(stderr).toContain('token-goat diff "src/baseline.ts::walkProject"')
       expect(stderr).toContain('Did you mean:')
-      expect(stderr).toContain('sleepSync')
+      expect(stderr).toContain('walkProjectSync')
       expect(mockRunGit).not.toHaveBeenCalled()
     })
 
@@ -4824,7 +4876,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockImplementation((opts?: any) => {
         if (opts?.name === 'totallyMissingEverywhere') return []
         if (opts?.filePath !== undefined) {
-          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+          // Similar to the query so it survives the similarity ranking.
+          return [{ name: 'totallyMissingEverywhereToo', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
         }
         return []
       })
@@ -4834,7 +4887,48 @@ describe('read_commands', () => {
       expect(stderr).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
       expect(stderr).not.toContain('is defined in')
       expect(stderr).toContain('Did you mean:')
-      expect(stderr).toContain('sleepSync')
+      expect(stderr).toContain('totallyMissingEverywhereToo')
+    })
+
+    // Same shared resolveSymbolSpecOrEmitError code path as runRead's equivalent tests above
+    // -- covers the second (:3423-area) call site named in the task.
+    it('points at outline when a symbol miss (runDiff) has no similar same-file candidates', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'zzz_totally_unrelated') return []
+        if (opts?.filePath !== undefined) {
+          return [{ name: 'sleepSync', kind: 'function', filePath: 'src/util.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'src/util.ts::zzz_totally_unrelated' })).toBe(1)
+      })
+      expect(stderr).not.toContain('Did you mean:')
+      expect(stderr).toContain('token-goat outline src/util.ts')
+    })
+
+    // Defect-B regression for the shared resolveSymbolSpecOrEmitError path: the DB-layer cap
+    // used to be applied before ranking, so the true near-match could be outside the arbitrary
+    // storage-order first-N and never considered.
+    it('finds the true near-match even when it is not among the first DIDYOUMEAN_LIMIT symbols in storage order (runDiff, defect-B regression)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        if (opts?.name === 'parseConf') return []
+        if (opts?.filePath !== undefined) {
+          const unrelated = Array.from({ length: 12 }, (_, i) => ({
+            name: `alpha${i + 1}`, kind: 'function', filePath: 'src/util.ts', lineStart: i + 1, lineEnd: i + 1, body: '', docstring: '', parent: '',
+          }))
+          return [...unrelated, { name: 'parseConfig', kind: 'function', filePath: 'src/util.ts', lineStart: 100, lineEnd: 105, body: '', docstring: '', parent: '' }]
+        }
+        return []
+      })
+      const { stderr } = capture(() => {
+        expect(runDiff({ spec: 'src/util.ts::parseConf' })).toBe(1)
+      })
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('parseConfig')
+      expect(stderr).not.toContain('alpha')
     })
 
     it('fails with formatAmbiguity\'s shape when the symbol matches several distinct definitions', () => {
@@ -6157,6 +6251,54 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
         expect(code).toBe(0)
       })
       expect(stdout.trim()).toBe('hello')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ranks the entry-miss suggestion list by similarity to the query instead of dumping every entry unfiltered', async () => {
+    const { zipSync, strToU8 } = await import('fflate')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zipread-test-'))
+    const zipPath = path.join(dir, 'archive.zip')
+    try {
+      const zip = zipSync({
+        'sub/config.json': strToU8('{}'),
+        'sub/unrelated_asset.png': strToU8('x'),
+      })
+      fs.writeFileSync(zipPath, zip)
+
+      // 'sub/config.json' genuinely contains the query as a substring.
+      const { stderr } = capture(() => {
+        const code = runZipRead({ file: zipPath, entry: 'sub/confi' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain("Entry 'sub/confi' not found")
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('sub/config.json')
+      expect(stderr).not.toContain('unrelated_asset')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Defect fix: an unrelated query used to print every entry in the archive regardless of
+  // relevance. It now gets no list at all -- pointing at zip-list (the command that lists
+  // every entry) instead of a dead end.
+  it('points at zip-list instead of an unranked full dump when no entry resembles the query', async () => {
+    const { zipSync, strToU8 } = await import('fflate')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zipread-test-'))
+    const zipPath = path.join(dir, 'archive.zip')
+    try {
+      const zip = zipSync({ 'sub/file.txt': strToU8('hello') })
+      fs.writeFileSync(zipPath, zip)
+
+      const { stderr } = capture(() => {
+        const code = runZipRead({ file: zipPath, entry: 'zzz_totally_unrelated' })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain("Entry 'zzz_totally_unrelated' not found")
+      expect(stderr).not.toContain('Did you mean:')
+      expect(stderr).toContain(`token-goat zip-list ${zipPath}`)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

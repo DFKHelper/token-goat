@@ -401,15 +401,31 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       expect(Object.keys(parsed.responses)).toEqual(['200', '404'])
     })
 
-    it('returns 1 with a not-found message plus close-match suggestions when the operation is absent', () => {
+    it('returns 1 with a not-found message plus close-match suggestions when the operation is a near-miss', () => {
+      const f = path.join(tempDir, 'openapi.json')
+      fs.writeFileSync(f, JSON.stringify(SPEC_JSON))
+      let code = -1
+      // 'getUserById' genuinely contains the query as a substring -- an unrelated query
+      // ('nonExistentOp') no longer surfaces it, see the next test.
+      const { stderr } = capture(() => { code = runOpenApiOp({ file: f, operation: 'getUserBy' }) })
+      expect(code).toBe(1)
+      expect(stderr).toContain("Operation 'getUserBy' not found")
+      expect(stderr).toContain('Did you mean:')
+      expect(stderr).toContain('getUserById')
+    })
+
+    // Defect fix: the suggestion list used to be every operation in the spec regardless of
+    // relevance to the query. An unrelated query now gets no list at all -- pointing at
+    // openapi-outline (the command that lists them all) instead of a dead end.
+    it('points at openapi-outline instead of an unranked full dump when no operation resembles the query', () => {
       const f = path.join(tempDir, 'openapi.json')
       fs.writeFileSync(f, JSON.stringify(SPEC_JSON))
       let code = -1
       const { stderr } = capture(() => { code = runOpenApiOp({ file: f, operation: 'nonExistentOp' }) })
       expect(code).toBe(1)
       expect(stderr).toContain("Operation 'nonExistentOp' not found")
-      expect(stderr).toContain('Did you mean:')
-      expect(stderr).toContain('getUserById')
+      expect(stderr).not.toContain('Did you mean:')
+      expect(stderr).toContain(`token-goat openapi-outline ${f}`)
     })
 
     it('returns 1 when the file does not exist', () => {
