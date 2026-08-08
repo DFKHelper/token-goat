@@ -115,6 +115,8 @@ import {
   healStaleIndex,
   runNoteGet,
   runNoteList,
+  rankSimilarNames,
+  filterSimilarHeadings,
 } from './read_commands.js'
 import { WHOLE_FILE_NOTE_SYMBOL, resolveSymbolMatch, symbolNamesInFile, computeFileFingerprint, upsertNote } from './notes.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
@@ -2061,8 +2063,11 @@ function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: string;
     const match = resolveSymbolMatch(resolvedPath, opts.symbol)
     if (match === null) {
       const messages = [`No symbol named '${opts.symbol}' is indexed in '${file}'`]
-      const available = symbolNamesInFile(resolvedPath)
+      const allNames = symbolNamesInFile(resolvedPath)
+      // Rank by similarity to the query before suggesting, the same way the read-side miss paths do -- passing the raw list meant a query resembling nothing printed every symbol in the file under "Did you mean", which reads as a guess list rather than a suggestion. When ranking leaves nothing, point at the command that lists them instead, reusing runSection's wording verbatim.
+      const available = rankSimilarNames(allNames, opts.symbol)
       if (available.length > 0) messages.push(didYouMean(available))
+      else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
       throw new CliError(messages.join('\n'))
     }
     symbol = opts.symbol
@@ -2519,9 +2524,12 @@ function cmdInsertSection(file: string, opts: { after: string; contentFrom?: str
 
   const result = readSection(file, opts.after)
   if (result === null) {
-    const available = listSections(file)
+    const allHeadings = listSections(file)
     const messages = [`Section '${opts.after}' not found in '${file}'`]
+    // Same reasoning as the note-add miss above: rank before suggesting, and fall through to the listing command when ranking leaves nothing, rather than dumping every heading in the file.
+    const available = filterSimilarHeadings(allHeadings, opts.after)
     if (available.length > 0) messages.push(didYouMean(available))
+    else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${file}`)
     throw new CliError(messages.join('\n'))
   }
 

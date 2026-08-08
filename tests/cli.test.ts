@@ -971,7 +971,8 @@ describe('token-goat CLI', () => {
       }
     })
 
-    it('insert-section on an unresolvable heading exits 1 with a "Did you mean" hint', () => {
+    // This used to assert that 'Nonexistent Heading' still listed 'Lesson 1' under "Did you mean" -- an oracle that encoded the unranked heading dump as correct. A query near no heading gets the listing command instead, and the file is still left untouched either way.
+    it('insert-section on a heading resembling nothing exits 1 pointing at outline, without dumping every heading', () => {
       const tmp = path.join(os.tmpdir(), `tg-ins-notfound-${Date.now()}.md`)
       fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
       const contentB64 = Buffer.from('new\n', 'utf8').toString('base64')
@@ -979,7 +980,24 @@ describe('token-goat CLI', () => {
         const r = runCli(['insert-section', tmp, '--after', 'Nonexistent Heading', '--content-b64', contentB64])
         expect(r.status).toBe(1)
         expect(r.stderr).toContain('not found')
-        expect(r.stderr).toContain('Lesson 1')
+        expect(r.stderr).not.toContain('Did you mean')
+        expect(r.stderr).toContain('outline')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    // The ranked suggestion still fires for a heading the query actually resembles, which is what keeps the negative assertion above a filter rather than a blanket removal of the hint.
+    it('insert-section suggests the near-name heading for a misspelled --after', () => {
+      const tmp = path.join(os.tmpdir(), `tg-ins-near-${Date.now()}.md`)
+      fs.writeFileSync(tmp, '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n', 'utf8')
+      const contentB64 = Buffer.from('new\n', 'utf8').toString('base64')
+      try {
+        const r = runCli(['insert-section', tmp, '--after', 'Leson 2', '--content-b64', contentB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('Did you mean')
+        expect(r.stderr).toContain('Lesson 2')
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })
