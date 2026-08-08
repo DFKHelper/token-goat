@@ -2038,14 +2038,17 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   const { resolved, filtered, preFilterCount, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount } = prep
 
   if (opts.json === true) {
-    const rows =
-      refCounts !== undefined
-        ? filtered.map((s) => ({
-            ...s,
-            refCount: refCounts.get(s.name) ?? 0,
-            hasDoc: hasRealDocstring(s.docstring),
-          }))
-        : filtered
+    // Project explicitly instead of spreading the row. The spread carried `body` -- the full source of every symbol -- into a payload for the one command whose entire purpose is to map a file WITHOUT its bodies. On src/cli.ts that was 45 KB of the 87 KB payload, and because guardJsonRows caps by bytes, the bodies crowded out symbols: 164 of 504 survived, so asking for machine-readable output silently returned under a third of the map the text form prints in full. An explicit projection also closes the trap that let it in -- a spread type-checks against SymbolEntry no matter what fields get added to it later, so the next new column would have leaked in just as quietly.
+    const rows = filtered.map((s) => ({
+      filePath: s.filePath,
+      name: s.name,
+      kind: s.kind,
+      lineStart: s.lineStart,
+      lineEnd: s.lineEnd,
+      docstring: s.docstring,
+      parent: s.parent,
+      ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
+    }))
     const capped = guardJsonRows(rows)
     const payload = {
       items: capped.items,
