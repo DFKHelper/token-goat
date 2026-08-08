@@ -2952,16 +2952,18 @@ export function buildProgram(): Command {
     .description('list all symbols in a file without bodies (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
+    .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex)')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
-      (file: string, more: string[], opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+      (file: string, more: string[], opts: { json?: boolean; minLines?: string; grep?: string; forceRefresh?: boolean; stats?: boolean }) =>
         runExitText(() =>
           noteExtraFileArgs('skeleton', file, more, () =>
             runSkeleton({
               file,
               ...(opts.json === true ? { json: true } : {}),
               ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
+              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
               ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
             }),
@@ -2974,16 +2976,18 @@ export function buildProgram(): Command {
     .description('list symbols with line ranges and docstrings (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
     .option('--min-lines <n>', 'only show symbols at least N lines long')
+    .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex)')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .action(
-      (file: string, more: string[], opts: { json?: boolean; minLines?: string; forceRefresh?: boolean; stats?: boolean }) =>
+      (file: string, more: string[], opts: { json?: boolean; minLines?: string; grep?: string; forceRefresh?: boolean; stats?: boolean }) =>
         runExitText(() =>
           noteExtraFileArgs('outline', file, more, () =>
             runOutline({
               file,
               ...(opts.json === true ? { json: true } : {}),
               ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
+              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
               ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
             }),

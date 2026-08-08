@@ -1621,6 +1621,140 @@ describe('read_commands', () => {
 
   // ---- runSection ---------------------------------------------------------
 
+  describe('outline/skeleton --grep', () => {
+    // Without a name filter the only way to find one area of a large file is to dump every symbol in it (src/cli.ts alone lists 502), which is precisely the full-file read these commands exist to avoid.
+    it('narrows outline to symbols whose name matches the pattern', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text, code } = runOutline({ file: 'a.ts', grep: 'Config' })
+      expect(code).toBe(0)
+      expect(text).toContain('parseConfig')
+      expect(text).toContain('writeConfig')
+      expect(text).not.toContain('unrelatedThing')
+    })
+
+    it('narrows skeleton the same way', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runSkeleton({ file: 'a.ts', grep: 'Config' })
+      expect(text).toContain('parseConfig')
+      expect(text).not.toContain('unrelatedThing')
+    })
+
+    // The pattern is matched against the symbol NAME only. Anchors have to work for that to be usable at all -- a caller narrowing to constructors or a naming prefix needs ^ to mean the start of the name.
+    it('treats the pattern as a regex against the symbol name', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', grep: '^parse' })
+      expect(text).toContain('parseConfig')
+      expect(text).not.toContain('writeConfig')
+    })
+
+    // An unparseable pattern is far more often a caller meaning the literal text than a mistake worth an error, so it degrades to a substring match rather than costing a round trip. Same convention as every other --grep flag.
+    it('falls back to a literal substring match when the pattern is not valid regex', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'readConfig(', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text, code } = runOutline({ file: 'a.ts', grep: 'Config(' })
+      expect(code).toBe(0)
+      expect(text).toContain('readConfig(')
+      expect(text).not.toContain('unrelatedThing')
+    })
+
+    // The two filters narrow the same set, so they must intersect rather than one overriding the other.
+    it('composes with --min-lines instead of one filter overriding the other', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', grep: 'Config', minLines: 5 })
+      expect(text).toContain('parseConfig')
+      expect(text).not.toContain('writeConfig')
+      expect(text).not.toContain('unrelatedThing')
+    })
+
+    // A --grep that matches nothing is the most likely way these listings go empty, so it inherits the filtered-to-empty notice and must name --grep rather than looking like a file with no symbols.
+    it('names --grep in the notice when it empties the listing', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text, code } = runOutline({ file: 'a.ts', grep: 'zzzz' })
+      expect(code).toBe(0)
+      expect(text).toContain('all 3 indexed symbols were filtered out')
+      expect(text).toContain('--grep zzzz')
+    })
+
+    // With both filters active the notice must name both -- blaming only one sends the caller to widen the wrong knob.
+    it('names both filters in the notice when both are active', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', grep: 'zzzz', minLines: 5 })
+      expect(text).toContain('--min-lines 5')
+      expect(text).toContain('--grep zzzz')
+      expect(text).toContain('widen or drop the filters')
+    })
+
+    // JSON output must narrow with the text output, not silently return every symbol to a caller that asked for a subset.
+    it('applies the filter to --json output and keeps totalCount consistent with items', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', grep: 'Config', json: true })
+      const payload = JSON.parse(text) as { items: { name: string }[]; totalCount: number }
+      expect(payload.items.map((i) => i.name)).toEqual(['parseConfig', 'writeConfig'])
+      expect(payload.totalCount).toBe(2)
+    })
+
+    // Control: with no --grep the listing is unchanged, so the flag cannot alter the default path.
+    it('leaves the listing untouched when --grep is absent', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+          { name: 'unrelatedThing', kind: 'function', filePath: 'a.ts', lineStart: 20, lineEnd: 40, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts' })
+      expect(text).toContain('parseConfig')
+      expect(text).toContain('unrelatedThing')
+      expect(text).not.toContain('filtered out')
+    })
+  })
+
   describe('filtered-to-empty listings', () => {
     // A filter that removes every symbol used to render exactly like a file with no symbols at all -- "(0 symbols)" and nothing else -- except the genuinely-empty case gets noSymbolsMessage explaining itself, so the filtered case was the one that read as a definitive answer about the file when it was really a statement about the filter.
     it('outline says the filter emptied the listing rather than implying the file has no symbols', () => {

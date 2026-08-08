@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, compileGrepMatcher, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -1797,6 +1797,8 @@ export interface SkeletonOptions {
   file: string
   json?: boolean
   minLines?: number
+  /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
   forceRefresh?: boolean
   stats?: boolean
   /**
@@ -1879,15 +1881,20 @@ function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { na
  * row shape and text-line formatting differ, so those stay in each command's own function.
  */
 // A file whose symbols were ALL removed by a filter renders as "(0 symbols)", which is the same thing an unindexed or symbol-less file shows -- except that case gets noSymbolsMessage explaining itself, and this one silently looked like a definitive answer about the file. Emitted only when the file genuinely had symbols before filtering, so the honest empty case keeps its own dedicated message untouched.
-function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefined): string {
+function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefined, grep: string | undefined): string {
   const plural = preFilterCount === 1 ? 'symbol' : 'symbols'
-  const cause = minLines !== undefined ? `--min-lines ${minLines}` : 'the active filter'
-  return `  (all ${preFilterCount} indexed ${plural} were filtered out by ${cause}; the file is indexed -- widen or drop the filter to see them)`
+  // Name every filter that is actually active, not just the first one: with both set, blaming one of them sends the caller to widen the wrong knob.
+  const parts: string[] = []
+  if (minLines !== undefined) parts.push(`--min-lines ${minLines}`)
+  if (grep !== undefined) parts.push(`--grep ${grep}`)
+  const cause = parts.length === 0 ? 'the active filter' : parts.join(' + ')
+  const knob = parts.length > 1 ? 'filters' : 'filter'
+  return `  (all ${preFilterCount} indexed ${plural} were filtered out by ${cause}; the file is indexed -- widen or drop the ${knob} to see them)`
 }
 
 function prepareSymbolListing(
   file: string,
-  opts: { minLines?: number; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
+  opts: { minLines?: number; grep?: string; forceRefresh?: boolean; stats?: boolean; projectRoot?: string },
 ): { kind: 'empty'; text: string } | { kind: 'ok'; resolved: string; filtered: SymbolEntry[]; preFilterCount: number; refCounts: Map<string, number> | undefined; fullSourceBytes: number; symbolsTruncated: boolean; trueSymbolCount: number | undefined } {
   const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
   if (opts.forceRefresh === true) {
@@ -1915,10 +1922,13 @@ function prepareSymbolListing(
     return { kind: 'empty', text: noSymbolsMessage(file, resolved) }
   }
 
-  const filtered =
-    opts.minLines !== undefined
-      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
-      : symbols
+  // Both filters narrow the same already-fetched set, so they compose: --min-lines then --grep. Applied after the cap slice and after the genuinely-empty check, exactly as --min-lines always has been, so neither the truncation flag nor the no-symbols message changes meaning when --grep is added.
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filtered = symbols.filter(
+    (s) =>
+      (opts.minLines === undefined || s.lineEnd - s.lineStart + 1 >= opts.minLines) &&
+      (matchesGrep === undefined || matchesGrep(s.name)),
+  )
 
   const refCounts =
     opts.stats === true
@@ -1986,7 +1996,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
   const lines: string[] = [`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`]
-  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines))
+  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
     const statsStr = formatStatsSuffix(refCounts, sym)
@@ -2003,6 +2013,8 @@ export interface OutlineOptions {
   file: string
   json?: boolean
   minLines?: number
+  /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
   forceRefresh?: boolean
   stats?: boolean
   /**
@@ -2046,7 +2058,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
   }
 
   const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
-  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines))
+  if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
