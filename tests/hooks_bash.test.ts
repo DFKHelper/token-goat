@@ -3177,6 +3177,87 @@ describe('postBashHandler — gh view field-batching advisory (one-time per sess
   })
 })
 
+describe('postBashHandler — failing test-runner advisory', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  function testRunEvent(command: string, output: string, exitCode: number | null): HookEvent {
+    return {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command },
+      sessionId: 'test-session',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command },
+        tool_response: exitCode === null ? output : { output, exit_code: exitCode },
+      },
+    }
+  }
+
+  // Large enough to clear the default 512-byte cache_min_bytes floor.
+  const failingPytestOutput = '=== FAILURES ===\n' + 'FAILED tests/test_x.py::test_thing - AssertionError\n'.repeat(20)
+
+  it('emits a failures advisory naming a recallable `bash-output | failures` command on a failing pytest run', async () => {
+    const result = await postBashHandler(testRunEvent('pytest', failingPytestOutput, 1))
+    expectHookType(result, 'context')
+    expect(result.context).toContain('token-goat failures')
+    expect(result.context).toContain('token-goat bash-output')
+    // The suggested id must actually resolve to the cached output.
+    const match = result.context.match(/token-goat bash-output (\S+)/)
+    expect(match).not.toBeNull()
+    if (match !== null) {
+      const cached = getBashOutput(match[1] as string)
+      expect(cached).not.toBeNull()
+      expect(cached?.output).toBe(failingPytestOutput)
+    }
+  })
+
+  it('fires for a bare `npm test` failure even though npm test is excluded from the general build/monitoring cache', async () => {
+    const output = 'FAIL src/foo.test.ts\n' + '  ✗ does the thing\n'.repeat(40)
+    const result = await postBashHandler(testRunEvent('npm test', output, 1))
+    expectHookType(result, 'context')
+    expect(result.context).toContain('token-goat failures')
+  })
+
+  it('fires for `npm run test`, `go test`, and `cargo test` failures', async () => {
+    const output = 'FAIL: test_thing did not match expected value\n'.repeat(30)
+    for (const cmd of ['npm run test', 'go test ./...', 'cargo test']) {
+      clearModuleCaches()
+      const result = await postBashHandler(testRunEvent(cmd, output, 1))
+      expectHookType(result, 'context')
+      expect(result.context).toContain('token-goat failures')
+    }
+  })
+
+  it('stays silent on a passing (exit 0) test run', async () => {
+    const result = await postBashHandler(testRunEvent('pytest', failingPytestOutput, 0))
+    expect(result.hookType === 'context' && result.context.includes('token-goat failures')).toBe(false)
+  })
+
+  it('stays silent on a non-test command, even with a matching non-zero exit and large output', async () => {
+    const output = 'error: something broke\n'.repeat(30)
+    const result = await postBashHandler(testRunEvent('npm run build', output, 1))
+    expect(result.hookType === 'context' && result.context.includes('token-goat failures')).toBe(false)
+  })
+
+  it('stays silent when the failing test output is too small to be worth reducing', async () => {
+    const result = await postBashHandler(testRunEvent('pytest', 'FAILED tests/test_x.py::test_thing\n', 1))
+    expect(result.hookType === 'context' && result.context.includes('token-goat failures')).toBe(false)
+  })
+
+  it('fires again on a second consecutive failing run (per-occurrence, not once-per-session)', async () => {
+    const first = await postBashHandler(testRunEvent('pytest', failingPytestOutput, 1))
+    expectHookType(first, 'context')
+    expect(first.context).toContain('token-goat failures')
+    const second = await postBashHandler(testRunEvent('pytest', failingPytestOutput, 1))
+    expectHookType(second, 'context')
+    expect(second.context).toContain('token-goat failures')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this
 // fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and

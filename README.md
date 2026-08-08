@@ -265,6 +265,8 @@ Built-in output compression covers 130+ dev tool CLIs: `pytest`, `jest` / `vites
 
 `gh api` responses get an extra pass: boilerplate `*_url` fields (`followers_url`, `gists_url`, `starred_url`, and around a dozen others) are stripped from JSON objects; `html_url`, `avatar_url`, `clone_url`, and `ssh_url` are kept. User and repo objects typically shrink 60–80%. When token-goat sees a GitHub permission error in the output or a non-zero exit on a security endpoint, it injects a system message suggesting `gh auth refresh -s security_events`.
 
+A failing `pytest` / `jest` / `vitest` / `go test` / `cargo test` run (including bare `npm test`/`npm run test`/`yarn test`/`pnpm test`) also gets a one-line advisory naming the exact `token-goat bash-output <id> | token-goat failures` command to run instead of re-reading the raw dump. Silent on a passing run, a non-test command, or output too small to be worth reducing.
+
 ### 6. Context pressure
 
 Token-goat tracks how close a session is to the autocompact trigger and tightens its hints as the window fills. Surgical-read suggestions kick in on progressively smaller files as pressure builds (500 lines at cool, down to 50 at critical), so large reads get flagged before they tip the session over. The PreCompact manifest also shrinks: capped at 500 tokens once the window runs hot, 300 once critical, so it stops contributing to the pressure it measures. The denominator is always the fixed 660,000-token autocompact trigger budget, not the model's raw context window, so the same thresholds apply across models. Run `token-goat doctor --context` to see the current footprint.

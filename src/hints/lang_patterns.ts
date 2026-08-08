@@ -285,6 +285,40 @@ export function isBuildCommand(cmd: string): boolean {
 }
 
 /**
+ * Regex patterns for test-runner bash commands whose failing output is worth extracting
+ * via `token-goat failures` instead of the caller scrolling the raw dump.
+ *
+ * Kept separate from BUILD_COMMAND_PATTERNS / MONITORING_COMMAND_PATTERNS because it also
+ * needs to match the bare `npm test` / `yarn test` / `pnpm test` spellings that those two
+ * lists deliberately exclude as too generic to cache on every green run.
+ */
+export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
+  // pytest (Python)
+  /^pytest(?:\s|$)/i,
+  // Jest / Vitest (direct or via npx)
+  /^(?:npx\s+)?jest(?:\s|$)/i,
+  /^(?:npx\s+)?vitest(?:\s+run|\s+watch)?(?:\s|$)/i,
+  // Go
+  /^go test(?:\s|$)/i,
+  // Rust / Cargo
+  /^cargo test(?:\s|$)/i,
+  // npm test / npm run test
+  /^npm (?:test|run test)(?:\s|$)/i,
+  // yarn test / yarn run test / pnpm test / pnpm run test
+  /^(?:yarn|pnpm)(?:\s+run)? test(?:\s|$)/i,
+]
+
+/**
+ * True when `cmd` invokes a test runner covered by `token-goat failures`
+ * (pytest, jest, vitest, go test, cargo test, or an npm/yarn/pnpm wrapper around one).
+ *
+ * @param cmd - The full bash command string.
+ */
+export function isTestRunnerCommand(cmd: string): boolean {
+  return TEST_RUNNER_COMMAND_PATTERNS.some((re) => re.test(cmd))
+}
+
+/**
  * Monitoring command patterns — long-running or repeatedly-run commands whose
  * output is always worth recalling from cache rather than re-running.
  *
