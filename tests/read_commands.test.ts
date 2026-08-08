@@ -1562,6 +1562,25 @@ describe('read_commands', () => {
       expect(stderr).toContain('Install')
     })
 
+    // The similarity filter drops every candidate for a query unrelated to any heading, which leaves the miss with no next step at all -- worse than the old unfiltered dump, which at least revealed what the file contained. Point at outline, the command that lists headings, mirroring the `Try: token-goat semantic` fallback runSymbol already prints for the same shape of dead end.
+    it('points at outline when a section miss has no similar headings, so a total miss is not a dead end', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue(['Getting Started', 'Configuration'])
+      const { text, code } = runSection({ spec: 'README.md::zzzz_totally_unrelated' })
+      expect(code).toBe(1)
+      expect(text).not.toContain('Did you mean:')
+      expect(text).toContain('token-goat outline README.md')
+    })
+
+    // A file with no headings at all is a different answer from one whose headings simply did not match: pointing at outline there would send the caller to a command that prints nothing.
+    it('names an empty heading set instead of pointing at outline when the file has no headings', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue([])
+      const { text } = runSection({ spec: 'README.md::anything' })
+      expect(text).toContain('has no headings')
+      expect(text).not.toContain('token-goat outline')
+    })
+
     it('reports "File not found" instead of a misleading "Section not found" when the file itself does not exist (regression: a bad path masqueraded as a missing heading, sending an agent hunting for a section that was never the actual problem)', () => {
       mockReadSection.mockReturnValue(null)
       mockListSections.mockReturnValue([])
