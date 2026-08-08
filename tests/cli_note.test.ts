@@ -77,13 +77,29 @@ describe('note-add / note-get / note-list', () => {
     }
   })
 
-  it('note-add rejects an unresolvable --symbol with a did-you-mean hint', () => {
+  // This used to assert that a query resembling nothing ('doesNotExistFn9k' against 'realNoteFn9k') still listed that symbol under "Did you mean" -- an oracle that encoded the unranked dump as correct. A query near no symbol has no suggestion to offer, so it gets the listing command instead.
+  it('note-add sends an unresolvable --symbol resembling nothing to outline rather than dumping every symbol', () => {
     const tmp = path.join(os.tmpdir(), `tg-note-badsym-${Date.now()}.ts`)
     fs.writeFileSync(tmp, 'export function realNoteFn9k(): number {\n  return 1\n}\n')
     try {
       const r = runCli(['note-add', tmp, '--symbol', 'doesNotExistFn9k', '--content-b64', b64('x')])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain("No symbol named 'doesNotExistFn9k'")
+      expect(r.stderr).not.toContain('Did you mean')
+      expect(r.stderr).toContain('outline')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  // The ranked suggestion still fires when the query actually resembles a symbol -- one dropped character here -- which is what makes the negative assertion above a real filter rather than a blanket removal of the hint.
+  it('note-add suggests the near-name symbol for a misspelled --symbol', () => {
+    const tmp = path.join(os.tmpdir(), `tg-note-nearsym-${Date.now()}.ts`)
+    fs.writeFileSync(tmp, 'export function realNoteFn9k(): number {\n  return 1\n}\n')
+    try {
+      const r = runCli(['note-add', tmp, '--symbol', 'realNoteFn9', '--content-b64', b64('x')])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('Did you mean')
       expect(r.stderr).toContain('realNoteFn9k')
     } finally {
       fs.rmSync(tmp, { force: true })

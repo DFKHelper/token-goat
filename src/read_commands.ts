@@ -357,7 +357,7 @@ function typoBudget(queryLen: number): number {
   return queryLen >= TYPO_TWO_EDIT_MIN_LEN ? 2 : 1
 }
 
-function rankSimilarNames(candidates: string[], query: string): string[] {
+export function rankSimilarNames(candidates: string[], query: string): string[] {
   const queryLower = query.toLowerCase()
   const filtered = candidates.filter((c) => {
     const cLower = c.toLowerCase()
@@ -385,7 +385,7 @@ function rankSimilarNames(candidates: string[], query: string): string[] {
  * miss path. Callers pass the ranked result straight to didYouMean, which already caps at
  * DIDYOUMEAN_LIMIT -- no second cap here.
  */
-function filterSimilarHeadings(available: string[], query: string): string[] {
+export function filterSimilarHeadings(available: string[], query: string): string[] {
   const queryLower = query.toLowerCase()
   const queryWords = queryLower.split(/[^a-z0-9]+/).filter((w) => w.length >= MIN_WORD_SIMILARITY_LEN)
   const matched = available.filter((heading) => {
