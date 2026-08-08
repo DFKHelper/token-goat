@@ -398,6 +398,14 @@ function filterSimilarHeadings(available: string[], query: string): string[] {
     // for why a reverse check would false-positive on unrelated words.
     return queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
   })
+  // Containment cannot reach a misspelled heading word: `Instalation` is neither a substring of `Installation` nor the reverse, so a one-character slip in a heading the caller already knows reads exactly like a query about nothing. Mirror the edit-distance fallback rankSimilarNames uses for symbol names, matched WORD-to-word rather than whole-heading, since a heading is usually several words and no realistic typo budget spans the whole string. Runs only when containment found nothing, so it can never reorder or displace a containment match, and a query near no word still yields nothing.
+  if (matched.length === 0 && queryWords.length > 0) {
+    const near = available.filter((heading) => {
+      const headingWords = heading.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 0)
+      return queryWords.some((qw) => qw.length <= TYPO_MAX_QUERY_LEN && headingWords.some((hw) => withinEditDistance(hw, qw, typoBudget(qw.length))))
+    })
+    return sortByLengthCloseness(near, query)
+  }
   return sortByLengthCloseness(matched, query)
 }
 
