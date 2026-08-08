@@ -295,13 +295,11 @@ describe('runScope integration', () => {
   })
 
   it('returns JSON array for --json flag', () => {
-    // Resolve a line guaranteed to be inside a real function body at test-run time, rather than
-    // a hardcoded line number -- this file grows over time and a fixed magic number eventually
-    // drifts outside every symbol's range (as happened here), making runScope legitimately find
-    // nothing and never print, which is a real test bug, not a runScope bug.
-    const anySymbol = querySymbols({ filePath: normalizePath(resolve('src/read_commands.ts')), limit: 1 })[0]
-    expect(anySymbol).toBeDefined()
-    const line = (anySymbol?.lineStart ?? 1) + 1
+    // Resolve a line guaranteed to be inside a real symbol at test-run time, rather than a hardcoded number -- this file grows over time and a fixed line eventually drifts outside every range, making runScope legitimately find nothing and never print, which is a test bug rather than a runScope bug.
+    // Taking the FIRST indexed symbol was the previous attempt at that and carried the same defect one level up: the first row is frequently a one-line `const`, whose lineStart + 1 is already past its end, so the test only passed while the next line happened to belong to another symbol. Require a symbol spanning at least two lines, which makes lineStart + 1 inside it by construction rather than by luck.
+    const spanning = querySymbols({ filePath: normalizePath(resolve('src/read_commands.ts')), limit: 200 }).find((sym) => sym.lineEnd > sym.lineStart)
+    expect(spanning).toBeDefined()
+    const line = (spanning?.lineStart ?? 1) + 1
 
     const captured = captureStdout(() => {
       runScope({ spec: `src/read_commands.ts:${line}`, json: true })
