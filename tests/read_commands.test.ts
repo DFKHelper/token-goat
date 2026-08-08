@@ -1641,6 +1641,24 @@ describe('read_commands', () => {
       expect(stderr).toContain('Install')
     })
 
+    // Containment cannot reach a misspelled heading WORD: `Instalation` is neither a substring of `Installation` nor the reverse, so before the edit-distance fallback a one-character slip in a heading the caller already knows produced the same bare outline pointer as a query about nothing at all.
+    it('suggests a heading whose word is one typo away from the query', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue(['Installation and Setup', 'Configuration Options'])
+      const { text } = runSection({ spec: 'README.md::Instalation' })
+      expect(text).toContain('Did you mean:')
+      expect(text).toContain('Installation and Setup')
+    })
+
+    // Negative control: the fallback stays a fallback rather than a net, so a query near no heading word still gets the outline pointer instead of an arbitrary suggestion.
+    it('still suggests no heading when the query is near no heading word', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListSections.mockReturnValue(['Installation and Setup', 'Configuration Options'])
+      const { text } = runSection({ spec: 'README.md::zzzzzzzz' })
+      expect(text).not.toContain('Did you mean:')
+      expect(text).toContain('outline')
+    })
+
     // The similarity filter drops every candidate for a query unrelated to any heading, which leaves the miss with no next step at all -- worse than the old unfiltered dump, which at least revealed what the file contained. Point at outline, the command that lists headings, mirroring the `Try: token-goat semantic` fallback runSymbol already prints for the same shape of dead end.
     it('points at outline when a section miss has no similar headings, so a total miss is not a dead end', () => {
       mockReadSection.mockReturnValue(null)
