@@ -303,6 +303,41 @@ function endsWithPathBoundary(full: string, suffix: string): boolean {
 const MIN_WORD_SIMILARITY_LEN = 3
 
 /**
+ * Rank `items` by closeness in length to `query` (shortest length-delta first), same tiebreak
+ * everywhere it's used: ordinal (not locale-aware) string comparison -- an unlocaled
+ * localeCompare() sorts differently across Node's small-icu vs full-icu builds and different
+ * system default locales, which would make this truncation-affecting ranking nondeterministic
+ * across machines/CI runners. Shared by every "did you mean" candidate list in this file so
+ * they all rank the same way; does not mutate `items`.
+ */
+function sortByLengthCloseness(items: string[], query: string): string[] {
+  return [...items].sort((a, b) => {
+    const diff = Math.abs(a.length - query.length) - Math.abs(b.length - query.length)
+    if (diff !== 0) return diff
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+}
+
+/**
+ * Filter `candidates` to those similar to `query` -- case-insensitive substring match in either
+ * direction, with the reverse direction (`query` contains `candidate`) gated at
+ * MIN_REVERSE_MATCH_LEN so short indexed names like `b`/`n` don't match nearly every query --
+ * then rank by {@link sortByLengthCloseness} and dedupe. This is the near-name scan `runSymbol`
+ * used inline before every "did you mean" list in this file grew the same unranked/unfiltered
+ * dump: a one-character typo and a nonsense query used to produce byte-identical suggestion
+ * lists. Factored out so `read`, `openapi-op`, and `zip-read` misses all get real ranking too,
+ * not just `symbol`.
+ */
+function rankSimilarNames(candidates: string[], query: string): string[] {
+  const queryLower = query.toLowerCase()
+  const filtered = candidates.filter((c) => {
+    const cLower = c.toLowerCase()
+    return cLower.includes(queryLower) || (cLower.length >= MIN_REVERSE_MATCH_LEN && queryLower.includes(cLower))
+  })
+  return sortByLengthCloseness([...new Set(filtered)], query)
+}
+
+/**
  * Filter and rank `available` headings by similarity to `query` before handing them to
  * {@link didYouMean}. Unfiltered, every heading in the file was shown regardless of relevance
  * -- a query for "zzzz" printed the exact same candidate list as a genuine near-miss like
@@ -318,22 +353,17 @@ const MIN_WORD_SIMILARITY_LEN = 3
 function filterSimilarHeadings(available: string[], query: string): string[] {
   const queryLower = query.toLowerCase()
   const queryWords = queryLower.split(/[^a-z0-9]+/).filter((w) => w.length >= MIN_WORD_SIMILARITY_LEN)
-  return available
-    .filter((heading) => {
-      const headingLower = heading.toLowerCase()
-      if (headingLower.includes(queryLower)) return true
-      if (queryLower.length >= MIN_WORD_SIMILARITY_LEN && queryLower.includes(headingLower)) return true
-      if (queryWords.length === 0) return false
-      const headingWords = headingLower.split(/[^a-z0-9]+/).filter((w) => w.length > 0)
-      // Forward containment only -- see resolveHeaderPos's widened tier in section_reader.ts
-      // for why a reverse check would false-positive on unrelated words.
-      return queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
-    })
-    .sort((a, b) => {
-      const diff = Math.abs(a.length - query.length) - Math.abs(b.length - query.length)
-      if (diff !== 0) return diff
-      return a < b ? -1 : a > b ? 1 : 0
-    })
+  const matched = available.filter((heading) => {
+    const headingLower = heading.toLowerCase()
+    if (headingLower.includes(queryLower)) return true
+    if (queryLower.length >= MIN_WORD_SIMILARITY_LEN && queryLower.includes(headingLower)) return true
+    if (queryWords.length === 0) return false
+    const headingWords = headingLower.split(/[^a-z0-9]+/).filter((w) => w.length > 0)
+    // Forward containment only -- see resolveHeaderPos's widened tier in section_reader.ts
+    // for why a reverse check would false-positive on unrelated words.
+    return queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
+  })
+  return sortByLengthCloseness(matched, query)
 }
 
 export function didYouMean(candidates: string[]): string {
@@ -516,32 +546,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       // Same near-name mechanism as `find`: scan the index and match by case-insensitive
       // substring in either direction, so a typo'd or partial name still gets a cheap next
       // step instead of dead-ending into a full-file Read or a wide Grep.
-      const nameLower = opts.name.toLowerCase()
       const rootDir = emptyIndexRoot
       const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
-      const candidates = [
-        ...new Set(
-          rawSymbols
-            .filter((s) => {
-              const symLower = s.name.toLowerCase()
-              return (
-                symLower.includes(nameLower) ||
-                (symLower.length >= MIN_REVERSE_MATCH_LEN && nameLower.includes(symLower))
-              )
-            })
-            .map((s) => s.name),
-        ),
-      ]
-        // Closest length to the query first (didYouMean only keeps the first DIDYOUMEAN_LIMIT,
-        // so ordering decides what survives). Ordinal (not locale-aware) tiebreak -- an
-        // unlocaled localeCompare() sorts differently across Node's small-icu vs full-icu builds
-        // and different system default locales, making this truncation-affecting ranking
-        // nondeterministic across machines/CI runners.
-        .sort((a, b) => {
-          const diff = Math.abs(a.length - nameLower.length) - Math.abs(b.length - nameLower.length)
-          if (diff !== 0) return diff
-          return a < b ? -1 : a > b ? 1 : 0
-        })
+      const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), opts.name)
       // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step.
       text += candidates.length > 0 ? `\n${didYouMean(candidates)}` : indexEmpty ? '' : `\nTry: token-goat semantic "${opts.name}"`
     }
@@ -1061,8 +1068,16 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, opts.projectRoot ?? process.cwd())
-    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
+    // Query a bounded superset (FIND_SCAN_LIMIT, same bound runSymbol's near-name scan uses)
+    // scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping
+    // in the query itself would return an arbitrary storage-order first-N that can omit the
+    // actual closest match entirely.
+    const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
+    const closes = rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
+    // No candidate resembled the query -- point at the command that lists the file's real
+    // symbols instead of leaving the miss with no next step.
+    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
     return { text: messages.join('\n'), code: 1 }
   }
 
@@ -2332,8 +2347,10 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
 
   if (match === undefined) {
     const messages = [`Operation '${opts.operation}' not found in '${opts.file}'`]
-    const closes = operations.map(operationLabel)
+    const closes = rankSimilarNames(operations.map(operationLabel), opts.operation)
     if (closes.length > 0) messages.push(didYouMean(closes))
+    // No operation resembled the query -- point at the command that lists them all.
+    else if (operations.length > 0) messages.push(`Try: token-goat openapi-outline ${opts.file}`)
     emitErr(messages.join('\n'))
     return 1
   }
@@ -2428,8 +2445,10 @@ export function runZipRead(opts: ZipReadCliOptions): number {
 
   if (content === undefined) {
     const messages = [`Entry '${opts.entry}' not found in '${opts.file}'`]
-    const closes = entries.map((e) => e.path)
+    const closes = rankSimilarNames(entries.map((e) => e.path), opts.entry)
     if (closes.length > 0) messages.push(didYouMean(closes))
+    // No entry resembled the query -- point at the command that lists the archive's contents.
+    else if (entries.length > 0) messages.push(`Try: token-goat zip-list ${opts.file}`)
     emitErr(messages.join('\n'))
     return 1
   }
@@ -3409,8 +3428,11 @@ export function resolveSymbolSpecOrEmitError(
     const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveIndexPath(file, projectRoot ?? process.cwd())
-    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
+    // Same bounded-scan-then-rank shape as runRead's none branch above.
+    const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
+    const closes = rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
+    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
     emitErr(messages.join('\n'))
     return null
   }
