@@ -12,6 +12,7 @@ import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { collapseFencedBlocks } from '../src/hooks_agent_spawn.js'
 
 // Lets one test force buildProjectMap()'s formatted output to be huge, so the briefing's
 // over-budget truncation path (see the "keeps the surgical-read reminder ... when the briefing
@@ -505,6 +506,142 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     const payload = { tool_name: 'Bash', tool_input: { command: 'echo hi' }, session_id: sessionId, tool_response: largeReport }
     const result = await runHook(buildEvent('post_tool_use', payload))
     expect(result.hookType).toBe('pass')
+  })
+})
+
+// Invariant-based fixture corpus, deliberately NOT a ratio-band suite. A ratio band ("output is
+// >=25% smaller") is a wrong-oracle test: it bakes in today's output, so a future correctness fix
+// that legitimately lowers the ratio would read as a regression and get "fixed" back into a bug.
+// These fixtures instead pin the design rule itself as executable invariants:
+//   1. every non-fence (prose) line is byte-identical between input and output;
+//   2. an all-prose report produces EXACTLY zero rewrite (equality, not "mostly unchanged");
+//   3. the elided-line count printed in every marker equals the real number of dropped lines;
+//   4. a report whose only fence is under the min-lines floor collapses to nothing (filtered-to-
+//      empty must render as untouched, not as a phantom compaction) -- "empty/filtered store
+//      renders as populated" is a documented recurring bug class in this repo.
+describe('Fence-collapse invariant corpus (collapseFencedBlocks, direct)', () => {
+  const RECALL_HINT = 'token-goat mcp-output mcp_deadbeefdeadbeef --full'
+  const MIN_LINES = 20
+  const KEEP_LINES = 6
+
+  /** Pull every "PROSE:..." line out of `text`, in order -- these are the non-fence lines a fixture asserts must survive byte-identically. */
+  function proseLines(text: string): string[] {
+    return text.split('\n').filter((l) => l.startsWith('PROSE:'))
+  }
+
+  interface Fixture {
+    name: string
+    lines: string[]
+    /** Expected elided-line count per fenced block, in the order the blocks appear. */
+    expectedElided: number[]
+  }
+
+  const corpus: Fixture[] = [
+    {
+      name: 'single long fence between prose',
+      lines: [
+        'PROSE:intro line one',
+        'PROSE:intro line two',
+        '```',
+        ...Array.from({ length: 50 }, (_, i) => `fence body ${i}`),
+        '```',
+        'PROSE:not verified: did not re-run the full suite after the falsify cycle',
+        'PROSE:trailing note',
+      ],
+      expectedElided: [50 - KEEP_LINES * 2],
+    },
+    {
+      name: 'two fences with prose before, between, and after',
+      lines: [
+        'PROSE:a',
+        '```',
+        ...Array.from({ length: 40 }, (_, i) => `f1-${i}`),
+        '```',
+        'PROSE:b',
+        '```',
+        ...Array.from({ length: 45 }, (_, i) => `f2-${i}`),
+        '```',
+        'PROSE:c',
+      ],
+      expectedElided: [40 - KEEP_LINES * 2, 45 - KEEP_LINES * 2],
+    },
+    {
+      name: '4-backtick fence containing a nested triple-backtick example, treated as one block',
+      lines: [
+        'PROSE:x',
+        '````',
+        ...Array.from({ length: 30 }, (_, i) => `outer-${i}`),
+        '```',
+        'inner fenced example (content, not prose -- inside the outer fence)',
+        '```',
+        ...Array.from({ length: 30 }, (_, i) => `outer-tail-${i}`),
+        '````',
+        'PROSE:y',
+      ],
+      // Body spans everything between the 4-backtick markers: 30 + 1 + 1 + 1 + 30 = 63 lines.
+      expectedElided: [63 - KEEP_LINES * 2],
+    },
+  ]
+
+  for (const fx of corpus) {
+    it(`preserves every prose line byte-identically, in order, with the correct elided count -- ${fx.name}`, () => {
+      const input = fx.lines.join('\n')
+      const output = collapseFencedBlocks(input, RECALL_HINT, MIN_LINES, KEEP_LINES)
+      expect(output).not.toBe(input) // sanity: this fixture must actually trigger a collapse
+
+      // Invariant 1: every non-fence prose line survives byte-identically, in the same order.
+      const inputProse = proseLines(input)
+      const outputLines = output.split('\n')
+      let searchFrom = 0
+      for (const line of inputProse) {
+        const idx = outputLines.indexOf(line, searchFrom)
+        expect(idx).toBeGreaterThanOrEqual(searchFrom) // present, and not out of order
+        searchFrom = idx + 1
+      }
+
+      // Invariant 3: the elided count in each marker matches the real number of dropped lines.
+      const markers = [...output.matchAll(/\[token-goat: (\d+) lines elided/g)].map((m) => Number(m[1]))
+      expect(markers).toEqual(fx.expectedElided)
+    })
+  }
+
+  it('produces EXACTLY zero rewrite for an all-prose report (equality, not a loose "mostly unchanged" band)', () => {
+    const allProse = Array.from({ length: 500 }, (_, i) => `PROSE:detailed finding line ${i} with no fenced content at all.`).join('\n')
+    const output = collapseFencedBlocks(allProse, RECALL_HINT, MIN_LINES, KEEP_LINES)
+    expect(output).toBe(allProse)
+  })
+
+  it('collapses to nothing (byte-identical) when the only fence is under the min-lines floor -- a filtered-to-empty result must not render as a phantom compaction', () => {
+    const report = ['PROSE:summary.', '```', ...Array.from({ length: 5 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'PROSE:tail note.'].join('\n')
+    const output = collapseFencedBlocks(report, RECALL_HINT, MIN_LINES, KEEP_LINES)
+    expect(output).toBe(report)
+    expect(output).not.toContain('lines elided')
+  })
+
+  it('the filtered-to-empty case, driven through the real hook, records neither the compact stat nor the decline stat (nothing was actually rewritten)', async () => {
+    const dataRoot = dataDirForHome(tmpHome)
+    const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
+    const prevLocal = process.env['LOCALAPPDATA']
+    const prevXdg = process.env['XDG_DATA_HOME']
+    process.env['LOCALAPPDATA'] = envRoot
+    process.env['XDG_DATA_HOME'] = envRoot
+    _resetDataDirCacheForTesting()
+    try {
+      const toolInput = { prompt: 'Investigate the issue.', description: 'Test agent' }
+      const report = ['Summary.', '```', ...Array.from({ length: 5 }, (_, i) => `file${i}.ts | 2 +-`), '```', 'y'.repeat(9000)].join('\n')
+      const payload = { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: report }
+      const result = await runHook(buildEvent('post_tool_use', payload))
+      expect(result.hookType).toBe('context')
+      const before = summarize(3650).by_kind
+      expect(before['agent_report_compact']?.events ?? 0).toBe(0)
+      expect(before['agent_report_compact_declined']?.events ?? 0).toBe(0)
+    } finally {
+      if (prevLocal === undefined) delete process.env['LOCALAPPDATA']
+      else process.env['LOCALAPPDATA'] = prevLocal
+      if (prevXdg === undefined) delete process.env['XDG_DATA_HOME']
+      else process.env['XDG_DATA_HOME'] = prevXdg
+      _resetDataDirCacheForTesting()
+    }
   })
 })
 
