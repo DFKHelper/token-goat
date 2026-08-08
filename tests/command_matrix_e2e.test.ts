@@ -424,12 +424,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(indexed?.lineStart).toBe(1)
     expect(indexed?.lineEnd).toBe(3)
     // Cross-check against a second command rather than eyeballing.
+    // outline maps a file without its bodies; the JSON branch must not ship them either (it used to, via a raw row spread).
     const outlineJson = run(['outline', 'exportsloc.ts', '--json'])
     expect(outlineJson.status, outlineJson.stderr).toBe(0)
     const outlineItems = JSON.parse(outlineJson.stdout) as { items: Array<{ name: string; lineStart: number; lineEnd: number }> }
     const outlineSym = outlineItems.items.find((s) => s.name === 'indexedExportLoc')
     expect(outlineSym?.lineStart).toBe(indexed?.lineStart)
     expect(outlineSym?.lineEnd).toBe(indexed?.lineEnd)
+    expect(outlineSym).not.toHaveProperty('body')
     expect(unindexed?.lineStart).toBe(null)
     expect(unindexed?.lineEnd).toBe(null)
   },

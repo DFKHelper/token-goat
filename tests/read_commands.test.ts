@@ -1621,6 +1621,55 @@ describe('read_commands', () => {
 
   // ---- runSection ---------------------------------------------------------
 
+  describe('outline --json payload shape', () => {
+    // outline exists to map a file WITHOUT its bodies, but the JSON branch spread the raw symbol row, so every body came along. On src/cli.ts that was 45 KB of an 87 KB payload.
+    it('omits symbol bodies from --json output', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: 'function alphaFn() { return SENTINEL_BODY_TEXT }', docstring: 'docs here', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', json: true })
+      expect(text).not.toContain('SENTINEL_BODY_TEXT')
+      const payload = JSON.parse(text) as { items: Record<string, unknown>[] }
+      expect(payload.items[0]).not.toHaveProperty('body')
+    })
+
+    // The fields outline actually renders, plus the structural ones, must survive -- dropping bodies must not quietly become dropping the payload.
+    it('keeps the fields outline renders and the row identity', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: 'function alphaFn() { return SENTINEL_BODY_TEXT }', docstring: 'docs here', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', json: true })
+      const payload = JSON.parse(text) as { items: Record<string, unknown>[]; totalCount: number }
+      expect(payload.items[0]).toMatchObject({
+        name: 'alphaFn',
+        kind: 'function',
+        lineStart: 1,
+        lineEnd: 3,
+        docstring: 'docs here',
+        filePath: 'a.ts',
+      })
+      expect(payload.totalCount).toBe(1)
+    })
+
+    // --stats adds its two columns to the projected row rather than being lost with the spread it replaced.
+    it('still adds the --stats columns to the projected row', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'alphaFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 3, body: 'function alphaFn() { return SENTINEL_BODY_TEXT }', docstring: 'docs here', parent: '' },
+        ] as never,
+      )
+      mockQueryRefCounts.mockReturnValue(new Map([['alphaFn', 7]]) as never)
+      const { text } = runOutline({ file: 'a.ts', json: true, stats: true })
+      const payload = JSON.parse(text) as { items: Record<string, unknown>[] }
+      expect(payload.items[0]).toMatchObject({ refCount: 7, hasDoc: true })
+      expect(payload.items[0]).not.toHaveProperty('body')
+    })
+  })
+
   describe('outline/skeleton --grep', () => {
     // Without a name filter the only way to find one area of a large file is to dump every symbol in it (src/cli.ts alone lists 502), which is precisely the full-file read these commands exist to avoid.
     it('narrows outline to symbols whose name matches the pattern', () => {
