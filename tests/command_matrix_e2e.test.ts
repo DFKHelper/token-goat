@@ -337,6 +337,12 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs/)
     // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
+    // A multi-file spec with --json must be ONE parseable document, not two concatenated ones.
+    const multiJson = run(['outline', 'src/mod.ts,caller.ts', '--json'])
+    expect(multiJson.status, multiJson.stderr).toBe(0)
+    const mergedNames = (JSON.parse(multiJson.stdout) as { items: Array<{ name: string }> }).items.map((i) => i.name)
+    expect(mergedNames).toContain('alphaSym')
+    expect(mergedNames).toContain('refDriver')
     const multi = run(['outline', 'src/mod.ts,caller.ts'])
     expect(multi.status, multi.stderr).toBe(0)
     expect(multi.stdout).toContain('# Outline: src/mod.ts')

@@ -1951,6 +1951,7 @@ function prepareSymbolListing(
 function runPerFileListing(
   files: string[],
   run: (file: string) => { text: string; code: number },
+  json = false,
 ): { text: string; code: number } {
   const blocks: string[] = []
   let anyOk = false
@@ -1959,13 +1960,50 @@ function runPerFileListing(
     if (r.code === 0) anyOk = true
     blocks.push(r.text)
   }
+  // Joining blocks with a blank line is right for text and wrong for JSON: it produces N complete documents back to back, which no parser accepts, so `--json` -- a flag whose only purpose is machine consumption -- failed outright on a multi-file spec. Merge into one document instead. Rows carry their own filePath, so a single flat items array stays unambiguous and the payload keeps the exact shape a single-file call returns, which means a caller does not have to branch on how many files it asked for.
+  if (json) return mergeListingJson(files, blocks, anyOk)
   return { text: blocks.join('\n\n'), code: anyOk ? 0 : 1 }
+}
+
+/**
+ * Merge the per-file JSON payloads of a multi-file listing into one document: items
+ * concatenated in the order the files were named, `truncated` true if any file truncated,
+ * `totalCount` summed. A file that produced prose rather than JSON (an unreadable path, or
+ * one with no indexed symbols -- both legitimate outcomes for one file of several) is
+ * reported in an `errors` array rather than being spliced into the document as text, which
+ * would break parsing again, or dropped, which would let a failed file read as an empty one.
+ * `errors` is omitted entirely when every file succeeded, so the all-ok payload is shaped
+ * exactly like a single-file one.
+ */
+function mergeListingJson(files: string[], blocks: string[], anyOk: boolean): { text: string; code: number } {
+  const items: unknown[] = []
+  const errors: { file: string; message: string }[] = []
+  let truncated = false
+  let totalCount = 0
+  for (const [i, block] of blocks.entries()) {
+    const file = files[i] ?? ''
+    let parsed: { items?: unknown[]; truncated?: boolean; totalCount?: number } | undefined
+    try {
+      parsed = JSON.parse(block) as { items?: unknown[]; truncated?: boolean; totalCount?: number }
+    } catch {
+      parsed = undefined
+    }
+    if (parsed === undefined || !Array.isArray(parsed.items)) {
+      errors.push({ file, message: block.trim() })
+      continue
+    }
+    items.push(...parsed.items)
+    if (parsed.truncated === true) truncated = true
+    totalCount += parsed.totalCount ?? parsed.items.length
+  }
+  const payload = { items, truncated, totalCount, ...(errors.length > 0 ? { errors } : {}) }
+  return { text: JSON.stringify(payload, null, 2), code: anyOk ? 0 : 1 }
 }
 
 /** Handle ``token-goat skeleton file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runSkeleton(opts: SkeletonOptions): { text: string; code: number } {
   const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file }))
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runSkeleton({ ...opts, file }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {
@@ -2029,7 +2067,7 @@ export interface OutlineOptions {
 /** Handle ``token-goat outline file``. Also accepts the family's comma-separated multi-file spec (`a,b,c`), emitting one headed block per file. */
 export function runOutline(opts: OutlineOptions): { text: string; code: number } {
   const multiFiles = parseMultiFileSpec(opts.file)
-  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file }))
+  if (multiFiles !== null) return runPerFileListing(multiFiles, (file) => runOutline({ ...opts, file }), opts.json === true)
 
   const prep = prepareSymbolListing(opts.file, opts)
   if (prep.kind === 'empty') {

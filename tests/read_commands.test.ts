@@ -1621,6 +1621,70 @@ describe('read_commands', () => {
 
   // ---- runSection ---------------------------------------------------------
 
+  describe('multi-file listing --json', () => {
+    // Text blocks are joined with a blank line, which for --json produced N complete documents back to back -- no parser accepts that, so the flag failed outright on exactly the input it exists to serve.
+    it('returns one parseable document for a comma-separated spec, not concatenated ones', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        const f = String(opts?.filePath ?? '')
+        if (f.includes('b.ts')) return [{ name: 'fromB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
+        return [{ name: 'fromA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
+      })
+      const { text, code } = runOutline({ file: 'a.ts,b.ts', json: true })
+      expect(code).toBe(0)
+      const payload = JSON.parse(text) as { items: { name: string }[]; totalCount: number; truncated: boolean }
+      expect(payload.items.map((i) => i.name)).toEqual(['fromA', 'fromB'])
+      expect(payload.totalCount).toBe(2)
+      expect(payload.truncated).toBe(false)
+    })
+
+    it('merges skeleton the same way', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        const f = String(opts?.filePath ?? '')
+        if (f.includes('b.ts')) return [{ name: 'fromB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
+        return [{ name: 'fromA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
+      })
+      const { text } = runSkeleton({ file: 'a.ts,b.ts', json: true })
+      const payload = JSON.parse(text) as { items: { name: string }[] }
+      expect(payload.items.map((i) => i.name)).toEqual(['fromA', 'fromB'])
+    })
+
+    // A file that yields prose rather than JSON (unreadable, or no indexed symbols) must neither be spliced in as text -- which breaks parsing again -- nor dropped, which would let a failed file read as an empty one.
+    it('reports a failing file in errors while staying parseable', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockImplementation((opts?: any) => {
+        const f = String(opts?.filePath ?? '')
+        if (f.includes('b.ts')) return [] as never
+        return [{ name: 'fromA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never
+      })
+      const { text, code } = runOutline({ file: 'a.ts,b.ts', json: true })
+      expect(code).toBe(0)
+      const payload = JSON.parse(text) as { items: { name: string }[]; errors?: { file: string; message: string }[] }
+      expect(payload.items.map((i) => i.name)).toEqual(['fromA'])
+      expect(payload.errors).toHaveLength(1)
+      expect(payload.errors?.[0]?.file).toBe('b.ts')
+      expect(payload.errors?.[0]?.message).not.toBe('')
+    })
+
+    // Control: with every file succeeding there is no errors key at all, so the merged payload is shaped exactly like a single-file one and a caller never has to branch on file count.
+    it('omits errors entirely when every file succeeded', () => {
+      mockQuerySymbols.mockImplementation(() => [{ name: 'sym', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never)
+      const { text } = runOutline({ file: 'a.ts,b.ts', json: true })
+      const payload = JSON.parse(text) as Record<string, unknown>
+      expect(payload).not.toHaveProperty('errors')
+      expect(Object.keys(payload)).toEqual(['items', 'truncated', 'totalCount'])
+    })
+
+    // Control: the text path is untouched -- still one headed block per file joined by a blank line.
+    it('leaves multi-file text output as separate headed blocks', () => {
+      mockQuerySymbols.mockImplementation(() => [{ name: 'sym', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }] as never)
+      const { text } = runOutline({ file: 'a.ts,b.ts' })
+      expect(text).toContain('# Outline: a.ts')
+      expect(text).toContain('# Outline: b.ts')
+    })
+  })
+
   describe('outline --json payload shape', () => {
     // outline exists to map a file WITHOUT its bodies, but the JSON branch spread the raw symbol row, so every body came along. On src/cli.ts that was 45 KB of an 87 KB payload.
     it('omits symbol bodies from --json output', () => {
