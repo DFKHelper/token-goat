@@ -1216,8 +1216,12 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       return { text: `File not found: '${filePath}'`, code: 1 }
     }
     const messages = [`Section '${heading}' not found in '${filePath}'`]
-    const available = filterSimilarHeadings(listSections(filePath), heading)
+    const allHeadings = listSections(filePath)
+    const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(didYouMean(available))
+    // The similarity filter correctly drops every candidate when the query resembles no heading, which would otherwise leave the miss with no next step -- worse than the unfiltered dump it replaced, since that at least revealed what the file contained. Point at outline (the command that lists headings), mirroring the `Try: token-goat semantic` fallback runSymbol prints for the same shape of dead end. A file with no headings at all is a different answer and gets said outright, because sending the caller to outline there would just print nothing.
+    else if (allHeadings.length === 0) messages.push(`'${specFilePath}' has no headings`)
+    else messages.push(`Try: token-goat outline ${specFilePath}`)
     return { text: messages.join('\n'), code: 1 }
   }
 
