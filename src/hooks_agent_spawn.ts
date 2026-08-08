@@ -24,16 +24,16 @@ import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /**
- * Target token budget for the entire briefing (project map + cached ids + reminder).
- * Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's
- * compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the current
- * imperative reminder (136 tokens, grown from a one-liner in c574b1f6) and a 1-3 entry cache-ids
- * block (26-50 tokens): worst-case realistic total lands around 300-370 tokens. 300 left ~zero
- * headroom, so the cache-ids block was silently dropped on essentially every real spawn (cycle
- * 121 regression). 450 leaves a real margin above that; revisit this number again if the reminder
- * text grows further.
+ * Target token budget for the entire briefing (project map + cached ids + reminder + report
+ * contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size
+ * project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the
+ * imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report
+ * contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case
+ * realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was
+ * added, so 550 leaves a real margin above that; revisit this number again if either tail block
+ * grows further.
  */
-const BRIEFING_TARGET_TOKENS = 450
+const BRIEFING_TARGET_TOKENS = 550
 
 /**
  * Build a compact subagent briefing block.
@@ -81,10 +81,16 @@ function buildSubagentBriefing(): string {
       // Bash output unavailable — skip and continue with reminder
     }
 
-    // 3. Surgical-read reminder
+    // 3. Surgical-read reminder, plus the report-contract clause. Both are load-bearing (dropped
+    // only in the last-resort tail-slice below, after the cache-ids block is already gone) --
+    // the contract is what makes a spawned subagent's report cite evidence instead of pasting it,
+    // and its "state every unverified claim explicitly" clause is what has caught a subagent
+    // shipping something it never checked, three cycles running.
     const tail: string[] = []
     tail.push('')
     tail.push('Before your first read of any file, check for a token-goat command that returns just what you need and run it instead of a full-file read or wide grep: `token-goat symbol <name>`, `token-goat read "file::symbol"`, `token-goat section "file::<heading>"`. Skipping that check is a violation, not an oversight; the only exemptions are a file under ~200 lines you need whole, a never-indexed file, or an image.')
+    tail.push('')
+    tail.push('Report contract: cite evidence as `file::symbol` or a token-goat recall id (`token-goat mcp-output <id> --full`) rather than pasting bodies; paste a fenced block only when the exact bytes are load-bearing; state every unverified claim explicitly (e.g. "not verified: ...") rather than omitting it.')
 
     const withCacheIds = head.join('\n') + cacheIdsBlock + '\n' + tail.join('\n')
     if (estimateTokens(withCacheIds) <= BRIEFING_TARGET_TOKENS) {
