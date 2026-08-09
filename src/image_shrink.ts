@@ -248,7 +248,15 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   }
 
   const result = await shrinkImage(input, { sizeThresholdBytes: 0 })
-  if (result === null) return passOutput()
+  if (result === null) {
+    // Qualified for a shrink attempt (over the size/dimension threshold) but shrinkImage
+    // declined -- either the re-encode never beat the original ("never enlarge") or the
+    // input was undecodable. Event-only like skill_oversized_first_load's sibling: 0
+    // bytes/tokens, since a skip saves nothing, but the count is what tells us whether the
+    // threshold is tuned right.
+    recordStat('image_shrink_skipped')
+    return passOutput()
+  }
 
   const basename = path.basename(filePath)
 

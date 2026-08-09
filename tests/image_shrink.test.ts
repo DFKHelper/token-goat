@@ -265,6 +265,28 @@ describe('preReadImageHandler', () => {
     expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
   })
 
+  it('records an image_shrink_skipped stat row through the real global stats DB when a qualifying image cannot be shrunk (regression: image_shrink_skipped was registered in KIND_TO_SOURCE and _KIND_GROUPS but no recordStat call site ever existed anywhere in src/, so the kind was permanently empty in `token-goat stats --full` -- this drives the real production hook path, not a unit test of shrinkImage in isolation)', async () => {
+    // Over DEFAULT_SIZE_THRESHOLD_BYTES so the handler skips the dimension probe and goes
+    // straight to shrinkImage -- undecodable bytes make sharp's metadata() throw inside
+    // shrinkImage's try/catch, which returns null (the "declined" branch under test), not the
+    // earlier fail-open passes exercised by the small-corrupt-file and missing-file tests above.
+    const bigCorruptPath = path.join(TMP, 'big-corrupt.png')
+    fs.writeFileSync(bigCorruptPath, Buffer.alloc(600 * 1024, 7))
+
+    const before = summarize(30).by_kind['image_shrink_skipped']
+    const beforeEvents = before?.events ?? 0
+
+    const out = await preReadImageHandler(makeEvent(bigCorruptPath))
+    expect(out.hookType).toBe('pass')
+
+    const after = summarize(30).by_kind['image_shrink_skipped']
+    expect(after).toBeDefined()
+    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
+    // A decline must never carry nonzero bytes -- it saved nothing, and nonzero would inflate
+    // the headline savings figure with a non-saving.
+    expect(after?.bytes_saved ?? 0).toBe(0)
+  })
+
   it('passes a large image through unshrunk when image_shrink.enabled is false (regression: no way to opt out of shrinking)', async () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nenabled = false\n', 'utf8')
     invalidateConfigCache()
