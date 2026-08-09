@@ -79,6 +79,50 @@ describe('runHintStatsCommand — human output', () => {
   })
 })
 
+describe('runHintStatsCommand — spend/net (bytes emitted)', () => {
+  it('shows the spend total as "n/a" (not a fake 0) when the store has zero rows', () => {
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('n/a')
+    expect(output).not.toMatch(/net.*saved.*spent.*0.*0.*0/i)
+  })
+
+  it('shows the spend total as "n/a" (not a fake 0) when every row predates spend tracking (legacy)', () => {
+    // Simulate a pre-migration row directly, the same shape db.test.ts's v9->v10 migration test
+    // leaves a pre-existing row in: no bytes_emitted value at all.
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, null)
+    const output = captureStdout(() => runHintStatsCommand())
+    expect(output).toContain('n/a')
+    expect(output).toContain('legacy')
+  })
+
+  it('computes a real net figure and marks a legacy row count once at least one emission carries a spend figure', () => {
+    const sid1 = nonce()
+    logHintEmission('bash_redirect', sid1, null, false, 200) // tracked
+    const sid2 = nonce()
+    logHintEmission('bash_redirect', sid2, null) // legacy: no spend figure
+
+    const output = captureStdout(() => runHintStatsCommand())
+    // Per-category spend column reflects only the tracked row (200), not a blended/fake total.
+    const line = output.split('\n').find((l) => l.startsWith('bash_redirect'))
+    expect(line).toBeDefined()
+    expect(line).toContain('200')
+    // 1 legacy row for this category must be visible, not silently dropped.
+    expect(output).toContain('1 legacy')
+  })
+
+  it('--json still returns the per-category array unchanged in shape, now carrying bytesEmitted/legacyEmissions', () => {
+    const sid = nonce()
+    logHintEmission('bash_redirect', sid, null, false, 77)
+    const output = captureStdout(() => runHintStatsCommand({ json: true }))
+    const parsed = JSON.parse(output) as Array<{ category: string; bytesEmitted: number | null; legacyEmissions: number }>
+    expect(parsed.length).toBe(5)
+    const row = parsed.find((r) => r.category === 'bash_redirect')
+    expect(row?.bytesEmitted).toBe(77)
+    expect(row?.legacyEmissions).toBe(0)
+  })
+})
+
 describe('runHintStatsCommand — --json', () => {
   it('emits a machine-readable array with one entry per category', () => {
     const output = captureStdout(() => runHintStatsCommand({ json: true }))

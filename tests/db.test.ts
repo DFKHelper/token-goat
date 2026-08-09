@@ -272,6 +272,53 @@ describe('getDb schema version', () => {
     expect(inserted.parent).toBe('Widget')
   })
 
+  it('migrates a v9 DB (hint_emissions table without the bytes_emitted column) up to SCHEMA_VERSION, adding hint_emissions.bytes_emitted', () => {
+    const p = tmpDbPath()
+
+    // Simulate a real pre-v10 on-disk database: a hint_emissions table shaped exactly like v9's
+    // SCHEMA_SQL (no `bytes_emitted` column), stamped user_version = 9. Built directly against
+    // the raw file, bypassing token-goat's getDb/initConnection, same pattern as the v8 -> v9
+    // symbols.parent test above.
+    const raw = new Database(p)
+    raw.exec(`
+      CREATE TABLE hint_emissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        correlator TEXT,
+        emitted_at REAL NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        acted_on INTEGER NOT NULL DEFAULT 0,
+        calls_remaining INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    raw.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('bash_redirect', 'preexisting-session', 'claude-code', null, Date.now(), 1, 0, 0)
+    raw.pragma('user_version = 9')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+
+    // Pre-existing row survives the ALTER TABLE with bytes_emitted left NULL (not 0 -- there is
+    // no way to know what a pre-migration emission cost, and rendering it as a genuine zero
+    // would misreport a real spend as a measured non-spend).
+    const existing = db.prepare('SELECT category, bytes_emitted FROM hint_emissions WHERE session_id = ?').get('preexisting-session') as {
+      category: string
+      bytes_emitted: number | null
+    }
+    expect(existing.category).toBe('bash_redirect')
+    expect(existing.bytes_emitted).toBe(null)
+
+    db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('bash_redirect', 'fresh-session', 'claude-code', null, Date.now(), 1, 0, 0, 42)
+    const inserted = db.prepare('SELECT bytes_emitted FROM hint_emissions WHERE session_id = ?').get('fresh-session') as { bytes_emitted: number | null }
+    expect(inserted.bytes_emitted).toBe(42)
+  })
+
   it('refuses to open a DB whose user_version is newer than this build supports', () => {
     const p = tmpDbPath()
     getDb(p)

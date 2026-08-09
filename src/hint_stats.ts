@@ -129,6 +129,7 @@ import { getHarnessName } from './bridges/registry.js'
 import { loadConfig } from './config.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
+import { summarize, SOURCE_HINT } from './stats.js'
 import type { HookOutput } from './types.js'
 
 export const HINT_CATEGORIES = [
@@ -327,23 +328,23 @@ export function applyHintTracking(event: HookEvent, output: HookOutput, classify
     }
     // Probe occasion: let it through and log it exactly like a normal (non-suppressed) emission
     // -- see the module doc comment for why the streak is deliberately NOT reset here.
-    logHintEmission(category, event.sessionId, correlator, compensateSelfResolve)
+    logHintEmission(category, event.sessionId, correlator, compensateSelfResolve, output.context.length)
     return output
   }
   resetSuppressionStreak(category)
-  logHintEmission(category, event.sessionId, correlator, compensateSelfResolve)
+  logHintEmission(category, event.sessionId, correlator, compensateSelfResolve, output.context.length)
   return output
 }
 
-/** Fail-soft: never throws, matching every other hook-path DB write in this codebase (see recall_index.ts's indexRecallEntry doc comment). */
-export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null, compensateSelfResolve = false): void {
+/** Fail-soft: never throws, matching every other hook-path DB write in this codebase (see recall_index.ts's indexRecallEntry doc comment). `bytesEmitted` is the hint text's own length (the real cost of injecting it into context) -- left `null` (never defaulted to 0) when the caller has no figure to give, so a legacy/untracked emission stays honestly distinguishable from a genuine zero-byte spend; see hint_emissions.bytes_emitted's schema comment in db.ts. */
+export function logHintEmission(category: HintCategory, sessionId: string, correlator: string | null, compensateSelfResolve = false, bytesEmitted: number | null = null): void {
   try {
     const db = getDb(globalDbPath())
     const resolved = correlator === null ? 1 : 0
     const window = ACTED_ON_WINDOW + (compensateSelfResolve ? 1 : 0)
     db.prepare(
-      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining)
-       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, 0, @callsRemaining)`,
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
+       VALUES (@category, @sessionId, @harness, @correlator, @emittedAt, @resolved, 0, @callsRemaining, @bytesEmitted)`,
     ).run({
       category,
       sessionId,
@@ -352,6 +353,7 @@ export function logHintEmission(category: HintCategory, sessionId: string, corre
       emittedAt: Date.now(),
       resolved,
       callsRemaining: correlator === null ? 0 : window,
+      bytesEmitted,
     })
   } catch {
     // Fail-soft: a hint-tracking failure must never block the hint (or the tool call) it accompanies.
@@ -466,19 +468,29 @@ export interface CategoryEfficacy {
   suppressed: boolean
   manualEffective: number
   manualIneffective: number
+  /** Sum of bytes_emitted across this category's tracked (non-legacy) emissions -- `null` when none of its emissions carry a spend figure (either zero emissions, or every one predates spend tracking; see `legacyEmissions`), never a fake 0. */
+  bytesEmitted: number | null
+  /** Count of this category's emissions with no bytes_emitted figure recorded -- pre-migration rows (see hint_emissions.bytes_emitted's schema comment in db.ts) plus any emission a caller logged without one. */
+  legacyEmissions: number
 }
 
 interface EmissionRow {
   emitted: number
   actedOn: number | null
+  bytesEmitted: number | null
+  legacyEmissions: number | null
 }
 
 function categoryStats(category: HintCategory): EmissionRow {
   const db = getDb(globalDbPath())
   const row = db
-    .prepare(`SELECT COUNT(*) AS emitted, SUM(acted_on) AS actedOn FROM hint_emissions WHERE category = ? AND harness = ?`)
+    .prepare(
+      `SELECT COUNT(*) AS emitted, SUM(acted_on) AS actedOn, SUM(bytes_emitted) AS bytesEmitted,
+              SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
+       FROM hint_emissions WHERE category = ? AND harness = ?`,
+    )
     .get(category, getHarnessName()) as EmissionRow | undefined
-  return row ?? { emitted: 0, actedOn: 0 }
+  return row ?? { emitted: 0, actedOn: 0, bytesEmitted: null, legacyEmissions: 0 }
 }
 
 /**
@@ -530,7 +542,7 @@ function manualMarks(category: HintCategory): { effective: number; ineffective: 
 /** Full per-category summary for `token-goat hint-stats`, one row per known category (even categories never emitted this harness get a zeroed row, so the report is a stable, complete shape). */
 export function getHintStatsSummary(): CategoryEfficacy[] {
   return HINT_CATEGORIES.map((category) => {
-    const { emitted, actedOn } = categoryStats(category)
+    const { emitted, actedOn, bytesEmitted, legacyEmissions } = categoryStats(category)
     const marks = manualMarks(category)
     return {
       category,
@@ -540,8 +552,41 @@ export function getHintStatsSummary(): CategoryEfficacy[] {
       suppressed: shouldSuppress(category, ''),
       manualEffective: marks.effective,
       manualIneffective: marks.ineffective,
+      bytesEmitted,
+      legacyEmissions: legacyEmissions ?? 0,
     }
   })
+}
+
+export interface HintStatsTotals {
+  /** All-time bytes saved across every hint kind (see stats.ts's KIND_TO_SOURCE) already recorded via the pre-existing `stats` ledger -- unaffected by this feature, just read here. */
+  savedBytes: number
+  /** All-time sum of hint_emissions.bytes_emitted across every category and harness -- `null` when nothing has been tracked yet (an empty store or a store made up entirely of legacy emissions; see `legacyEmissions`), never a fake 0. */
+  spentBytes: number | null
+  /** All-time count of emissions with no bytes_emitted figure, across every category and harness -- non-zero here means `spentBytes`/`netBytes` are computed from a subset of real emissions, not the full history. */
+  legacyEmissions: number
+  /** savedBytes - spentBytes; `null` exactly when spentBytes is `null`, for the same reason. */
+  netBytes: number | null
+}
+
+/** All-time saved/spent/net totals for `token-goat hint-stats`'s summary line — see {@link getHintStatsSummary} for the per-category breakdown this rolls up. Deliberately NOT harness-scoped, unlike the per-category rows above it: the saved half comes from the `stats` ledger, which has no `harness` column at all (see stats.ts's GLOBAL_SCHEMA_SQL) and therefore spans every harness. Filtering only the spend half would subtract one harness's cost from every harness's savings and overstate the net. */
+export function getHintStatsTotals(): HintStatsTotals {
+  const db = getDb(globalDbPath())
+  const row = db
+    .prepare(
+      `SELECT SUM(bytes_emitted) AS spentBytes, SUM(CASE WHEN bytes_emitted IS NULL THEN 1 ELSE 0 END) AS legacyEmissions
+       FROM hint_emissions`,
+    )
+    .get() as { spentBytes: number | null; legacyEmissions: number | null } | undefined
+  const spentBytes = row?.spentBytes ?? null
+  const legacyEmissions = row?.legacyEmissions ?? 0
+  const savedBytes = summarize(0).by_source[SOURCE_HINT]?.bytes_saved ?? 0
+  return {
+    savedBytes,
+    spentBytes,
+    legacyEmissions,
+    netBytes: spentBytes === null ? null : savedBytes - spentBytes,
+  }
 }
 
 /** Clear every tracked emission, manual mark, and probe-recovery streak — `token-goat hint-stats --reset`. */
