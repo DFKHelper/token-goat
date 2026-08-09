@@ -5137,6 +5137,57 @@ describe('read_commands', () => {
       expect(stdout).toContain('No files changed')
     })
 
+    it('--grep filters the changed-file list by path', () => {
+      gitOk('src/a.ts\ntests/a.test.ts\nvendor/b.ts\n')
+      const withoutFlag = capture(() => { runChanged({ ref: 'HEAD~1' }) }).stdout
+      expect(withoutFlag).toContain('tests/a.test.ts')
+
+      const withFlag = capture(() => { runChanged({ ref: 'HEAD~1', grep: '^src/' }) }).stdout
+      expect(withFlag).toContain('src/a.ts')
+      expect(withFlag).not.toContain('tests/a.test.ts')
+      expect(withFlag).not.toContain('vendor/b.ts')
+    })
+
+    it('says the match was filtered out, not "No files changed", when --grep matches none of the changed files (plural, count > 1)', () => {
+      gitOk('src/a.ts\nsrc/b.ts\n')
+      const result = capture(() => {
+        const code = runChanged({ ref: 'HEAD~1', grep: '^nomatch/' })
+        expect(code).toBe(0)
+      })
+      const all = result.stdout + result.stderr
+      expect(all).toContain('all 2 changed files were filtered out by --grep')
+      expect(all).not.toContain('No files changed')
+    })
+
+    // Singular count branch, pinned separately from the plural control above so a fixture landing on count===1 is actually asserted, not just reached.
+    it('uses singular wording when exactly one file changed and --grep filtered it out', () => {
+      gitOk('src/only.ts\n')
+      const result = capture(() => {
+        const code = runChanged({ ref: 'HEAD~1', grep: '^nomatch/' })
+        expect(code).toBe(0)
+      })
+      const all = result.stdout + result.stderr
+      expect(all).toContain('all 1 changed file was filtered out by --grep')
+      expect(all).not.toContain('1 changed files')
+    })
+
+    it('--json keeps totalCount at the post-grep count', () => {
+      gitOk('src/a.ts\ntests/a.test.ts\n')
+      const parsed = JSON.parse(capture(() => { runChanged({ ref: 'HEAD~1', json: true, grep: '^src/' }) }).stdout) as { items: string[]; totalCount: number }
+      expect(parsed.items).toEqual(['src/a.ts'])
+      expect(parsed.totalCount).toBe(1)
+    })
+
+    it('falls back to a literal substring match for an invalid regex, never throwing', () => {
+      gitOk('src/[unclosed]weird.ts\nsrc/other.ts\n')
+      const { stdout } = capture(() => {
+        const code = runChanged({ ref: 'HEAD~1', grep: '[unclosed' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('src/[unclosed]weird.ts')
+      expect(stdout).not.toContain('src/other.ts')
+    })
+
     it('lists changed symbols with kind and location in symbol mode', () => {
       // Distinguish the rev-parse (project root) call from git diff --name-only -- gitOk's single
       // canned response for every runGit call would otherwise make resolveProjectRoot's toplevel
@@ -6124,6 +6175,88 @@ describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => 
   })
 })
 
+describe('runRefs --grep (single-symbol path, filters on call-site file path)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+  })
+
+  it('keeps only refs whose call-site file path matches the pattern', () => {
+    const rows = [
+      ref('src/auth.ts', 10, 'login()'),
+      ref('tests/auth.test.ts', 5, 'login()'),
+      ref('vendor/legacy.ts', 9, 'login()'),
+    ]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'login', grep: '^src/' })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withFlag).toContain('src/auth.ts:10: login()')
+    expect(withFlag).not.toContain('tests/auth.test.ts')
+    expect(withFlag).not.toContain('vendor/legacy.ts')
+  })
+
+  // Negative control: flag-absent output is byte-identical to today, proving the --grep test above is not vacuous.
+  it('leaves output unchanged when --grep is omitted', () => {
+    const rows = [ref('src/auth.ts', 10, 'login()'), ref('tests/auth.test.ts', 5, 'login()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const text = capture(() => runRefs({ spec: 'login' })).stdout
+    expect(text.trim().split('\n')).toEqual(['src/auth.ts:10: login()', 'tests/auth.test.ts:5: login()'])
+  })
+
+  it('says the match was filtered out, not "no references found", when --grep matches none of the refs that do exist (plural, count > 1)', () => {
+    const rows = [ref('src/a.ts', 1, 'f()'), ref('src/b.ts', 2, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const result = capture(() => {
+      const code = runRefs({ spec: 'f', grep: '^nomatch/' })
+      expect(code).toBe(0)
+    })
+    const all = result.stdout + result.stderr
+    expect(all).toContain('all 2 references were filtered out by --grep')
+    expect(all).not.toContain('no references found')
+  })
+
+  // Singular count branch: a bug shipped once where every fixture happened to filter 2+ items, leaving the count === 1 branch unasserted -- this pins both the verb ("was") and the noun ("reference", not "references").
+  it('uses singular wording when exactly one reference existed and --grep filtered it out', () => {
+    const rows = [ref('src/only.ts', 1, 'g()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const result = capture(() => {
+      const code = runRefs({ spec: 'g', grep: '^nomatch/' })
+      expect(code).toBe(0)
+    })
+    const all = result.stdout + result.stderr
+    expect(all).toContain('all 1 reference was filtered out by --grep')
+    expect(all).not.toContain('1 references')
+  })
+
+  it('--json keeps totalCount honest at the post-grep count, not the unfiltered total', () => {
+    const rows = [ref('src/a.ts', 1, 'f()'), ref('tests/a.test.ts', 2, 'f()'), ref('src/b.ts', 3, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const withFlag = JSON.parse(capture(() => runRefs({ spec: 'f', json: true, grep: '^src/' })).stdout) as { items: unknown[]; totalCount: number }
+    expect(withFlag.items).toHaveLength(2)
+    expect(withFlag.totalCount).toBe(2)
+  })
+
+  it('falls back to a literal substring match for an invalid regex, never throwing', () => {
+    const rows = [ref('src/[unclosed]weird.ts', 1, 'f()'), ref('src/other.ts', 2, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const text = capture(() => {
+      const code = runRefs({ spec: 'f', grep: '[unclosed' })
+      expect(code).toBe(0)
+    }).stdout
+    expect(text).toContain('src/[unclosed]weird.ts')
+    expect(text).not.toContain('src/other.ts')
+  })
+})
+
 describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -6191,6 +6324,21 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
     expect(withFlag).toContain('no non-test references found')
     expect(withFlag).toContain('1 in test files hidden by --exclude-tests')
     expect(withFlag).not.toContain('(no references found)')
+  })
+
+  it('--grep filters by call-site file path on the cross-file path too, with the filtered-to-empty notice per symbol', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'realUse') return [ref('src/cli.ts', 5, 'realUse()'), ref('vendor/x.ts', 1, 'realUse()')]
+      if (opts.name === 'testOnly') return [ref('vendor/y.ts', 2, 'testOnly()')]
+      return []
+    })
+    const withFlag = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::realUse,src/b.ts::testOnly', grep: '^src/' })
+      expect(code).toBe(0)
+    }).stdout
+    expect(withFlag).toContain('src/cli.ts:5: realUse()')
+    expect(withFlag).not.toContain('vendor/x.ts')
+    expect(withFlag).toContain('all 1 reference was filtered out by --grep')
   })
 })
 
@@ -6341,6 +6489,17 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     expect(stdout).toContain('2 references across 1 files')
     // The caller-grouped per-line view (":line  context") is not also present.
     expect(stdout).not.toContain(':1  x')
+  })
+
+  // --grep must narrow the set --top groups from, not just the per-line dump -- otherwise --top would still rank files --grep was supposed to exclude.
+  it('composes with --grep: the grouped-by-file summary reflects the POST-filter set, not the unfiltered one', () => {
+    mockQueryRefs.mockReturnValue([
+      ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x'), ref('src/a.ts', 3, 'x'),
+      ref('tests/b.test.ts', 1, 'x'), ref('tests/b.test.ts', 2, 'x'),
+    ])
+    const { stdout } = capture(() => runRefs({ spec: 'login', top: 5, grep: '^src/' }))
+    expect(stdout).toContain('3 references across 1 files (showing top 1)')
+    expect(stdout).not.toContain('tests/b.test.ts')
   })
 
   it('rejects --top 0 as an explicit invalid-argument error instead of rendering an empty summary', () => {

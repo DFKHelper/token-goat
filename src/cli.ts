@@ -3007,7 +3007,8 @@ export function buildProgram(): Command {
     .option('-C, --context <n>', 'lines of call-site source to show before and after each reference (default 0)')
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide references whose call site lives in a test file (opt-in; default output is unchanged)')
-    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); the indexed path is typically absolute, so match an unanchored fragment (e.g. --grep "/src/") rather than an anchored ^src/, to drop test/vendored hits from a wide-fanout symbol')
+    .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runRefs({
           spec,
@@ -3017,6 +3018,7 @@ export function buildProgram(): Command {
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )
@@ -3369,7 +3371,8 @@ export function buildProgram(): Command {
     .option('-l, --limit <n>', 'max references to scan')
     .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
     .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
-    .action((symbol: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'filter to callers whose enclosing symbol name matches this regex (falls back to a literal substring match when the pattern does not compile)')
+    .action((symbol: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runCallers({
           symbol,
@@ -3377,6 +3380,7 @@ export function buildProgram(): Command {
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )
@@ -3841,12 +3845,14 @@ export function buildProgram(): Command {
     .option('--since <ref>', 'git ref to compare against (default: HEAD~5)')
     .option('--symbol', 'list symbols instead of files')
     .option('-j, --json', 'output as JSON')
-    .action((ref: string | undefined, opts: { since?: string; symbol?: boolean; json?: boolean }) =>
+    .option('--grep <pattern>', 'filter to changed files whose path matches this regex (falls back to a literal substring match when the pattern does not compile); applies to file paths even in --symbol mode')
+    .action((ref: string | undefined, opts: { since?: string; symbol?: boolean; json?: boolean; grep?: string }) =>
       runExit(() =>
         runChanged({
           ref: opts.since ?? ref ?? 'HEAD~5',
           ...(opts.symbol === true ? { symbolMode: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )

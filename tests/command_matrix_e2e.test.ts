@@ -420,6 +420,22 @@ const cases: Record<string, () => void | Promise<void>> = {
     const crossWithFlag = run(['refs', 'exclhelper.ts::exclHelperFn,src/mod.ts::alphaSym', '--exclude-tests'])
     expect(crossWithFlag.status, crossWithFlag.stderr).toBe(0)
     expect(crossWithFlag.stdout).not.toContain('exclcaller.test.ts')
+
+    // --grep: filters on the call-site FILE PATH, not the enclosing symbol name. A matching
+    // pattern keeps only that file's references; a non-matching pattern must not read as "no
+    // references found" (the symbol IS referenced -- --grep just filtered every hit).
+    const grepMatch = run(['refs', 'exclhelper.ts::exclHelperFn', '--grep', 'exclprod'])
+    expect(grepMatch.status, grepMatch.stderr).toBe(0)
+    expect(grepMatch.stdout).toContain('exclprod.ts')
+    expect(grepMatch.stdout).not.toContain('exclcaller.test.ts')
+    const grepEmpty = run(['refs', 'exclhelper.ts::exclHelperFn', '--grep', 'nomatch-zz-12345'])
+    expect(grepEmpty.status, grepEmpty.stderr).toBe(0)
+    expect(grepEmpty.stdout).toMatch(/filtered out by --grep/)
+    expect(grepEmpty.stdout).not.toMatch(/no references found/)
+    // An invalid regex must fall back to a literal substring match, never error.
+    const grepBadRegex = run(['refs', 'exclhelper.ts::exclHelperFn', '--grep', '[unclosed'])
+    expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
+    expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
   },
   exports: () => {
     expectRead(['exports', 'src/mod.ts'], 'alphaSym')
@@ -545,6 +561,21 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(rBareShallow.stderr).toContain('git diff failed')
     expect(rBareShallow.stderr).toMatch(/Hint: this repo has only 2 commits/)
     expect(rBareShallow.stderr).toContain('token-goat changed --since HEAD~1')
+
+    // --grep: filters on the changed FILE PATH. A matching pattern keeps the file; a
+    // non-matching pattern must not read as "No files changed." (a file DID change, --grep
+    // just filtered it out).
+    const grepMatch = run(['changed', '--since', 'HEAD~1', '--grep', 'mod'])
+    expect(grepMatch.status, grepMatch.stderr).toBe(0)
+    expect(grepMatch.stdout).toMatch(/mod\.ts/)
+    const grepEmpty = run(['changed', '--since', 'HEAD~1', '--grep', 'nomatch-zz-12345'])
+    expect(grepEmpty.status, grepEmpty.stderr).toBe(0)
+    expect(grepEmpty.stdout).toMatch(/filtered out by --grep/)
+    expect(grepEmpty.stdout).not.toMatch(/No files changed/)
+    // An invalid regex must fall back to a literal substring match, never error.
+    const grepBadRegex = run(['changed', '--since', 'HEAD~1', '--grep', '[unclosed'])
+    expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
+    expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
   },
   diff: () => {
     // gammaSym was added by the second commit; alphaSym/betaSym are untouched by it.
@@ -1779,6 +1810,22 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(withFlag.stdout).not.toContain('exclTestCallerA')
     expect(withFlag.stdout).not.toContain('exclTestCallerB')
     expect(withFlag.stdout).toContain('hidden by --exclude-tests')
+
+    // --grep: filters on the CALLER SYMBOL NAME. A matching pattern keeps only that caller; a
+    // non-matching pattern must not read as "no references found" (callers DO exist, --grep
+    // just filtered every hit).
+    const grepMatch = run(['callers', 'exclhelper.ts::exclHelperFn', '--grep', 'exclProdCaller'])
+    expect(grepMatch.status, grepMatch.stderr).toBe(0)
+    expect(grepMatch.stdout).toContain('exclProdCaller')
+    expect(grepMatch.stdout).not.toContain('exclTestCallerA')
+    const grepEmpty = run(['callers', 'exclhelper.ts::exclHelperFn', '--grep', 'nomatch-zz-12345'])
+    expect(grepEmpty.status, grepEmpty.stderr).toBe(0)
+    expect(grepEmpty.stdout).toMatch(/filtered out by --grep/)
+    expect(grepEmpty.stdout).not.toMatch(/no references found/)
+    // An invalid regex must fall back to a literal substring match, never error.
+    const grepBadRegex = run(['callers', 'exclhelper.ts::exclHelperFn', '--grep', '[unclosed'])
+    expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
+    expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
   },
   'call-chain': () => {
     // refHelper is called by refDriver which has no further callers in the tiny fixture. Same

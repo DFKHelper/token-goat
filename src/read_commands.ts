@@ -1414,6 +1414,8 @@ export interface RefsOptions {
   context?: number
   /** `--exclude-tests`: drop references whose call site lives in a test file (per isTestFile). Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
+  /** Only list references whose call-site FILE PATH matches this pattern (rows render as `file:line: symbol`, so this is the field each row is keyed on -- the high-value case is a wide-fanout symbol where `--grep "^src/"` drops test/vendored hits). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 /**
@@ -1518,17 +1520,25 @@ export function runRefs(opts: RefsOptions): number {
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
     // The `file` in `file::symbol` names where the symbol is DEFINED, only used to disambiguate a same-named symbol elsewhere in the index via applyTypedRefsTier below. It must never be passed to queryRefs/countRefs -- refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only.
-    if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    // --grep needs the same full-headroom query as --exclude-tests -- see runRefsSingle's sibling comment.
+    if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     let results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
     let suppressed = 0
-    let filteredTotal: number | undefined
     if (opts.excludeTests === true) {
       const f = applyExcludeTestsFilter(results)
       suppressed = f.suppressed
-      filteredTotal = f.refs.length
-      results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+      results = f.refs
+    }
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment.
+    const preGrepCount = results.length
+    const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+    if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+    let filteredTotal: number | undefined
+    if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
+    if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
+      results = results.slice(0, opts.limit ?? 100)
     }
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
@@ -1540,15 +1550,20 @@ export function runRefs(opts: RefsOptions): number {
         // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
         // is not the real number of matching refs -- countRefs reruns the same filters with no
         // LIMIT to report an honest total (same fix as runSymbol's countSymbols call). Under
-        // --exclude-tests, countRefs has no isTestFile predicate to rerun, so filteredTotal (the
-        // pre-slice filtered count, already scanned with full headroom above) is the honest total.
+        // --exclude-tests or --grep, countRefs has no way to rerun that filter, so filteredTotal
+        // (the pre-slice filtered count, already scanned with full headroom above) is the honest total.
         const capped = guardJsonRows(results)
-        const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
+        const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
         jsonOut[sym] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
     if (results.length === 0) {
+      // Distinguish "--grep matched none of the N references that do exist" for this symbol from a genuine absence -- same trap already fixed for dead/deps/types, and checked first so it takes priority over the --exclude-tests message below.
+      if (matchesGrep !== undefined && preGrepCount > 0) {
+        lines.push(`${sym}: ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references').trim()}`)
+        continue
+      }
       // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
       lines.push(opts.excludeTests === true && suppressed > 0 ? `${sym}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${sym}: (no references found)`)
       continue
@@ -1590,17 +1605,25 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     const key = keyFor({ file, symbol })
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: symbol }
     // Same reasoning as runRefs's per-symbol loop above: the pair's `file` only disambiguates which same-named symbol this is, by its defining file, via applyTypedRefsTier below -- it must never be passed to queryRefs/countRefs, which would wrongly narrow every result to same-file references only.
-    if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    // --grep needs the same full-headroom query as --exclude-tests -- see runRefsSingle's sibling comment.
+    if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     let results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
     let suppressed = 0
-    let filteredTotal: number | undefined
     if (opts.excludeTests === true) {
       const f = applyExcludeTestsFilter(results)
       suppressed = f.suppressed
-      filteredTotal = f.refs.length
-      results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+      results = f.refs
+    }
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment.
+    const preGrepCount = results.length
+    const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+    if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+    let filteredTotal: number | undefined
+    if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
+    if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
+      results = results.slice(0, opts.limit ?? 100)
     }
     if (results.length > 0) anyFound = true
     refFilePaths.push(...results.map((r) => r.filePath))
@@ -1609,14 +1632,19 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
         jsonOut[key] = topFilesJsonPayload(results, opts.top)
       } else {
         // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
-        // Same --exclude-tests honest-total reasoning as runRefs's per-symbol branch above.
+        // Same --exclude-tests/--grep honest-total reasoning as runRefs's per-symbol branch above.
         const capped = guardJsonRows(results)
-        const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
+        const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
         jsonOut[key] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
     if (results.length === 0) {
+      // Distinguish "--grep matched none of the N references that do exist" for this pair from a genuine absence -- same trap already fixed for dead/deps/types, and checked first so it takes priority over the --exclude-tests message below.
+      if (matchesGrep !== undefined && preGrepCount > 0) {
+        lines.push(`${key}: ${grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references').trim()}`)
+        continue
+      }
       // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
       lines.push(opts.excludeTests === true && suppressed > 0 ? `${key}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${key}: (no references found)`)
       continue
@@ -1653,21 +1681,43 @@ function runRefsSingle(opts: RefsOptions): number {
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // `file` in `file::symbol` names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call below, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result to same-file references only.
   const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
-  if (opts.excludeTests === true) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+  // --grep needs the same full-headroom query as --exclude-tests, since it also filters the
+  // resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit
+  // before it runs would silently under-return by letting non-matching refs occupy slots ahead
+  // of the cutoff.
+  if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
 
   let results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
   let suppressed = 0
-  let filteredTotal: number | undefined
   if (opts.excludeTests === true) {
     const f = applyExcludeTestsFilter(results)
     suppressed = f.suppressed
-    filteredTotal = f.refs.length
-    results = opts.top !== undefined ? f.refs : f.refs.slice(0, opts.limit ?? 100)
+    results = f.refs
+  }
+  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on:
+  // `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the
+  // whole (test-filtered) set rather than from an already-capped page.
+  const preGrepCount = results.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+  let filteredTotal: number | undefined
+  if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
+  if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
+    results = results.slice(0, opts.limit ?? 100)
   }
 
   if (results.length === 0) {
+    // Distinguish "--grep matched none of the N references that do exist" from a symbol that
+    // genuinely has no references (or none outside tests) -- same "filtered store renders as
+    // populated" trap already fixed for dead/deps/types. Checked first so it takes priority
+    // over the --exclude-tests message below when both filters are active and --grep is what
+    // zeroed the remaining set.
+    if (matchesGrep !== undefined && preGrepCount > 0) {
+      emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references'))
+      return 0
+    }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
       emitErr(`No non-test references found for '${symName}' (${suppressed} in test files hidden by --exclude-tests)`)
@@ -1692,9 +1742,9 @@ function runRefsSingle(opts: RefsOptions): number {
       payload = topFilesJsonPayload(results, opts.top)
     } else {
       // Same "SQL LIMIT applied before totalCount is taken" fix as runRefs's per-symbol branch above.
-      // Same --exclude-tests honest-total reasoning as runRefs's per-symbol branch above.
+      // Same --exclude-tests/--grep honest-total reasoning as runRefs's per-symbol branch above.
       const capped = guardJsonRows(results)
-      const trueTotal = opts.excludeTests === true ? (filteredTotal ?? results.length) : countRefs(queryOpts)
+      const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
       payload = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     const text = JSON.stringify(payload, null, 2)
@@ -3246,6 +3296,8 @@ export interface ChangedOptions {
   symbolMode?: boolean
   json?: boolean
   projectRoot?: string
+  /** Only list changed files whose path matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. In `--symbol` mode this still filters the file path, not the symbol name, since the command's primary listing is files. */
+  grep?: string
 }
 
 /**
@@ -3372,6 +3424,16 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
   if (changedFiles.length === 0) {
     emit('No files changed.')
+    return 0
+  }
+
+  // --grep narrows the changed-file list by path, and runs BEFORE any downstream truncation or
+  // symbol-mode scoping so it selects from the whole changed set, not an already-capped page.
+  const preGrepFileCount = changedFiles.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  if (matchesGrep !== undefined) changedFiles = changedFiles.filter((f) => matchesGrep(f))
+  if (matchesGrep !== undefined && changedFiles.length === 0) {
+    emit(grepFilteredToEmptyNotice(preGrepFileCount, opts.grep ?? '', 'changed file', 'changed files'))
     return 0
   }
 
