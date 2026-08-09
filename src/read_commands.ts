@@ -1891,7 +1891,9 @@ function filteredToEmptyNotice(preFilterCount: number, minLines: number | undefi
   if (grep !== undefined) parts.push(`--grep ${grep}`)
   const cause = parts.length === 0 ? 'the active filter' : parts.join(' + ')
   const knob = parts.length > 1 ? 'filters' : 'filter'
-  return `  (all ${preFilterCount} indexed ${plural} were filtered out by ${cause}; the file is indexed -- widen or drop the ${knob} to see them)`
+  // The verb has to agree with the noun the count already selects: "all 1 indexed symbol were filtered out" reads as a typo in the tool rather than as a report about the file.
+  const verb = preFilterCount === 1 ? 'was' : 'were'
+  return `  (all ${preFilterCount} indexed ${plural} ${verb} filtered out by ${cause}; the file is indexed -- widen or drop the ${knob} to see them)`
 }
 
 function prepareSymbolListing(

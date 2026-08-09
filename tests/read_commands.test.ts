@@ -1846,6 +1846,29 @@ describe('read_commands', () => {
       expect(text).toContain('--grep zzzz')
     })
 
+    // Every existing case here filters out 2 or more symbols, so the singular branch shipped saying "all 1 indexed symbol were filtered out" -- the noun agreed with the count and the verb did not, which reads as a typo in the tool rather than as a report about the file. One survivor is the most common way to reach this notice, so it is the case most seen.
+    it('agrees the verb with the count when exactly one symbol was filtered out', () => {
+      mockQuerySymbols.mockReturnValue(
+        [{ name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' }] as never,
+      )
+      const { text, code } = runOutline({ file: 'a.ts', grep: 'zzzz' })
+      expect(code).toBe(0)
+      expect(text).toContain('all 1 indexed symbol was filtered out')
+      expect(text).not.toContain('symbol were filtered out')
+    })
+
+    // Negative control: the plural branch is untouched by the singular fix and must keep its own agreement. Passes both before and after, so it proves the singular assertion above is doing the work rather than the pair drifting together.
+    it('keeps the plural verb when more than one symbol was filtered out', () => {
+      mockQuerySymbols.mockReturnValue(
+        [
+          { name: 'parseConfig', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 10, body: '', docstring: '', parent: '' },
+          { name: 'writeConfig', kind: 'function', filePath: 'a.ts', lineStart: 12, lineEnd: 13, body: '', docstring: '', parent: '' },
+        ] as never,
+      )
+      const { text } = runOutline({ file: 'a.ts', grep: 'zzzz' })
+      expect(text).toContain('all 2 indexed symbols were filtered out')
+    })
+
     // With both filters active the notice must name both -- blaming only one sends the caller to widen the wrong knob.
     it('names both filters in the notice when both are active', () => {
       mockQuerySymbols.mockReturnValue(

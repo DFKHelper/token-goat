@@ -962,6 +962,9 @@ describe('runTypes --grep', () => {
       })
       expect(captured).toContain('--grep')
       expect(captured).not.toContain('No type declarations found')
+      // The fixture indexes exactly one type, so this notice takes its singular branch -- which shipped saying "all 1 type declaration were filtered out", the noun agreeing with the count and the verb not. Asserting only that '--grep' appears let that through, and one survivor is the most common way to reach the notice at all.
+      expect(captured).toContain(' was filtered out by --grep')
+      expect(captured).not.toContain(' were filtered out by --grep')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
