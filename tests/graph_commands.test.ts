@@ -5,7 +5,7 @@
  */
 
 import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync, mkdirSync } from 'node:fs'
-import { join, resolve, delimiter } from 'node:path'
+import { join, resolve, delimiter, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
@@ -14,7 +14,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { captureStdout } from './helpers/capture-stdout.js'
-import { querySymbols, searchSymbolsFts } from '../src/index_reader.js'
+import { querySymbols, queryRefs, searchSymbolsFts } from '../src/index_reader.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import {
   bfsCallChains,
@@ -64,15 +64,23 @@ function captureStderr(fn: () => void): string {
 // module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to
 // regression-test that buildFileSymCache() is hoisted once outside the BFS loop in
 // runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited.
+// queryRefs is wrapped the same way (real implementation by default, overridable per-test via
+// mockReturnValueOnce) so the `--json` path-spelling negative-control tests below can hand
+// callers/testFor a synthetic out-of-project row without indexing a real file there.
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
-  return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts) }
+  return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts), queryRefs: vi.fn(actual.queryRefs) }
 })
 
 // ---- helpers ----------------------------------------------------------------
 
 function makeSymbol(name: string, lineStart: number, lineEnd: number, kind = 'function'): SymbolEntry {
   return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '', parent: '' }
+}
+
+/** Root-relative expectation for `--json` path fields, mirroring toDisplayPath's own forward-slash convention -- used by tests below that compare a `--json` row's path field against an absolute fixture path now that it renders root-relative. */
+function toRel(root: string, abs: string): string {
+  return relative(normalizePath(root), normalizePath(abs)).replace(/\\/g, '/')
 }
 
 // Establish the precondition this suite's header assumes: the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state.
@@ -394,6 +402,38 @@ describe('runTypes integration', () => {
   it('exits 1 for a nonexistent file even with --json (regression: emptiness check must run before format branching)', () => {
     const code = runTypes({ file: 'src/__nonexistent_xyzzy__.ts', json: true })
     expect(code).toBe(1)
+  })
+
+  // --json path-spelling: `filePath` used to echo querySymbols' raw absolute row verbatim, while
+  // the plain-text sibling test above already renders `toDisplayPath(rootDir, ...)` -- same
+  // command, same repo, two spellings decided only by --json. Matches outline/skeleton/refs.
+  it('renders --json filePath root-relative for an in-project symbol (matching plain-text output)', () => {
+    const captured = captureStdout(() => {
+      const code = runTypes({ file: 'src/parser_types.ts', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as Array<{ name: string; filePath: string }>
+    expect(parsed.length).toBeGreaterThan(0)
+    for (const r of parsed) {
+      expect(r.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
+      expect(r.filePath.replace(/\\/g, '/')).toBe('src/parser_types.ts')
+    }
+  })
+
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
+  // proves the fix renders through toDisplayPath's own root-membership check rather than
+  // blindly stripping a prefix from every row.
+  it('leaves an out-of-project --json filePath absolute (negative control)', () => {
+    const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-types-outside-project-fixture', 'far.ts'))
+    const sym: SymbolEntry = { name: 'OutOfProjectTypesFixture', kind: 'interface', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
+    vi.mocked(querySymbols).mockReturnValueOnce([sym])
+    const captured = captureStdout(() => {
+      const code = runTypes({ json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as Array<{ name: string; filePath: string }>
+    const row = parsed.find((r) => r.name === 'OutOfProjectTypesFixture')
+    expect(row?.filePath).toBe(outOfProjectAbs)
   })
 
   it('sorts a realistic mixed-case file-path set in the expected en-locale order (regression: comparator must not silently drop its locale pin)', () => {
@@ -1020,6 +1060,26 @@ describe('runCallers integration', () => {
     expect(arr.length).toBeGreaterThan(0)
     expect(typeof arr[0]?.caller).toBe('string')
     expect(typeof arr[0]?.line).toBe('number')
+    // --json path-spelling: `file` used to echo queryRefs' raw absolute row verbatim, while the
+    // plain-text sibling test above already renders `toDisplayPath(rootDir, ...)`. Every row here
+    // is a real caller inside this repo, so every `file` must be root-relative.
+    for (const e of arr) {
+      expect(e.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
+    }
+  })
+
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
+  // proves the fix renders through toDisplayPath's own root-membership check rather than
+  // blindly stripping a prefix from every row.
+  it('leaves an out-of-project --json file absolute (negative control)', () => {
+    const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-callers-outside-project-fixture', 'far.ts'))
+    vi.mocked(queryRefs).mockReturnValueOnce([{ name: 'querySymbols', filePath: outOfProjectAbs, line: 5, col: 0, context: '' }])
+    const captured = captureStdout(() => {
+      const code = runCallers({ symbol: 'querySymbols', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as Array<{ file: string }>
+    expect(parsed.some((r) => r.file === outOfProjectAbs)).toBe(true)
   })
 
   it('resolveCallers returns the same enclosing-function-aware entries runCallers prints', () => {
@@ -1492,6 +1552,27 @@ describe('runDead integration', () => {
     })
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
+    // --json path-spelling: `file` used to echo querySymbols' raw absolute row verbatim. Every
+    // row here comes from this repo's own scan, so every `file` must be root-relative.
+    for (const r of parsed as Array<{ file: string }>) {
+      expect(r.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
+    }
+  })
+
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
+  // proves the fix renders through toDisplayPath's own root-membership check rather than
+  // blindly stripping a prefix from every row.
+  it('leaves an out-of-project --json file absolute (negative control)', () => {
+    const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-dead-outside-project-fixture', 'far.ts'))
+    const sym: SymbolEntry = { name: 'outOfProjectDeadFixture9x2', kind: 'function', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
+    vi.mocked(querySymbols).mockReturnValueOnce([sym])
+    const captured = captureStdout(() => {
+      const code = runDead({ json: true, top: 500 })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+    const row = parsed.find((r) => r.name === 'outOfProjectDeadFixture9x2')
+    expect(row?.file).toBe(outOfProjectAbs)
   })
 })
 
@@ -1590,9 +1671,9 @@ describe('runDead same-project name-collision scoping', () => {
         })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         // fileA's copy is truly dead and must be reported.
-        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normA)).toBe(true)
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && r.file === toRel(root, normA))).toBe(true)
         // fileB's copy is genuinely called locally and must NOT be reported as dead.
-        expect(parsed.some((r) => r.name === 'collideFn9k2' && normalizePath(r.file) === normB)).toBe(false)
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && r.file === toRel(root, normB))).toBe(false)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -1633,9 +1714,9 @@ describe('runDead virtual-dispatch rescue', () => {
         })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
         // The override is reachable only via Base's self-dispatch -- must not be flagged dead.
-        expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === implFile)).toBe(false)
+        expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, implFile))).toBe(false)
         // A genuinely unused sibling method on the same class must still be flagged.
-        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === implFile)).toBe(true)
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, implFile))).toBe(true)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -1687,8 +1768,8 @@ describe('runDead virtual-dispatch rescue', () => {
           runDead({ json: true, top: 500, kind: 'method' })
         })
         const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
-        expect(parsed.some((r) => r.name === 'compressBody' && normalizePath(r.file) === factoryFile)).toBe(false)
-        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && normalizePath(r.file) === factoryFile)).toBe(true)
+        expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, factoryFile))).toBe(false)
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, factoryFile))).toBe(true)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -3104,8 +3185,11 @@ describe('runTestFor', () => {
       }
       expect(code).toBe(0)
 
+      // `--json`'s `testFile` now renders root-relative (toDisplayPath(rootDir, ...), same
+      // spelling as the plain-text sibling test above), not the raw absolute path this used to
+      // compare against.
       const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
-      const entry = results.find((r) => r.testFile === testFile)
+      const entry = results.find((r) => r.testFile === 'testForTarget.test.ts')
       expect(entry).toBeDefined()
       expect(entry!.testFunctions).toContain('test_usesTarget')
       expect(entry!.testFunctions).not.toContain('test_unrelated')
@@ -3156,13 +3240,33 @@ describe('runTestFor', () => {
       }
       expect(code).toBe(0)
 
+      // Same root-relative `testFile` rewrite as the sibling test above.
       const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
-      const entry = results.find((r) => r.testFile === testFile)
+      const entry = results.find((r) => r.testFile === 'itWordTarget.test.ts')
       expect(entry).toBeDefined()
       expect(entry!.testFunctions).not.toContain('iterateOverTargetHelper')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
+  // proves the fix renders through toDisplayPath's own root-membership check rather than
+  // blindly stripping a prefix from every row.
+  it('leaves an out-of-project --json testFile absolute (negative control)', () => {
+    const gonePath = normalizePath(resolve('src/__testfor_negctl_target__.ts'))
+    const syms: SymbolEntry[] = [
+      { name: '__testForNegCtlFn9x2__', kind: 'function', filePath: gonePath, lineStart: 1, lineEnd: 3, body: '', docstring: '', parent: '' },
+    ]
+    vi.mocked(querySymbols).mockReturnValueOnce(syms)
+    const outOfProjectTestFile = normalizePath(join(tmpdir(), 'tg-testfor-outside-project-fixture', 'far.test.ts'))
+    vi.mocked(queryRefs).mockReturnValueOnce([{ name: '__testForNegCtlFn9x2__', filePath: outOfProjectTestFile, line: 3, col: 0, context: '' }])
+    const captured = captureStdout(() => {
+      const code = runTestFor({ file: gonePath, json: true })
+      expect(code).toBe(0)
+    })
+    const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+    expect(results.some((r) => r.testFile === outOfProjectTestFile)).toBe(true)
   })
 })
 

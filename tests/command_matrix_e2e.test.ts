@@ -263,6 +263,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(scopedPayload.items.length).toBe(1)
     expect(scopedPayload.items[0]?.name).toBe('alphaSym')
     expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toContain('src/mod.ts')
+
+    // `--json`'s filePath now renders root-relative against the real built binary, matching
+    // outline/skeleton/refs --json -- pinned as an exact equality (not just `.toContain`) so a
+    // regression back to the absolute spelling is caught.
+    expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toBe('src/mod.ts')
   },
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
@@ -314,12 +319,18 @@ const cases: Record<string, () => void | Promise<void>> = {
     // through the in-process runSemantic() unit tests.
     const r = run(['semantic', 'alphamarker', '--json'])
     expect(r.status, r.stderr).toBe(0)
-    const payload = JSON.parse(r.stdout) as { source: string; items: unknown[]; truncated: boolean; totalCount: number }
+    const payload = JSON.parse(r.stdout) as { source: string; items: Array<{ filePath: string }>; truncated: boolean; totalCount: number }
     expect(['embeddings', 'fts']).toContain(payload.source)
     expect(Array.isArray(payload.items)).toBe(true)
     expect(payload.items.length).toBeGreaterThan(0)
     expect(typeof payload.truncated).toBe('boolean')
     expect(typeof payload.totalCount).toBe('number')
+    // `--json`'s filePath now renders root-relative against the real built binary, matching
+    // outline/skeleton/refs --json.
+    for (const item of payload.items) {
+      expect(item.filePath.replace(/\\/g, '/')).not.toContain(repo.split(path.sep).join('/'))
+      expect(path.isAbsolute(item.filePath)).toBe(false)
+    }
   },
   skeleton: () => {
     expectRead(['skeleton', 'src/mod.ts'], 'alphaSym')
@@ -382,6 +393,13 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('return 1')
     expect(multi.stdout).toContain('betaSym')
     expect(multi.stdout).toContain('return 2')
+
+    // `--json`'s symbol.filePath now renders root-relative against the real built binary,
+    // matching the plain-text block above and the outline/skeleton/refs --json convention.
+    const j = run(['brief', 'src/mod.ts::alphaSym', '--json'])
+    expect(j.status, j.stderr).toBe(0)
+    const payload = JSON.parse(j.stdout) as { symbol: { filePath: string } }
+    expect(payload.symbol.filePath.replace(/\\/g, '/')).toBe('src/mod.ts')
   },
   refs: () => {
     const r = run(['refs', 'caller.ts::refHelper', '--callers'])
@@ -1859,6 +1877,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     const grepBadRegex = run(['callers', 'exclhelper.ts::exclHelperFn', '--grep', '[unclosed'])
     expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
     expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // `--json`'s file now renders root-relative against the real built binary, matching the
+    // plain-text rows above and the outline/skeleton/refs --json convention.
+    const j = run(['callers', 'refHelper', '--json'])
+    expect(j.status, j.stderr).toBe(0)
+    const jParsed = JSON.parse(j.stdout) as Array<{ file: string }>
+    expect(jParsed.length).toBeGreaterThan(0)
+    for (const entry of jParsed) expect(path.isAbsolute(entry.file)).toBe(false)
   },
   'call-chain': () => {
     // refHelper is called by refDriver which has no further callers in the tiny fixture. Same
@@ -1893,8 +1919,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     // never called anywhere -- present without the flag (byte-identical to today), gone with it.
     const withoutFlag = run(['dead', '--top', '500', '--json'])
     expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
-    const withoutParsed = JSON.parse(withoutFlag.stdout) as Array<{ name: string }>
+    const withoutParsed = JSON.parse(withoutFlag.stdout) as Array<{ name: string; file: string }>
     expect(withoutParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(true)
+    // `--json`'s file now renders root-relative against the real built binary, matching the
+    // outline/skeleton/refs --json convention.
+    for (const entry of withoutParsed) expect(path.isAbsolute(entry.file)).toBe(false)
     const withFlag = run(['dead', '--top', '500', '--json', '--exclude-tests'])
     expect(withFlag.status, withFlag.stderr).toBe(0)
     const withParsed = JSON.parse(withFlag.stdout) as Array<{ name: string }>
@@ -1957,8 +1986,11 @@ const cases: Record<string, () => void | Promise<void>> = {
     // names the filter instead of looking like the store is empty.
     const grepped = run(['types', 'typesgrep.ts', '--json', '--grep', 'Alpha'])
     expect(grepped.status, grepped.stderr).toBe(0)
-    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string }>
+    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string; filePath: string }>
     expect(greppedParsed.map((t) => t.name)).toEqual(['TypesGrepAlphaFixture'])
+    // `--json`'s filePath now renders root-relative against the real built binary, matching the
+    // outline/skeleton/refs --json convention.
+    expect(greppedParsed[0]?.filePath.replace(/\\/g, '/')).toBe('typesgrep.ts')
 
     const grepMiss = run(['types', 'typesgrep.ts', '--grep', 'zzzzNoSuchType'])
     expect(grepMiss.status, grepMiss.stderr).toBe(0)
@@ -2006,6 +2038,14 @@ const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['test-for', 'caller.ts'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // `--json`'s testFile now renders root-relative against the real built binary, matching the
+    // outline/skeleton/refs --json convention. exclhelper.ts is referenced by exclcaller.test.ts
+    // (see the 'refs'/'callers' --exclude-tests fixtures above), so this exercises a real hit.
+    const j = run(['test-for', 'exclhelper.ts', '--json'])
+    expect(j.status, j.stderr).toBe(0)
+    const jParsed = JSON.parse(j.stdout) as Array<{ testFile: string }>
+    expect(jParsed.some((e) => e.testFile.replace(/\\/g, '/') === 'exclcaller.test.ts')).toBe(true)
   },
   'coverage-gaps': () => {
     const r = run(['coverage-gaps', '--top', '3'])

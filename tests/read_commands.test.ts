@@ -501,14 +501,25 @@ describe('read_commands', () => {
         expect(text).toContain(`${outOfProjectAbs}:2-2`)
       })
 
-      it('--json output stays absolute and byte-identical regardless of project-relative display logic', () => {
+      // Oracle replaced: this used to assert --json "stays absolute", pinning the very inconsistency being fixed -- outline/skeleton/refs/types/dead/callers/test-for --json all render rows through toDisplayPath because root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, and `symbol` was the last holdout. The invariant that was worth keeping -- an out-of-project path must NOT be mangled into something relative -- is kept below as the negative control.
+      it('--json renders an in-project filePath root-relative, matching human output and the outline/skeleton/refs --json convention', () => {
         const sym: MockSymbol = { name: 'jsonSym', kind: 'function', filePath: inProjectAbs, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         mockCountSymbols.mockReturnValue(1)
         const { text } = runSymbol({ name: 'jsonSym', json: true })
         const parsed = JSON.parse(text) as { items: Array<{ filePath: string }> }
-        expect(parsed.items[0]?.filePath).toBe(inProjectAbs)
+        expect(parsed.items[0]?.filePath).toBe('src/display-fixture.ts')
+      })
+
+      it('--json leaves an out-of-project filePath absolute (negative control: root-relativising is not applied blindly)', () => {
+        const sym: MockSymbol = { name: 'jsonFarSym', kind: 'function', filePath: outOfProjectAbs, lineStart: 2, lineEnd: 2, body: 'y', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockCountSymbols.mockReturnValue(1)
+        const { text } = runSymbol({ name: 'jsonFarSym', json: true })
+        const parsed = JSON.parse(text) as { items: Array<{ filePath: string }> }
+        expect(parsed.items[0]?.filePath).toBe(outOfProjectAbs)
       })
 
       it('produces identical output whether process.cwd() is the project root or a subdirectory of it (cwd-independence)', () => {
@@ -2862,6 +2873,38 @@ describe('read_commands', () => {
       expect(parsed.callers).toHaveLength(1)
       expect(parsed.callers[0]?.caller).toBe('caller1')
       expect(parsed.section?.heading).toBe('Usage')
+    })
+
+    // --json path-spelling: symbol.filePath and callers[].file used to echo the raw row verbatim
+    // even though the plain-text block above already renders both via toDisplayPath(rootDir, ...)
+    // -- same command, same repo, two spellings decided only by --json. Matches
+    // outline/skeleton/refs/types/dead/callers/test-for/symbol --json.
+    it('renders --json symbol.filePath and callers[].file root-relative, matching the plain-text block', () => {
+      const briefDisplayFixture = path.join(process.cwd(), 'src', 'brief-display-fixture.ts')
+      const briefCallerFixture = path.join(process.cwd(), 'src', 'brief-caller-fixture.ts')
+      const sym: MockSymbol = { name: 'briefJsonSym', kind: 'function', filePath: briefDisplayFixture, lineStart: 10, lineEnd: 20, body: 'function briefJsonSym() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([{ caller: 'caller1', kind: 'function', file: briefCallerFixture, line: 3 }])
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: `${briefDisplayFixture}::briefJsonSym`, json: true }) })
+      const parsed = JSON.parse(stdout) as { symbol: { filePath: string }; callers: Array<{ file: string }> }
+      expect(parsed.symbol.filePath).toBe('src/brief-display-fixture.ts')
+      expect(parsed.callers[0]?.file).toBe('src/brief-caller-fixture.ts')
+    })
+
+    it('--json leaves an out-of-project symbol.filePath and callers[].file absolute (negative control)', () => {
+      const outOfProjectSym = path.join(os.tmpdir(), 'tg-brief-outside-project-fixture', 'far.ts')
+      const outOfProjectCaller = path.join(os.tmpdir(), 'tg-brief-outside-project-fixture', 'farCaller.ts')
+      const sym: MockSymbol = { name: 'briefFarSym', kind: 'function', filePath: outOfProjectSym, lineStart: 1, lineEnd: 1, body: 'x', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      mockResolveCallers.mockReturnValue([{ caller: 'farCaller', kind: 'function', file: outOfProjectCaller, line: 1 }])
+      mockFindContainingSection.mockReturnValue(null)
+      const { stdout } = capture(() => { runBrief({ spec: `${outOfProjectSym}::briefFarSym`, json: true }) })
+      const parsed = JSON.parse(stdout) as { symbol: { filePath: string }; callers: Array<{ file: string }> }
+      expect(parsed.symbol.filePath).toBe(outOfProjectSym)
+      expect(parsed.callers[0]?.file).toBe(outOfProjectCaller)
     })
 
     it('renders plain text with symbol body, callers, and section line', () => {

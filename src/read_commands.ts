@@ -603,6 +603,10 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   const fullSourceBytes = sumFileSizes(results.map((s) => s.filePath))
 
+  // Shared by both the --json payload and the human blocks below, so a caller-supplied
+  // projectRoot (or none) resolves the same way for either output mode.
+  const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the
@@ -611,14 +615,15 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // no LIMIT to report an honest total, the same distinction json_query's --head already
     // makes (its totalCount survives --head unlike this one used to).
     const trueTotal = countSymbols(queryOpts)
-    const payload = { items: capped.items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+    // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
+    const items = capped.items.map((s) => ({ ...s, filePath: toDisplayPath(symbolDisplayRoot, s.filePath) }))
+    const payload = { items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
     return { text, code: 0 }
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
-  const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
   const blocks = results.map((sym) => {
     const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}`
     const body = resolveBody(sym)
@@ -3093,11 +3098,13 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const fullSourceBytes = sumFileSizes([match.filePath])
 
   if (opts.json === true) {
+    // callers' contextLines attached first (buildContextWindow reads real source off disk and needs the raw absolute `c.file`), THEN both symbol.filePath and callers[].file rewritten to the same root-relative spelling the text block above renders (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
+    const callersWithContext = (opts.context ?? 0) > 0
+      ? shown.map((c) => ({ ...c, contextLines: buildContextWindow(c.file, c.line, opts.context ?? 0) ?? [] }))
+      : shown
     const result: BriefResult = {
-      symbol: match,
-      callers: (opts.context ?? 0) > 0
-        ? shown.map((c) => ({ ...c, contextLines: buildContextWindow(c.file, c.line, opts.context ?? 0) ?? [] }))
-        : shown,
+      symbol: { ...match, filePath: toDisplayPath(rootDir, match.filePath) },
+      callers: callersWithContext.map((c) => ({ ...c, file: toDisplayPath(rootDir, c.file) })),
       totalCallers,
       truncated,
       section,
@@ -5051,8 +5058,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   if (hits.length > 0) {
     const enclosing = hits.map((h) => resolveEnclosingSymbol(h.filePath, h.startLine))
     if (opts.json === true) {
+      // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
       const items = hits.map((h, i) => ({
-        filePath: h.filePath,
+        filePath: toDisplayPath(rootDir, h.filePath),
         name: enclosing[i]?.name ?? null,
         kind: enclosing[i]?.kind ?? null,
         startLine: h.startLine,
@@ -5103,8 +5111,9 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     return { text, code: 1 }
   }
   if (opts.json === true) {
+    // Same root-relative rewrite as the embeddings branch above.
     const items = results.map((s) => ({
-      filePath: s.filePath,
+      filePath: toDisplayPath(rootDir, s.filePath),
       name: s.name,
       kind: s.kind,
       startLine: s.lineStart,
