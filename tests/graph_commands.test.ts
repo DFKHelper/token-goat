@@ -3902,6 +3902,51 @@ describe('runArch', () => {
   // shape for both: `main.ts` imports `leaf.ts` and nothing imports `main.ts` (the entry point),
   // and `a.ts`/`b.ts` import each other (a 2-node cycle) while also both being imported by
   // `main.ts` so they're excluded from entryPoints.
+  // A repo with zero tracked files produced the three section headers with nothing under any of them -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so "nothing to analyse" was indistinguishable from "clean architecture."
+  it('says there was nothing to analyse instead of printing empty section headers', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-empty-'))
+    try {
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 10 })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      expect(captured).toContain('no tracked files found')
+      expect(captured).not.toMatch(/hubs \(top/)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // The --json branch must stay untouched: an empty array trio is already unambiguous, and changing it would be a shape break.
+  it('leaves --json emitting the empty hubs/entryPoints/cycles arrays for a repo with no tracked files', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tg-arch-empty-json-'))
+    try {
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+
+      let captured = ''
+      const origWrite = process.stdout.write.bind(process.stdout)
+      process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+      let code: number
+      try {
+        code = runArch({ cwd: repo, top: 10, json: true })
+      } finally {
+        process.stdout.write = origWrite
+      }
+      expect(code).toBe(0)
+      expect(JSON.parse(captured)).toEqual({ hubs: [], entryPoints: [], cycles: [] })
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('reports entryPoints and cycles, not just hubs', () => {
     const repo = mkdtempSync(join(tmpdir(), 'tg-arch-fields-'))
     try {
