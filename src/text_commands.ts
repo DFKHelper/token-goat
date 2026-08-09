@@ -653,7 +653,8 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
   // "this block".
   const seenBodies = new Map<string, boolean>()
 
-  for (const block of filtered) {
+  // Indexed rather than for-of because the pre-filter frame count is read back off the parallel `blocks` array below: `filtered` is a .map of `blocks` so the indices line up, and carrying the count on the mapped object instead would leak a new field into the `--json` payload, which spreads those same objects verbatim.
+  for (const [blockIndex, block] of filtered.entries()) {
     process.stdout.write('Traceback (most recent call last):\n')
     for (const f of block.frames) {
       process.stdout.write(`  File "${f.file}", line ${f.lineNo}, in ${f.func}\n`)
@@ -667,6 +668,13 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       if (opts.bodies === true) {
         for (const line of formatFrameBody(f, cwd, seenBodies)) process.stdout.write(`${line}\n`)
       }
+    }
+    // A block rendered down to its bare header reads exactly like a block that carried nothing, so the reader cannot tell "this failure is entirely in dependency/runtime code" from "trace lost the frames" -- and only the first answer stops them re-reading the raw traceback. Every parser here requires at least one frame before it emits a block (parsePythonBlock and friends all return null otherwise), so a surviving count of zero is always the project filter's doing, never an honestly empty block. --keep never zeroes a block either (it only slices when frames.length > keepN, keeping keepN >= 1), so isProjectFrame is the sole cause worth naming. The verb has to agree with the noun the count already selects: "all 1 frames were filtered out" reads as a typo in the tool rather than as a report about the traceback.
+    if (block.frames.length === 0) {
+      const preFilterCount = blocks[blockIndex]?.frames.length ?? 0
+      const noun = preFilterCount === 1 ? 'frame' : 'frames'
+      const verb = preFilterCount === 1 ? 'was' : 'were'
+      process.stdout.write(`  (all ${preFilterCount} ${noun} ${verb} filtered out as non-project -- this traceback runs entirely through dependency or runtime code)\n`)
     }
     if (block.exception) process.stdout.write(`${block.exception}\n`)
     process.stdout.write('\n')
