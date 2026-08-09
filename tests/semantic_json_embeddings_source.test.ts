@@ -5,6 +5,9 @@
 // then asserts the JSON envelope matches the fts branch's shape: {source, items, truncated,
 // totalCount}, with every item carrying the same keys (name/kind null on this branch, since
 // embeddings hits have neither).
+import * as path from 'node:path'
+import * as os from 'node:os'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
@@ -46,5 +49,27 @@ describe('runSemantic --json: embeddings source', () => {
     expect(payload.items[0]?.distance).toBe(0.12)
     expect(payload.truncated).toBe(false)
     expect(payload.totalCount).toBe(1)
+  })
+
+  // --json path-spelling: `filePath` used to echo searchSemantic's raw row verbatim, while the
+  // plain-text branch already renders `toDisplayPath(rootDir, ...)`. Positive: an absolute
+  // in-project hit renders root-relative. Negative control: an absolute out-of-project hit stays
+  // absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership
+  // check rather than blindly stripping a prefix from every row.
+  it('renders an absolute in-project filePath root-relative, and leaves an absolute out-of-project filePath absolute', async () => {
+    const inProjectAbs = path.join(process.cwd(), 'src', 'auth.ts')
+    const outOfProjectAbs = path.join(os.tmpdir(), 'tg-semantic-outside-project-fixture', 'far.ts')
+    const hits: SearchHit[] = [
+      { filePath: inProjectAbs, startLine: 1, endLine: 10, kind: 'window', distance: 0.1, text: 'export function authenticate(token: string) {}' },
+      { filePath: outOfProjectAbs, startLine: 1, endLine: 5, kind: 'window', distance: 0.2, text: 'export function farFn() {}' },
+    ]
+    searchSemanticMock.mockResolvedValue(hits)
+
+    const { text, code } = await runSemantic('authenticate token far', { json: true })
+
+    expect(code).toBe(0)
+    const payload = JSON.parse(text) as { items: Array<{ filePath: string }> }
+    expect(payload.items.some((i) => i.filePath === 'src/auth.ts')).toBe(true)
+    expect(payload.items.some((i) => i.filePath === outOfProjectAbs)).toBe(true)
   })
 })

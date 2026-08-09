@@ -326,11 +326,11 @@ export function runCallers(opts: CallersOptions): number {
   const contextLines = opts.context ?? 0
 
   if (opts.json === true) {
-    // `contextLines` is added alongside the existing fields, never in place of any of them, so a
-    // consumer that ignores it sees today's payload verbatim.
-    const payload = contextLines > 0
+    // `contextLines` is added alongside the existing fields, never in place of any of them, so a consumer that ignores it sees today's payload verbatim. `file` is rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- done AFTER contextLines is attached, since buildContextWindow reads real source off disk and needs the raw absolute path, not the display spelling.
+    const withContext = contextLines > 0
       ? entries.map((e) => ({ ...e, contextLines: buildContextWindow(e.file, e.line, contextLines) ?? [] }))
       : entries
+    const payload = withContext.map((e) => ({ ...e, file: toDisplayPath(rootDir, e.file) }))
     emit(JSON.stringify(payload, null, 2))
     return 0
   }
@@ -662,7 +662,8 @@ export function runDead(opts: DeadOptions): number {
   const sliced = grepped.slice(0, opts.top ?? grepped.length)
 
   if (opts.json === true) {
-    emit(JSON.stringify(sliced, null, 2))
+    // `file` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
+    emit(JSON.stringify(sliced.map((r) => ({ ...r, file: toDisplayPath(rootDir, r.file) })), null, 2))
     return 0
   }
 
@@ -991,7 +992,8 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(filtered, null, 2))
+    // `filePath` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
+    emit(JSON.stringify(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })), null, 2))
     return 0
   }
 
@@ -1376,7 +1378,8 @@ export function runTestFor(opts: TestForOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
+    // `testFile` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
+    emit(JSON.stringify(results.map((r) => ({ ...r, testFile: toDisplayPath(rootDir, r.testFile) })), null, 2))
     return 0
   }
   if (results.length === 0) {
