@@ -1463,6 +1463,7 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   const totals = loadAllSessionReadCounts()
 
   let entries: HotEntry[] = [...totals.values()].map(({ path: p, readCount: rc }) => ({ path: p, readCount: rc }))
+  const preProjectCount = entries.length
 
   if (opts.project === true) {
     const project = findProject(process.cwd())
@@ -1486,6 +1487,15 @@ export function cmdHot(opts: { limit?: string; project?: boolean; json?: boolean
   }
 
   if (entries.length === 0) {
+    // Distinguish "read data exists but none of it falls under this project root" from "no read
+    // data recorded at all" -- same empty-vs-filtered-store distinction runNoteList makes for
+    // --stale-only, so --project finding nothing doesn't read as "no session read data exists"
+    // when data just lives elsewhere.
+    if (opts.project === true && preProjectCount > 0) {
+      const noun = preProjectCount === 1 ? 'file' : 'files'
+      process.stdout.write(`No session read data under this project root (${preProjectCount} ${noun} recorded outside it).\n`)
+      return
+    }
     process.stdout.write('No session read data found.\n')
     return
   }
