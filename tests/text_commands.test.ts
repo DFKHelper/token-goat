@@ -289,6 +289,51 @@ describe('trace command', () => {
     expect(frames[1]?.context).toBe('do_something()')
   })
 
+  // Regression: a block whose frames were ALL non-project rendered as a bare "Traceback (most
+  // recent call last):" header with zero frames under it, which is indistinguishable from a block
+  // that genuinely carried nothing -- the reader cannot tell "this failure is entirely in
+  // dependency/runtime code" from "trace lost the frames", and the honest answer is the one that
+  // stops them re-reading the raw traceback.
+  it('names the dropped frame count when every frame in a block was filtered out as non-project (plural)', () => {
+    const allForeign = [
+      'Traceback (most recent call last):',
+      '  File "/usr/lib/python3.11/site-packages/requests/api.py", line 59, in request',
+      '    return session.request()',
+      '  File "/usr/lib/python3.11/site-packages/urllib3/conn.py", line 12, in connect',
+      '    sock.connect()',
+      'ConnectionError: refused',
+    ].join('\n')
+    const r = run(['trace'], { input: allForeign, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Traceback (most recent call last):')
+    expect(r.stdout).toContain('all 2 frames were filtered out as non-project')
+    expect(r.stdout).toContain('ConnectionError: refused')
+  })
+
+  // The count==1 branch has its own noun/verb pair; asserting only the plural above would let
+  // "all 1 frames were filtered out" ship, which reads as a bug in the tool rather than a report
+  // about the traceback.
+  it('agrees the noun and verb with the count when exactly one frame was filtered out as non-project (singular)', () => {
+    const oneForeign = [
+      'Traceback (most recent call last):',
+      '  File "/usr/lib/python3.11/site-packages/requests/api.py", line 59, in request',
+      '    return session.request()',
+      'ConnectionError: refused',
+    ].join('\n')
+    const r = run(['trace'], { input: oneForeign, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('all 1 frame was filtered out as non-project')
+    expect(r.stdout).not.toContain('all 1 frames')
+  })
+
+  // The notice must stay off the happy path: a block that kept frames already shows them, and an
+  // unconditional notice would claim frames were dropped on every ordinary traceback.
+  it('does not emit the non-project notice for a block that kept at least one project frame', () => {
+    const r = run(['trace'], { input: SAMPLE_TRACEBACK, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).not.toContain('filtered out as non-project')
+  })
+
   it('does not print a fabricated blank context line for a frame that had no source context in the original traceback (regression: cmdTrace\'s plain-text renderer checked f.context !== undefined, but parseTracebacks always assigns a string ("" for the no-context case), so the check was always true and printed a spurious blank indented line)', () => {
     const multi = [
       'Traceback (most recent call last):',
