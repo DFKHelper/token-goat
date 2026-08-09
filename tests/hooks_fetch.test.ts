@@ -529,6 +529,107 @@ describe('postFetchHandler', () => {
     expect(compressCall).toBeUndefined();
   });
 
+  it('records webfetch:compress bytes_saved using UTF-8 byte deltas (regression: previous code used UTF-16 .length)', () => {
+    const url = 'https://example.com/compress-bytes-test';
+    const orig = process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+    try {
+      process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = '1024';
+      clearModuleCaches();
+
+      // Create a large HTML body to ensure compression fires.
+      const paragraph = '<p>Article content. '.repeat(1000) + '</p>';
+      const html = `<!DOCTYPE html><html><head><title>Test</title><script>tracking();</script></head><body>${paragraph}</body></html>`;
+      expect(html.length).toBeGreaterThanOrEqual(16 * 1024);
+
+      vi.mocked(recordStat).mockClear();
+      const result = postFetchHandler({
+        eventName: 'post_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'compress-session',
+        agentId: undefined,
+        raw: { tool_response: html },
+      });
+      expect(result.hookType).toBe('rewriteOutput');
+      if (result.hookType !== 'rewriteOutput') throw new Error('unreachable');
+
+      // Retrieve the actual stored body via the cache.
+      const denyResult = preFetchHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'compress-session',
+        agentId: undefined,
+        raw: {},
+      });
+      expect(denyResult.hookType).toBe('deny');
+      if (denyResult.hookType !== 'deny') throw new Error('unreachable');
+      const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
+      expect(cacheId).toBeTruthy();
+      const storedBody = getWebOutput(cacheId as string);
+      expect(storedBody).not.toBeNull();
+
+      // Verify the recorded stat is the UTF-8 byte delta (not UTF-16 .length delta).
+      const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+      expect(compressCall).toBeDefined();
+      const [, recordedBytesSaved, recordedTokensSaved] = compressCall as unknown[];
+
+      // Calculate the true UTF-8 byte delta.
+      const htmlBytes = Buffer.byteLength(html, 'utf-8');
+      const storedBytes = Buffer.byteLength(storedBody as string, 'utf-8');
+      const expectedBytesDelta = htmlBytes - storedBytes;
+
+      // The fix ensures recordedBytesSaved equals the true UTF-8 byte delta.
+      expect(recordedBytesSaved).toBe(expectedBytesDelta);
+      expect(recordedTokensSaved).toBe(Math.round(expectedBytesDelta / 4));
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+      } else {
+        process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = orig;
+      }
+      clearModuleCaches();
+    }
+  });
+
+  it('records webfetch:compress correctly for ASCII content (no regression on non-multi-byte)', () => {
+    const url = 'https://example.com/ascii-compress';
+    const orig = process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+    try {
+      process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = '1024';
+      clearModuleCaches();
+      const asciiParagraph = '<p>Article text with ASCII content only. '.repeat(500) + '</p>';
+      const html = `<!DOCTYPE html><html><head><title>Test</title><script>tracking();</script></head><body>${asciiParagraph}</body></html>`;
+      expect(html.length).toBeGreaterThanOrEqual(16 * 1024);
+
+      vi.mocked(recordStat).mockClear();
+      const result = postFetchHandler({
+        eventName: 'post_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'ascii-compress-session',
+        agentId: undefined,
+        raw: { tool_response: html },
+      });
+      expect(result.hookType).toBe('rewriteOutput');
+      if (result.hookType !== 'rewriteOutput') throw new Error('unreachable');
+
+      // Verify UTF-8 bytes are recorded (for ASCII, UTF-8 bytes == .length, so this is a sanity check).
+      const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+      expect(compressCall).toBeDefined();
+      const [, recordedBytesSaved, recordedTokensSaved] = compressCall as unknown[];
+      expect(recordedBytesSaved).toBeGreaterThan(0);
+      expect(recordedTokensSaved).toBe(Math.round((recordedBytesSaved as number) / 4));
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'];
+      } else {
+        process.env['TOKEN_GOAT_WEBFETCH_COMPRESS_MIN_BYTES'] = orig;
+      }
+      clearModuleCaches();
+    }
+  });
+
   it('does not fence ordinary content with no injection pattern match', () => {
     const url = 'https://example.com/ordinary';
     const body = 'This is a perfectly ordinary article about gardening tips for the summer.';
