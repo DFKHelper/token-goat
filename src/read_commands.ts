@@ -261,11 +261,14 @@ export function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
  * exists on disk (stale index entry) or can't be stat'd contributes 0 rather than throwing --
  * stat recording must never turn a successful read into a hard error.
  */
+// Per-file ceiling on a single file's contribution to a bytes-saved stat's "full source" side, deliberately NOT read from config: it's derived from two independent, unrelated sources landing within 8% of each other -- token-goat's own FILE_TYPE_THRESHOLDS.generic (src/hints/file_type_handler.ts) is 100_000, the size above which token-goat itself intercepts an unrecognized file rather than letting it be read whole, so "the agent would have read the whole file" is contradicted by token-goat's own behavior past that point; and Claude Code's Read tool truncates at 2000 lines by default, which at this repo's measured ~54 bytes/line (read_commands.ts: 271,673 bytes / ~5000 lines) puts Read's real ceiling at ~108,000 bytes -- and it stays a hardcoded constant rather than a config knob because coupling the ledger's unit to a user-configurable threshold would let a config change silently rewrite historical stat comparability.
+export const SUM_FILE_SIZES_PER_FILE_CEILING = 100_000
+
 function sumFileSizes(filePaths: Iterable<string>): number {
   let total = 0
   for (const fp of new Set(filePaths)) {
     try {
-      total += fs.statSync(fp).size
+      total += Math.min(fs.statSync(fp).size, SUM_FILE_SIZES_PER_FILE_CEILING)
     } catch {
       // Stale index entry pointing at a deleted/moved file — contributes nothing.
     }
