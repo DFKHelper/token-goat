@@ -200,7 +200,7 @@ describe('preSkillHandler — duplicate-load advisory', () => {
 });
 
 describe('preSkillHandler — oversized first-load gate', () => {
-  // Regression for the bug where only REPEAT loads were size-gated: a skill's full body still landed in context once per session on its first (cold) invocation, even when a compact slice was available on disk. Pre-fix, this cold-load call returns pass (no prior hasSessionOutput entry to trigger the duplicate-load path); post-fix it must deny and point at skill-body --compact.
+  // Regression for the bug where only REPEAT loads were size-gated: a skill's full body still landed in context once per session on its first (cold) invocation, even when a compact slice was available on disk. Pre-fix, this cold-load call returns pass (no prior hasSessionOutput entry to trigger the duplicate-load path); post-fix it must deny and name a working recall command for the full body. (The `--compact` spelling this used to assert pinned the refetch pointer itself, which the inline-slice change below deliberately removes on this branch; the invariant worth keeping is deny + a real recall command, so it now asserts the full-body command.)
   it('denies the very first load of an oversized skill that has a compact marker', async () => {
     const skillDir = path.join(sourceDir, 'big-skill');
     await fs.mkdir(skillDir, { recursive: true });
@@ -213,7 +213,42 @@ describe('preSkillHandler — oversized first-load gate', () => {
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
       expect(out.message).toContain('big-skill');
-      expect(out.message).toContain('token-goat skill-body big-skill --compact');
+      expect(out.message).toContain('token-goat skill-body big-skill');
+    }
+  });
+
+  // Regression: on this branch the handler had ALREADY extracted the compact slice (it is the gate condition) and then threw it away, denying with a pointer telling the agent to run `skill-body <name> --compact` to fetch the very bytes just computed -- an extra reasoning turn plus a Bash round-trip per occurrence. Pre-fix the deny message contains the pointer and not the slice; post-fix the slice ships inline and only the FULL-body command is named.
+  it('inlines the compact slice on the oversized first load instead of telling the agent to re-fetch it', async () => {
+    const skillDir = path.join(sourceDir, 'inline-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary line one.\nCompact summary line two.';
+    const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(7000)}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('inline-skill', 'sess-inline'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny') {
+      expect(out.message).toContain(compact);
+      expect(out.message).toContain('token-goat skill-body inline-skill');
+      expect(out.message).not.toContain('--compact');
+      // Lossless: the detail past the marker is NOT inlined, it stays behind the named command.
+      expect(out.message).not.toContain('x'.repeat(7000));
+    }
+  });
+
+  // Negative control that holds on BOTH sides of the fix: a compact slice big enough to trip the same oversize gate is not worth inlining, so the original pointer deny stands verbatim and the slice bytes stay out of the message.
+  it('still emits the plain pointer deny when the compact slice is itself oversized', async () => {
+    const skillDir = path.join(sourceDir, 'huge-compact-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'z'.repeat(6001);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(7000)}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('huge-compact-skill', 'sess-huge'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny') {
+      expect(out.message).toContain('token-goat skill-body huge-compact-skill --compact');
+      expect(out.message).not.toContain(compact);
     }
   });
 

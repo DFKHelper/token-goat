@@ -149,6 +149,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   injection_detected: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
   skill_oversized_first_load: SOURCE_SKILL,
+  // Cold first load of an oversized skill where preSkillHandler inlined the compact slice in its reply instead of pointing at `skill-body --compact`. Unlike its skill_oversized_first_load sibling (event-only, 0 bytes -- the pointer deny saves nothing by itself, the follow-up command does) this one records real savings: the full body never landed, the slice did, so bytesSaved is body minus slice.
+  skill_compact_inlined: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
   // Envelope compaction of an oversized subagent report (hooks_agent_spawn.ts). SOURCE_CONTENT, not SOURCE_HINT: the handler's sibling session_hint entry is advisory (it only appends a recall pointer and genuinely saves nothing), whereas this kind records a real rewrite with real bytes removed, so filing it under the advisory bucket would understate the compaction and repeat the zero-savings desync this registry keeps getting bitten by.
   agent_report_compact: SOURCE_CONTENT,

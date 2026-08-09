@@ -81,7 +81,19 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       try {
         const body = await readFile(sourcePath, 'utf-8');
         const bodyBytes = Buffer.byteLength(body, 'utf-8');
-        if (bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES && extractCompactFromMarker(body) !== null) {
+        const compact = bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES ? extractCompactFromMarker(body) : null;
+        if (compact !== null) {
+          // The compact slice is already in hand here, so denying with a pointer to `skill-body --compact` costs an extra agent turn (reasoning + Bash call + that command's echo) to re-fetch content this handler just computed. Inline it instead whenever the slice itself is small enough not to trip the same oversize gate -- that bound is what "oversized" means on this branch, so reusing it needs no second magic number, and an inline reply is strictly smaller than deny + refetch of the identical bytes. Over that bound (or with no marker, or on a read failure) the original pointer deny stands verbatim.
+          const compactBytes = Buffer.byteLength(compact, 'utf-8');
+          if (compactBytes <= OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES) {
+            const savedBytes = bodyBytes - compactBytes;
+            recordStat('skill_compact_inlined', savedBytes, Math.round(savedBytes / 4));
+            return denyOutput(
+              'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
+                ' bytes) is inlined below instead of the full body. Run `token-goat skill-body ' + skillName +
+                '` if you need the full body.\n\n' + compact,
+            );
+          }
           recordStat('skill_oversized_first_load');
           return denyOutput(
             'Skill `' + skillName + '` is large (' + bodyBytes +

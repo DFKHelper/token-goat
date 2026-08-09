@@ -551,6 +551,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'skill_cached',
       'skill_load',
       'skill_oversized_first_load',
+      'skill_compact_inlined',
       'resume_packet',
       'decision_log',
     ]),
