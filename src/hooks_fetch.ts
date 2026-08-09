@@ -119,7 +119,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // Store under a (url, prompt) dedup key - see preFetchHandler - while keeping the persisted blob's displayed url clean for `token-goat web-history`. Also record it in the session (url-keyed) for the compact-manifest "fetched this session" listing.
     const prompt = typeof toolInput['prompt'] === 'string' ? (toolInput['prompt'] as string) : '';
 
-    // A raw HTML body is the same unshrunk-payload problem image_shrink.ts already solves for images: extract clean text before caching, so a later recall (web-output, or a repeat fetch caught by preFetchHandler's dedup) never re-surfaces raw markup. webfetch.compress_bodies/compress_min_bytes already existed as persisted, validated, env-overridable config with zero consumers until now.
+    // A raw HTML body is the same unshrunk-payload problem image_shrink.ts already solves for images: extract clean text before caching, so a later recall (web-output, or a repeat fetch caught by preFetchHandler's dedup) never re-surfaces raw markup by default. webfetch.compress_bodies/compress_min_bytes already existed as persisted, validated, env-overridable config with zero consumers until now. The uncleaned body is passed through to storeWebOutput below as `rawContent` so it stays recoverable via `web-output --raw` rather than being lost -- a lossy store with no recovery path is the defect this closes, not the cleaning itself.
     let storedBody = body;
     const wfCfg = loadConfig().webfetch;
     if (wfCfg.compress_bodies && body.length >= wfCfg.compress_min_bytes && looksLikeHtml(body)) {
@@ -130,7 +130,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
       }
     }
 
-    const cacheId = storeWebOutput(url, storedBody, `${url}\x00${prompt}`);
+    const cacheId = storeWebOutput(url, storedBody, `${url}\x00${prompt}`, storedBody !== body ? body : undefined);
     recordWebFetch(url, prompt, cacheId);
 
     if (injectionMatches.length > 0) {
