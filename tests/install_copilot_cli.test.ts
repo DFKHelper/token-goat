@@ -716,6 +716,54 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBe('you already read this file')
   })
 
+  it('translates a postToolUse rewriteOutput (hookSpecificOutput.updatedToolOutput) into modifiedResult', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({ hookSpecificOutput: { updatedToolOutput: 'compressed body' } }),
+    )
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: {}, toolResult: {} }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body' })
+    expect(parsed.additionalContext).toBeUndefined()
+  })
+
+  it('emits both modifiedResult and additionalContext when a postToolUse response carries both', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({
+        hookSpecificOutput: { updatedToolOutput: 'compressed body', additionalContext: 'a hint' },
+      }),
+    )
+    const stdout = runShim(
+      'postToolUse',
+      JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: {}, toolResult: {} }),
+      cwd,
+      env,
+    )
+    const parsed = JSON.parse(stdout)
+    expect(parsed.modifiedResult).toEqual({ resultType: 'success', textResultForLlm: 'compressed body' })
+    expect(parsed.additionalContext).toBe('a hint')
+  })
+
+  it('does not emit modifiedResult for sessionStart even when the response carries updatedToolOutput', () => {
+    const cwd = mkIsolated()
+    const env = withFakeTokenGoat(
+      cwd,
+      JSON.stringify({ hookSpecificOutput: { updatedToolOutput: 'should never surface here' } }),
+    )
+    const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const parsed = JSON.parse(stdout)
+    expect(parsed.modifiedResult).toBeUndefined()
+    expect(parsed.additionalContext).toBeUndefined()
+  })
+
   it('forwards postToolUse toolResult.textResultForLlm to token-goat as canonical.tool_response', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
