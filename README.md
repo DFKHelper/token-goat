@@ -285,6 +285,8 @@ token-goat doctor          # confirms hooks and sharp are working; look for "sha
 
 Three commands. Done. Hooks register and start working immediately; no terminal popups, no tray icon, no service to babysit.
 
+For bounded archive/document comparisons after setup, see the [CLI comparison workflow](#archivedocument-comparison-workflow).
+
 **Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a delimited routing block written to `~/.claude/CLAUDE.md` plus a registered skill gate the agent's reads — before any file read it must ask whether a `token-goat read` / `symbol` / `section` returns just what it needs, and the block explicitly subordinates the harness's own Read/Grep tool-preference rules to the *fallback* choice once token-goat is ruled out. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
@@ -310,6 +312,8 @@ token-goat covers the **narrow-read** half of cheap context: pulling one symbol,
 `rg` (search) · `fd` (file discovery) · `bat` (paged/piped reads) · `eza` (listings) · `delta` (diff rendering) · `jq` / `yq` (JSON / YAML) · `sd` (find-replace) · `mlr` (CSV/TSV/JSON records) · `sqlite3` (structured queries) · `gh` (PRs, issues, CI) · `hyperfine` (benchmarks) · `fzf`, `lazygit` (interactive)
 
 Optional but useful: `difft` (difftastic — syntax-aware diff, so reformats and moved blocks stop generating review noise), `just` (task runner, keeps verify commands discoverable), `typos` (deterministic spellcheck).
+
+For archive/document work specifically, token-goat's bounded SQLite, XLSX, and PDF readers are documented in the [CLI comparison workflow](#archivedocument-comparison-workflow); keep rendering and schema-specific lineage interpretation in dedicated document tooling.
 
 ```bash
 # macOS / Linux (Homebrew)
@@ -456,6 +460,21 @@ To upgrade cleanly:
 **AI agents handling an upgrade:** complete all three steps in sequence. After step 3, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
 
 ## CLI
+
+### Archive/document comparison workflow
+
+The existing bounded readers cover the text and tabular parts of an archive comparison without loading whole files:
+
+```bash
+token-goat sqlite-schema catalog.db
+token-goat sqlite-query catalog.db "SELECT file_path, name FROM files WHERE name LIKE '%owner%' LIMIT 20" --json
+token-goat xlsx-sheets link-map.xlsx
+token-goat xlsx-query link-map.xlsx --sheet Links --columns publication,source,target --head 50
+token-goat pdf-meta manual.pdf
+token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
+```
+
+`token-goat` intentionally does not render PDF pages or infer XML publication lineage: those operations produce binary/visual output or require schema-specific interpretation. Keep those steps in the document/PDF tooling, then pass only the bounded paths, rows, and page text needed for comparison.
 
 | Command | What it does |
 |---------|-------------|
