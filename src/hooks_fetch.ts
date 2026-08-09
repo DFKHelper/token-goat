@@ -144,15 +144,18 @@ export function postFetchHandler(event: HookEvent): HookOutput {
       const noticeFor = (id: string): string => `\n[token-goat: WebFetch body compressed via extractCleanText; use \`token-goat web-output ${id} --raw\` to recall it]`
       const notice = noticeFor(cacheId)
       const noticeBytes = Buffer.byteLength(notice, 'utf-8')
+      const originalBytes = Buffer.byteLength(body, 'utf-8');
+      const rewrittenBytes = Buffer.byteLength(storedBody, 'utf-8');
       if (
         isRewriteWorthwhile({
-          originalBytes: Buffer.byteLength(body, 'utf-8'),
-          rewrittenBytes: Buffer.byteLength(storedBody, 'utf-8'),
+          originalBytes,
+          rewrittenBytes,
           noticeBytes,
           minNetSavingsBytes: resolveMinNetSavingsBytes(),
         })
       ) {
-        recordStat('webfetch:compress', body.length - storedBody.length, Math.round((body.length - storedBody.length) / 4))
+        const bytesDelta = originalBytes - rewrittenBytes;
+        recordStat('webfetch:compress', bytesDelta, Math.round(bytesDelta / 4))
         return { hookType: 'rewriteOutput', updatedOutput: storedBody + notice };
       }
     }
