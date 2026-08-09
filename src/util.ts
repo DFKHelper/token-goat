@@ -769,6 +769,21 @@ export function compileGrepMatcher(pattern: string): (candidate: string) => bool
   }
 }
 
+/**
+ * Shared `--grep`-filtered-to-empty notice for listing commands (`types`, `exports`, `imports`,
+ * `dead`, `deps`) that have no `--min-lines` counterpart to `read_commands.ts`'s
+ * `filteredToEmptyNotice` (skeleton/outline). Distinguishes "the store genuinely has nothing" from
+ * "the store has N items but --grep matched none of them" -- without this, both states render as
+ * the same bare empty message and a caller cannot tell whether to widen the filter or give up on
+ * the file/project entirely, the same "filtered store renders as populated" trap this repo has hit
+ * 9+ times before. `nounSingular`/`nounPlural` name what was filtered (e.g. "type declaration" /
+ * "type declarations") so the message matches the command's own vocabulary.
+ */
+export function grepFilteredToEmptyNotice(preFilterCount: number, grep: string, nounSingular: string, nounPlural: string): string {
+  const noun = preFilterCount === 1 ? nounSingular : nounPlural
+  return `  (all ${preFilterCount} ${noun} were filtered out by --grep ${grep} -- widen or drop the filter to see them)`
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

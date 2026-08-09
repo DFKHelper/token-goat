@@ -910,6 +910,86 @@ describe('runTypes limit validation', () => {
   })
 })
 
+describe('runTypes --grep', () => {
+  it('filters type declarations to those whose NAME matches the pattern', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-grep-'))
+    try {
+      const file = join(dir, 'model.ts')
+      writeFileSync(file, ['interface TypesGrepAlpha { x: number }', 'interface TypesGrepBeta { y: number }', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const captured = captureStdout(() => {
+        const code = runTypes({ file: normalizePath(file), json: true, grep: 'Alpha' })
+        expect(code).toBe(0)
+      })
+      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      expect(parsed.map((r) => r.name)).toEqual(['TypesGrepAlpha'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Negative control: proves the pattern actually narrows the set rather than the plumbing
+  // being a no-op that happens to match by coincidence.
+  it('negative control: an unfiltered call still returns both declarations', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-grep-neg-'))
+    try {
+      const file = join(dir, 'model.ts')
+      writeFileSync(file, ['interface TypesGrepNegAlpha { x: number }', 'interface TypesGrepNegBeta { y: number }', ''].join('\n'))
+      indexFileSync(normalizePath(file))
+
+      const captured = captureStdout(() => {
+        const code = runTypes({ file: normalizePath(file), json: true })
+        expect(code).toBe(0)
+      })
+      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      expect(parsed.map((r) => r.name)).toEqual(expect.arrayContaining(['TypesGrepNegAlpha', 'TypesGrepNegBeta']))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a filtered-to-empty notice, distinct from "no type declarations found", when --grep matches nothing in an indexed file', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-grep-empty-'))
+    try {
+      const file = join(dir, 'model.ts')
+      writeFileSync(file, 'interface TypesGrepEmptyFixture { x: number }\n')
+      indexFileSync(normalizePath(file))
+
+      const captured = captureStdout(() => {
+        const code = runTypes({ file: normalizePath(file), grep: '__no_such_type_xyzzy__' })
+        expect(code).toBe(0)
+      })
+      expect(captured).toContain('--grep')
+      expect(captured).not.toContain('No type declarations found')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to a literal substring match for an invalid regex instead of erroring, and does not error', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-types-grep-invalid-'))
+    try {
+      const file = join(dir, 'model.ts')
+      writeFileSync(file, 'interface TypesGrepInvalidFixture { x: number }\n')
+      indexFileSync(normalizePath(file))
+
+      // '[unclosed' is not valid regex; compileGrepMatcher falls back to a literal substring
+      // match, which this name does not contain -- assert only that the call succeeds and
+      // filters (rather than throwing), matching the invalid-regex contract for the sibling
+      // outline/skeleton --grep flags.
+      const captured = captureStdout(() => {
+        const code = runTypes({ file: normalizePath(file), json: true, grep: '[unclosed' })
+        expect(code).toBe(0)
+      })
+      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      expect(parsed.map((r) => r.name)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('runCallers integration', () => {
   it('exits 0 for a well-known symbol and returns structured output', () => {
     const captured = captureStdout(() => {
@@ -1571,6 +1651,75 @@ describe('runDead --exclude-tests', () => {
   })
 })
 
+describe('runDead --grep', () => {
+  it('filters dead symbols to those whose NAME matches the pattern, applied before --top', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-grep-'))
+    try {
+      const file = join(root, 'dead-grep.ts')
+      writeFileSync(file, 'export function deadGrepAlphaFn2k9() { return 1 }\nexport function deadGrepBetaFn2k9() { return 1 }\n')
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const filtered = JSON.parse(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'Alpha' })).toBe(0) }),
+        ) as Array<{ name: string }>
+        expect(filtered.map((r) => r.name)).toEqual(['deadGrepAlphaFn2k9'])
+
+        // Negative control: proves --grep actually narrows rather than the plumbing being a
+        // no-op that happens to pass the positive assertion above.
+        const unfiltered = JSON.parse(
+          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) }),
+        ) as Array<{ name: string }>
+        expect(unfiltered.map((r) => r.name)).toEqual(expect.arrayContaining(['deadGrepAlphaFn2k9', 'deadGrepBetaFn2k9']))
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a filtered-to-empty notice, distinct from "No dead symbols found.", when --grep matches none of the dead symbols that exist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-grep-empty-'))
+    try {
+      const file = join(root, 'dead-grep-empty.ts')
+      writeFileSync(file, 'export function deadGrepEmptyFn7j1() { return 1 }\n')
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => { expect(runDead({ top: 500, grep: '__no_such_dead_symbol_xyzzy__' })).toBe(0) })
+        expect(captured).toContain('--grep')
+        expect(captured).not.toBe('No dead symbols found.\n')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to a literal substring match for an invalid regex instead of erroring', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-dead-grep-invalid-'))
+    try {
+      const file = join(root, 'dead-grep-invalid.ts')
+      writeFileSync(file, 'export function deadGrepInvalidFn5h3() { return 1 }\n')
+      indexFileSync(normalizePath(file))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const code = runDead({ top: 500, grep: '[unclosed' })
+        expect(code).toBe(0)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runDeps against the real repo -------------------------
 
 describe('runDeps integration', () => {
@@ -1777,6 +1926,56 @@ describe('runDeps integration', () => {
       })
       const parsed = JSON.parse(captured) as { internal: string[] }
       expect(parsed.internal).toContain(normalizePath(indexTs))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runDeps --grep', () => {
+  it('filters internal and external deps to those whose specifier matches the pattern', () => {
+    const captured = captureStdout(() => {
+      const code = runDeps({ file: 'src/read_commands.ts', json: true, grep: 'baseline' })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
+    expect(parsed.internal).toEqual(['src/baseline.ts'])
+    expect(parsed.external).toEqual([])
+  })
+
+  // Negative control: proves the --grep plumbing actually narrows the set rather than being a
+  // no-op that happens to pass the positive test above by coincidence (e.g. a filter wired to
+  // the wrong field, or never applied at all).
+  it('negative control: an unfiltered call still returns more than one dependency', () => {
+    const captured = captureStdout(() => {
+      const code = runDeps({ file: 'src/read_commands.ts', json: true })
+      expect(code).toBe(0)
+    })
+    const parsed = JSON.parse(captured) as { internal: string[]; external: string[] }
+    expect(parsed.internal.length + parsed.external.length).toBeGreaterThan(1)
+  })
+
+  it('reports a filtered-to-empty notice (not a bare "no imports" message) when --grep matches nothing', () => {
+    const captured = captureStdout(() => {
+      const code = runDeps({ file: 'src/read_commands.ts', grep: '__no_such_dependency_xyzzy__' })
+      expect(code).toBe(0)
+    })
+    expect(captured).toContain('--grep')
+    expect(captured).toContain('__no_such_dependency_xyzzy__')
+    expect(captured).not.toBe('(no imports found)')
+  })
+
+  it('falls back to a literal substring match for an invalid regex instead of erroring', () => {
+    const dir = mkdtempSync(join(process.cwd(), 'tg-deps-grep-invalid-'))
+    try {
+      const file = join(dir, 'entry.ts')
+      writeFileSync(file, 'import { x } from "has[unclosed-bracket"\nimport { y } from "safe"\n')
+      const captured = captureStdout(() => {
+        const code = runDeps({ file, grep: '[unclosed' })
+        expect(code).toBe(0)
+      })
+      expect(captured).toContain('has[unclosed-bracket')
+      expect(captured).not.toContain('safe')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
