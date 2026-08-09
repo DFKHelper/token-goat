@@ -1540,6 +1540,11 @@ export function runArch(opts: ArchOptions): number {
   const cwd = opts.cwd ?? process.cwd()
   const top = opts.top ?? 10
   const files = getTrackedFiles(cwd)
+  // With zero tracked files the three headers below still print, each with nothing under it -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so an empty result reads as a clean architecture rather than as "there was nothing to analyse." Say which it is, reusing cli.ts's wording for this same condition. The --json branch is untouched: `{hubs: [], entryPoints: [], cycles: []}` is already unambiguous.
+  if (files.length === 0 && opts.json !== true) {
+    emit(`no tracked files found under '${toDisplayPath(getDisplayRoot(cwd), cwd)}' (is it a git repo?). Nothing to analyse.`)
+    return 0
+  }
   // Case-insensitive filesystems (Windows/macOS) treat Foo.ts and foo.ts as the
   // same file; an import spec's casing need not match the tracked path's, so
   // membership must be checked through foldPath() rather than raw string
