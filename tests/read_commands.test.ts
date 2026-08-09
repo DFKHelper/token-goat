@@ -100,7 +100,7 @@ import {
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
-import { resolveIndexPath } from '../src/paths.js'
+import { resolveIndexPath, toDisplayPath } from '../src/paths.js'
 import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
 import { indexFileSync } from '../src/parser.js'
@@ -6410,7 +6410,8 @@ describe('runRefs — project-relative display paths (toDisplayPath/getDisplayRo
     expect(stdout).toContain(`${outOfProjectAbs}:20: mixedSym()`)
   })
 
-  it('--json output stays absolute and byte-identical regardless of project-relative display logic', () => {
+  // Oracle replaced: this used to assert --json "stays absolute", pinning the very inconsistency being fixed. outline/skeleton --json already render rows through toDisplayPath because root-relative is reproducible while absolute is specific to one machine and one drive-letter casing; refs was the outlier. The invariant that was worth keeping -- an out-of-project path must NOT be mangled into something relative -- is kept below as the negative control.
+  it('--json renders an in-project path root-relative, matching the text rows and the outline/skeleton --json convention', () => {
     mockQueryRefs.mockReturnValue([ref(inProjectAbs, 10, 'jsonSym()')])
     mockCountRefs.mockReturnValue(1)
     const { stdout } = capture(() => {
@@ -6418,7 +6419,15 @@ describe('runRefs — project-relative display paths (toDisplayPath/getDisplayRo
       expect(code).toBe(0)
     })
     const parsed = JSON.parse(stdout) as { items: Array<{ filePath: string }> }
-    expect(parsed.items[0]?.filePath).toBe(inProjectAbs)
+    expect(parsed.items[0]?.filePath).toBe('src/refs-display-fixture.ts')
+  })
+
+  it('--json leaves an out-of-project path absolute (negative control: root-relativising is not applied blindly)', () => {
+    mockQueryRefs.mockReturnValue([ref(outOfProjectAbs, 20, 'farSym()')])
+    mockCountRefs.mockReturnValue(1)
+    const { stdout } = capture(() => runRefs({ spec: 'farSym', json: true }))
+    const parsed = JSON.parse(stdout) as { items: Array<{ filePath: string }> }
+    expect(parsed.items[0]?.filePath).toBe(outOfProjectAbs)
   })
 
   it('produces identical output whether process.cwd() is the project root or a subdirectory of it (cwd-independence)', () => {
@@ -6436,6 +6445,137 @@ describe('runRefs — project-relative display paths (toDisplayPath/getDisplayRo
     }
   })
 })
+
+// A given path must render with ONE spelling no matter how many symbols the caller asked for. Before this, runRefsSingle passed a real display root while runRefs (multi-symbol) and runRefsCrossFile passed undefined, so `refs a` printed `src/x.ts:10` and `refs "a,b"` printed the absolute path for the identical row. Every case below pairs an in-project positive (root-relative) with an out-of-project negative control (must stay absolute in BOTH arities), so a change that simply stripped prefixes everywhere would fail.
+describe('runRefs — path spelling is independent of arity (single vs multi-symbol vs cross-file)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCountRefs.mockReturnValue(1)
+  })
+
+  const inAbs = path.join(process.cwd(), 'src', 'arity-fixture.ts')
+  const inRel = 'src/arity-fixture.ts'
+  const outAbs = path.join(os.tmpdir(), 'tg-arity-outside', 'far.ts')
+
+  const specs: Array<[string, string]> = [
+    ['single', 'aritySym'],
+    ['multi-symbol', 'aritySym,otherSym'],
+    ['cross-file', 'src/a.ts::aritySym,src/b.ts::otherSym'],
+  ]
+
+  for (const [label, spec] of specs) {
+    it(`renders an in-project row root-relative in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'aritySym()')])
+      const { stdout } = capture(() => runRefs({ spec }))
+      expect(stdout).toContain(`${inRel}:10: aritySym()`)
+      expect(stdout).not.toContain(inAbs)
+    })
+
+    it(`leaves an out-of-project row absolute in the ${label} form (negative control)`, () => {
+      mockQueryRefs.mockReturnValue([ref(outAbs, 20, 'aritySym()')])
+      const { stdout } = capture(() => runRefs({ spec }))
+      expect(stdout).toContain(`${outAbs}:20: aritySym()`)
+    })
+
+    it(`renders --top file rows root-relative in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'x'), ref(inAbs, 11, 'x')])
+      const { stdout } = capture(() => runRefs({ spec, top: 3 }))
+      expect(stdout).toContain(`2  ${inRel}`)
+      expect(stdout).not.toContain(inAbs)
+    })
+
+    it(`renders --callers group headers root-relative in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'callerFn')])
+      const { stdout } = capture(() => runRefs({ spec, callers: true }))
+      expect(stdout).toContain(`${inRel}:`)
+      expect(stdout).not.toContain(inAbs)
+    })
+
+    it(`renders --context windows against the root-relative path in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(path.join(process.cwd(), 'package.json'), 2, 'ctxSym()')])
+      const { stdout } = capture(() => runRefs({ spec, context: 1 }))
+      expect(stdout).toContain('package.json:2: ctxSym()')
+      expect(stdout).not.toContain(path.join(process.cwd(), 'package.json'))
+    })
+
+    it(`emits a root-relative filePath under --json in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'aritySym()')])
+      const { stdout } = capture(() => runRefs({ spec, json: true }))
+      const paths = collectJsonFilePaths(JSON.parse(stdout))
+      expect(paths).toContain(inRel)
+      expect(paths).not.toContain(inAbs)
+    })
+
+    it(`emits a root-relative --top fileCounts entry under --json in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'x')])
+      const { stdout } = capture(() => runRefs({ spec, top: 2, json: true }))
+      expect(collectJsonTopFiles(JSON.parse(stdout))).toContain(inRel)
+    })
+
+    it(`honours an anchored --grep against the rendered (root-relative) path in the ${label} form`, () => {
+      mockQueryRefs.mockReturnValue([ref(inAbs, 10, 'aritySym()'), ref(outAbs, 20, 'aritySym()')])
+      const { stdout } = capture(() => runRefs({ spec, grep: '^src/' }))
+      expect(stdout).toContain(`${inRel}:10: aritySym()`)
+      // Negative control: --grep really filters, it does not just pass everything through.
+      expect(stdout).not.toContain(`${outAbs}:20:`)
+    })
+  }
+
+  it('renders an absolute path -- never undefined, empty, or cwd-relative -- when no project root resolves', () => {
+    const noRootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-refs-noroot-'))
+    const target = path.join(noRootDir, 'nested', 'thing.ts')
+    const before = process.cwd()
+    try {
+      process.chdir(noRootDir)
+      mockQueryRefs.mockReturnValue([ref(target, 7, 'noRootSym()')])
+      const { stdout } = capture(() => runRefs({ spec: 'noRootSym' }))
+      const row = stdout.split('\n').find((l) => l.includes(':7:')) ?? ''
+      expect(row).not.toContain('undefined')
+      expect(row.trim()).not.toBe(':7: noRootSym()')
+      // Either an absolute path (no root resolved) or a root-relative one (a root did resolve
+      // above the temp dir) is acceptable; a bare cwd-relative `nested/thing.ts` is not, since it
+      // would render the same query differently depending on where it was run from.
+      expect(row).toContain('noRootSym()')
+      expect(row.includes(target) || row.includes(toDisplayPath(process.cwd(), target))).toBe(true)
+      expect(row).not.toContain(' nested/thing.ts')
+    } finally {
+      process.chdir(before)
+      fs.rmSync(noRootDir, { recursive: true, force: true })
+    }
+  })
+})
+
+function collectJsonFilePaths(payload: unknown): string[] {
+  const out: string[] = []
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const n of node) visit(n)
+      return
+    }
+    const rec = node as Record<string, unknown>
+    if (typeof rec.filePath === 'string') out.push(rec.filePath)
+    for (const v of Object.values(rec)) visit(v)
+  }
+  visit(payload)
+  return out
+}
+
+function collectJsonTopFiles(payload: unknown): string[] {
+  const out: string[] = []
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const n of node) visit(n)
+      return
+    }
+    const rec = node as Record<string, unknown>
+    if (typeof rec.file === 'string' && typeof rec.count === 'number') out.push(rec.file)
+    for (const v of Object.values(rec)) visit(v)
+  }
+  visit(payload)
+  return out
+}
 
 describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
   beforeEach(() => {
