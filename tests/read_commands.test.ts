@@ -4466,6 +4466,64 @@ describe('read_commands', () => {
     })
   })
 
+  describe('runExports --grep', () => {
+    it('filters exported symbols to those whose NAME matches the pattern', () => {
+      const syms: MockSymbol[] = [
+        { name: 'pubAlpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubAlpha() {}', docstring: '' },
+        { name: 'pubBeta', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'export function pubBeta() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => {
+        const code = runExports({ file: 'a.ts', grep: 'Alpha' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('pubAlpha')
+      expect(stdout).not.toContain('pubBeta')
+    })
+
+    // Negative control: proves --grep actually narrows the set rather than the plumbing being a
+    // no-op that happens to pass the positive test above.
+    it('negative control: an unfiltered call still returns both exports', () => {
+      const syms: MockSymbol[] = [
+        { name: 'pubAlpha', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubAlpha() {}', docstring: '' },
+        { name: 'pubBeta', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'export function pubBeta() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
+      expect(stdout).toContain('pubAlpha')
+      expect(stdout).toContain('pubBeta')
+    })
+
+    it('reports a filtered-to-empty notice, distinct from "No exported symbols", when --grep matches nothing among real exports', () => {
+      const syms: MockSymbol[] = [
+        { name: 'pubGamma', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubGamma() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => {
+        const code = runExports({ file: 'a.ts', grep: '__no_such_export_xyzzy__' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('--grep')
+      expect(stdout).not.toContain('No exported symbols found')
+    })
+
+    it('falls back to a literal substring match for an invalid regex instead of erroring', () => {
+      const syms: MockSymbol[] = [
+        { name: 'pubDelta', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'export function pubDelta() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => {
+        const code = runExports({ file: 'a.ts', grep: '[unclosed' })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('--grep')
+    })
+  })
+
   // ---- extractImports -------------------------------------------------------
 
   describe('extractImports', () => {
@@ -4924,6 +4982,70 @@ describe('read_commands', () => {
         })
         expect(stdout).toContain('config.mk')
         expect(stdout).toContain('optional.mk')
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('runImports --grep', () => {
+    it('filters imports to those whose MODULE SPECIFIER matches the pattern', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-grep-'))
+      try {
+        const file = path.join(dir, 'entry.ts')
+        fs.writeFileSync(file, "import { a } from 'alpha-pkg'\nimport { b } from 'beta-pkg'\n")
+        const { stdout } = capture(() => {
+          const code = runImports({ file, grep: 'alpha' })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('alpha-pkg')
+        expect(stdout).not.toContain('beta-pkg')
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    // Negative control: proves --grep actually narrows the set rather than the plumbing being a
+    // no-op that happens to pass the positive test above.
+    it('negative control: an unfiltered call still returns both imports', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-grep-neg-'))
+      try {
+        const file = path.join(dir, 'entry.ts')
+        fs.writeFileSync(file, "import { a } from 'alpha-pkg'\nimport { b } from 'beta-pkg'\n")
+        const { stdout } = capture(() => { runImports({ file }) })
+        expect(stdout).toContain('alpha-pkg')
+        expect(stdout).toContain('beta-pkg')
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('reports a filtered-to-empty notice, distinct from "No imports found", when --grep matches nothing among real imports', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-grep-empty-'))
+      try {
+        const file = path.join(dir, 'entry.ts')
+        fs.writeFileSync(file, "import { a } from 'gamma-pkg'\n")
+        const { stdout } = capture(() => {
+          const code = runImports({ file, grep: '__no_such_import_xyzzy__' })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('--grep')
+        expect(stdout).not.toContain('No imports found')
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('falls back to a literal substring match for an invalid regex instead of erroring', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-imports-grep-invalid-'))
+      try {
+        const file = path.join(dir, 'entry.ts')
+        fs.writeFileSync(file, "import { a } from 'delta-pkg'\n")
+        const { stdout } = capture(() => {
+          const code = runImports({ file, grep: '[unclosed' })
+          expect(code).toBe(0)
+        })
+        expect(stdout).toContain('--grep')
       } finally {
         fs.rmSync(dir, { recursive: true, force: true })
       }

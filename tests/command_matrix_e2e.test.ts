@@ -172,6 +172,13 @@ beforeAll(() => {
   git(['init'])
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+  // Fixture for `types --grep`: two type declarations with disjoint names so a grep pattern can
+  // be asserted to keep one and drop the other.
+  fs.writeFileSync(
+    path.join(repo, 'typesgrep.ts'),
+    'export interface TypesGrepAlphaFixture { x: number }\nexport interface TypesGrepBetaFixture { y: number }\n',
+  )
+
   // Second commit touching src/mod.ts so `changed --since HEAD~1` has a diff.
   fs.appendFileSync(
     path.join(repo, 'src', 'mod.ts'),
@@ -440,6 +447,22 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(outlineSym).not.toHaveProperty('body')
     expect(unindexed?.lineStart).toBe(null)
     expect(unindexed?.lineEnd).toBe(null)
+
+    // --grep narrows by exported NAME against the real built binary, and an all-filtered
+    // result names the filter instead of looking like the file has no exports at all.
+    const grepped = run(['exports', 'exportsloc.ts', '--grep', 'indexedExportLoc'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    expect(grepped.stdout).toContain('indexedExportLoc')
+    expect(grepped.stdout).not.toContain('reExportedOnlyLoc')
+
+    const grepMiss = run(['exports', 'exportsloc.ts', '--grep', 'zzzzNoSuchExport'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchExport')
+    expect(grepMiss.stdout).not.toContain('No exported symbols found')
+
+    // Invalid regex falls back to a literal substring match instead of erroring.
+    const grepInvalid = run(['exports', 'exportsloc.ts', '--grep', '[unclosed'])
+    expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   imports: () => {
     const r = run(['imports', 'app.ts'])
@@ -452,6 +475,21 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(multi.stdout).toContain('# Imports: ctximporter.ts')
     expect(multi.stdout).toContain('./src/mod.js')
     expect(multi.stdout).toContain('./caller.js')
+
+    // --grep narrows by MODULE SPECIFIER, and an all-filtered result names the filter
+    // instead of looking like the file has no imports at all.
+    const grepped = run(['imports', 'app.ts', '--grep', 'mod'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    expect(grepped.stdout).toContain('mod')
+
+    const grepMiss = run(['imports', 'app.ts', '--grep', 'zzzzNoSuchImport'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchImport')
+    expect(grepMiss.stdout).not.toContain('No imports found')
+
+    // Invalid regex falls back to a literal substring match instead of erroring.
+    const grepInvalid = run(['imports', 'app.ts', '--grep', '[unclosed'])
+    expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   find: () => expectRead(['find', 'alphaSym'], 'mod'),
   grep: () => {
@@ -1781,6 +1819,22 @@ const cases: Record<string, () => void | Promise<void>> = {
     expect(withFlag.status, withFlag.stderr).toBe(0)
     const withParsed = JSON.parse(withFlag.stdout) as Array<{ name: string }>
     expect(withParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(false)
+
+    // --grep narrows by NAME, and an all-filtered result names the filter instead of looking
+    // like a genuinely clean codebase.
+    const grepped = run(['dead', '--top', '500', '--json', '--grep', 'exclDeadOnlyInTest'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string }>
+    expect(greppedParsed.map((s) => s.name)).toEqual(['exclDeadOnlyInTest'])
+
+    const grepMiss = run(['dead', '--top', '500', '--grep', 'zzzzNoSuchDeadSymbol'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchDeadSymbol')
+    expect(grepMiss.stdout).not.toContain('No dead symbols found.')
+
+    // Invalid regex falls back to a literal substring match instead of erroring.
+    const grepInvalid = run(['dead', '--top', '500', '--grep', '[unclosed'])
+    expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   deps: () => {
     // app.ts imports from ./src/mod.js — deps must list that as an internal dep, rendered as a
@@ -1797,12 +1851,43 @@ const cases: Record<string, () => void | Promise<void>> = {
     const parsed = JSON.parse(rJson.stdout) as { file: string; internal: string[]; external: string[] }
     expect(parsed.internal).toContain('src/mod.ts')
     for (const entry of parsed.internal) expect(entry).not.toContain('\\')
+
+    // --grep narrows on the module specifier, and an all-filtered result names the filter
+    // instead of looking like the file has no imports at all.
+    const grepped = run(['deps', 'app.ts', '--grep', 'mod'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    expect(grepped.stdout).toContain('src/mod.ts')
+
+    const grepMiss = run(['deps', 'app.ts', '--grep', 'zzzzNoSuchDep'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchDep')
+    expect(grepMiss.stdout).not.toBe('(no imports found)\n')
+
+    // Invalid regex falls back to a literal substring match instead of erroring.
+    const grepInvalid = run(['deps', 'app.ts', '--grep', '[unclosed'])
+    expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   types: () => {
     // The fixture is tiny and may have no type declarations; accept exit 0 or 1 but never a crash.
     const r = run(['types'])
     expect(r.status).not.toBeNull()
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
+
+    // --grep narrows by NAME against the typesgrep.ts fixture, and an all-filtered result
+    // names the filter instead of looking like the store is empty.
+    const grepped = run(['types', 'typesgrep.ts', '--json', '--grep', 'Alpha'])
+    expect(grepped.status, grepped.stderr).toBe(0)
+    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string }>
+    expect(greppedParsed.map((t) => t.name)).toEqual(['TypesGrepAlphaFixture'])
+
+    const grepMiss = run(['types', 'typesgrep.ts', '--grep', 'zzzzNoSuchType'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('--grep zzzzNoSuchType')
+    expect(grepMiss.stdout).not.toContain('No type declarations found')
+
+    // Invalid regex falls back to a literal substring match instead of erroring.
+    const grepInvalid = run(['types', 'typesgrep.ts', '--grep', '[unclosed'])
+    expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
   },
   scope: () => {
     // Line 2 of caller.ts is inside refHelper (which spans lines 1-3); scope must find it.

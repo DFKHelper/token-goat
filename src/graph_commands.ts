@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, resolveSymbolSpecOrEmitError } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -582,6 +582,8 @@ export interface DeadOptions {
   json?: boolean
   /** `--exclude-tests`: drop dead symbols DEFINED in a test file (per isTestFile), not ones merely referenced there. Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
+  /** Only list dead symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 export function runDead(opts: DeadOptions): number {
@@ -632,7 +634,13 @@ export function runDead(opts: DeadOptions): number {
     results.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })
   }
 
-  const sliced = results.slice(0, opts.top ?? results.length)
+  // --grep narrows the confirmed-dead set (after --exclude-tests already dropped test-file
+  // definitions), and it runs BEFORE the --top slice so it selects from the whole dead set
+  // rather than from an already-capped page.
+  const preGrepCount = results.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const grepped = matchesGrep !== undefined ? results.filter((r) => matchesGrep(r.name)) : results
+  const sliced = grepped.slice(0, opts.top ?? grepped.length)
 
   if (opts.json === true) {
     emit(JSON.stringify(sliced, null, 2))
@@ -640,6 +648,13 @@ export function runDead(opts: DeadOptions): number {
   }
 
   if (sliced.length === 0) {
+    // Distinguish "--grep matched none of the N dead symbols that do exist" from a genuinely
+    // clean codebase (or one fully hidden by --exclude-tests below) -- same "filtered store
+    // renders as populated" trap already fixed for skeleton/outline.
+    if (matchesGrep !== undefined && preGrepCount > 0) {
+      emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'dead symbol', 'dead symbols'))
+      return 0
+    }
     // When --exclude-tests filtered EVERYTHING out, a bare "No dead symbols found." is indistinguishable from a genuinely clean codebase, so the agent concludes there is nothing to do while findings sit hidden behind the flag. Say what was suppressed. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
       emit(`No dead symbols found (${suppressed} in test files hidden by --exclude-tests).`)
@@ -669,6 +684,8 @@ export function runDead(opts: DeadOptions): number {
 export interface DepsOptions {
   file: string
   json?: boolean
+  /** Only list dependencies whose MODULE SPECIFIER (internal path or external package name) matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 // `.mts`/`.cts` are real, recognized TypeScript source extensions elsewhere in this codebase
@@ -753,21 +770,34 @@ export function runDeps(opts: DepsOptions): number {
   // Normalize before handing to toDisplayPath, which returns the target verbatim when it cannot relativize (a file outside this project). Without this the fallback keeps native backslashes while the payload's own `file` field is forward-slash, so the two disagree in exactly the case the relative form cannot cover. Unresolved specifiers and bare module names are not paths and pass through untouched.
   const displayInternal = internal.map((i) => (path.isAbsolute(i) ? toDisplayPath(rootDir, normalizePath(i)) : i))
 
+  // --grep filters on the specifier each row lists: the resolved/display path for internal
+  // deps, the bare package name for external ones. Applied before any output is built, so it
+  // selects from the whole dependency set rather than an already-formatted page.
+  const preFilterCount = displayInternal.length + external.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filteredInternal = matchesGrep !== undefined ? displayInternal.filter((i) => matchesGrep(i)) : displayInternal
+  const filteredExternal = matchesGrep !== undefined ? external.filter((e) => matchesGrep(e)) : external
+
   if (opts.json === true) {
     // `file` echoed the argument verbatim, so an absolute or backslash-spelled argument produced a payload whose own two path fields disagreed no matter how `internal` was rendered. Relative arguments -- the common case -- are unchanged by normalizePath.
-    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: displayInternal, external }, null, 2))
+    emit(JSON.stringify({ file: toDisplayPath(rootDir, normalizePath(opts.file)), internal: filteredInternal, external: filteredExternal }, null, 2))
     return 0
   }
 
-  if (internal.length > 0) {
+  if (matchesGrep !== undefined && preFilterCount > 0 && filteredInternal.length === 0 && filteredExternal.length === 0) {
+    emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'dependency', 'dependencies'))
+    return 0
+  }
+
+  if (filteredInternal.length > 0) {
     emit('internal:')
-    for (const i of displayInternal) emit(`  ${i}`)
+    for (const i of filteredInternal) emit(`  ${i}`)
   }
-  if (external.length > 0) {
+  if (filteredExternal.length > 0) {
     emit('external:')
-    for (const e of external) emit(`  ${e}`)
+    for (const e of filteredExternal) emit(`  ${e}`)
   }
-  if (internal.length === 0 && external.length === 0) {
+  if (filteredInternal.length === 0 && filteredExternal.length === 0) {
     emit('(no imports found)')
   }
   return 0
@@ -869,6 +899,8 @@ export interface TypesOptions {
   file?: string
   json?: boolean
   limit?: number
+  /** Only list type declarations whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 export function runTypes(opts: TypesOptions): number {
@@ -921,12 +953,30 @@ export function runTypes(opts: TypesOptions): number {
     return 1
   }
 
-  if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
+  // --grep narrows on NAME, applied to the whole result set before any output is built -- there
+  // is no further truncation step downstream for `types` to run ahead of.
+  const preFilterCount = results.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filtered = matchesGrep !== undefined ? results.filter((r) => matchesGrep(r.name)) : results
+
+  if (filtered.length === 0) {
+    // The store is genuinely non-empty (preFilterCount > 0, already confirmed above) but --grep
+    // matched none of it -- distinct from the "no type declarations found" case above, which
+    // exits 1 because there was nothing to find at all.
+    if (opts.json === true) {
+      emit(JSON.stringify([], null, 2))
+      return 0
+    }
+    emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'type declaration', 'type declarations'))
     return 0
   }
 
-  for (const r of results) {
+  if (opts.json === true) {
+    emit(JSON.stringify(filtered, null, 2))
+    return 0
+  }
+
+  for (const r of filtered) {
     emit(`${r.name}\t${r.kind}\t${toDisplayPath(rootDir, r.filePath)}:${r.lineStart}`)
   }
   return 0

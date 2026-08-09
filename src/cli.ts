@@ -3263,10 +3263,11 @@ export function buildProgram(): Command {
     .command('exports <file> [more...]')
     .description('list exported (public) symbols in a file (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
-    .action((file: string, more: string[], opts: { json?: boolean }) =>
+    .option('--grep <pattern>', 'only show exported symbols whose name matches this regex (literal substring if it is not valid regex)')
+    .action((file: string, more: string[], opts: { json?: boolean; grep?: string }) =>
       runExit(() => {
         emitExtraFileArgsNote('exports', file, more)
-        return runExports({ file, ...(opts.json === true ? { json: true } : {}) })
+        return runExports({ file, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
       }),
     )
 
@@ -3274,10 +3275,11 @@ export function buildProgram(): Command {
     .command('imports <file> [more...]')
     .description('list the modules a file imports (also accepts a comma-separated file list "a,b,c" for one headed block per file)')
     .option('-j, --json', 'output as JSON')
-    .action((file: string, more: string[], opts: { json?: boolean }) =>
+    .option('--grep <pattern>', 'only show imports whose module specifier matches this regex (literal substring if it is not valid regex)')
+    .action((file: string, more: string[], opts: { json?: boolean; grep?: string }) =>
       runExit(() => {
         emitExtraFileArgsNote('imports', file, more)
-        return runImports({ file, ...(opts.json === true ? { json: true } : {}) })
+        return runImports({ file, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
       }),
     )
 
@@ -3417,7 +3419,8 @@ export function buildProgram(): Command {
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide dead symbols defined in a test file (opt-in; default output is unchanged)')
-    .action((opts: { kind?: string; includePrivate?: boolean; top?: string; json?: boolean; excludeTests?: boolean }) =>
+    .option('--grep <pattern>', 'only show dead symbols whose name matches this regex (literal substring if it is not valid regex)')
+    .action((opts: { kind?: string; includePrivate?: boolean; top?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runDead({
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
@@ -3425,6 +3428,7 @@ export function buildProgram(): Command {
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )
@@ -3433,8 +3437,9 @@ export function buildProgram(): Command {
     .command('deps <file>')
     .description('one-level imports: resolves relative imports to project files, groups others as external')
     .option('-j, --json', 'output as JSON')
-    .action((file: string, opts: { json?: boolean }) =>
-      runExit(() => runDeps({ file, ...(opts.json === true ? { json: true } : {}) })),
+    .option('--grep <pattern>', 'only show dependencies whose module specifier matches this regex (literal substring if it is not valid regex)')
+    .action((file: string, opts: { json?: boolean; grep?: string }) =>
+      runExit(() => runDeps({ file, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })),
     )
 
   program
@@ -3442,12 +3447,14 @@ export function buildProgram(): Command {
     .description('type-like declarations (type, interface, enum, struct, trait, and Python type classes)')
     .option('-j, --json', 'output as JSON')
     .option('-l, --limit <n>', 'max results per kind')
-    .action((file: string | undefined, opts: { json?: boolean; limit?: string }) =>
+    .option('--grep <pattern>', 'only show type declarations whose name matches this regex (literal substring if it is not valid regex)')
+    .action((file: string | undefined, opts: { json?: boolean; limit?: string; grep?: string }) =>
       runExit(() =>
         runTypes({
           ...(file !== undefined ? { file } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       ),
     )

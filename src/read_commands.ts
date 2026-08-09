@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, compileGrepMatcher, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -4122,6 +4122,12 @@ export function runConfigGet(opts: ConfigGetOptions): number {
 export interface ImportsExportsOptions {
   file: string
   json?: boolean
+  /**
+   * Only list rows whose primary string matches this pattern -- the exported symbol NAME for
+   * `exports`, the imported MODULE SPECIFIER for `imports`. Regex, falling back to a literal
+   * substring match when it does not compile -- see compileGrepMatcher.
+   */
+  grep?: string
 }
 
 /**
@@ -4233,11 +4239,33 @@ export function runExports(opts: ImportsExportsOptions): number {
     return 0
   }
 
+  // --grep narrows on NAME, applied before any output (JSON or text) is built -- there is no
+  // further truncation step downstream for `exports` to run ahead of.
+  const preFilterCount = names.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filteredNames = matchesGrep !== undefined ? names.filter((n) => matchesGrep(n)) : names
+
   const fullSourceBytes = sumFileSizes([opts.file])
+
+  if (filteredNames.length === 0) {
+    // Genuinely-empty ("No exported symbols found") already returned above; this is the file
+    // having exports but --grep matching none of them -- distinct states per the repo's
+    // filtered-store convention.
+    if (opts.json === true) {
+      const jsonText = JSON.stringify([], null, 2)
+      emit(jsonText)
+      recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
+      return 0
+    }
+    const text = grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'exported symbol', 'exported symbols')
+    emit(text)
+    recordReadStat('exports', fullSourceBytes, text, opts.file)
+    return 0
+  }
 
   if (opts.json === true) {
     const jsonText = JSON.stringify(
-      names.map((n) => {
+      filteredNames.map((n) => {
         const loc = locOf(n)
         return { name: n, kind: kindOf(n), lineStart: loc?.lineStart ?? null, lineEnd: loc?.lineEnd ?? null }
       }),
@@ -4249,7 +4277,7 @@ export function runExports(opts: ImportsExportsOptions): number {
     return 0
   }
 
-  const outLines = names.map((n) => {
+  const outLines = filteredNames.map((n) => {
     const loc = locOf(n)
     const locSuffix = loc === null ? '' : ` (${loc.lineStart}-${loc.lineEnd})`
     return `${kindOf(n).padEnd(10)} ${n}${locSuffix}`
@@ -4783,17 +4811,36 @@ export function runImports(opts: ImportsExportsOptions): number {
     return 0
   }
 
+  // --grep narrows on the MODULE SPECIFIER, run before guardJsonRows' truncation so it selects
+  // from the whole import list rather than an already-capped page.
+  const preFilterCount = imports.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const filteredImports = matchesGrep !== undefined ? imports.filter((i) => matchesGrep(i)) : imports
+
   const fullSourceBytes = sumFileSizes([opts.file])
 
+  if (filteredImports.length === 0) {
+    if (opts.json === true) {
+      const jsonText = JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2)
+      emit(jsonText)
+      recordReadStat('imports', fullSourceBytes, jsonText, opts.file)
+      return 0
+    }
+    const text2 = grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'import', 'imports')
+    emit(text2)
+    recordReadStat('imports', fullSourceBytes, text2, opts.file)
+    return 0
+  }
+
   if (opts.json === true) {
-    const capped = guardJsonRows(imports)
+    const capped = guardJsonRows(filteredImports)
     const jsonText = JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2)
     emit(jsonText)
     recordReadStat('imports', fullSourceBytes, jsonText, opts.file)
     return 0
   }
 
-  const outLines = imports.map((imp) => `import  ${imp}`)
+  const outLines = filteredImports.map((imp) => `import  ${imp}`)
   for (const line of outLines) {
     emit(line)
   }
