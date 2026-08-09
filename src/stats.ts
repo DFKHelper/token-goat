@@ -316,6 +316,19 @@ function getGlobalDb(homeDir?: string): Database.Database {
  * Silently no-ops on any error so hook paths are never blocked.
  * Pass `_testDb` in tests to inject a pre-initialized database.
  */
+// Distinguishes "genuinely no stats ever recorded" from "stats exist but every one falls outside
+// the requested --window-days" -- same empty-vs-filtered-store distinction already made for
+// dead/types (--exclude-tests, --grep) so a caller sees a bare "no stats" as a filter artifact
+// rather than a broken telemetry pipeline. Only queried once summarize() already found zero rows
+// in-window, so the common (non-empty) path pays nothing extra.
+function noStatsMessage(windowDays: number, homeDir?: string): string {
+  if (windowDays <= 0) return 'No stats recorded yet.'
+  const db = getGlobalDb(homeDir)
+  const total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
+  if (total === 0) return 'No stats recorded yet.'
+  return `No stats in the last ${windowDays} days (${total} recorded outside this window; use --window-days 0 for all time).`
+}
+
 export function recordStat(
   kind: string,
   bytesSaved = 0,
@@ -589,7 +602,7 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string;
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
   if (summary.total_events === 0) {
-    console.log('No stats recorded yet.')
+    console.log(noStatsMessage(windowDays, opts?.homeDir))
     return
   }
 
@@ -609,7 +622,7 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
   if (summary.total_events === 0) {
-    console.log('No stats recorded yet.')
+    console.log(noStatsMessage(windowDays, opts?.homeDir))
     return
   }
 

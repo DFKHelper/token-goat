@@ -188,6 +188,11 @@ describe('note-add / note-get / note-list', () => {
       expect(staleOnly.status, staleOnly.stderr).toBe(0)
       expect(staleOnly.stdout).not.toContain(normalizePath(tmp1))
       expect(staleOnly.stdout).not.toContain(normalizePath(tmp2))
+      // Regression: "No stale notes." alone is indistinguishable from "no notes recorded at
+      // all" -- notes exist here (this suite shares one notes store across tests, so the exact
+      // count is not pinned), just none stale, so the count must say so.
+      expect(staleOnly.stdout).toContain('notes recorded, none stale')
+      expect(staleOnly.stdout).not.toBe('No stale notes.\n')
 
       const listJson = runCli(['note-list', '--json'])
       expect(listJson.status, listJson.stderr).toBe(0)

@@ -5217,6 +5217,13 @@ export function runNoteList(opts: NoteListOptions = {}): { text: string; code: n
 
   recordStat('note_list')
   if (filtered.length === 0) {
+    // Distinguish "notes exist but none are stale" from "no notes recorded at all" -- same
+    // empty-vs-filtered-store distinction runDead makes for --exclude-tests, so --stale-only
+    // finding nothing doesn't read as "there are no notes" when notes just aren't stale.
+    if (opts.staleOnly === true && withStale.length > 0) {
+      const noun = withStale.length === 1 ? 'note' : 'notes'
+      return { text: `No stale notes (${withStale.length} ${noun} recorded, none stale).`, code: 0 }
+    }
     return { text: opts.staleOnly === true ? 'No stale notes.' : 'No notes recorded.', code: 0 }
   }
   const noteListDisplayRoot = getDisplayRoot()
