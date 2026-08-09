@@ -45,6 +45,13 @@ const THREE_STATE_VERIFIED = [
   'stats', 'cost',
   // Skill cache, verified in prior cycles per project memory.
   'skill-list', 'skill-diff', 'skill-history', 'skill-size',
+  // Session read-count store, verified this cycle. cmdHot fixed to distinguish "no read data
+  // recorded at all" from "--project filtered a nonzero total down to zero"; cmdRecent and
+  // runScope have no filter argument at all (only a --limit/count cap), so they only ever have
+  // two states (empty vs populated) and correctly render both; runArch always renders explicit
+  // per-section counts (including "cycles (0 found)") rather than a blanket empty notice, so it
+  // is unambiguous with zero tracked files too.
+  'hot', 'recent', 'scope', 'arch',
 ] as const
 
 /**
@@ -80,9 +87,8 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
     'reads or extracts a single named item (one symbol, one file, one section), not a filterable listing':
       ['read', 'section', 'brief', 'skill-body', 'skill-compact', 'skill-section', 'blame',
         'changed', 'diff', 'log', 'find', 'grep', 'conflicts', 'compact-doc', 'compact-hint'],
-    'not yet individually classified into THREE_STATE_VERIFIED -- listing-shaped over the index/embeddings but this cycle only closed the residual gaps named in the project memory (call-chain, coverage-gaps, note-list, stats/cost, types)':
-      ['recent', 'hot', 'ignores', 'arch', 'ask', 'scope', 'context-for', 'similar', 'impact',
-        'deps', 'failures'],
+    'not yet individually classified into THREE_STATE_VERIFIED -- listing-shaped over the index/embeddings but this cycle only closed the residual gaps named in the project memory (call-chain, coverage-gaps, note-list, stats/cost, types, plus hot/recent/scope/arch this cycle)':
+      ['ignores', 'ask', 'context-for', 'similar', 'impact', 'deps', 'failures'],
   }
   const out: Record<string, string> = {}
   for (const [reason, names] of Object.entries(reasons)) {

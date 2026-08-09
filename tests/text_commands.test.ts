@@ -1736,6 +1736,35 @@ describe('hot command', () => {
       fs.rmSync(hotData, { recursive: true, force: true })
     }
   })
+
+  // Regression: --project filtering totals down to zero entries printed the same "No session
+  // read data found." notice as the genuinely-empty-cache case, wrongly claiming no read data
+  // exists at all when read data exists but none of it falls under this project root. Same
+  // empty-vs-filtered-store distinction runNoteList makes for --stale-only.
+  it('--project filtering to zero entries names the total instead of claiming no data exists at all', () => {
+    const hotData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-projempty-'))
+    const projRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hot-projemptyroot-'))
+    try {
+      fs.mkdirSync(path.join(projRoot, '.git'))
+      const sessDir = path.join(hotData, 'sessions')
+      fs.mkdirSync(sessDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(sessDir, 'sess1.json'),
+        JSON.stringify({
+          files: [{ path: '/some/unrelated/project/file.ts', readCount: 4, lastReadAt: 1, wasEdited: false, sizeBytes: 100 }],
+          hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [],
+        }),
+        'utf8',
+      )
+      const r = run(['hot', '--project'], { cwd: projRoot, env: isolatedEnv(hotData) })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).not.toBe('No session read data found.\n')
+      expect(r.stdout).toContain('1 file')
+    } finally {
+      fs.rmSync(hotData, { recursive: true, force: true })
+      fs.rmSync(projRoot, { recursive: true, force: true })
+    }
+  })
 })
 
 // ── recent ──────────────────────────────────────────────────────────────────
