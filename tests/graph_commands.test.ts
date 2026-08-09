@@ -1561,11 +1561,24 @@ describe('resolveCallers cross-project scoping', () => {
 
 describe('runDead integration', () => {
   it('exits 0 even when no dead symbols are found', () => {
-    // A nonexistent kind genuinely finds zero symbols to check -- unlike a --top of 0, this
-    // exercises the "no dead symbols found" message path without relying on --top to force an
-    // empty slice (see the --top rejection test below).
-    const code = runDead({ kind: '__nonexistent_kind_xyzzy__' })
+    // 'function' is a real, recognized kind (this suite's own beforeAll indexes the whole src
+    // tree, so it always has functions to pass the kind-validation check), but querySymbols is
+    // stubbed to return none for this one call so the case exercises the "no dead symbols found"
+    // message path deterministically rather than depending on this repo's own dead-symbol count
+    // staying at zero over time.
+    vi.mocked(querySymbols).mockReturnValueOnce([])
+    const code = runDead({ kind: 'function' })
     expect(code).toBe(0)
+  })
+
+  it('rejects an unrecognized --kind instead of silently reporting a false-clean "no dead symbols" result', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runDead({ kind: '__nonexistent_kind_xyzzy__' })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).not.toContain('No dead symbols found')
+    expect(errCaptured).toContain('Unrecognized kind')
+    expect(errCaptured).toContain('__nonexistent_kind_xyzzy__')
   })
 
   it('rejects --top 0 as an explicit invalid-argument error instead of silently reporting a false-clean "no dead symbols" result', () => {
@@ -1613,6 +1626,51 @@ describe('runDead integration', () => {
     const parsed = envelopeItems<{ name: string; file: string }>(captured)
     const row = parsed.find((r) => r.name === 'outOfProjectDeadFixture9x2')
     expect(row?.file).toBe(outOfProjectAbs)
+  })
+})
+
+// ---- runDead --kind comma-separated union -----------------------------------
+
+describe('runDead --kind comma-separated union', () => {
+  // The regression that matters: `--kind function,method` must return exactly the SET UNION of
+  // running `--kind function` and `--kind method` separately, not merely "more than zero rows"
+  // (which a buggy implementation that only honored one of the two kinds would also satisfy).
+  it('returns the union of two single-kind result sets', () => {
+    const captureNames = (kind: string): Set<string> => {
+      const captured = captureStdout(() => { runDead({ json: true, top: 500, kind }) })
+      return new Set(envelopeItems<{ name: string; kind: string }>(captured).map((r) => `${r.kind}:${r.name}`))
+    }
+    const fnOnly = captureNames('function')
+    const methodOnly = captureNames('method')
+    const captured = captureStdout(() => { runDead({ json: true, top: 500, kind: 'function,method' }) })
+    const combined = new Set(envelopeItems<{ name: string; kind: string }>(captured).map((r) => `${r.kind}:${r.name}`))
+
+    const expectedUnion = new Set([...fnOnly, ...methodOnly])
+    expect(combined).toEqual(expectedUnion)
+    // Negative control: passes on both the buggy (single-kind) and fixed implementation only if
+    // it is trivially satisfied by an empty set -- guard against that by requiring both source
+    // sets be non-empty in this repo's own real index, so the union assertion above is load-bearing.
+    expect(fnOnly.size).toBeGreaterThan(0)
+    expect(methodOnly.size).toBeGreaterThan(0)
+  })
+
+  it('rejects an unrecognized kind even when comma-mixed with a valid one, naming the specific bad kind', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runDead({ kind: 'function,__bogus_kind_9x2__' })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).toContain('Unrecognized kind')
+    expect(errCaptured).toContain('__bogus_kind_9x2__')
+    // Negative control: the VALID kind in the mix must not itself be flagged.
+    expect(errCaptured).not.toMatch(/Unrecognized kind[^\n]*'function'/)
+  })
+
+  it('reports "kinds" (plural) when multiple unrecognized kinds are given', () => {
+    const errCaptured = captureStderr(() => {
+      const code = runDead({ kind: '__bogus_a_9x2__,__bogus_b_9x2__' })
+      expect(code).toBe(1)
+    })
+    expect(errCaptured).toContain('Unrecognized kinds')
   })
 })
 

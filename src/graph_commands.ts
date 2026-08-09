@@ -15,10 +15,10 @@ import * as path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
-import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError } from './read_commands.js'
+import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice } from './util.js'
@@ -611,6 +611,13 @@ function hasAncestorDispatchRef(methodName: string, scopeName: string, classFile
   return false
 }
 
+// Symbol `kind` values every language adapter in this repo is known to emit (collected from the language adapter source, not the runtime index) -- used by `dead --kind` to recognize a genuinely valid kind that just happens to have zero instances in the current project, distinct from a typo/nonexistent kind. Not exhaustive by construction (a future adapter can add a new kind), which is fine: distinctSymbolKinds(rootDir) still covers anything actually indexed, and this list only widens what counts as "known" rather than narrowing it.
+const CORE_SYMBOL_KINDS: ReadonlyArray<string> = [
+  'function', 'method', 'class', 'interface', 'enum', 'type', 'variable', 'const',
+  'struct', 'trait', 'namespace', 'module', 'property', 'field', 'constructor',
+  'macro', 'union', 'alias', 'directive', 'extension', 'mixin', 'protocol',
+]
+
 export interface DeadOptions {
   kind?: string
   includePrivate?: boolean
@@ -630,13 +637,42 @@ export function runDead(opts: DeadOptions): number {
     emitErr(`--top must be a positive number, got: ${opts.top}`)
     return 1
   }
-  const kind = opts.kind ?? 'function'
+  // Comma-separated, matching every other multi-spec surface in this CLI (read/refs/skeleton/
+  // outline/section) -- splits on ',', trims, drops empties; `--kind` absent keeps the old
+  // single-kind default untouched.
+  const kinds = opts.kind !== undefined
+    ? [...new Set(opts.kind.split(',').map((k) => k.trim()).filter((k) => k.length > 0))]
+    : ['function']
   // global.db is a single machine-wide index shared across every project ever indexed
   // (constants.ts) -- both the symbol scan and the per-symbol ref-count lookup must be scoped
   // to the current project root, or a function dead in this project but referenced by a
   // same-named symbol in an unrelated project on the same machine is wrongly scored ALIVE.
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const syms = querySymbols({ kind, limit: 5000, rootDir })
+
+  // An unrecognized kind (typo, or a kind this language's adapter never emits) must not silently
+  // fall through to zero rows and read as a clean codebase. Validated against the UNION of what
+  // this project's own index already contains (distinctSymbolKinds) and CORE_SYMBOL_KINDS, a
+  // static list of kind names every language adapter in this repo is known to emit -- the
+  // index alone is not enough, since a genuinely valid kind (e.g. 'class' in a project with zero
+  // classes) would never appear in a small project's own distinct-kind set and would otherwise be
+  // wrongly rejected as unrecognized (see the empty-index-hint guard's "class" fixture case).
+  const knownKinds = [...new Set([...distinctSymbolKinds(rootDir), ...CORE_SYMBOL_KINDS])]
+  const unknownKinds = kinds.filter((k) => !knownKinds.includes(k))
+  if (unknownKinds.length > 0) {
+    const label = unknownKinds.length === 1 ? 'kind' : 'kinds'
+    const quoted = unknownKinds.map((k) => `'${k}'`).join(', ')
+    emitErr(`Unrecognized ${label}: ${quoted}`)
+    for (const k of unknownKinds) {
+      const closes = rankSimilarNames(knownKinds, k)
+      if (closes.length > 0) emitErr(didYouMean(closes))
+    }
+    return 1
+  }
+
+  // 5000 kept PER KIND (not split across the requested kinds) so a two-kind query sees the same
+  // per-kind depth a one-kind query would -- splitting one 5000 across kinds would silently
+  // under-scan relative to running each kind separately.
+  const syms = kinds.flatMap((k) => querySymbols({ kind: k, limit: 5000, rootDir }))
   const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []

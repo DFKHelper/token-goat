@@ -3418,7 +3418,7 @@ export function buildProgram(): Command {
   program
     .command('dead')
     .description('symbols with zero references (default kind: function)')
-    .option('-k, --kind <kind>', 'symbol kind to check (function, method, class, ...)')
+    .option('-k, --kind <kind>', 'symbol kind(s) to check, comma-separated for a union (function, method, class, ...)')
     .option('--include-private', 'include _-prefixed names')
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
