@@ -436,6 +436,39 @@ const cases: Record<string, () => void | Promise<void>> = {
     const grepBadRegex = run(['refs', 'exclhelper.ts::exclHelperFn', '--grep', '[unclosed'])
     expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
     expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // Arity independence: one path, one spelling. The single-symbol path used to resolve a display root while the multi-symbol and cross-file paths passed none, so the identical row rendered `ctximporter.ts:3` in one form and the machine-specific absolute path in the others. `repo` is the project root here, so a root-relative row can never contain it.
+    const repoFwd = repo.split(path.sep).join('/')
+    const arityForms = [
+      run(['refs', 'caller.ts::refHelper']),
+      run(['refs', 'caller.ts::refHelper,refDriver']),
+      run(['refs', 'caller.ts::refHelper,src/mod.ts::alphaSym']),
+    ]
+    for (const form of arityForms) {
+      expect(form.status, form.stderr).toBe(0)
+      // Negative control on the same line: the row IS present (so `not.toContain(repo)` cannot pass vacuously on an empty listing) and it carries no absolute prefix.
+      expect(form.stdout).toMatch(/(^|\s)ctximporter\.ts:\d+:/m)
+      expect(form.stdout).not.toContain(repo)
+      expect(form.stdout).not.toContain(repoFwd)
+    }
+
+    // --json carries the same spelling as the text rows, in every arity.
+    for (const spec of ['caller.ts::refHelper', 'caller.ts::refHelper,refDriver', 'caller.ts::refHelper,src/mod.ts::alphaSym']) {
+      const j = run(['refs', spec, '--json'])
+      expect(j.status, j.stderr).toBe(0)
+      expect(j.stdout).toContain('"filePath": "ctximporter.ts"')
+      expect(j.stdout).not.toContain(repo)
+      expect(j.stdout).not.toContain(repoFwd)
+    }
+
+    // An anchored --grep must match what the rows show, in every arity -- the exact defect 2591a37c fixed for the single form, which the other two must not reintroduce.
+    for (const spec of ['caller.ts::refHelper', 'caller.ts::refHelper,refDriver', 'caller.ts::refHelper,src/mod.ts::alphaSym']) {
+      const anchored = run(['refs', spec, '--grep', '^ctximporter'])
+      expect(anchored.status, anchored.stderr).toBe(0)
+      expect(anchored.stdout).toMatch(/(^|\s)ctximporter\.ts:\d+:/m)
+      // Negative control: --grep really filters -- the same-file caller site is dropped.
+      expect(anchored.stdout).not.toMatch(/(^|\s)caller\.ts:\d+:/m)
+    }
   },
   exports: () => {
     expectRead(['exports', 'src/mod.ts'], 'alphaSym')

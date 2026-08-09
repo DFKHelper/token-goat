@@ -1423,15 +1423,24 @@ export interface RefsOptions {
  * verbatim), optionally followed by its `-C` source window. Shared by all three `refs` rendering
  * paths (single, multi-symbol, cross-file) so `-C` cannot drift between them.
  */
-// --grep has to test the SAME string the row renders, which is toDisplayPath(displayRoot, filePath) and not the raw stored path. runRefsSingle renders with a real display root, so its rows read `src/db.ts:331` while the stored field is absolute -- matching the stored field made `--grep "^src/"` filter every row away even though every visible row began with `src/`, i.e. the filter silently operated on a string the caller could not see. The multi-symbol and cross-file paths render with an undefined root (absolute rows), so passing each function its own render root keeps all three what-you-see-is-what-you-filter, and keeps them that way if one of those paths later gains a root.
-function refGrepFilter(grep: string | undefined, displayRoot: string | undefined): ((r: RefEntry) => boolean) | undefined {
-  if (grep === undefined) return undefined
-  const matches = compileGrepMatcher(grep)
-  return (r) => matches(toDisplayPath(displayRoot, r.filePath))
+// The ONE place every `refs` output path -- text rows, --top summaries, --json payloads, and the --grep filter -- turns a stored absolute path into the path a caller sees. It takes no root argument on purpose: the previous shape passed a root per call site, so runRefsSingle rendered root-relative while the multi-symbol and cross-file paths passed `undefined` and rendered absolute (the same path spelled two ways depending only on how many symbols you asked for), and a filter handed a different root than its renderer silently tested a string the caller could not see (the `--grep "^src/"` matches-nothing bug). Sourcing the root here makes both divergences unrepresentable rather than merely fixed.
+function refsDisplayPath(p: string): string {
+  return toDisplayPath(getDisplayRoot(), p)
 }
 
-function renderRefLines(ref: RefEntry, displayRoot: string | undefined, contextLines: number, indent = '  '): string[] {
-  const displayPath = toDisplayPath(displayRoot, ref.filePath)
+function refGrepFilter(grep: string | undefined): ((r: RefEntry) => boolean) | undefined {
+  if (grep === undefined) return undefined
+  const matches = compileGrepMatcher(grep)
+  return (r) => matches(refsDisplayPath(r.filePath))
+}
+
+/** JSON reference rows as emitted: `-C` windows attached first (they read from disk, so they need the raw absolute path), then `filePath` rewritten to the same display spelling the text rows use -- root-relative and reproducible rather than absolute and specific to one machine's drive-letter casing, matching what outline/skeleton `--json` already do. */
+function refsJsonItems<T extends RefEntry>(items: T[], contextLines: number): (T & { contextLines?: SourceContextLine[] })[] {
+  return withContextLines(items, contextLines).map((r) => ({ ...r, filePath: refsDisplayPath(r.filePath) }))
+}
+
+function renderRefLines(ref: RefEntry, contextLines: number, indent = '  '): string[] {
+  const displayPath = refsDisplayPath(ref.filePath)
   const base = `${indent}${displayPath}:${ref.line}: ${ref.context}`
   const window = buildContextWindow(ref.filePath, ref.line, contextLines)
   if (window === null) return [base]
@@ -1538,9 +1547,9 @@ export function runRefs(opts: RefsOptions): number {
       suppressed = f.suppressed
       results = f.refs
     }
-    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. This path renders with an undefined display root (absolute rows), so it filters on that same rendering.
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. It tests the path as refsDisplayPath renders it, the same spelling the rows below show.
     const preGrepCount = results.length
-    const matchesGrep = refGrepFilter(opts.grep, undefined)
+    const matchesGrep = refGrepFilter(opts.grep)
     if (matchesGrep !== undefined) results = results.filter(matchesGrep)
     let filteredTotal: number | undefined
     if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
@@ -1561,7 +1570,7 @@ export function runRefs(opts: RefsOptions): number {
         // (the pre-slice filtered count, already scanned with full headroom above) is the honest total.
         const capped = guardJsonRows(results)
         const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
-        jsonOut[sym] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+        jsonOut[sym] = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
@@ -1577,13 +1586,13 @@ export function runRefs(opts: RefsOptions): number {
     }
     lines.push(`${sym}:`)
     if (opts.top !== undefined) {
-      lines.push(...renderTopFilesSummary(results, opts.top, undefined, suppressed))
+      lines.push(...renderTopFilesSummary(results, opts.top, suppressed))
     } else if (opts.callers === true) {
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
-      lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
+      lines.push(...renderCallerGroups(results, opts.context ?? 0))
     } else {
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
-      for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
+      for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
@@ -1623,9 +1632,9 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
       suppressed = f.suppressed
       results = f.refs
     }
-    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. This path renders with an undefined display root (absolute rows), so it filters on that same rendering.
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. It tests the path as refsDisplayPath renders it, the same spelling the rows below show.
     const preGrepCount = results.length
-    const matchesGrep = refGrepFilter(opts.grep, undefined)
+    const matchesGrep = refGrepFilter(opts.grep)
     if (matchesGrep !== undefined) results = results.filter(matchesGrep)
     let filteredTotal: number | undefined
     if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
@@ -1642,7 +1651,7 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
         // Same --exclude-tests/--grep honest-total reasoning as runRefs's per-symbol branch above.
         const capped = guardJsonRows(results)
         const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
-        jsonOut[key] = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+        jsonOut[key] = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
       }
       continue
     }
@@ -1658,13 +1667,13 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     }
     lines.push(`${key}:`)
     if (opts.top !== undefined) {
-      lines.push(...renderTopFilesSummary(results, opts.top, undefined, suppressed))
+      lines.push(...renderTopFilesSummary(results, opts.top, suppressed))
     } else if (opts.callers === true) {
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
-      lines.push(...renderCallerGroups(results, undefined, opts.context ?? 0))
+      lines.push(...renderCallerGroups(results, opts.context ?? 0))
     } else {
       if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
-      for (const ref of results) lines.push(...renderRefLines(ref, undefined, opts.context ?? 0))
+      for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
   }
   const fullSourceBytes = sumFileSizes(refFilePaths)
@@ -1703,11 +1712,9 @@ function runRefsSingle(opts: RefsOptions): number {
     suppressed = f.suppressed
     results = f.refs
   }
-  // Hoisted above the --grep filter: the filter tests the path as this function renders it, so both need the same root.
-  const displayRoot = getDisplayRoot()
-  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on: `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the whole (test-filtered) set rather than from an already-capped page. It tests the path as RENDERED under displayRoot, so an anchored pattern matches what the caller sees.
+  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on: `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the whole (test-filtered) set rather than from an already-capped page. It tests the path as refsDisplayPath renders it, so an anchored pattern matches what the caller sees.
   const preGrepCount = results.length
-  const matchesGrep = refGrepFilter(opts.grep, displayRoot)
+  const matchesGrep = refGrepFilter(opts.grep)
   if (matchesGrep !== undefined) results = results.filter(matchesGrep)
   let filteredTotal: number | undefined
   if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
@@ -1752,7 +1759,7 @@ function runRefsSingle(opts: RefsOptions): number {
       // Same --exclude-tests/--grep honest-total reasoning as runRefs's per-symbol branch above.
       const capped = guardJsonRows(results)
       const trueTotal = (opts.excludeTests === true || matchesGrep !== undefined) ? (filteredTotal ?? results.length) : countRefs(queryOpts)
-      payload = { items: withContextLines(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+      payload = { items: refsJsonItems(capped.items, opts.context ?? 0), truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
     }
     const text = JSON.stringify(payload, null, 2)
     emit(text)
@@ -1762,10 +1769,10 @@ function runRefsSingle(opts: RefsOptions): number {
 
   const lines =
     opts.top !== undefined
-      ? renderTopFilesSummary(results, opts.top, displayRoot, suppressed)
+      ? renderTopFilesSummary(results, opts.top, suppressed)
       : opts.callers === true
-        ? [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...renderCallerGroups(results, displayRoot, opts.context ?? 0)]
-        : [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...results.flatMap((ref) => renderRefLines(ref, displayRoot, opts.context ?? 0, ''))]
+        ? [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...renderCallerGroups(results, opts.context ?? 0)]
+        : [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...results.flatMap((ref) => renderRefLines(ref, opts.context ?? 0, ''))]
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -1794,12 +1801,12 @@ function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
 }
 
 /** Renders the `--top N` grouped-by-file summary: a header line with total refs/files, then one `count  file` line per shown file, then an elision note naming exactly how many files and refs were dropped (never a silent truncation -- see this repo's no-silent-caps convention). `suppressed`, when > 0, appends an additive note naming how many test-file references `--exclude-tests` hid -- omitted entirely (byte-identical to today) whenever it's 0/undefined. */
-function renderTopFilesSummary(refs: RefEntry[], topN: number, displayRoot?: string, suppressed?: number): string[] {
+function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: number): string[] {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
   const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${suppressed} in test files hidden by --exclude-tests)` : ''
   const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})${suppressedNote}`]
-  for (const { file, count } of shown) lines.push(`  ${count}  ${toDisplayPath(displayRoot, file)}`)
+  for (const { file, count } of shown) lines.push(`  ${count}  ${refsDisplayPath(file)}`)
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
     const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
@@ -1819,12 +1826,13 @@ interface RefsTopJsonEntry {
 function topFilesJsonPayload(refs: RefEntry[], topN: number): RefsTopJsonEntry {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
-  return { fileCounts: shown, totalFiles: grouped.length, totalRefs: refs.length, shown: shown.length }
+  // Same display spelling as the text `--top` summary this envelope mirrors -- see refsDisplayPath.
+  return { fileCounts: shown.map((g) => ({ ...g, file: refsDisplayPath(g.file) })), totalFiles: grouped.length, totalRefs: refs.length, shown: shown.length }
 }
 
 type RefsJsonEntry = { items: RefEntry[]; truncated: boolean; totalCount: number } | RefsTopJsonEntry
 
-function renderCallerGroups(refs: RefEntry[], displayRoot?: string, contextLines = 0): string[] {
+function renderCallerGroups(refs: RefEntry[], contextLines = 0): string[] {
   const byFile = new Map<string, RefEntry[]>()
   for (const ref of refs) {
     const bucket = byFile.get(ref.filePath)
@@ -1836,7 +1844,7 @@ function renderCallerGroups(refs: RefEntry[], displayRoot?: string, contextLines
   }
   const lines: string[] = []
   for (const [file, fileRefs] of byFile) {
-    const displayPath = toDisplayPath(displayRoot, file)
+    const displayPath = refsDisplayPath(file)
     lines.push(`${displayPath}:`)
     for (const ref of fileRefs) {
       lines.push(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)

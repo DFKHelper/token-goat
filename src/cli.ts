@@ -3007,7 +3007,7 @@ export function buildProgram(): Command {
     .option('-C, --context <n>', 'lines of call-site source to show before and after each reference (default 0)')
     .option('-j, --json', 'output as JSON')
     .option('--exclude-tests', 'hide references whose call site lives in a test file (opt-in; default output is unchanged)')
-    .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); matched against the path as rendered, so ^src/ matches what you see (the multi-symbol and cross-file forms render absolute paths) -- drops test/vendored hits from a wide-fanout symbol')
+    .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); matched against the path as rendered, so ^src/ matches what you see in every form -- drops test/vendored hits from a wide-fanout symbol')
     .action((spec: string, opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
       runExit(() =>
         runRefs({
