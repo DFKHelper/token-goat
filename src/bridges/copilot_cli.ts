@@ -323,10 +323,23 @@ function translate(copilotEvent, resp) {
     return {}
   }
 
-  if (copilotEvent === 'postToolUse' || copilotEvent === 'sessionStart') {
-    // Both surface token-goat's context through the same field. sessionStart is
-    // the one channel that reaches the model before it picks its first read
-    // tool, so this is where the routing reminder has to land.
+  if (copilotEvent === 'postToolUse') {
+    // Confirmed against https://docs.github.com/en/copilot/reference/hooks-reference: postToolUse accepts modifiedResult ({resultType: 'success', textResultForLlm: string}) to replace the tool output, and additionalContext can coexist with it in the same response -- token-goat's rewriteOutput producers (compression, injection fencing, image shrink) map to modifiedResult here; resultType is hardcoded 'success' since token-goat never intends to fail the tool call. Emitted camelCase-only, not the snake_case "VS Code compatible" variant the inbound side handles around line 247: the hooks reference doc selects that format by registering the event name in PascalCase, and COPILOT_CLI_HOOK_EVENTS (copilot_cli_install.ts) registers every event this shim handles in camelCase, so a token-goat-installed hook can never be in that mode and a snake_case response would be wrong here, not merely redundant.
+    const hso = resp && resp.hookSpecificOutput
+    const updatedToolOutput = hso && hso.updatedToolOutput
+    const context = extractContext(resp)
+    const out = {}
+    if (typeof updatedToolOutput === 'string') {
+      out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
+    }
+    if (context) out.additionalContext = context
+    return out
+  }
+
+  if (copilotEvent === 'sessionStart') {
+    // sessionStart has no tool result to modify -- only additionalContext applies, and it's the
+    // one channel that reaches the model before it picks its first read tool, so this is where
+    // the routing reminder has to land.
     const context = extractContext(resp)
     if (context) return { additionalContext: context }
     return {}
