@@ -1414,7 +1414,7 @@ export interface RefsOptions {
   context?: number
   /** `--exclude-tests`: drop references whose call site lives in a test file (per isTestFile). Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
-  /** Only list references whose call-site FILE PATH matches this pattern (rows render as `file:line: symbol`, so this is the field each row is keyed on -- the high-value case is a wide-fanout symbol where `--grep "^src/"` drops test/vendored hits). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  /** Only list references whose call-site FILE PATH matches this pattern (rows render as `file:line: symbol`, so this is the field each row is keyed on -- matched against the path as RENDERED under displayRoot, so an anchored `--grep "^src/"` matches what the caller sees; the high-value case is a wide-fanout symbol where that drops test/vendored hits). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
 }
 
@@ -1423,6 +1423,13 @@ export interface RefsOptions {
  * verbatim), optionally followed by its `-C` source window. Shared by all three `refs` rendering
  * paths (single, multi-symbol, cross-file) so `-C` cannot drift between them.
  */
+// --grep has to test the SAME string the row renders, which is toDisplayPath(displayRoot, filePath) and not the raw stored path. runRefsSingle renders with a real display root, so its rows read `src/db.ts:331` while the stored field is absolute -- matching the stored field made `--grep "^src/"` filter every row away even though every visible row began with `src/`, i.e. the filter silently operated on a string the caller could not see. The multi-symbol and cross-file paths render with an undefined root (absolute rows), so passing each function its own render root keeps all three what-you-see-is-what-you-filter, and keeps them that way if one of those paths later gains a root.
+function refGrepFilter(grep: string | undefined, displayRoot: string | undefined): ((r: RefEntry) => boolean) | undefined {
+  if (grep === undefined) return undefined
+  const matches = compileGrepMatcher(grep)
+  return (r) => matches(toDisplayPath(displayRoot, r.filePath))
+}
+
 function renderRefLines(ref: RefEntry, displayRoot: string | undefined, contextLines: number, indent = '  '): string[] {
   const displayPath = toDisplayPath(displayRoot, ref.filePath)
   const base = `${indent}${displayPath}:${ref.line}: ${ref.context}`
@@ -1531,10 +1538,10 @@ export function runRefs(opts: RefsOptions): number {
       suppressed = f.suppressed
       results = f.refs
     }
-    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment.
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. This path renders with an undefined display root (absolute rows), so it filters on that same rendering.
     const preGrepCount = results.length
-    const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-    if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+    const matchesGrep = refGrepFilter(opts.grep, undefined)
+    if (matchesGrep !== undefined) results = results.filter(matchesGrep)
     let filteredTotal: number | undefined
     if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
     if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
@@ -1616,10 +1623,10 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
       suppressed = f.suppressed
       results = f.refs
     }
-    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment.
+    // --grep narrows by call-site file path, before the requested-limit slice -- see runRefsSingle's sibling comment. This path renders with an undefined display root (absolute rows), so it filters on that same rendering.
     const preGrepCount = results.length
-    const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-    if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+    const matchesGrep = refGrepFilter(opts.grep, undefined)
+    if (matchesGrep !== undefined) results = results.filter(matchesGrep)
     let filteredTotal: number | undefined
     if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
     if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
@@ -1696,12 +1703,12 @@ function runRefsSingle(opts: RefsOptions): number {
     suppressed = f.suppressed
     results = f.refs
   }
-  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on:
-  // `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the
-  // whole (test-filtered) set rather than from an already-capped page.
+  // Hoisted above the --grep filter: the filter tests the path as this function renders it, so both need the same root.
+  const displayRoot = getDisplayRoot()
+  // --grep narrows by the reference's call-site FILE PATH (the field each row is keyed on: `file:line: symbol`), and runs BEFORE the requested-limit slice below so it selects from the whole (test-filtered) set rather than from an already-capped page. It tests the path as RENDERED under displayRoot, so an anchored pattern matches what the caller sees.
   const preGrepCount = results.length
-  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  if (matchesGrep !== undefined) results = results.filter((r) => matchesGrep(r.filePath))
+  const matchesGrep = refGrepFilter(opts.grep, displayRoot)
+  if (matchesGrep !== undefined) results = results.filter(matchesGrep)
   let filteredTotal: number | undefined
   if (opts.excludeTests === true || matchesGrep !== undefined) filteredTotal = results.length
   if ((opts.excludeTests === true || matchesGrep !== undefined) && opts.top === undefined) {
@@ -1753,7 +1760,6 @@ function runRefsSingle(opts: RefsOptions): number {
     return 0
   }
 
-  const displayRoot = getDisplayRoot()
   const lines =
     opts.top !== undefined
       ? renderTopFilesSummary(results, opts.top, displayRoot, suppressed)

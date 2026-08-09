@@ -6235,6 +6235,39 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
     expect(all).not.toContain('1 references')
   })
 
+  // The index stores ABSOLUTE call-site paths while runRefsSingle RENDERS them root-relative, so a row the caller sees as `src/a.ts` was stored as `C:/.../src/a.ts`. Filtering the stored field made an anchored pattern test a string the caller can never see: `--grep "^src/"` matched nothing against a listing where every visible row began with `src/`. Every sibling fixture here builds rows from RELATIVE paths, which models the wrong data and is exactly why this passed in unit tests while failing against the real binary -- so this fixture is deliberately absolute.
+  it('matches --grep against the path as rendered, not the absolute stored path', () => {
+    // Give resolveProjectRoot a real toplevel: mockRunGit is otherwise unset here, and getDisplayRoot() has to resolve to a genuine root for the rendered path to be root-relative at all.
+    vi.mocked(runGit).mockReturnValue({ exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' } as never)
+    const root = process.cwd().replace(/\\/g, '/')
+    const rows = [ref(`${root}/src/a.ts`, 1, 'f()'), ref(`${root}/tests/a.test.ts`, 2, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const result = capture(() => {
+      const code = runRefs({ spec: 'f', grep: '^src/' })
+      expect(code).toBe(0)
+    })
+    const all = result.stdout + result.stderr
+    expect(all).toContain('src/a.ts')
+    expect(all).not.toContain('filtered out by --grep')
+  })
+
+  // Negative control: an anchor that genuinely matches nothing still empties the listing, so the assertion above is about the path being rendered before the test and not about --grep having quietly stopped filtering. Passes both before and after the fix.
+  it('still filters everything out for an anchor that matches no rendered path', () => {
+    // Give resolveProjectRoot a real toplevel: mockRunGit is otherwise unset here, and getDisplayRoot() has to resolve to a genuine root for the rendered path to be root-relative at all.
+    vi.mocked(runGit).mockReturnValue({ exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' } as never)
+    const root = process.cwd().replace(/\\/g, '/')
+    const rows = [ref(`${root}/src/a.ts`, 1, 'f()'), ref(`${root}/tests/a.test.ts`, 2, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const result = capture(() => {
+      const code = runRefs({ spec: 'f', grep: '^nosuchdir/' })
+      expect(code).toBe(0)
+    })
+    const all = result.stdout + result.stderr
+    expect(all).toContain('all 2 references were filtered out by --grep')
+  })
+
   it('--json keeps totalCount honest at the post-grep count, not the unfiltered total', () => {
     const rows = [ref('src/a.ts', 1, 'f()'), ref('tests/a.test.ts', 2, 'f()'), ref('src/b.ts', 3, 'f()')]
     mockQueryRefs.mockReturnValue(rows)
