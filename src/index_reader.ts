@@ -141,6 +141,17 @@ export function querySymbols(
   return rows.map(toSymbolEntry)
 }
 
+/** All distinct `kind` values present in the index, optionally scoped to `rootDir` (same scoping as {@link querySymbols}). Lets callers (e.g. `dead --kind`) validate a requested kind against what the index actually contains instead of guessing at a hardcoded list, since valid kinds vary per language adapter. */
+export function distinctSymbolKinds(rootDir?: string, dbPath: string = globalDbPath()): string[] {
+  const where: string[] = []
+  const params: (string | number)[] = []
+  applyRootDirScope(rootDir, 'file_path', where, params)
+  const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  const db = getDb(dbPath)
+  const rows = db.prepare(`SELECT DISTINCT kind FROM symbols ${clause} ORDER BY kind`).all(...params) as Array<{ kind: string }>
+  return rows.map((r) => r.kind)
+}
+
 /**
  * True count of symbols matching the same name/filePath/kind/rootDir filters
  * {@link querySymbols} accepts, ignoring `limit` entirely -- used so `token-goat
