@@ -535,6 +535,64 @@ describe('stats', () => {
       expect(output).toContain('No stats recorded yet')
     })
 
+    // Regression: a stat row that exists but falls outside the --window-days cutoff used to
+    // render byte-identical to "no stats ever recorded" -- the empty-vs-filtered-store trap
+    // (see runDead's --exclude-tests handling) applied to the time-window filter.
+    it('distinguishes "outside window" from "never recorded" when a stat exists before the cutoff', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-outside-window-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const sixtyDaysAgo = Math.floor(Date.now() / 1000) - 60 * 24 * 60 * 60
+      db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)').run(
+        sixtyDaysAgo,
+        'symbol_read',
+        100,
+        20,
+      )
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+
+      try {
+        _renderStats({ windowDays: 30, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      expect(output).not.toContain('No stats recorded yet')
+      expect(output).toContain('outside this window')
+      expect(output).toContain('1 recorded outside this window')
+    })
+
     it('formats and prints stats summary', () => {
       const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-summary-'))
       const platform = process.platform

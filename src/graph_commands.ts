@@ -1511,6 +1511,10 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   }
   if (sliced.length === 0) {
     emit('No coverage gaps found.')
+    // Only paid after the query already came back empty (index-empty and genuinely-clean both
+    // land here) -- distinguishes "this project has no functions to test" from "nothing is
+    // indexed yet", matching runDead's own emptyIndexMessage guard.
+    if (isIndexEmptyForProject(globalDbPath(), rootDir)) emit(emptyIndexMessage(rootDir))
     return 0
   }
   for (const g of sliced) emit(`${g.name}\t${g.kind}\t${toDisplayPath(rootDir, g.file)}:${g.line}`)

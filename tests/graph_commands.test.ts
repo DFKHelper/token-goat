@@ -3518,6 +3518,34 @@ describe('runCoverageGaps subdirectory scoping', () => {
   })
 })
 
+// ---- runCoverageGaps on a never-indexed project (regression) ---------------
+// "No coverage gaps found." on a project with zero indexed symbols used to render identically to
+// a genuinely fully-tested project -- the same empty-vs-never-indexed trap already closed for
+// runDead/runTypes/runCallChain via isIndexEmptyForProject's emptyIndexMessage guard.
+describe('runCoverageGaps on a never-indexed project', () => {
+  it('appends the empty-index hint when the project root has no indexed symbols at all', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-covgaps-empty-'))
+    try {
+      writeFileSync(join(root, 'package.json'), '{"name":"tg-covgaps-empty-fixture"}\n')
+      // Deliberately never indexFileSync anything under `root` -- this rootDir has zero rows in
+      // both `files` and `symbols` for isIndexEmptyForProject to find.
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const captured = captureStdout(() => {
+          const code = runCoverageGaps({ top: 5 })
+          expect(code).toBe(0)
+        })
+        expect(captured).toContain('No coverage gaps found.')
+        expect(captured).toContain('no files indexed for this project')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- runTestFor / runCoverageGaps do not truncate away test refs at 500+ refs (regression) --
 
 describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
