@@ -19,6 +19,7 @@
  * branch, so `configPath()` is redirected (hoisted vi.mock) to a per-test temp
  * file — the same pattern tests/config.test.ts uses.
  */
+import { tempConfigPath } from './helpers/temp-config.js'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -26,7 +27,7 @@ import * as path from 'node:path'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-compress-rewrite-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-compress-rewrite-config.toml')
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }

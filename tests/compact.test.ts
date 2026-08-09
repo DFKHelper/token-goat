@@ -2,6 +2,7 @@
  * Tests for compact.ts functions.
  */
 
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -20,8 +21,8 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-compact-test-config-${process.pid}.toml`)
-const _testProjectConfigPath = path.join(os.tmpdir(), `tg-compact-test-project-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-compact-test-config.toml')
+const _testProjectConfigPath = tempConfigPath('tg-compact-test-project-config.toml')
 
 import {
   CATALOG_TOKENS,

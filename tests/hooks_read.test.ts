@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -15,7 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-read-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-read-config-test.toml')
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler, postReadHandler, buildLineDiff } from '../src/hooks_read.js'
