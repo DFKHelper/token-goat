@@ -9,6 +9,7 @@ import { shortFingerprint } from './fingerprint.js';
 import { loadConfig } from './config.js';
 import { looksLikeHtml, extractCleanText } from './web_extract.js';
 import { scanForInjectionPatterns, fenceUntrustedContent } from './injection_scan.js';
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/base.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
@@ -136,6 +137,24 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     if (injectionMatches.length > 0) {
       // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings specifically on the injection-detected path and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return.
       return { hookType: 'rewriteOutput', updatedOutput: fenceUntrustedContent(storedBody, injectionMatches) };
+    }
+
+    // Normal path: ship the compressed copy already computed and cached above instead of discarding it -- previously storedBody was only ever consumed by the injection-detected branch, so a compressed HTML body's savings never reached the model. Gated on compression having actually happened (storedBody !== body) so an unchanged body is never rewritten, and on the same net-benefit floor bash_compress uses so a rewrite whose savings don't clear the recall notice's own cost isn't shipped.
+    if (storedBody !== body) {
+      const noticeFor = (id: string): string => `\n[token-goat: WebFetch body compressed via extractCleanText; use \`token-goat web-output ${id} --raw\` to recall it]`
+      const notice = noticeFor(cacheId)
+      const noticeBytes = Buffer.byteLength(notice, 'utf-8')
+      if (
+        isRewriteWorthwhile({
+          originalBytes: Buffer.byteLength(body, 'utf-8'),
+          rewrittenBytes: Buffer.byteLength(storedBody, 'utf-8'),
+          noticeBytes,
+          minNetSavingsBytes: resolveMinNetSavingsBytes(),
+        })
+      ) {
+        recordStat('webfetch:compress', body.length - storedBody.length, Math.round((body.length - storedBody.length) / 4))
+        return { hookType: 'rewriteOutput', updatedOutput: storedBody + notice };
+      }
     }
 
     return passOutput();

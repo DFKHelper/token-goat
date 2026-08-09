@@ -264,7 +264,11 @@ describe('postFetchHandler', () => {
       agentId: undefined,
       raw: { tool_response: html },
     });
-    expect(result.hookType).toBe('pass');
+    expect(result.hookType).toBe('rewriteOutput');
+    if (result.hookType !== 'rewriteOutput') throw new Error('unreachable');
+    expect(result.updatedOutput).not.toContain('<html>');
+    expect(result.updatedOutput).not.toContain('<script>');
+    expect(result.updatedOutput).toContain('Real article content');
 
     // Recover the cache id the same way a real dedup deny would carry it.
     const denyResult = preFetchHandler({
@@ -279,6 +283,7 @@ describe('postFetchHandler', () => {
     if (denyResult.hookType !== 'deny') throw new Error('unreachable');
     const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
     expect(cacheId).toBeTruthy();
+    expect(result.updatedOutput).toContain(`token-goat web-output ${cacheId} --raw`);
 
     const stored = getWebOutput(cacheId as string);
     expect(stored).not.toBeNull();
@@ -425,8 +430,10 @@ describe('postFetchHandler', () => {
   );
 
   it(
-    'stores the pre-clean HTML alongside the compressed cache entry so it stays recoverable via getWebOutputRaw ' +
-      '(regression: extractCleanText compression discarded the fetched HTML entirely, with no recovery path short of re-fetching)',
+    'stores the pre-clean HTML alongside the compressed cache entry so it stays recoverable via getWebOutputRaw, ' +
+      'and rewrites the normal-path output to the compressed text with a recall pointer and a recorded savings stat ' +
+      '(regression: extractCleanText compression discarded the fetched HTML entirely, with no recovery path short of re-fetching, ' +
+      'and the cleaned copy was computed then thrown away on the normal path instead of being shipped to the model)',
     () => {
       const url = 'https://example.com/raw-recovery-html';
       const paragraph = '<p>Ordinary filler content that pads this response out.</p>\n'.repeat(400);
@@ -443,7 +450,10 @@ describe('postFetchHandler', () => {
         agentId: undefined,
         raw: { tool_response: html },
       });
-      expect(result.hookType).toBe('pass');
+      expect(result.hookType).toBe('rewriteOutput');
+      if (result.hookType !== 'rewriteOutput') throw new Error('unreachable');
+      expect(result.updatedOutput).not.toContain('<script>');
+      expect(result.updatedOutput).not.toContain('data-config="secret-selector"');
 
       const denyResult = preFetchHandler({
         eventName: 'pre_tool_use',
@@ -458,6 +468,9 @@ describe('postFetchHandler', () => {
       const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
       expect(cacheId).toBeTruthy();
 
+      // The rewritten output tells the reader how to recall the original raw body -- same `web-output <id> --raw` convention as the dedup hint.
+      expect(result.updatedOutput).toContain(`token-goat web-output ${cacheId} --raw`);
+
       // Default read path (getWebOutput / `token-goat web-output`) is unchanged: cleaned text, script tag and raw attribute gone.
       const cleaned = getWebOutput(cacheId as string);
       expect(cleaned).not.toBeNull();
@@ -470,8 +483,51 @@ describe('postFetchHandler', () => {
       expect(raw).toContain('data-config="secret-selector"');
       expect(raw).toContain('window.__embedded = {token: "abc123"}');
       expect(raw).not.toBe(cleaned);
+
+      // Savings stat recorded for the real body-vs-storedBody delta.
+      const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+      expect(compressCall).toBeTruthy();
+      expect((compressCall as unknown[])[1]).toBeGreaterThan(0);
     },
   );
+
+  it('does not rewrite or record a compression stat when the HTML body clears the caching threshold but not compress_min_bytes', () => {
+    const url = 'https://example.com/html-below-compress-floor';
+    // Above the 1024-byte caching floor but below webfetch.compress_min_bytes (16KB default) -- compression must not fire.
+    const html = `<html><body><p>${'small html filler content. '.repeat(50)}</p></body></html>`;
+    expect(html.length).toBeGreaterThanOrEqual(1024);
+    expect(html.length).toBeLessThan(16 * 1024);
+
+    const result = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'html-below-compress-floor-session',
+      agentId: undefined,
+      raw: { tool_response: html },
+    });
+    expect(result.hookType).toBe('pass');
+    const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+    expect(compressCall).toBeUndefined();
+  });
+
+  it('does not rewrite or record a compression stat for a large non-HTML body', () => {
+    const url = 'https://example.com/large-plaintext';
+    const body = 'Plain text filler with no markup whatsoever. '.repeat(1000);
+    expect(body.length).toBeGreaterThanOrEqual(16 * 1024);
+
+    const result = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId: 'large-plaintext-session',
+      agentId: undefined,
+      raw: { tool_response: body },
+    });
+    expect(result.hookType).toBe('pass');
+    const compressCall = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'webfetch:compress');
+    expect(compressCall).toBeUndefined();
+  });
 
   it('does not fence ordinary content with no injection pattern match', () => {
     const url = 'https://example.com/ordinary';
