@@ -1054,7 +1054,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   if (!canRunWrappedShell()) return null
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly.
-  const detected = detectFromCommand(cmd)
+  const detected = detectFromCommand(cmd, getCwd(event))
   let filterName: string
   if (detected !== null) {
     filterName = detected.filter.name
@@ -1706,7 +1706,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
-  if (!isBuildCommand(cmd) && detectFromCommand(cmd) === null) return passOutput()
+  if (!isBuildCommand(cmd) && detectFromCommand(cmd, preHookCwd ?? undefined) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
   const cmdHash = shortFingerprint(stripOutputPipeline(cmd))

@@ -1,8 +1,12 @@
 // Batch B golden tests — package-manager filters. Faithfully ported from the Python suites (py_test_pkgmgr.py and the relevant TestXxx classes in test_bash_compress.py). These are the regression spec for the 15 filters in src/tool_filters/package_managers.ts.
 
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 
-import { PACKAGE_MANAGER_FILTERS, detectFromCommand, selectFilter, TOOL_FILTERS } from '../src/tool_filters/index.js'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { PACKAGE_MANAGER_FILTERS, detectFromCommand, resolvePackageManagerScript, selectFilter, TOOL_FILTERS } from '../src/tool_filters/index.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1303,5 +1307,157 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
   it('pnpm install still dispatches to npm_install filter (list-only carve-out doesn\'t break install)', () => {
     const f = selectFilter(['pnpm', 'install'])
     expect(f?.name).toBe('npm_install')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Package-manager run-script resolution: `npm test` / `npm run <script>` /
+// `yarn <script>` / `pnpm run <script>` / `bun run <script>` resolve to the
+// argv the script actually executes (via the nearest ancestor package.json),
+// so dispatch lands on the SPECIFIC filter (vitest, eslint, ...) instead of
+// the generic npm/pnpm/yarn/bun catch-all.
+// ---------------------------------------------------------------------------
+
+describe('Dispatch: package-manager run-script resolution', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pkgscript-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const writePkg = (scripts: Record<string, string>, atDir = dir) => {
+    fs.writeFileSync(path.join(atDir, 'package.json'), JSON.stringify({ scripts }))
+  }
+
+  // The test that matters most: given a fixture package.json with `"test": "vitest run"`,
+  // `npm test` must select the vitest filter via the REAL selectFilter/detectFromCommand
+  // dispatch path -- not a unit test of resolvePackageManagerScript in isolation (which would
+  // fall into this repo's documented injected-seam trap).
+  it('npm test resolves to the vitest filter when scripts.test is a vitest invocation', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('vitest')
+  })
+
+  it('detectFromCommand resolves npm test to the vitest filter end to end', () => {
+    writePkg({ test: 'vitest run' })
+    const result = detectFromCommand('npm test', dir)
+    expect(result?.filter.name).toBe('vitest')
+  })
+
+  it('npm run <script> resolves through an arbitrary script name', () => {
+    writePkg({ build: 'eslint .' })
+    const f = selectFilter(['npm', 'run', 'build'], dir)
+    expect(f?.name).toBe('eslint')
+  })
+
+  it('yarn <script> (bare form) resolves the same as npm run', () => {
+    writePkg({ lint: 'eslint .' })
+    const f = selectFilter(['yarn', 'lint'], dir)
+    expect(f?.name).toBe('eslint')
+  })
+
+  it('pnpm run <script> resolves the same as npm run', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['pnpm', 'run', 'test'], dir)
+    expect(f?.name).toBe('vitest')
+  })
+
+  it('bun run <script> resolves the same as npm run', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['bun', 'run', 'test'], dir)
+    expect(f?.name).toBe('vitest')
+  })
+
+  // Negative control: bare `bun test` is bun's own built-in test runner, not a script alias --
+  // it must keep dispatching to the bun filter even when scripts.test names something else.
+  it('bare bun test is NOT treated as a script alias (bun has its own built-in test runner)', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['bun', 'test'], dir)
+    expect(f?.name).toBe('bun')
+  })
+
+  // Negative control: `npm install`/`npm ci` must keep hitting the npm package-manager filter
+  // unchanged -- resolution only applies to run-script forms.
+  it('npm install still dispatches to npm_install filter even with a cwd package.json present', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['npm', 'install'], dir)
+    expect(f?.name).toBe('npm_install')
+  })
+
+  it('npm ls still dispatches to dep-list filter even with a cwd package.json present', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['npm', 'ls'], dir)
+    expect(f?.name).toBe('dep-list')
+  })
+
+  // A repo with no scripts.test (or no package.json at all) must fall through to the ordinary
+  // npm filter exactly as today -- resolution failure is silent, not an error.
+  it('npm test falls through to the npm filter when scripts.test is absent', () => {
+    writePkg({ build: 'tsc' })
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('npm')
+  })
+
+  it('npm test falls through to the npm filter when there is no package.json at all', () => {
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('npm')
+  })
+
+  it('npm test falls through to the npm filter when package.json is malformed JSON', () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{ this is not json')
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('npm')
+  })
+
+  // Compound scripts (`&&`, `||`, `;`, pipes) aren't one dispatchable command -- resolving to
+  // just the first segment would silently discard the rest, so this declines to resolve rather
+  // than guess, and falls through to the generic npm filter (which still compresses the whole
+  // combined output faithfully).
+  it('a compound script (vitest run && eslint .) declines to resolve and falls through to npm', () => {
+    writePkg({ test: 'vitest run && eslint .' })
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('npm')
+  })
+
+  // A script that invokes another npm script chains through bounded resolution rather than
+  // stopping at the intermediate `npm run <script>` form.
+  it('a script that invokes another script chains to the final resolved filter', () => {
+    writePkg({ test: 'npm run unit', unit: 'vitest run' })
+    const f = selectFilter(['npm', 'test'], dir)
+    expect(f?.name).toBe('vitest')
+  })
+
+  // A self-referencing script cycle must terminate (bounded depth), not hang or throw.
+  it('a self-referencing script cycle terminates instead of looping forever', () => {
+    writePkg({ test: 'npm run test' })
+    expect(() => selectFilter(['npm', 'test'], dir)).not.toThrow()
+  })
+
+  // Monorepo: the nearest ancestor package.json wins over one further up, even though both
+  // exist -- resolution must not assume repo root.
+  it('resolves against the nearest ancestor package.json, not a further-up one', () => {
+    writePkg({ test: 'eslint .' }, dir) // "root"
+    const sub = fs.mkdtempSync(path.join(dir, 'pkg-'))
+    writePkg({ test: 'vitest run' }, sub)
+    const f = selectFilter(['npm', 'test'], sub)
+    expect(f?.name).toBe('vitest')
+  })
+
+  // Unit-level guard on the resolver itself, complementing (not replacing) the end-to-end
+  // dispatch assertions above: without a cwd, selectFilter must behave exactly as before
+  // (existing callers that never pass cwd must see no change in behaviour).
+  it('resolvePackageManagerScript returns null for a non-run-script form', () => {
+    expect(resolvePackageManagerScript(['npm', 'install'], dir)).toBeNull()
+  })
+
+  it('selectFilter without a cwd argument resolves exactly as before (no behaviour change for existing callers)', () => {
+    writePkg({ test: 'vitest run' })
+    const f = selectFilter(['npm', 'test'])
+    expect(f?.name).toBe('npm')
   })
 })

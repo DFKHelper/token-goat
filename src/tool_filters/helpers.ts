@@ -4,6 +4,9 @@
 //
 // Ported faithfully from the Python `bash_compress.py` foundation so the per-tool filters that depend on these primitives compress identically.
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { stripAnsiCodes } from '../bash_compress.js'
 
 // ---------------------------------------------------------------------------
@@ -644,6 +647,153 @@ export function stripPrefixes(argv: string[]): string[] {
     }
   }
   return out
+}
+
+// ---------------------------------------------------------------------------
+// Package-manager run-script resolution
+// ---------------------------------------------------------------------------
+//
+// `npm test` / `npm run build` / `yarn lint` / `pnpm run build` / `bun run build` invoke a
+// package.json script alias that never appears in the command string, so `selectFilter`
+// dispatching on `argv[0]` (`npm`) can only ever land on the generic package-manager filter --
+// it has no way to see that `scripts.test` is `vitest run`. This resolves the script to the
+// argv it actually executes so dispatch can match the specific filter (vitest, eslint, ...)
+// instead, the same way `python -m pytest` resolves to `pytest` above.
+
+/** Package-manager binaries whose subcommands can name a package.json script. */
+const PACKAGE_MANAGER_SCRIPT_STEMS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
+
+/** Bound on `scripts.a` → `scripts.b` → ... chains, so a self-referencing script
+ * (`"test": "npm run test"`) terminates instead of looping forever. */
+const MAX_SCRIPT_RESOLUTION_DEPTH = 5
+
+/** A script body containing a shell control operator isn't one dispatchable command
+ * (`"test": "vitest run && eslint ."`) -- resolving to the first segment would silently
+ * discard the rest, so such scripts decline to resolve and fall through to the generic
+ * package-manager filter, which still compresses the *whole* combined output faithfully. */
+const COMPOUND_SCRIPT_RE = /&&|\|\||[|;]|`|\$\(/
+
+interface PackageJsonScriptsCacheEntry {
+  mtimeMs: number
+  scripts: Record<string, string>
+}
+
+/** Cache of `package.json` path → (mtime, parsed `scripts`), so the hot dispatch path re-reads
+ * a given package.json only when it changes on disk, not on every Bash call. */
+const packageJsonScriptsCache = new Map<string, PackageJsonScriptsCacheEntry>()
+
+/** Parse `candidate`'s `scripts` map, using the mtime-gated cache. Returns `{}` (and caches
+ * that) on any read/parse failure or a missing/malformed `scripts` field -- callers treat an
+ * empty map the same as "no script found" rather than a hard error. */
+function loadPackageScripts(candidate: string, stat: fs.Stats): Record<string, string> {
+  const cached = packageJsonScriptsCache.get(candidate)
+  if (cached && cached.mtimeMs === stat.mtimeMs) return cached.scripts
+  let scripts: Record<string, string> = {}
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(candidate, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const raw = (parsed as Record<string, unknown>)['scripts']
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) scripts = raw as Record<string, string>
+    }
+  } catch {
+    // Unreadable or malformed JSON -- cached as empty so the hot path doesn't re-parse a
+    // known-broken file on every call until it changes.
+  }
+  packageJsonScriptsCache.set(candidate, { mtimeMs: stat.mtimeMs, scripts })
+  return scripts
+}
+
+/** Find the nearest ancestor `package.json` starting at `startDir` (the command's own working
+ * directory, NOT the repo root -- a monorepo subpackage's scripts must win over the root's) and
+ * return its `scripts` map, or `null` when none exists up to the filesystem root. */
+function findNearestPackageScripts(startDir: string): Record<string, string> | null {
+  let dir = startDir
+  for (;;) {
+    const candidate = path.join(dir, 'package.json')
+    try {
+      const stat = fs.statSync(candidate)
+      if (stat.isFile()) return loadPackageScripts(candidate, stat)
+    } catch {
+      // No package.json at this level -- walk up.
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+/** Extract the script name a package-manager invocation names, or `null` when `args` isn't a
+ * run-script form this resolver handles (bare subcommands like `npm install`, `npm ci`, `npm
+ * ls` are deliberately left alone -- see the module doc comment). */
+function scriptNameFromArgs(stem: string, args: string[]): string | null {
+  const [a0, a1] = args
+  if (a0 === undefined) return null
+  switch (stem) {
+    case 'npm':
+    case 'pnpm':
+      // `npm test`/`npm t` and `pnpm test`/`pnpm t` are package-manager shorthands for the
+      // `test` script even without an explicit `run`.
+      if (a0 === 'test' || a0 === 't') return 'test'
+      if ((a0 === 'run' || a0 === 'run-script') && a1 !== undefined) return a1
+      return null
+    case 'bun':
+      // Bare `bun test` is bun's own built-in test runner, not a script alias -- only the
+      // explicit `bun run <script>` form names a package.json script.
+      if (a0 === 'run' && a1 !== undefined) return a1
+      return null
+    case 'yarn':
+      // Yarn's classic CLI runs a script by bare name (`yarn lint`) as well as via `run`; a
+      // bare first token that happens to also be a yarn built-in (`yarn install`) is still
+      // safe to try here because the scripts-map lookup below silently misses when there's no
+      // matching script, which is the same "decline to resolve" outcome as any other subcommand.
+      if (a0 === 'run' && a1 !== undefined) return a1
+      if (!a0.startsWith('-')) return a0
+      return null
+    default:
+      return null
+  }
+}
+
+/**
+ * Resolve `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run
+ * <script>` to the argv of the command the script actually executes, by reading the nearest
+ * ancestor `package.json`'s `scripts` map (relative to `cwd`, the command's own working
+ * directory). Returns `null` -- meaning "fall through to ordinary dispatch on the unresolved
+ * argv" -- for anything this can't safely resolve: not a package-manager invocation at all, not
+ * a run-script form, no ancestor `package.json`, an unreadable/malformed one, the named script
+ * missing, or a script body that isn't a single dispatchable command (compound `&&`/`||`/`;`/
+ * pipe scripts, or a chain exceeding {@link MAX_SCRIPT_RESOLUTION_DEPTH} hops). Never throws.
+ */
+export function resolvePackageManagerScript(argv: string[], cwd: string): string[] | null {
+  try {
+    let current = argv
+    let resolvedAny = false
+    for (let depth = 0; depth < MAX_SCRIPT_RESOLUTION_DEPTH; depth++) {
+      if (current.length === 0) break
+      const stem = pathStem(current[0]!).toLowerCase()
+      if (!PACKAGE_MANAGER_SCRIPT_STEMS.has(stem)) break
+      const scriptName = scriptNameFromArgs(stem, current.slice(1))
+      if (scriptName === null) break
+      const scripts = findNearestPackageScripts(cwd)
+      if (scripts === null) break
+      const scriptCmd = scripts[scriptName]
+      if (typeof scriptCmd !== 'string' || !scriptCmd.trim()) break
+      if (COMPOUND_SCRIPT_RE.test(scriptCmd)) break
+      let nextArgv: string[]
+      try {
+        nextArgv = shlexSplit(scriptCmd)
+      } catch {
+        break
+      }
+      if (nextArgv.length === 0) break
+      current = nextArgv
+      resolvedAny = true
+    }
+    return resolvedAny ? current : null
+  } catch {
+    // Must never throw or block dispatch -- fall through to the unresolved argv.
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
-import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, shlexSplit, stripPrefixes } from './helpers.js'
+import { REDIRECT_TOKEN_RE, hasBareBackgroundOrNewline, resolvePackageManagerScript, shlexSplit, stripPrefixes } from './helpers.js'
 import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
@@ -67,14 +67,38 @@ const PROFILE_CAPS: Record<string, number> = { aggressive: 50, balanced: 200, mi
  * when none applies (callers should NOT wrap such commands — the subprocess
  * overhead would be pure cost). argv is prefix-stripped first so
  * `sudo time python -m pytest` resolves to the pytest filter.
+ *
+ * When `cwd` is supplied and `argv` is a package-manager run-script form
+ * (`npm test`, `npm run build`, `yarn lint`, `pnpm run build`, `bun run
+ * build`), this first tries resolving the aliased script (via the nearest
+ * ancestor `package.json`) and dispatching on THAT — so `npm test` backed by
+ * `"test": "vitest run"` matches the vitest filter instead of the generic
+ * npm one. If resolution isn't applicable/safe or the resolved command
+ * matches no filter, this falls through to the unresolved `argv` exactly as
+ * before (which still lets the generic npm/pnpm/yarn/bun filter claim it).
  */
-export function selectFilter(argv: string[]): ToolFilter | null {
+export function selectFilter(argv: string[], cwd?: string): ToolFilter | null {
   if (argv.length === 0) return null
   let resolved = stripPrefixes(argv)
   if (resolved.length === 0) {
     // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall back to the first token so a dedicated env filter can still opt in.
     resolved = argv.slice(0, 1)
     if (resolved.length === 0) return null
+  }
+  if (cwd !== undefined) {
+    const scriptArgv = resolvePackageManagerScript(resolved, cwd)
+    if (scriptArgv !== null) {
+      const scriptResolved = stripPrefixes(scriptArgv)
+      if (scriptResolved.length > 0) {
+        for (const f of TOOL_FILTERS) {
+          try {
+            if (f.matches(scriptResolved)) return f
+          } catch {
+            // A filter raising during matches() must not break dispatch.
+          }
+        }
+      }
+    }
   }
   for (const f of TOOL_FILTERS) {
     try {
@@ -99,7 +123,7 @@ function hasRedirect(argv: string[]): boolean {
  * a single command, so compounds/pipelines/backgrounded/multi-line commands
  * are left untouched.
  */
-export function detectFromCommand(command: string): { filter: ToolFilter; argv: string[] } | null {
+export function detectFromCommand(command: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   if (!command || command.length > 65536) return null
   if (['&&', '||', '$(', '`'].some((op) => command.includes(op))) return null
   if (command.includes('|') || command.includes(';')) return null
@@ -111,7 +135,7 @@ export function detectFromCommand(command: string): { filter: ToolFilter; argv: 
     return null
   }
   if (hasRedirect(argv)) return null
-  const filter = selectFilter(argv)
+  const filter = selectFilter(argv, cwd)
   if (filter === null) return null
   return { filter, argv: stripPrefixes(argv) }
 }
@@ -121,7 +145,7 @@ export function detectFromCommand(command: string): { filter: ToolFilter; argv: 
  * compound guard already ran on the whole command). Still rejects `||`, `|`,
  * `;`, `$()`, and backticks inside the segment.
  */
-function detectSingleSegment(segment: string): { filter: ToolFilter; argv: string[] } | null {
+function detectSingleSegment(segment: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   const seg = segment.trim()
   if (!seg || seg.length > 65536) return null
   if (['||', '$(', '`'].some((op) => seg.includes(op))) return null
@@ -140,7 +164,7 @@ function detectSingleSegment(segment: string): { filter: ToolFilter; argv: strin
     return null
   }
   if (hasRedirect(argv)) return null
-  const filter = selectFilter(argv)
+  const filter = selectFilter(argv, cwd)
   if (filter === null) return null
   return { filter, argv: stripPrefixes(argv) }
 }
@@ -204,6 +228,7 @@ function splitTopLevelAnd(command: string): string[] {
 export function tryWrapCompoundSegments(
   command: string,
   wrapperArgs: (filterName: string, segment: string) => string | null,
+  cwd?: string,
 ): string | null {
   if (!command || command.includes('||') || command.includes('|') || command.includes(';')) return null
   if (command.includes('$(') || command.includes('`')) return null
@@ -214,7 +239,7 @@ export function tryWrapCompoundSegments(
   let anyWrapped = false
   for (const seg of segments) {
     if (!seg) return null // empty segment (e.g. trailing &&) — bail
-    const detected = detectSingleSegment(seg)
+    const detected = detectSingleSegment(seg, cwd)
     if (detected !== null) {
       const wrapped = wrapperArgs(detected.filter.name, seg)
       if (wrapped !== null) {

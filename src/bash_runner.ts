@@ -55,7 +55,7 @@ export interface RunOptions {
 }
 
 /** Look up the filter by name first, falling back to argv-based dispatch. */
-function resolveFilter(command: string, filterName: string | undefined): ToolFilter | null {
+function resolveFilter(command: string, filterName: string | undefined, cwd: string | undefined): ToolFilter | null {
   if (filterName) {
     const named = filterByName(filterName)
     if (named !== null) return named
@@ -67,7 +67,7 @@ function resolveFilter(command: string, filterName: string | undefined): ToolFil
   } catch {
     return null
   }
-  return selectFilter(argv)
+  return selectFilter(argv, cwd)
 }
 
 // Shared spawnSync options for the two run paths: same shell resolution (wrappedShell), timeout, cwd, env. Each caller adds its own stdio (and maxBuffer for the capture path).
@@ -118,7 +118,7 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
  */
 export function run(command: string, opts: RunOptions = {}): number {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_SECONDS
-  const filter = resolveFilter(command, opts.filterName)
+  const filter = resolveFilter(command, opts.filterName, opts.cwd)
   if (filter === null) {
     // No tool filter matches this command. Ordinarily that means streaming it
     // through raw is cheapest (one subprocess fork, no capture). But when the
