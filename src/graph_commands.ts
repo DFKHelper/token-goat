@@ -184,6 +184,8 @@ export interface CallersOptions {
   context?: number
   /** `--exclude-tests`: drop callers whose call site lives in a test file (per isTestFile). Opt-in; omitted or false leaves output byte-identical to today. */
   excludeTests?: boolean
+  /** Only list callers whose enclosing symbol NAME matches this pattern (the primary field each row is keyed on: `symbol<TAB>file:line`). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  grep?: string
 }
 
 export interface CallerEntry {
@@ -283,14 +285,31 @@ export function runCallers(opts: CallersOptions): number {
     emitErr(`Symbol '${name}' not found in '${file}'`)
     return 1
   }
-  const resolved = resolveCallers(name, opts.limit, fileHint, rootDir, opts.excludeTests)
-  // Filter target is the caller's call SITE, not the resolved symbol's own definition site --
-  // resolveCallers already queried unbounded (full headroom) when excludeTests is set, so
-  // slicing to the requested limit happens here, AFTER filtering, matching this file's other
-  // --exclude-tests sites (never slice before the filter, or the flag silently under-returns).
+  // resolveCallers must query unbounded (full headroom) whenever either --exclude-tests or
+  // --grep is set, since both filter the resolved set client-side, AFTER the query -- slicing
+  // to the requested limit before either filter runs would silently under-return by letting
+  // suppressed/non-matching entries occupy slots ahead of the cutoff.
+  const unbounded = opts.excludeTests === true || opts.grep !== undefined
+  const resolved = resolveCallers(name, opts.limit, fileHint, rootDir, unbounded)
+  // Filter target is the caller's call SITE, not the resolved symbol's own definition site.
   const suppressed = opts.excludeTests === true ? resolved.filter((e) => isTestFile(e.file)).length : 0
-  const entries = opts.excludeTests === true ? resolved.filter((e) => !isTestFile(e.file)).slice(0, opts.limit ?? 500) : resolved
+  let filtered = opts.excludeTests === true ? resolved.filter((e) => !isTestFile(e.file)) : resolved
+  // --grep narrows by the caller's enclosing symbol NAME (the field each row is keyed on:
+  // `symbol<TAB>file:line`), and runs BEFORE the requested-limit slice below so it selects from
+  // the whole (test-filtered) set rather than from an already-capped page.
+  const preGrepCount = filtered.length
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  if (matchesGrep !== undefined) filtered = filtered.filter((e) => matchesGrep(e.caller))
+  const entries = unbounded ? filtered.slice(0, opts.limit ?? 500) : filtered
   if (entries.length === 0) {
+    // Distinguish "--grep matched none of the N callers that do exist" from a genuinely
+    // caller-less symbol -- same "filtered store renders as populated" trap already fixed for
+    // dead/deps/types. Checked first so it takes priority over the --exclude-tests message
+    // below when both filters are active and --grep is what zeroed the remaining set.
+    if (matchesGrep !== undefined && preGrepCount > 0) {
+      emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers'))
+      return 0
+    }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
       emitErr(`No non-test references found for '${opts.symbol}' (${suppressed} in test files hidden by --exclude-tests)`)

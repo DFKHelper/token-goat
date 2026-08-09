@@ -1313,6 +1313,119 @@ describe('runCallers --exclude-tests', () => {
   })
 })
 
+describe('runCallers --grep', () => {
+  it('keeps only callers whose enclosing symbol name matches the pattern', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-grep-'))
+    try {
+      const defFile = join(root, 'grep-def.ts')
+      const callerFile = join(root, 'grep-caller.ts')
+      writeFileSync(defFile, 'export function grepTargetFn8q3() { return 1 }\n')
+      writeFileSync(callerFile, 'function handleWidget8q3() { grepTargetFn8q3() }\nfunction otherCaller8q3() { grepTargetFn8q3() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => { expect(runCallers({ symbol: 'grepTargetFn8q3' })).toBe(0) })
+        expect(withoutFlag).toContain('handleWidget8q3')
+        expect(withoutFlag).toContain('otherCaller8q3')
+
+        const withFlag = captureStdout(() => { expect(runCallers({ symbol: 'grepTargetFn8q3', grep: '^handle' })).toBe(0) })
+        expect(withFlag).toContain('handleWidget8q3')
+        expect(withFlag).not.toContain('otherCaller8q3')
+        expect(withFlag).not.toEqual(withoutFlag)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('says the match was filtered out, not "No references found", when --grep matches none of the callers that do exist (plural, count > 1)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-grep-empty-'))
+    try {
+      const defFile = join(root, 'grep-empty-def.ts')
+      const callerFile = join(root, 'grep-empty-caller.ts')
+      writeFileSync(defFile, 'export function grepEmptyFn4r7() { return 1 }\n')
+      writeFileSync(callerFile, 'function callerOne4r7() { grepEmptyFn4r7() }\nfunction callerTwo4r7() { grepEmptyFn4r7() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errs: string[] = []
+        const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => { errs.push(String(c)); return true })
+        try {
+          const out = captureStdout(() => { expect(runCallers({ symbol: 'grepEmptyFn4r7', grep: '^nomatch' })).toBe(0) })
+          const all = out + errs.join('\n')
+          expect(all).toContain('all 2 callers were filtered out by --grep')
+          expect(all).not.toContain('No references found')
+        } finally {
+          errSpy.mockRestore()
+        }
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Singular count branch, pinned separately from the plural control above so a fixture landing on count===1 is actually asserted, not just reached.
+  it('uses singular wording when exactly one caller existed and --grep filtered it out', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-grep-singular-'))
+    try {
+      const defFile = join(root, 'grep-singular-def.ts')
+      const callerFile = join(root, 'grep-singular-caller.ts')
+      writeFileSync(defFile, 'export function grepSingularFn2j5() { return 1 }\n')
+      writeFileSync(callerFile, 'function onlyCaller2j5() { grepSingularFn2j5() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => { expect(runCallers({ symbol: 'grepSingularFn2j5', grep: '^nomatch' })).toBe(0) })
+        expect(out).toContain('all 1 caller was filtered out by --grep')
+        expect(out).not.toContain('1 callers')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Caller NAMEs are valid JS identifiers, except the one synthetic value resolveCallers emits
+  // for a module-scope call site: the literal string '(module scope)'. That's the only caller
+  // string containing regex-metacharacter bytes, so it doubles as the vehicle for proving the
+  // invalid-regex fallback does a literal substring match rather than throwing: '(' alone is an
+  // unterminated group and fails to compile, but is a literal substring of '(module scope)' and
+  // of no named-function caller.
+  it('falls back to a literal substring match for an invalid regex, never throwing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-grep-literal-'))
+    try {
+      const defFile = join(root, 'grep-literal-def.ts')
+      const callerFile = join(root, 'grep-literal-caller.ts')
+      writeFileSync(defFile, 'export function grepLiteralFn9x1() { return 1 }\n')
+      writeFileSync(callerFile, 'grepLiteralFn9x1()\nfunction plainCaller9x1() { grepLiteralFn9x1() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const out = captureStdout(() => { expect(runCallers({ symbol: 'grepLiteralFn9x1', grep: '(' })).toBe(0) })
+        expect(out).toContain('(module scope)')
+        expect(out).not.toContain('plainCaller9x1')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- resolveCallers/runCallers cross-project scoping (regression) -----------
 
 describe('resolveCallers cross-project scoping', () => {
