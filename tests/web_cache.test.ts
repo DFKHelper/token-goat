@@ -8,6 +8,7 @@ import { likeSearchForTesting } from '../src/recall_index.js'
 import {
   getWebOutput,
   getWebOutputByUrl,
+  getWebOutputRaw,
   storeWebOutput,
   wasUrlFetchedThisSession,
 } from '../src/web_cache.js'
@@ -83,6 +84,38 @@ describe('retrieval', () => {
     storeWebOutput('https://example.com/c', 'first')
     storeWebOutput('https://example.com/c', 'second')
     expect(getWebOutputByUrl('https://example.com/c')?.content).toBe('second')
+  })
+})
+
+// Regression: postFetchHandler stored only the cleaned (extractCleanText) body when
+// webfetch.compress_bodies compressed a fetch, so the original fetched body was permanently
+// unrecoverable -- a lossy store with no recovery path (this repo's "lossy store" defect class),
+// not the merely-lossy-reader-over-a-lossless-store shape every other cache in this codebase uses.
+describe('getWebOutputRaw', () => {
+  it('returns the separately-stored raw body when a raw copy was passed at store time, leaving getWebOutput (the default read path) unchanged', () => {
+    const id = storeWebOutput('https://example.com/raw', 'cleaned text', undefined, '<html><body>cleaned text<script>evil()</script></body></html>')
+    expect(getWebOutput(id)).toBe('cleaned text')
+    expect(getWebOutputRaw(id)).toBe('<html><body>cleaned text<script>evil()</script></body></html>')
+  })
+
+  it('falls back to the cleaned content when no raw copy was stored (cleaning never ran, or the entry predates this feature)', () => {
+    const id = storeWebOutput('https://example.com/no-raw', 'plain body')
+    expect(getWebOutputRaw(id)).toBe('plain body')
+  })
+
+  it('is a no-op when rawContent equals content (nothing was actually cleaned)', () => {
+    const id = storeWebOutput('https://example.com/identical', 'same', undefined, 'same')
+    expect(getWebOutputRaw(id)).toBe('same')
+  })
+
+  it('returns null for an unknown id, same as getWebOutput', () => {
+    expect(getWebOutputRaw('deadbeef')).toBeNull()
+  })
+
+  it('recovers the raw body through the disk read-through path (cross-process recall), not just in-memory', () => {
+    const id = storeWebOutput('https://example.com/disk-raw', 'clean', undefined, 'raw-on-disk')
+    clearModuleCaches()
+    expect(getWebOutputRaw(id)).toBe('raw-on-disk')
   })
 })
 

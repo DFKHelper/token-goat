@@ -53,3 +53,32 @@ describe('web-output --section on a missing heading', () => {
     expect(stdout.join('')).not.toContain('real body text')
   })
 })
+
+// Regression: postFetchHandler's compress_bodies path cached only the cleaned text, so a raw
+// fetch body was permanently unrecoverable once cleaned -- a lossy store with no recovery path.
+// web-output --raw (new) recovers it via storeWebOutput's optional rawContent param; the default
+// (no --raw) path must stay byte-identical to before this change.
+describe('web-output --raw', () => {
+  it('returns the raw pre-clean body when a raw copy was stored, and the default (no --raw) stays the cleaned body', async () => {
+    const id = storeWebOutput('https://example.com/raw-cli', 'cleaned body', undefined, '<html><body data-secret="x">cleaned body</body></html>')
+
+    const rawCode = await runCli(['web-output', id, '--raw'])
+    expect(rawCode).toBe(0)
+    expect(stdout.join('')).toContain('data-secret="x"')
+
+    stdout.length = 0
+    const defaultCode = await runCli(['web-output', id])
+    expect(defaultCode).toBe(0)
+    expect(stdout.join('')).toBe('cleaned body\n')
+    expect(stdout.join('')).not.toContain('data-secret')
+  })
+
+  it('falls back to the cleaned content when no raw copy was ever stored', async () => {
+    const id = storeWebOutput('https://example.com/no-raw-cli', 'plain body')
+
+    const code = await runCli(['web-output', id, '--raw'])
+
+    expect(code).toBe(0)
+    expect(stdout.join('')).toBe('plain body\n')
+  })
+})

@@ -66,7 +66,7 @@ import {
   WorkerAlreadyRunningError,
 } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
-import { getWebOutput } from './web_cache.js'
+import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 import * as bashRunner from './bash_runner.js'
 import {
   runSymbol,
@@ -1073,12 +1073,13 @@ function cmdBashOutput(
 
 function cmdWebOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; raw?: boolean },
 ): void {
   if (id === undefined) {
     throw new CliError('provide a web cache <id>')
   }
-  const content = getWebOutput(id)
+  // --raw recovers the body as actually fetched, before hooks_fetch.ts's extractCleanText cleaning pass, so a selector/script tag/embedded JSON blob lost from the default cleaned text is still recoverable without re-fetching. Falls back to the cleaned content when no separate raw copy was stored (cleaning never ran for this entry), which is already the raw body in that case.
+  const content = opts.raw === true ? getWebOutputRaw(id) : getWebOutput(id)
   if (content === null) {
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
@@ -3248,6 +3249,7 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
     .option('--full', 'print the entire cached entry with no head/tail elision')
+    .option('--raw', 'return the body as actually fetched, before extractCleanText cleaning, instead of the default cleaned text')
     .action(guard(cmdWebOutput))
 
   program

@@ -26,6 +26,9 @@ export const WEB_OUTPUT_SUBDIR = 'web_outputs'
 // cacheId -> stored body.
 let _byId = new Map<string, string>()
 
+// cacheId -> raw (pre-clean) body, only populated when the stored body was cleaned via extractCleanText (see hooks_fetch.ts) and therefore differs from the raw fetch.
+let _rawById = new Map<string, string>()
+
 // url -> cacheId (the most recent fetch wins for a given URL).
 let _urlIndex = new Map<string, string>()
 
@@ -55,8 +58,13 @@ function cacheIdForUrl(url: string): string {
  * `url` field (and `_urlIndex`, used by getWebOutputByUrl /
  * wasUrlFetchedThisSession) stay keyed on the real URL for display and
  * URL-only lookups.
+ *
+ * `rawContent`, if given and different from `content`, is the body as actually fetched, before
+ * hooks_fetch.ts's extractCleanText cleaning pass. Stored alongside the cleaned `content` so the
+ * cache stays lossless (recoverable via {@link getWebOutputRaw} / `web-output --raw`) even though
+ * the default read path still returns the cleaned text.
  */
-export function storeWebOutput(url: string, content: string, dedupKey: string = url): string {
+export function storeWebOutput(url: string, content: string, dedupKey: string = url, rawContent?: string): string {
   const cacheId = cacheIdForUrl(dedupKey)
   // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth
   // redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the
@@ -66,8 +74,11 @@ export function storeWebOutput(url: string, content: string, dedupKey: string = 
   const redactedContent = redactSecrets(content).text
   _byId.set(cacheId, redactedContent)
   _urlIndex.set(url, cacheId)
+  const redactedRaw = rawContent !== undefined && rawContent !== content ? redactSecrets(rawContent).text : undefined
+  if (redactedRaw !== undefined) _rawById.set(cacheId, redactedRaw)
+  else _rawById.delete(cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.
-  storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content: redactedContent })
+  storeBlob(WEB_OUTPUT_SUBDIR, cacheId, redactedRaw !== undefined ? { url, content: redactedContent, raw: redactedRaw } : { url, content: redactedContent })
   // The url itself can carry a secret (a signed URL's token query param, an embedded API key)
   // just like content can -- redact ONLY the copy fed to the recall index (label/content), not
   // the `url` used above for _urlIndex/storeBlob: those need the real url intact for exact-match
@@ -81,13 +92,12 @@ export function storeWebOutput(url: string, content: string, dedupKey: string = 
   return cacheId
 }
 
-/** Coerce an untrusted parsed-JSON blob into `{ url?, content }`, or null when
- * `content` is missing or not a string. */
-function coerceWebBlob(raw: unknown): { url: string | null; content: string } | null {
+/** Coerce an untrusted parsed-JSON blob into `{ url?, content, raw? }`, or null when `content` is missing or not a string. */
+function coerceWebBlob(raw: unknown): { url: string | null; content: string; raw: string | null } | null {
   if (raw === null || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
   if (typeof o['content'] !== 'string') return null
-  return { url: typeof o['url'] === 'string' ? o['url'] : null, content: o['content'] }
+  return { url: typeof o['url'] === 'string' ? o['url'] : null, content: o['content'], raw: typeof o['raw'] === 'string' ? o['raw'] : null }
 }
 
 /**
@@ -107,8 +117,16 @@ export function getWebOutput(cacheId: string): string | null {
   const blob = coerceWebBlob(loadBlob(WEB_OUTPUT_SUBDIR, cacheId))
   if (blob === null) return null
   _byId.set(cacheId, blob.content)
+  if (blob.raw !== null) _rawById.set(cacheId, blob.raw)
   if (blob.url !== null) _urlIndex.set(blob.url, cacheId)
   return blob.content
+}
+
+/** Return the body as actually fetched for `cacheId`, before extractCleanText's cleaning pass -- the recovery path `web-output --raw` uses. Falls back to the cleaned body (same disk/staleness rules as {@link getWebOutput}) when no separate raw copy was stored, which covers both "the entry predates this raw-recovery feature" and "cleaning never ran for this entry (webfetch.compress_bodies was off, or the body was too small/not HTML)" -- in both cases the cleaned body IS the raw body, so there is nothing to lose. */
+export function getWebOutputRaw(cacheId: string): string | null {
+  const cleaned = getWebOutput(cacheId)
+  if (cleaned === null) return null
+  return _rawById.get(cacheId) ?? cleaned
 }
 
 /**
@@ -161,5 +179,6 @@ export function wasUrlFetchedThisSession(url: string): boolean {
 
 registerReset(() => {
   _byId = new Map()
+  _rawById = new Map()
   _urlIndex = new Map()
 })

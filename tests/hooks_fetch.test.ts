@@ -10,7 +10,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 });
 
 import { postFetchHandler, preFetchHandler } from '../src/hooks_fetch.js';
-import { getWebOutput } from '../src/web_cache.js';
+import { getWebOutput, getWebOutputRaw } from '../src/web_cache.js';
 import { clearModuleCaches } from '../src/reset.js';
 import { recordStat } from '../src/stats.js';
 
@@ -421,6 +421,55 @@ describe('postFetchHandler', () => {
       expect(stored).not.toBeNull();
       // The fenced output and the cached copy must agree -- both are the compressed text.
       expect(result.updatedOutput).toContain((stored as string).slice(0, 200));
+    },
+  );
+
+  it(
+    'stores the pre-clean HTML alongside the compressed cache entry so it stays recoverable via getWebOutputRaw ' +
+      '(regression: extractCleanText compression discarded the fetched HTML entirely, with no recovery path short of re-fetching)',
+    () => {
+      const url = 'https://example.com/raw-recovery-html';
+      const paragraph = '<p>Ordinary filler content that pads this response out.</p>\n'.repeat(400);
+      const html =
+        `<!DOCTYPE html><html><head><title>Test</title></head><body>` +
+        `<div id="widget" data-config="secret-selector">${paragraph}<script>window.__embedded = {token: "abc123"}</script>${paragraph}</div></body></html>`;
+      expect(html.length).toBeGreaterThanOrEqual(16 * 1024);
+
+      const result = postFetchHandler({
+        eventName: 'post_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'raw-recovery-html-session',
+        agentId: undefined,
+        raw: { tool_response: html },
+      });
+      expect(result.hookType).toBe('pass');
+
+      const denyResult = preFetchHandler({
+        eventName: 'pre_tool_use',
+        toolName: 'WebFetch',
+        toolInput: { url },
+        sessionId: 'raw-recovery-html-session',
+        agentId: undefined,
+        raw: {},
+      });
+      expect(denyResult.hookType).toBe('deny');
+      if (denyResult.hookType !== 'deny') throw new Error('unreachable');
+      const cacheId = /token-goat web-output ([0-9a-f]+)/.exec(denyResult.message)?.[1];
+      expect(cacheId).toBeTruthy();
+
+      // Default read path (getWebOutput / `token-goat web-output`) is unchanged: cleaned text, script tag and raw attribute gone.
+      const cleaned = getWebOutput(cacheId as string);
+      expect(cleaned).not.toBeNull();
+      expect(cleaned).not.toContain('<script>');
+      expect(cleaned).not.toContain('data-config="secret-selector"');
+
+      // The raw fetched body -- selector, script tag, embedded JSON -- is still recoverable via getWebOutputRaw (`web-output --raw`).
+      const raw = getWebOutputRaw(cacheId as string);
+      expect(raw).not.toBeNull();
+      expect(raw).toContain('data-config="secret-selector"');
+      expect(raw).toContain('window.__embedded = {token: "abc123"}');
+      expect(raw).not.toBe(cleaned);
     },
   );
 
