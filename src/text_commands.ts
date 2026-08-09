@@ -656,6 +656,13 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
   // Indexed rather than for-of because the pre-filter frame count is read back off the parallel `blocks` array below: `filtered` is a .map of `blocks` so the indices line up, and carrying the count on the mapped object instead would leak a new field into the `--json` payload, which spreads those same objects verbatim.
   for (const [blockIndex, block] of filtered.entries()) {
     process.stdout.write('Traceback (most recent call last):\n')
+    // `--keep N` slices the TAIL of the surviving project frames, so what it drops is the OUTER frames -- the call path that led to the failure, which is the single thing `trace` exists to show. Rendered silently, the kept tail reads as the complete project-frame set, so the notice goes ABOVE the frames, where the elision actually happened. Recomputed off the parallel `blocks` array (same indexing rationale as the loop header) rather than carried on the mapped object, because those objects are spread verbatim into the `--json` payload and a new field would change that frozen shape. Wording and shape are the repo's existing cap-elision dialect (see renderTopFilesSummary in read_commands.ts): `...(N more X elided; use a higher --flag to see more)`, with the noun agreeing with the count so "1 more frames elided" can't ship. This cannot collide with the filtered-to-empty notice below: --keep only slices when frames.length > keepN and keepN >= 1, so any block it truncates keeps at least one frame, and any block that reaches zero was zeroed by isProjectFrame alone -- for which droppedByKeep is 0 and this notice stays silent.
+    const projectFrameCount = blocks[blockIndex]?.frames.filter((f) => isProjectFrame(f.file, cwd)).length ?? 0
+    const droppedByKeep = projectFrameCount - block.frames.length
+    if (droppedByKeep > 0) {
+      const noun = droppedByKeep === 1 ? 'frame' : 'frames'
+      process.stdout.write(`  ...(${droppedByKeep} more ${noun} elided; use a higher --keep to see more)\n`)
+    }
     for (const f of block.frames) {
       process.stdout.write(`  File "${f.file}", line ${f.lineNo}, in ${f.func}\n`)
       // parseTracebacks always assigns context a string ('' for "no context line"), never

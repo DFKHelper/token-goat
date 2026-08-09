@@ -334,6 +334,113 @@ describe('trace command', () => {
     expect(r.stdout).not.toContain('filtered out as non-project')
   })
 
+  // Regression: `--keep N` sliced the surviving project frames down to the last N and said nothing
+  // about the rest, so the output read as the complete project-frame set when it was not -- and the
+  // frames it dropped are the OUTER ones, i.e. the call path that led to the failure, which is the
+  // one thing `trace` exists to show. Six project frames kept down to two must name the four gone.
+  const SIX_PROJECT_FRAMES = [
+    'Traceback (most recent call last):',
+    '  File "app/main.py", line 1, in fn1',
+    '    call1()',
+    '  File "app/router.py", line 2, in fn2',
+    '    call2()',
+    '  File "app/service.py", line 3, in fn3',
+    '    call3()',
+    '  File "app/repo.py", line 4, in fn4',
+    '    call4()',
+    '  File "app/db.py", line 5, in fn5',
+    '    call5()',
+    '  File "app/driver.py", line 6, in fn6',
+    '    call6()',
+    'ValueError: boom',
+  ].join('\n')
+
+  it('names how many frames --keep dropped, and drops the outer ones (plural)', () => {
+    const r = run(['trace', '--keep', '2'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('...(4 more frames elided; use a higher --keep to see more)')
+    // The notice sits above the frames because the elision happened there -- the kept frames are
+    // the innermost two, so an appended note would point at the wrong end of the call chain.
+    expect(r.stdout.indexOf('elided')).toBeLessThan(r.stdout.indexOf('app/db.py'))
+    expect(r.stdout).toContain('app/driver.py')
+    expect(r.stdout).not.toContain('app/main.py')
+    expect(r.stdout).toContain('ValueError: boom')
+  })
+
+  // The count==1 branch has its own noun; asserting only the plural above would let "1 more frames
+  // elided" ship, which reads as a bug in the tool rather than a report about the traceback.
+  it('agrees the noun with the count when --keep drops exactly one frame (singular)', () => {
+    const r = run(['trace', '--keep', '5'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('...(1 more frame elided; use a higher --keep to see more)')
+    expect(r.stdout).not.toContain('1 more frames')
+  })
+
+  // --keep >= the frame count drops nothing, so an unconditional notice would claim an elision that
+  // never happened. Both the exactly-equal boundary and the over-count case must stay silent.
+  it('emits no elision notice when --keep is at or above the project frame count', () => {
+    for (const keep of ['6', '99']) {
+      const r = run(['trace', '--keep', keep], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout, `--keep ${keep}`).not.toContain('elided')
+      expect(r.stdout, `--keep ${keep}`).toContain('app/main.py')
+    }
+  })
+
+  // A block can lose frames to the non-project filter AND then be truncated by --keep. The two
+  // notices must never both fire: --keep only slices when frames.length > keepN with keepN >= 1, so
+  // a truncated block always keeps at least one frame and can never also be the filtered-to-empty
+  // case. Assert each state prints its own notice and not the other's.
+  it('does not emit contradictory notices when non-project filtering and --keep truncation both apply', () => {
+    const mixed = [
+      'Traceback (most recent call last):',
+      '  File "app/main.py", line 1, in fn1',
+      '    call1()',
+      '  File "/usr/lib/python3/site-packages/pkg/client.py", line 9, in send',
+      '    sock.send()',
+      '  File "app/repo.py", line 4, in fn4',
+      '    call4()',
+      '  File "app/db.py", line 5, in fn5',
+      '    call5()',
+      'ValueError: boom',
+    ].join('\n')
+    // 4 frames in, 1 non-project, 3 project survive, --keep 1 drops 2 of those 3.
+    const r = run(['trace', '--keep', '1'], { input: mixed, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('...(2 more frames elided; use a higher --keep to see more)')
+    expect(r.stdout).not.toContain('filtered out as non-project')
+    expect(r.stdout).toContain('app/db.py')
+    expect(r.stdout).not.toContain('client.py')
+
+    // The mirror state: every frame is non-project, so the filter notice fires and the --keep
+    // notice must stay silent even though --keep was passed.
+    const allForeignWithKeep = [
+      'Traceback (most recent call last):',
+      '  File "/usr/lib/python3/site-packages/pkg/a.py", line 1, in a',
+      '    a()',
+      '  File "/usr/lib/python3/site-packages/pkg/b.py", line 2, in b',
+      '    b()',
+      'ValueError: boom',
+    ].join('\n')
+    const r2 = run(['trace', '--keep', '1'], { input: allForeignWithKeep, cwd: tmpDir })
+    expect(r2.status, r2.stderr).toBe(0)
+    expect(r2.stdout).toContain('all 2 frames were filtered out as non-project')
+    expect(r2.stdout).not.toContain('elided')
+  })
+
+  // The elision notice is a plain-text-renderer concern only; --json is frozen this cycle, so the
+  // payload must stay byte-identical to what the same input produced before the notice existed.
+  it('leaves --json output unchanged when --keep truncates', () => {
+    const r = run(['trace', '--keep', '2', '--json'], { input: SIX_PROJECT_FRAMES, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: { frames: Record<string, unknown>[] }[] }
+    expect(parsed.tracebacks).toHaveLength(1)
+    expect(parsed.tracebacks[0]?.frames).toHaveLength(2)
+    expect(r.stdout).not.toContain('elided')
+    // No new key leaked onto the block or its frames from the count recomputation.
+    expect(Object.keys(parsed.tracebacks[0] ?? {}).sort()).toEqual(['exception', 'frames'])
+  })
+
   it('does not print a fabricated blank context line for a frame that had no source context in the original traceback (regression: cmdTrace\'s plain-text renderer checked f.context !== undefined, but parseTracebacks always assigns a string ("" for the no-context case), so the check was always true and printed a spurious blank indented line)', () => {
     const multi = [
       'Traceback (most recent call last):',
