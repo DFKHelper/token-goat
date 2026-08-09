@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor, findSpecSeparator, resolveSymbolSpecOrEmitError } from './read_commands.js'
+import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice } from './util.js'
@@ -307,6 +307,15 @@ export function runCallers(opts: CallersOptions): number {
     // dead/deps/types. Checked first so it takes priority over the --exclude-tests message
     // below when both filters are active and --grep is what zeroed the remaining set.
     if (matchesGrep !== undefined && preGrepCount > 0) {
+      // This branch exits 0 (the store is non-empty, the filter just matched none of it), so
+      // under --json a prose notice would hand the consumer a success status with an unparseable
+      // body. Emit the same `{items, truncated, totalCount}` envelope the populated branch below
+      // does, with `totalCount: 0` -- the post-filter count, never `preGrepCount`. Matches
+      // `types`' own filtered-to-empty --json branch; text mode keeps the human notice.
+      if (opts.json === true) {
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        return 0
+      }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'caller', 'callers'))
       return 0
     }
@@ -330,8 +339,16 @@ export function runCallers(opts: CallersOptions): number {
     const withContext = contextLines > 0
       ? entries.map((e) => ({ ...e, contextLines: buildContextWindow(e.file, e.line, contextLines) ?? [] }))
       : entries
-    const payload = withContext.map((e) => ({ ...e, file: toDisplayPath(rootDir, e.file) }))
-    emit(JSON.stringify(payload, null, 2))
+    // Shared `{items, truncated, totalCount}` envelope so `--json` consumers never branch on
+    // payload shape. `totalCount` is `filtered.length` -- the post-`--exclude-tests`,
+    // post-`--grep`, PRE-`--limit`-slice count. In the `unbounded` path `entries` is a slice of
+    // `filtered`, so that slice also feeds `truncated`; in the bounded path the limit was already
+    // applied in SQL, `entries === filtered`, and `filtered.length` is the honest count of what
+    // this invocation actually resolved.
+    const rows = withContext.map((e) => ({ ...e, file: toDisplayPath(rootDir, e.file) }))
+    const capped = guardJsonRows(rows)
+    const limitTruncated = entries.length < filtered.length
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length }, null, 2))
     return 0
   }
 
@@ -663,7 +680,14 @@ export function runDead(opts: DeadOptions): number {
 
   if (opts.json === true) {
     // `file` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
-    emit(JSON.stringify(sliced.map((r) => ({ ...r, file: toDisplayPath(rootDir, r.file) })), null, 2))
+    // Shared `{items, truncated, totalCount}` envelope, emitted unconditionally (empty result
+    // included) so `--json` consumers never branch on payload shape. `totalCount` is
+    // `grepped.length` -- the post-`--exclude-tests`, post-`--grep`, PRE-`--top` count -- not
+    // `sliced.length`, which would report the already-truncated page as if it were the total.
+    // `--top` therefore also feeds `truncated`, same as the `--head` handling in read_commands.
+    const capped = guardJsonRows(sliced.map((r) => ({ ...r, file: toDisplayPath(rootDir, r.file) })))
+    const topTruncated = sliced.length < grepped.length
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length }, null, 2))
     return 0
   }
 
@@ -984,7 +1008,11 @@ export function runTypes(opts: TypesOptions): number {
     // matched none of it -- distinct from the "no type declarations found" case above, which
     // exits 1 because there was nothing to find at all.
     if (opts.json === true) {
-      emit(JSON.stringify([], null, 2))
+      // Same `{items, truncated, totalCount}` envelope the populated branch below emits, so a
+      // filtered-to-empty result is a well-formed envelope with `totalCount: 0` rather than a
+      // second shape a consumer has to branch on. `totalCount` is the post-`--grep` count (0
+      // here by definition), never `preFilterCount` -- it counts what MATCHED the filter.
+      emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
       return 0
     }
     emit(grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'type declaration', 'type declarations'))
@@ -993,7 +1021,12 @@ export function runTypes(opts: TypesOptions): number {
 
   if (opts.json === true) {
     // `filePath` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
-    emit(JSON.stringify(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })), null, 2))
+    // Wrapped in the shared `{items, truncated, totalCount}` envelope (symbol/refs/skeleton/
+    // outline's own shape) so `--json` consumers never branch on payload shape. `totalCount` is
+    // the post-`--grep`, pre-overflow-guard count: `filtered` is the whole matched set, and
+    // nothing truncates it between here and guardJsonRows.
+    const capped = guardJsonRows(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })))
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
 
@@ -1379,7 +1412,12 @@ export function runTestFor(opts: TestForOptions): number {
 
   if (opts.json === true) {
     // `testFile` rewritten to the same root-relative spelling the text rows below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing.
-    emit(JSON.stringify(results.map((r) => ({ ...r, testFile: toDisplayPath(rootDir, r.testFile) })), null, 2))
+    // Shared `{items, truncated, totalCount}` envelope, emitted unconditionally -- including the
+    // "no test files reference this" case, which becomes `{items: [], truncated: false,
+    // totalCount: 0}` rather than a bare `[]`. Nothing truncates `results` upstream, so
+    // `totalCount` is simply how many test files matched.
+    const capped = guardJsonRows(results.map((r) => ({ ...r, testFile: toDisplayPath(rootDir, r.testFile) })))
+    emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
   }
   if (results.length === 0) {
