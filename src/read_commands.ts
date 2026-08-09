@@ -243,8 +243,12 @@ function guardText(text: string, command: string): string {
  * truncating text mid-payload. `symbol`/`refs`/`skeleton`/`outline`'s `--json` branches were the
  * one output path the overflow guard didn't reach -- their text-mode siblings already route
  * through {@link guardText}/{@link emitGuarded}, but JSON mode returned the raw, unbounded array.
+ *
+ * Exported so `graph_commands.ts` (`types`/`callers`/`dead`/`test-for`) builds the same
+ * `{items, truncated, totalCount}` envelope from the same helper rather than reimplementing the
+ * cap, which is how the two halves of the envelope migration stay byte-compatible.
  */
-function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
+export function guardJsonRows<T>(items: readonly T[]): JsonRowCapResult<T> {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { items: [...items], truncated: false, totalCount: items.length }
   return capJsonRows(items, cfg.overflow_guard.max_tokens)

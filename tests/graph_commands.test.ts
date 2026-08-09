@@ -78,6 +78,44 @@ function makeSymbol(name: string, lineStart: number, lineEnd: number, kind = 'fu
   return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '', parent: '' }
 }
 
+/**
+ * Unwrap the shared `{items, truncated, totalCount}` `--json` envelope that `types`/`callers`/
+ * `dead`/`test-for` emit (the same shape `symbol`/`refs`/`skeleton`/`outline` already used).
+ * Still pins a shape — the current one — rather than dropping the shape assertion: a payload
+ * that regressed to a bare array, or grew the wrapper while losing `truncated`/`totalCount`,
+ * fails here before any caller's own row-level assertions run.
+ */
+function envelopeItems<T>(captured: string): T[] {
+  const parsed: unknown = JSON.parse(captured)
+  expect(Array.isArray(parsed)).toBe(false)
+  const payload = parsed as { items: T[]; truncated: boolean; totalCount: number }
+  expect(Array.isArray(payload.items)).toBe(true)
+  expect(typeof payload.truncated).toBe('boolean')
+  expect(typeof payload.totalCount).toBe('number')
+  return payload.items
+}
+
+/**
+ * Run `fn` with the overflow guard off. Needed only by the handful of cases below that scan the
+ * WHOLE repo with `--json` and then assert a specific row is present (or a specific relative
+ * order holds): now that these commands route their `--json` rows through `guardJsonRows` like
+ * `symbol`/`refs`/`skeleton`/`outline` already did, a full-project `types --json` legitimately
+ * caps at the token budget and drops trailing rows. Those cases pin CONTENT and ORDERING, not
+ * the absence of truncation, so the guard is disabled rather than the assertions weakened.
+ * `loadConfig`'s cache key includes an env fingerprint, so toggling this is picked up on the
+ * next call without any cache reset.
+ */
+function withoutOverflowGuard<T>(fn: () => T): T {
+  const orig = process.env['TOKEN_GOAT_OVERFLOW_GUARD']
+  process.env['TOKEN_GOAT_OVERFLOW_GUARD'] = '0'
+  try {
+    return fn()
+  } finally {
+    if (orig === undefined) delete process.env['TOKEN_GOAT_OVERFLOW_GUARD']
+    else process.env['TOKEN_GOAT_OVERFLOW_GUARD'] = orig
+  }
+}
+
 /** Root-relative expectation for `--json` path fields, mirroring toDisplayPath's own forward-slash convention -- used by tests below that compare a `--json` row's path field against an absolute fixture path now that it renders root-relative. */
 function toRel(root: string, abs: string): string {
   return relative(normalizePath(root), normalizePath(abs)).replace(/\\/g, '/')
@@ -386,17 +424,18 @@ describe('runTypes integration', () => {
   })
 
   it('returns valid JSON for --json flag', () => {
-    const captured = captureStdout(() => {
+    const captured = withoutOverflowGuard(() => captureStdout(() => {
       const code = runTypes({ json: true })
       expect(code).toBe(0)
-    })
-    const parsed: unknown = JSON.parse(captured)
-    expect(Array.isArray(parsed)).toBe(true)
+    }))
+    // Shape pin updated from "bare array" to the shared envelope (envelopeItems asserts
+    // items/truncated/totalCount); the content pin below is untouched.
+    const parsed = envelopeItems<SymbolEntry>(captured)
     // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter
     // that fell through to every symbol in the project) -- assert a known real project type
     // interface is actually present by name, matching the plain-text sibling test above's own
     // toMatch(/SymbolEntry|RefEntry|Language/) content pin.
-    expect((parsed as SymbolEntry[]).some((r) => r.name === 'SymbolEntry')).toBe(true)
+    expect(parsed.some((r) => r.name === 'SymbolEntry')).toBe(true)
   })
 
   it('exits 1 for a nonexistent file even with --json (regression: emptiness check must run before format branching)', () => {
@@ -412,7 +451,7 @@ describe('runTypes integration', () => {
       const code = runTypes({ file: 'src/parser_types.ts', json: true })
       expect(code).toBe(0)
     })
-    const parsed = JSON.parse(captured) as Array<{ name: string; filePath: string }>
+    const parsed = envelopeItems<{ name: string; filePath: string }>(captured)
     expect(parsed.length).toBeGreaterThan(0)
     for (const r of parsed) {
       expect(r.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
@@ -427,11 +466,11 @@ describe('runTypes integration', () => {
     const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-types-outside-project-fixture', 'far.ts'))
     const sym: SymbolEntry = { name: 'OutOfProjectTypesFixture', kind: 'interface', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
     vi.mocked(querySymbols).mockReturnValueOnce([sym])
-    const captured = captureStdout(() => {
+    const captured = withoutOverflowGuard(() => captureStdout(() => {
       const code = runTypes({ json: true })
       expect(code).toBe(0)
-    })
-    const parsed = JSON.parse(captured) as Array<{ name: string; filePath: string }>
+    }))
+    const parsed = envelopeItems<{ name: string; filePath: string }>(captured)
     const row = parsed.find((r) => r.name === 'OutOfProjectTypesFixture')
     expect(row?.filePath).toBe(outOfProjectAbs)
   })
@@ -449,11 +488,11 @@ describe('runTypes integration', () => {
       indexFileSync(normalizePath(fileA))
       indexFileSync(normalizePath(fileB))
 
-      const captured = captureStdout(() => {
+      const captured = withoutOverflowGuard(() => captureStdout(() => {
         const code = runTypes({ json: true, limit: 5000 })
         expect(code).toBe(0)
-      })
-      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      }))
+      const parsed = envelopeItems<{ name: string }>(captured)
       const idxApple = parsed.findIndex((r) => r.name === 'AppleLocaleFixture')
       const idxBanana = parsed.findIndex((r) => r.name === 'BananaLocaleFixture')
       expect(idxApple).toBeGreaterThanOrEqual(0)
@@ -491,7 +530,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesPyClassFixture')
       expect(parsed.find((r) => r.name === 'TypesPyClassFixture')?.kind).toBe('class')
     } finally {
@@ -517,7 +556,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesRustUnionFixture')
       expect(parsed.find((r) => r.name === 'TypesRustUnionFixture')?.kind).toBe('union')
     } finally {
@@ -544,7 +583,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesSwiftProtocolFixture')
       expect(parsed.find((r) => r.name === 'TypesSwiftProtocolFixture')?.kind).toBe('protocol')
     } finally {
@@ -569,7 +608,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesZigOpaqueFixture')
       expect(parsed.find((r) => r.name === 'TypesZigOpaqueFixture')?.kind).toBe('opaque')
     } finally {
@@ -593,7 +632,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesDartMixinFixture')
       expect(parsed.find((r) => r.name === 'TypesDartMixinFixture')?.kind).toBe('mixin')
     } finally {
@@ -617,7 +656,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesDartExtensionFixture')
       expect(parsed.find((r) => r.name === 'TypesDartExtensionFixture')?.kind).toBe('extension')
     } finally {
@@ -640,7 +679,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesSwiftActorFixture')
       expect(parsed.find((r) => r.name === 'TypesSwiftActorFixture')?.kind).toBe('actor')
     } finally {
@@ -678,7 +717,7 @@ describe('runTypes integration', () => {
           const code = runTypes({ file: normalizePath(file), json: true })
           expect(code).toBe(0)
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+        const parsed = envelopeItems<{ name: string; kind: string }>(captured)
         expect(parsed.map((r) => r.name)).toContain(name)
         expect(parsed.find((r) => r.name === name)?.kind).toBe(kind)
       }
@@ -720,7 +759,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesProtoMessageFixture')
       expect(parsed.find((r) => r.name === 'TypesProtoMessageFixture')?.kind).toBe('proto_message')
       expect(parsed.map((r) => r.name)).toContain('TypesProtoEnumFixture')
@@ -770,7 +809,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       for (const [name, kind] of [
         ['TypesGraphqlTypeFixture', 'graphql_type'],
         ['TypesGraphqlInterfaceFixture', 'graphql_interface'],
@@ -811,7 +850,7 @@ describe('runTypes integration', () => {
           const code = runTypes({ file: normalizePath(file), json: true })
           expect(code).toBe(0)
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+        const parsed = envelopeItems<{ name: string; kind: string }>(captured)
         const expectedName = file === ktFile ? 'TypesKotlinObjectFixture' : 'TypesScalaObjectFixture'
         expect(parsed.map((r) => r.name)).toContain(expectedName)
         expect(parsed.find((r) => r.name === expectedName)?.kind).toBe('object')
@@ -842,7 +881,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesGraphqlScalarFixture')
       expect(parsed.find((r) => r.name === 'TypesGraphqlScalarFixture')?.kind).toBe('graphql_scalar')
     } finally {
@@ -873,7 +912,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesGraphqlExtendFixture')
       expect(parsed.find((r) => r.name === 'TypesGraphqlExtendFixture')?.kind).toBe('graphql_extend')
     } finally {
@@ -904,7 +943,7 @@ describe('runTypes integration', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string; kind: string }>
+      const parsed = envelopeItems<{ name: string; kind: string }>(captured)
       expect(parsed.map((r) => r.name)).toContain('TypesSfcClassFixture')
       expect(parsed.find((r) => r.name === 'TypesSfcClassFixture')?.kind).toBe('sfc_script_class')
     } finally {
@@ -962,7 +1001,7 @@ describe('runTypes --grep', () => {
         const code = runTypes({ file: normalizePath(file), json: true, grep: 'Alpha' })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      const parsed = envelopeItems<{ name: string }>(captured)
       expect(parsed.map((r) => r.name)).toEqual(['TypesGrepAlpha'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -982,7 +1021,7 @@ describe('runTypes --grep', () => {
         const code = runTypes({ file: normalizePath(file), json: true })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      const parsed = envelopeItems<{ name: string }>(captured)
       expect(parsed.map((r) => r.name)).toEqual(expect.arrayContaining(['TypesGrepNegAlpha', 'TypesGrepNegBeta']))
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1025,7 +1064,7 @@ describe('runTypes --grep', () => {
         const code = runTypes({ file: normalizePath(file), json: true, grep: '[unclosed' })
         expect(code).toBe(0)
       })
-      const parsed = JSON.parse(captured) as Array<{ name: string }>
+      const parsed = envelopeItems<{ name: string }>(captured)
       expect(parsed.map((r) => r.name)).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1054,9 +1093,9 @@ describe('runCallers integration', () => {
     const captured = captureStdout(() => {
       runCallers({ symbol: 'querySymbols', json: true })
     })
-    const parsed: unknown = JSON.parse(captured)
-    expect(Array.isArray(parsed)).toBe(true)
-    const arr = parsed as Array<{ caller: string; kind: string; file: string; line: number }>
+    // Shape pin updated from "bare array" to the shared envelope; every row-level assertion
+    // below (caller/line types, root-relative `file` spelling) is unchanged.
+    const arr = envelopeItems<{ caller: string; kind: string; file: string; line: number }>(captured)
     expect(arr.length).toBeGreaterThan(0)
     expect(typeof arr[0]?.caller).toBe('string')
     expect(typeof arr[0]?.line).toBe('number')
@@ -1078,7 +1117,7 @@ describe('runCallers integration', () => {
       const code = runCallers({ symbol: 'querySymbols', json: true })
       expect(code).toBe(0)
     })
-    const parsed = JSON.parse(captured) as Array<{ file: string }>
+    const parsed = envelopeItems<{ file: string }>(captured)
     expect(parsed.some((r) => r.file === outOfProjectAbs)).toBe(true)
   })
 
@@ -1357,11 +1396,11 @@ describe('runCallers --exclude-tests', () => {
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
         const withoutFlag = captureStdout(() => { runCallers({ symbol: 'exclCallersJsonFn2m9', json: true }) })
-        const parsedWithout = JSON.parse(withoutFlag) as Array<{ caller: string; file: string }>
+        const parsedWithout = envelopeItems<{ caller: string; file: string }>(withoutFlag)
         expect(parsedWithout).toHaveLength(3)
 
         const withFlag = captureStdout(() => { runCallers({ symbol: 'exclCallersJsonFn2m9', json: true, excludeTests: true }) })
-        const parsedWith = JSON.parse(withFlag) as Array<{ caller: string; file: string }>
+        const parsedWith = envelopeItems<{ caller: string; file: string }>(withFlag)
         expect(parsedWith).toHaveLength(1)
         expect(parsedWith[0]?.caller).toBe('jsonProdCaller')
       } finally {
@@ -1550,11 +1589,12 @@ describe('runDead integration', () => {
     const captured = captureStdout(() => {
       runDead({ json: true, top: 5 })
     })
-    const parsed: unknown = JSON.parse(captured)
-    expect(Array.isArray(parsed)).toBe(true)
+    // Shape pin updated from "bare array" to the shared envelope; the path-spelling assertion
+    // below is unchanged.
+    const parsed = envelopeItems<{ file: string }>(captured)
     // --json path-spelling: `file` used to echo querySymbols' raw absolute row verbatim. Every
     // row here comes from this repo's own scan, so every `file` must be root-relative.
-    for (const r of parsed as Array<{ file: string }>) {
+    for (const r of parsed) {
       expect(r.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
     }
   })
@@ -1570,7 +1610,7 @@ describe('runDead integration', () => {
       const code = runDead({ json: true, top: 500 })
       expect(code).toBe(0)
     })
-    const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+    const parsed = envelopeItems<{ name: string; file: string }>(captured)
     const row = parsed.find((r) => r.name === 'outOfProjectDeadFixture9x2')
     expect(row?.file).toBe(outOfProjectAbs)
   })
@@ -1599,7 +1639,7 @@ describe('runDead cross-project scoping', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500 })
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string }>
+        const parsed = envelopeItems<{ name: string }>(captured)
         // rootB's reference to the same-named function must not mask rootA's copy as alive.
         expect(parsed.some((r) => r.name === 'trulyDeadFn9k2')).toBe(true)
       } finally {
@@ -1669,7 +1709,7 @@ describe('runDead same-project name-collision scoping', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500 })
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        const parsed = envelopeItems<{ name: string; file: string }>(captured)
         // fileA's copy is truly dead and must be reported.
         expect(parsed.some((r) => r.name === 'collideFn9k2' && r.file === toRel(root, normA))).toBe(true)
         // fileB's copy is genuinely called locally and must NOT be reported as dead.
@@ -1712,7 +1752,7 @@ describe('runDead virtual-dispatch rescue', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        const parsed = envelopeItems<{ name: string; file: string }>(captured)
         // The override is reachable only via Base's self-dispatch -- must not be flagged dead.
         expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, implFile))).toBe(false)
         // A genuinely unused sibling method on the same class must still be flagged.
@@ -1767,7 +1807,7 @@ describe('runDead virtual-dispatch rescue', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
         })
-        const parsed = JSON.parse(captured) as Array<{ name: string; file: string }>
+        const parsed = envelopeItems<{ name: string; file: string }>(captured)
         expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, factoryFile))).toBe(false)
         expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, factoryFile))).toBe(true)
       } finally {
@@ -1794,9 +1834,9 @@ describe('runDead --exclude-tests', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
-        const withoutFlag = JSON.parse(
-          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) }),
-        ) as Array<{ name: string }>
+        const withoutFlag = envelopeItems<{ name: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) })
+        )
         const prodPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadProdFn8q4')
         const testPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadTestFn8q4')
         expect(prodPresentWithout).toBe(true)
@@ -1804,9 +1844,9 @@ describe('runDead --exclude-tests', () => {
         // flag is absent, exactly like it is today.
         expect(testPresentWithout).toBe(true)
 
-        const withFlag = JSON.parse(
-          captureStdout(() => { expect(runDead({ json: true, top: 500, excludeTests: true })).toBe(0) }),
-        ) as Array<{ name: string }>
+        const withFlag = envelopeItems<{ name: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, excludeTests: true })).toBe(0) })
+        )
         const prodPresentWith = withFlag.some((r) => r.name === 'exclDeadProdFn8q4')
         const testPresentWith = withFlag.some((r) => r.name === 'exclDeadTestFn8q4')
         expect(prodPresentWith).toBe(true)
@@ -1858,16 +1898,16 @@ describe('runDead --grep', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
-        const filtered = JSON.parse(
-          captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'Alpha' })).toBe(0) }),
-        ) as Array<{ name: string }>
+        const filtered = envelopeItems<{ name: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'Alpha' })).toBe(0) })
+        )
         expect(filtered.map((r) => r.name)).toEqual(['deadGrepAlphaFn2k9'])
 
         // Negative control: proves --grep actually narrows rather than the plumbing being a
         // no-op that happens to pass the positive assertion above.
-        const unfiltered = JSON.parse(
-          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) }),
-        ) as Array<{ name: string }>
+        const unfiltered = envelopeItems<{ name: string }>(
+          captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) })
+        )
         expect(unfiltered.map((r) => r.name)).toEqual(expect.arrayContaining(['deadGrepAlphaFn2k9', 'deadGrepBetaFn2k9']))
       } finally {
         cwdSpy.mockRestore()
@@ -3188,7 +3228,7 @@ describe('runTestFor', () => {
       // `--json`'s `testFile` now renders root-relative (toDisplayPath(rootDir, ...), same
       // spelling as the plain-text sibling test above), not the raw absolute path this used to
       // compare against.
-      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
       const entry = results.find((r) => r.testFile === 'testForTarget.test.ts')
       expect(entry).toBeDefined()
       expect(entry!.testFunctions).toContain('test_usesTarget')
@@ -3241,7 +3281,7 @@ describe('runTestFor', () => {
       expect(code).toBe(0)
 
       // Same root-relative `testFile` rewrite as the sibling test above.
-      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
       const entry = results.find((r) => r.testFile === 'itWordTarget.test.ts')
       expect(entry).toBeDefined()
       expect(entry!.testFunctions).not.toContain('iterateOverTargetHelper')
@@ -3265,7 +3305,7 @@ describe('runTestFor', () => {
       const code = runTestFor({ file: gonePath, json: true })
       expect(code).toBe(0)
     })
-    const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+    const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
     expect(results.some((r) => r.testFile === outOfProjectTestFile)).toBe(true)
   })
 })
@@ -3321,7 +3361,7 @@ describe('runTestFor cross-project scoping', () => {
           process.stdout.write = origWrite
         }
         expect(code).toBe(0)
-        const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+        const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
         // rootB's test file referencing the same-named function must not leak into rootA's results.
         expect(results.some((r) => r.testFile === testFileB)).toBe(false)
         expect(results).toEqual([])
@@ -3483,7 +3523,7 @@ describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
         cwdSpy.mockRestore()
       }
       expect(code).toBe(0)
-      const results = JSON.parse(captured) as Array<{ testFile: string; testFunctions: string[] }>
+      const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
       expect(results.some((r) => r.testFile.endsWith('z_target.test.ts'))).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })

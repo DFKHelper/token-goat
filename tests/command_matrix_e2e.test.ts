@@ -76,6 +76,21 @@ function expectRead(args: string[], substr: string): void {
   expect(r.stdout).toContain(substr)
 }
 
+/**
+ * Unwrap the shared `{items, truncated, totalCount}` `--json` envelope, asserting it against the
+ * real built bundle before returning the rows. Row-list commands (`symbol`/`refs`/`skeleton`/
+ * `outline`/`types`/`callers`/`dead`/`test-for`/`semantic`) all emit this shape unconditionally.
+ */
+function envelopeItems<T>(stdout: string): T[] {
+  const parsed: unknown = JSON.parse(stdout)
+  expect(Array.isArray(parsed)).toBe(false)
+  const payload = parsed as { items: T[]; truncated: boolean; totalCount: number }
+  expect(Array.isArray(payload.items)).toBe(true)
+  expect(typeof payload.truncated).toBe('boolean')
+  expect(typeof payload.totalCount).toBe('number')
+  return payload.items
+}
+
 beforeAll(() => {
   dataBase = mkIsolated('tg-matrix-data-')
   repo = mkIsolated('tg-matrix-repo-')
@@ -1882,7 +1897,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     // plain-text rows above and the outline/skeleton/refs --json convention.
     const j = run(['callers', 'refHelper', '--json'])
     expect(j.status, j.stderr).toBe(0)
-    const jParsed = JSON.parse(j.stdout) as Array<{ file: string }>
+    const jParsed = envelopeItems<{ file: string }>(j.stdout)
     expect(jParsed.length).toBeGreaterThan(0)
     for (const entry of jParsed) expect(path.isAbsolute(entry.file)).toBe(false)
   },
@@ -1919,21 +1934,21 @@ const cases: Record<string, () => void | Promise<void>> = {
     // never called anywhere -- present without the flag (byte-identical to today), gone with it.
     const withoutFlag = run(['dead', '--top', '500', '--json'])
     expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
-    const withoutParsed = JSON.parse(withoutFlag.stdout) as Array<{ name: string; file: string }>
+    const withoutParsed = envelopeItems<{ name: string; file: string }>(withoutFlag.stdout)
     expect(withoutParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(true)
     // `--json`'s file now renders root-relative against the real built binary, matching the
     // outline/skeleton/refs --json convention.
     for (const entry of withoutParsed) expect(path.isAbsolute(entry.file)).toBe(false)
     const withFlag = run(['dead', '--top', '500', '--json', '--exclude-tests'])
     expect(withFlag.status, withFlag.stderr).toBe(0)
-    const withParsed = JSON.parse(withFlag.stdout) as Array<{ name: string }>
+    const withParsed = envelopeItems<{ name: string }>(withFlag.stdout)
     expect(withParsed.some((s) => s.name === 'exclDeadOnlyInTest')).toBe(false)
 
     // --grep narrows by NAME, and an all-filtered result names the filter instead of looking
     // like a genuinely clean codebase.
     const grepped = run(['dead', '--top', '500', '--json', '--grep', 'exclDeadOnlyInTest'])
     expect(grepped.status, grepped.stderr).toBe(0)
-    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string }>
+    const greppedParsed = envelopeItems<{ name: string }>(grepped.stdout)
     expect(greppedParsed.map((s) => s.name)).toEqual(['exclDeadOnlyInTest'])
 
     const grepMiss = run(['dead', '--top', '500', '--grep', 'zzzzNoSuchDeadSymbol'])
@@ -1986,7 +2001,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     // names the filter instead of looking like the store is empty.
     const grepped = run(['types', 'typesgrep.ts', '--json', '--grep', 'Alpha'])
     expect(grepped.status, grepped.stderr).toBe(0)
-    const greppedParsed = JSON.parse(grepped.stdout) as Array<{ name: string; filePath: string }>
+    const greppedParsed = envelopeItems<{ name: string; filePath: string }>(grepped.stdout)
     expect(greppedParsed.map((t) => t.name)).toEqual(['TypesGrepAlphaFixture'])
     // `--json`'s filePath now renders root-relative against the real built binary, matching the
     // outline/skeleton/refs --json convention.
@@ -2044,7 +2059,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     // (see the 'refs'/'callers' --exclude-tests fixtures above), so this exercises a real hit.
     const j = run(['test-for', 'exclhelper.ts', '--json'])
     expect(j.status, j.stderr).toBe(0)
-    const jParsed = JSON.parse(j.stdout) as Array<{ testFile: string }>
+    const jParsed = envelopeItems<{ testFile: string }>(j.stdout)
     expect(jParsed.some((e) => e.testFile.replace(/\\/g, '/') === 'exclcaller.test.ts')).toBe(true)
   },
   'coverage-gaps': () => {
