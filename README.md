@@ -536,7 +536,7 @@ token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 | `token-goat waste [--project <path>] [--transcript <path>] [--top <n>] [--json]` | Session spend-ledger: parses the current project's Claude Code session transcript and reports token cost by tool, by file, the top N most expensive individual tool calls, files read once and never referenced again, and Bash commands run repeatedly without hitting token-goat's own bash-output cache. See [Session waste ledger](#session-waste-ledger) below. |
 | `token-goat mcp-audit [--project <path>] [--json]` | MCP server schema cost report: scans .mcp.json for installed MCP servers, estimates per-server token costs from cached tool calls, correlates schema complexity against real call frequency. Outputs as markdown table or JSON. |
 | `token-goat recall ["<query>"] [--type bash\|web\|mcp] [--limit <n>] [--json]` | Full-text search across every cached bash-output, web-output, and mcp-output entry at once — one command instead of remembering which cache type holds a prior result. Ranked by relevance (BM25 via SQLite FTS5). With **no query**, lists every cached entry newest-first instead of searching, so you can browse when the ids have scrolled out of context and you have no term to search for. `--type` narrows to one cache type; `--limit` caps results (default 10). Each hit shows its cache type, id, the exact recall command (`bash-output <id>` / `web-output <id>` / `mcp-output <id>`), and a content snippet. See [Cross-cache recall](#cross-cache-recall) below. |
-| `token-goat hint-stats [--json] [--reset] [--mark-effective <cat>] [--mark-ineffective <cat>]` | Per-category efficacy report for token-goat's discretionary hint hooks: how often each hint category was emitted, how often the agent actually followed its specific suggestion within the next few tool calls, and whether the category is currently auto-suppressed. `--reset` clears all tracked data; `--mark-effective`/`--mark-ineffective <category>` record a manual vote as a supplement to the automatic signal. See [Hint efficacy tracking](#hint-efficacy-tracking) below. |
+| `token-goat hint-stats [--json] [--reset] [--mark-effective <cat>] [--mark-ineffective <cat>]` | Per-category efficacy report for token-goat's discretionary hint hooks: how often each hint category was emitted, how often the agent actually followed its specific suggestion within the next few tool calls, whether the category is currently auto-suppressed, and the bytes each category spent (injected into context) plus an all-time saved/spent/net summary line. `--reset` clears all tracked data; `--mark-effective`/`--mark-ineffective <category>` record a manual vote as a supplement to the automatic signal. See [Hint efficacy tracking](#hint-efficacy-tracking) below. |
 | `token-goat history` | Show current session access history: bash commands and URLs fetched. |
 | `token-goat session-outline` | Turn-by-turn structure (role, preview, tool calls, approx size) of a Claude Code session JSONL transcript, instead of a raw Read; defaults to the current project's most recent session. |
 | `token-goat session-slice <turns>` | Full content of one turn range from a Claude Code session JSONL transcript (see `session-outline` for turn numbers), instead of a raw Read. |
@@ -711,18 +711,28 @@ Every hint hook (the re-read/dedup/surgical-read nudges in the Bash, Read, and E
 worth its keep only if it's actually followed. `token-goat hint-stats` reports, per hint
 category: how many times it fired, how many times a later Bash command in the same session
 actually invoked the specific `token-goat` command (or referenced the specific cached-output id)
-the hint pointed at, the resulting efficacy percentage, and whether the category is currently
-auto-suppressed:
+the hint pointed at, the resulting efficacy percentage, whether the category is currently
+auto-suppressed, and the `spent` column (bytes of hint text actually injected into context for
+that category — the real cost of emitting it, not just how often it fired):
 
 ```
 $ token-goat hint-stats
-category              emitted  acted-on  efficacy  suppressed  manual+  manual-
-bash_redirect          42       9         21.4%     no          0        0
-bash_recall            18       15        83.3%     no          0        0
-read_reread_dedup      11       2         18.2%     no          0        0
-read_structural_nav    7        1         14.3%     yes         0        1
-edit_reread_suggest    3        0         0%        no          0        0
+category              emitted  acted-on  efficacy  suppressed  manual+  manual-  spent
+bash_redirect          42       9         21.4%     no          0        0        3150
+bash_recall            18       15        83.3%     no          0        0        1080
+read_reread_dedup      11       2         18.2%     no          0        0        660
+read_structural_nav    7        1         14.3%     yes         0        1        420
+edit_reread_suggest    3        0         0%        no          0        0        180
+
+TOTAL   saved=48200   spent=5490   net=42710
 ```
+
+`spent` (and the `TOTAL` line's `spent`/`net`) render `n/a` instead of a fake `0` whenever a
+category — or, for the total, the whole store — has no tracked spend figure at all: either
+nothing has fired yet, or every emission predates this feature and was recorded before spend
+tracking existed. A partially-tracked category shows the real sum plus how many legacy rows it
+excludes, e.g. `120 (2 legacy)`, rather than silently blending unknown-cost rows into the total
+as if they cost nothing.
 
 A category is auto-suppressed for its harness once it has at least `hint_stats.min_sample_size`
 emissions (default 5) AND its efficacy falls below `hint_stats.suppress_threshold_pct` (default

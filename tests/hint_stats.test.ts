@@ -10,6 +10,7 @@ import {
   classifyReadHint,
   extractPathCorrelator,
   getHintStatsSummary,
+  getHintStatsTotals,
   isHintCategory,
   isProbeOccasion,
   logHintEmission,
@@ -244,6 +245,64 @@ describe('logHintEmission', () => {
     const row = summary.find((r) => r.category === 'bash_redirect')
     expect(row?.emitted).toBe(1)
     expect(row?.actedOn).toBe(0)
+  })
+
+  it('persists the bytesEmitted spend figure passed by the caller', () => {
+    const n = nonce()
+    logHintEmission('bash_redirect', n, null, false, 123)
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT bytes_emitted FROM hint_emissions WHERE session_id = ?').get(n) as { bytes_emitted: number | null }
+    expect(row.bytes_emitted).toBe(123)
+  })
+
+  it('defaults bytesEmitted to NULL (not 0) when the caller does not pass one', () => {
+    const n = nonce()
+    logHintEmission('bash_redirect', n, null)
+    const db = getDb(globalDbPath())
+    const row = db.prepare('SELECT bytes_emitted FROM hint_emissions WHERE session_id = ?').get(n) as { bytes_emitted: number | null }
+    expect(row.bytes_emitted).toBe(null)
+  })
+})
+
+describe('getHintStatsSummary — spend (bytesEmitted/legacyEmissions)', () => {
+  it('reports bytesEmitted null and legacyEmissions 0 for a category with zero emissions', () => {
+    const summary = getHintStatsSummary()
+    const row = summary.find((r) => r.category === 'read_reread_dedup')
+    expect(row?.emitted).toBe(0)
+    expect(row?.bytesEmitted).toBe(null)
+    expect(row?.legacyEmissions).toBe(0)
+  })
+
+  it('sums bytesEmitted across emissions that all carry a tracked spend figure', () => {
+    logHintEmission('read_reread_dedup', nonce(), null, false, 100)
+    logHintEmission('read_reread_dedup', nonce(), null, false, 50)
+    const summary = getHintStatsSummary()
+    const row = summary.find((r) => r.category === 'read_reread_dedup')
+    expect(row?.emitted).toBe(2)
+    expect(row?.bytesEmitted).toBe(150)
+    expect(row?.legacyEmissions).toBe(0)
+  })
+
+  it('reports bytesEmitted null (not a fake 0) when every emission predates spend tracking', () => {
+    // Simulates a pre-migration row: bytes_emitted left unset, same shape the v9->v10 ALTER
+    // TABLE migration leaves a pre-existing row in (see db.test.ts's v9->v10 migration test).
+    logHintEmission('edit_reread_suggest', nonce(), null)
+    logHintEmission('edit_reread_suggest', nonce(), null)
+    const summary = getHintStatsSummary()
+    const row = summary.find((r) => r.category === 'edit_reread_suggest')
+    expect(row?.emitted).toBe(2)
+    expect(row?.bytesEmitted).toBe(null)
+    expect(row?.legacyEmissions).toBe(2)
+  })
+
+  it('sums only the tracked rows and reports the legacy count separately for a mixed category', () => {
+    logHintEmission('bash_recall', nonce(), null) // legacy: no spend figure
+    logHintEmission('bash_recall', nonce(), null, false, 80) // tracked
+    const summary = getHintStatsSummary()
+    const row = summary.find((r) => r.category === 'bash_recall')
+    expect(row?.emitted).toBe(2)
+    expect(row?.bytesEmitted).toBe(80)
+    expect(row?.legacyEmissions).toBe(1)
   })
 })
 
@@ -567,6 +626,16 @@ describe('applyHintTracking', () => {
     expect(summary.find((r) => r.category === 'bash_redirect')?.emitted).toBe(1)
   })
 
+  it('records the emitted hint text length as the spend (bytesEmitted) for this emission', () => {
+    const n = nonce()
+    const event = bashEvent(n, 'cat C:/repo/file.ts')
+    const contextOut = { hookType: 'context' as const, context: 'Use `token-goat read "C:/repo/file.ts::Foo"` instead.' }
+    applyHintTracking(event, contextOut, classify)
+
+    const summary = getHintStatsSummary()
+    expect(summary.find((r) => r.category === 'bash_redirect')?.bytesEmitted).toBe(contextOut.context.length)
+  })
+
   it('substitutes passOutput() and does not log when the category is suppressed and backoff_thresholds is empty (no probing)', () => {
     const cfg = defaultConfig()
     cfg.hint_stats.min_sample_size = 1
@@ -823,6 +892,38 @@ describe('resetHintStats', () => {
 
     const summary = getHintStatsSummary()
     expect(summary.every((r) => r.emitted === 0 && r.manualEffective === 0 && r.manualIneffective === 0)).toBe(true)
+  })
+})
+
+// The saved half of the net figure comes from the `stats` ledger, which has no `harness` column and therefore spans every harness. Scoping only the spend half to the current harness subtracted one harness's cost from every harness's savings and overstated the net.
+describe('getHintStatsTotals harness scope', () => {
+  it('sums spend across every harness, matching the unscoped saved half', () => {
+    const db = getDb(globalDbPath())
+    db.prepare('DELETE FROM hint_emissions').run()
+    const insert = db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
+       VALUES (?, ?, ?, NULL, ?, 1, 0, 0, ?)`,
+    )
+    insert.run('bash_redirect', nonce(), 'claude-code', Date.now(), 100)
+    insert.run('bash_redirect', nonce(), 'some-other-harness', Date.now(), 25)
+
+    expect(getHintStatsTotals().spentBytes).toBe(125)
+  })
+
+  it('counts legacy (null-spend) emissions from every harness too', () => {
+    const db = getDb(globalDbPath())
+    db.prepare('DELETE FROM hint_emissions').run()
+    const insert = db.prepare(
+      `INSERT INTO hint_emissions (category, session_id, harness, correlator, emitted_at, resolved, acted_on, calls_remaining, bytes_emitted)
+       VALUES (?, ?, ?, NULL, ?, 1, 0, 0, NULL)`,
+    )
+    insert.run('bash_redirect', nonce(), 'claude-code', Date.now())
+    insert.run('bash_redirect', nonce(), 'some-other-harness', Date.now())
+
+    const totals = getHintStatsTotals()
+    expect(totals.legacyEmissions).toBe(2)
+    expect(totals.spentBytes).toBeNull()
+    expect(totals.netBytes).toBeNull()
   })
 })
 
