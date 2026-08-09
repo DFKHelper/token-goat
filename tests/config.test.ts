@@ -1,6 +1,5 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,8 +16,8 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-config-test-${process.pid}.toml`)
-const _testProjectConfigPath = path.join(os.tmpdir(), `tg-project-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-config-test.toml')
+const _testProjectConfigPath = tempConfigPath('tg-project-config-test.toml')
 
 import {
   defaultConfig,

@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -17,7 +18,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-screenshot-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-screenshot-config.toml')
 
 // Importing relay registers EVERY hook module (including hooks_screenshot) for
 // its side-effects, so runHook dispatches through the real production

@@ -6,6 +6,7 @@
  * All project/history tests use TOKEN_GOAT_HOME for disk_cache isolation.
  */
 
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -64,7 +65,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return { ...actual, atomicWriteBytes: atomicWriteBytesMock }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-cfgcmd-test.toml')
 
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory, cmdFetchImage } from '../src/config_commands.js'
 import { globalDbPath } from '../src/constants.js'

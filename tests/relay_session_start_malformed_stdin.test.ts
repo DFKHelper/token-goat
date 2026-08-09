@@ -1,7 +1,6 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,8 +16,8 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-relay-session-start-config-${process.pid}.toml`)
-const _testDbPath = path.join(os.tmpdir(), `tg-relay-session-start-db-${process.pid}.sqlite`)
+const _testConfigPath = tempConfigPath('tg-relay-session-start-config.toml')
+const _testDbPath = tempConfigPath('tg-relay-session-start-db.sqlite')
 
 import { relay } from '../src/relay.js'
 import '../src/hooks_session_start.js' // side-effect: registers sessionStartHandler on session_start

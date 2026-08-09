@@ -19,13 +19,14 @@
  * for the lifetime of this file.
  */
 
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-edit-dispatch-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-edit-dispatch-config.toml')
 
 // vi.mock is hoisted -- redirect dataDir()/configPath() to an isolated location so this
 // file's real dirty-queue writes never touch the shared per-worker isolated home.

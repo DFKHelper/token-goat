@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -9,7 +10,7 @@ import sharp from 'sharp'
 // The jpeg_quality/max_image_pixels regression tests need a writable config, so
 // configPath() is redirected (hoisted vi.mock) to a per-test-run temp file — the
 // same pattern tests/config.test.ts and tests/bash_compress_rewrite.test.ts use.
-const _testConfigPath = path.join(os.tmpdir(), `tg-image-shrink-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-image-shrink-config.toml')
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }

@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -40,7 +41,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-disk-cache-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-disk-cache-config-test.toml')
 
 import { storeBlob, loadBlob, pruneBlobs, tokenGoatHome } from '../src/disk_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'

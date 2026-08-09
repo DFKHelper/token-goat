@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -13,7 +14,7 @@ vi.mock('sharp', () => {
   throw new Error('Cannot find module \'sharp\'')
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-image-shrink-sharp-unavailable-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-image-shrink-sharp-unavailable.toml')
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }

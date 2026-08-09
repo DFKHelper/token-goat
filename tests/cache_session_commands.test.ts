@@ -8,6 +8,7 @@
  * covered by tests/command_matrix_e2e.test.ts.
  */
 
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -36,7 +37,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath, dataDir: () => _testDataDir }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-cache-session-commands-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-cache-session-commands-config-test.toml')
 let _testDataDir: string
 
 import { listBlobs, storeBlob } from '../src/disk_cache.js'

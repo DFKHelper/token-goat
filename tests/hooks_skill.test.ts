@@ -1,7 +1,7 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -16,7 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   };
 });
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-skill-config-test-${process.pid}.toml`);
+const _testConfigPath = tempConfigPath('tg-hooks-skill-config-test.toml');
 
 import type { HookEvent } from '../src/hook_registry.js';
 import { runHook } from '../src/hook_registry.js';

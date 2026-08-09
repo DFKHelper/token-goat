@@ -1,7 +1,6 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { unlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -20,7 +19,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath }
 })
 
-const _testConfigPath = join(tmpdir(), `tg-hooks-glob-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-glob-config-test.toml')
 
 import { postGlobHandler, preGlobDedupHandler } from '../src/hooks_glob.js'
 import { recordStat } from '../src/stats.js'

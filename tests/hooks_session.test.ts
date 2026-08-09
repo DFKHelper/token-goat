@@ -1,7 +1,6 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { HookEvent } from '../src/hook_registry.js';
 import * as util from '../src/util.js';
 
@@ -17,7 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath };
 });
 
-const _testConfigPath = join(tmpdir(), `tg-hooks-session-config-test-${process.pid}.toml`);
+const _testConfigPath = tempConfigPath('tg-hooks-session-config-test.toml');
 
 import { subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';

@@ -1,9 +1,8 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as os from 'node:os'
-import * as path from 'node:path'
 import sharp from 'sharp'
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-hooks-browser-image-config-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-browser-image-config.toml')
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath }

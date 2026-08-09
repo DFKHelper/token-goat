@@ -14,6 +14,7 @@
  * invalidateConfigCache() so loadConfig() picks it up) -- not a mocked loadConfig() -- since the
  * whole defect was several real call sites never consulting the real config at all.
  */
+import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -28,7 +29,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = path.join(os.tmpdir(), `tg-indexing-config-gates-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-indexing-config-gates.toml')
 
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { cmdIndex } from '../src/cli.js'

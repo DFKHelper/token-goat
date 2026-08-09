@@ -1,3 +1,4 @@
+import { tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
@@ -23,7 +24,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
+const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
