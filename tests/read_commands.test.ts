@@ -4385,7 +4385,10 @@ describe('read_commands', () => {
         const db = new Database(f)
         db.exec('CREATE TABLE items (id INTEGER, blob TEXT)')
         const insert = db.prepare('INSERT INTO items (id, blob) VALUES (?, ?)')
-        for (let i = 0; i < 500; i++) insert.run(i, `item-${i}-`.repeat(5))
+        // One transaction, not 500 implicit ones. Each bare .run() commits and fsyncs on its own, which is unnoticeable on a fast local disk but took 51-55s on a CI runner -- past the 30s testTimeout. Same 500 rows and same assertions, just without paying 500 fsyncs.
+        db.transaction(() => {
+          for (let i = 0; i < 500; i++) insert.run(i, `item-${i}-`.repeat(5))
+        })()
         db.close()
         const { stdout } = capture(() => {
           runSqliteQuery({ file: f, sql: 'SELECT * FROM items', json: true })

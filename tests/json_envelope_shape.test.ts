@@ -100,6 +100,9 @@ function expectEnvelope(raw: string, label: string): unknown[] {
 // ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so
 // it is empty until something seeds it. Seed the repo's own src tree plus one test file, so
 // `test-for` has a referencing test file to find rather than depending on ambient index state.
+// Explicit per-hook timeout: this hook tree-sitter-parses the repo's whole src tree (213 files, ~4.2MB) from scratch, which measures 20-32s even on a fast many-core machine and roughly doubles on a 4-vCPU CI runner -- past the 30s global hookTimeout, which is sized for ordinary hooks. Scoped here rather than raising that global bound, so every other hook keeps the tighter hang detection.
+const WHOLE_SRC_INDEX_TIMEOUT_MS = 120_000
+
 beforeAll(() => {
   const walk = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -109,7 +112,7 @@ beforeAll(() => {
     })
   for (const file of walk(resolve('src'))) indexFileSync(normalizePath(file))
   indexFileSync(normalizePath(resolve('tests', 'graph_commands.test.ts')))
-})
+}, WHOLE_SRC_INDEX_TIMEOUT_MS)
 
 describe('--json envelope shape', () => {
   it('symbol emits the envelope with row-level fields intact', () => {
