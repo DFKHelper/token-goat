@@ -5099,6 +5099,15 @@ interface SemanticOptions {
   json?: boolean
   /** Filter to hits whose FILE PATH matches this pattern (matched against the path as rendered under displayRoot, same convention as `refs --grep`). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. Applied before the `--limit` slice in both the embeddings and FTS-fallback branches. */
   grep?: string
+  /**
+   * `--exclude-tests`: drop hits whose file lives in a test file (per isTestFile), matching
+   * `refs`/`callers`/`dead`'s flag of the same name. Opt-in; omitted or false leaves output
+   * byte-identical to today. Distinct from `grep`, which can only ever *select* paths -- there
+   * is no `--grep` pattern that reliably excludes tests, since a negative lookahead silently
+   * degrades to a literal substring match on the regex-compile fallback. Composes with `grep`:
+   * a hit must satisfy both. Applied before the `--limit` slice in both branches.
+   */
+  excludeTests?: boolean
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -5160,8 +5169,23 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // the stored absolute path. Applied here, between merge and slice, so `--limit 20 --grep
   // '^src/'` returns 20 src/ hits rather than however many of the top-20 *unfiltered* hits
   // happen to live under src/ -- the "filter must precede slice" trap this repo has hit before.
+  //
+  // --exclude-tests rides the same seam for the same reason: filtering after the slice would
+  // return however many of the top-`n` hits happen not to be tests, rather than `n` non-test
+  // hits. It is checked against the STORED path (isTestFile), not the rendered one, because
+  // whether a file is a test is a property of the file itself, not of how it is displayed.
   const preGrepHitCount = mergedHits.length
-  const filteredHits = matchesGrep !== undefined ? mergedHits.filter((h) => matchesGrep(toDisplayPath(rootDir, h.filePath))) : mergedHits
+  const keepHit = (h: { filePath: string }): boolean => {
+    if (opts.excludeTests === true && isTestFile(h.filePath)) return false
+    return matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))
+  }
+  const anyFilter = matchesGrep !== undefined || opts.excludeTests === true
+  const filteredHits = anyFilter ? mergedHits.filter(keepHit) : mergedHits
+  // Counted on the grep-surviving set, so the number reported by the --exclude-tests notice is
+  // "tests hidden among the hits you actually asked for", not tests hidden repo-wide.
+  const suppressedHits = opts.excludeTests === true
+    ? mergedHits.filter((h) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))) && isTestFile(h.filePath)).length
+    : 0
   const hits = filteredHits.slice(0, n)
   if (hits.length > 0) {
     const enclosing = hits.map((h) => resolveEnclosingSymbol(h.filePath, h.startLine))
@@ -5205,13 +5229,18 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // above). When grep is set, over-fetch a larger candidate set using the same ratio the
   // embeddings branch uses, filter, THEN slice to `n`. When grep is unset this call stays
   // byte-identical to before so today's un-filtered behavior does not change.
+  // --exclude-tests needs the same over-fetch as --grep, for the same DB-LIMIT reason.
   let results: ReturnType<typeof searchSymbolsFts>
   let preGrepFtsCount = 0
-  if (matchesGrep !== undefined) {
+  let suppressedFts = 0
+  if (anyFilter) {
     const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
     const rawResults = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
     preGrepFtsCount = rawResults.length
-    results = rawResults.filter((s) => matchesGrep(toDisplayPath(rootDir, s.filePath))).slice(0, n)
+    if (opts.excludeTests === true) {
+      suppressedFts = rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, s.filePath))) && isTestFile(s.filePath)).length
+    }
+    results = rawResults.filter(keepHit).slice(0, n)
   } else {
     results = searchSymbolsFts(query, n, undefined, rootDir)
   }
@@ -5228,6 +5257,21 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
         return { text: JSON.stringify(payload, null, 2), code: 0 }
       }
       return { text: `token-goat: ${notice.trim()}`, code: 0 }
+    }
+    // Same distinction one flag over: "--exclude-tests hid every hit there was" is a filtered
+    // store, not an empty one, so it exits 0 with a notice naming the count instead of the
+    // exit-1 "no matches" below. Checked after --grep so a run with both flags reports the
+    // narrower grep story first, matching runRefs's ordering.
+    if (opts.excludeTests === true) {
+      const suppressedTotal = suppressedHits + suppressedFts
+      if (suppressedTotal > 0) {
+        const notice = `no non-test matches for '${query}' (${suppressedTotal} in test files hidden by --exclude-tests)`
+        if (opts.json === true) {
+          const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
+          return { text: JSON.stringify(payload, null, 2), code: 0 }
+        }
+        return { text: `token-goat: ${notice}`, code: 0 }
+      }
     }
     // Only paid after both the embedding search and the FTS fallback already came back empty.
     const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
