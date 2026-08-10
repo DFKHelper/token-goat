@@ -330,34 +330,35 @@ describe('cli_doctor', () => {
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
       fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
-      fs.writeFileSync(drainHeartbeatPathFor(tempDir), '')
+      fs.writeFileSync(drainHeartbeatPathFor(tempDir), `${process.pid}\n`)
 
       const result = checkDirtyQueueHealth(tempDir)
       expect(result.status).toBe('ok')
       expect(result.message).toContain('actively draining')
     })
 
-    it('warns when the worker is running but the drain heartbeat is stale (wedged/deadlocked)', () => {
+    it('reports a worker as not running when its heartbeat lease is stale', () => {
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
       const heartbeatPath = drainHeartbeatPathFor(tempDir)
       fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true })
-      fs.writeFileSync(heartbeatPath, '')
+      fs.writeFileSync(heartbeatPath, `${process.pid}\n`)
       const staleMs = Date.now() - 5 * 60 * 1000 // 5 minutes ago, well past the staleness threshold
       fs.utimesSync(heartbeatPath, new Date(staleMs), new Date(staleMs))
 
       const result = checkDirtyQueueHealth(tempDir)
-      expect(result.status).toBe('warn')
-      expect(result.message).toContain("hasn't completed a drain cycle")
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('worker not running')
     })
 
-    it('returns ok when the worker is running but has not completed its first drain cycle yet (no heartbeat file)', () => {
+    it('reports the worker as not running until it writes its first heartbeat lease', () => {
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
-      // Deliberately no heartbeat file written -- simulates a freshly-started worker.
+      // Deliberately no heartbeat file written -- the PID alone cannot prove worker ownership.
 
       const result = checkDirtyQueueHealth(tempDir)
       expect(result.status).toBe('ok')
+      expect(result.message).toContain('worker not running')
     })
   })
 
@@ -518,6 +519,8 @@ describe('cli_doctor', () => {
       // process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
+      fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
+      fs.writeFileSync(drainHeartbeatPathFor(tempDir), `${process.pid}\n`)
 
       const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
       const worker = results.find((r) => r.name === 'Worker')
