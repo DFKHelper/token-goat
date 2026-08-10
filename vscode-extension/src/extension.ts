@@ -81,7 +81,19 @@ async function compressText(text: string, extension: string): Promise<string> {
   const payload = await withTemporaryText(scrubPii(text), extension, (file) => runTokenGoat(['compress-text', '--file', file]))
   showStats(payload)
   if (lastRedactions > 0) {
-    void vscode.window.setStatusBarMessage(`token-goat: removed ${lastRedactions} personal-data item(s) before sending`, 6000)
+    if (savingsContext && !savingsContext.globalState.get<boolean>('piiNoticeShown', false)) {
+      void savingsContext.globalState.update('piiNoticeShown', true)
+      void vscode.window.showInformationMessage(
+        `token-goat removed ${lastRedactions} personal-data item(s) (emails, phone/ID/card numbers) before this reached chat. It does this every time — turn it off in Settings if you need raw text.`,
+        'Keep it on', 'Turn it off',
+      ).then((choice) => {
+        if (choice === 'Turn it off') {
+          void vscode.workspace.getConfiguration('token-goat').update('scrubPii', false, vscode.ConfigurationTarget.Global)
+        }
+      })
+    } else {
+      void vscode.window.setStatusBarMessage(`token-goat: removed ${lastRedactions} personal-data item(s) before sending`, 6000)
+    }
   }
   return payload
 }
