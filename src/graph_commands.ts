@@ -376,6 +376,8 @@ export interface CallChainOptions {
   symbol: string
   depth?: number
   json?: boolean
+  /** `--exclude-tests`: prune callers whose call site lives in a test file (per isTestFile) before they're admitted to the BFS, so nothing walks through a test node. Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
 
 export function runCallChain(opts: CallChainOptions): number {
@@ -420,6 +422,14 @@ export function runCallChain(opts: CallChainOptions): number {
   // across every node visited, not rebuilt per-node (which would defeat the point of caching it).
   const getSyms = buildFileSymCache()
 
+  // Counts refs pruned by --exclude-tests across the whole BFS (root + every hop), so the
+  // suppressed-everything message below can distinguish a filtered view from a genuinely
+  // caller-less symbol. Flag-absent, this stays 0 and the message path below is unreachable.
+  // Declared ABOVE the closure that mutates it: `callersOf` captures this binding, and today it
+  // is only invoked later (via bfsCallChains), but a `let` declared after its own capturing
+  // closure is a temporal-dead-zone trap for any future edit that calls the closure earlier.
+  let suppressedCount = 0
+
   const callersOf: CallersOfFn = (n: string): string[] => {
     const refs = queryRefs({ name: n, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     if (refs.length === 0) return []
@@ -427,6 +437,14 @@ export function runCallChain(opts: CallChainOptions): number {
     const scoped = fileHint !== undefined && n === name ? filterRefsForSymbol(refs, n, fileHint, getSyms) : refs
     const names = new Set<string>()
     for (const ref of scoped) {
+      // Skipped before the caller is admitted so the BFS never walks THROUGH a test node -- a
+      // test-file caller that itself has real (non-test) callers must not drag them in either.
+      // Filter target is the call SITE (ref.filePath), never the resolved symbol's own definition
+      // site (the 0ec04da8 bug class documented above).
+      if (opts.excludeTests === true && isTestFile(ref.filePath)) {
+        suppressedCount += 1
+        continue
+      }
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
       if (enc !== null) names.add(enc.name)
     }
@@ -445,6 +463,14 @@ export function runCallChain(opts: CallChainOptions): number {
   // callers" signal, not `chains.length === 0`. The depth<=0 rejection above rules out the only
   // other way bfsCallChains produces this exact shape (its own `maxDepth <= 0` short-circuit).
   if (chains.length === 1 && chains[0]?.length === 1 && chains[0][0] === name) {
+    // "(no callers)" plus exit 0 for a symbol that IS called -- only from tests -- reads as
+    // genuinely unreferenced. Name the suppressed count so the filtered view is never mistaken
+    // for absence. Flag-absent, suppressedCount is always 0 so this stays unreachable and output
+    // is byte-identical to today.
+    if (opts.excludeTests === true && suppressedCount > 0) {
+      emit(`${name}  (no non-test callers; ${suppressedCount} in test files hidden by --exclude-tests)`)
+      return 0
+    }
     emit(`${name}  (no callers)`)
     return 0
   }
@@ -461,6 +487,8 @@ export interface ImpactOptions {
   symbol: string
   top?: number
   json?: boolean
+  /** `--exclude-tests`: prune callers (including module-scope entries) whose call site lives in a test file (per isTestFile) before they're admitted to the BFS, so nothing walks through a test node. Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
 
 /**
@@ -507,6 +535,10 @@ export function runImpact(opts: ImpactOptions): number {
 
   const hops = new Map<string, number>([[rootName, 0]])
   const queue: Array<[string, number]> = [[rootName, 0]]
+  // Counts refs pruned by --exclude-tests across the whole BFS, so the suppressed-everything
+  // message below can distinguish a filtered view from a genuinely caller-less symbol.
+  // Flag-absent, this stays 0 and the message branch below is unreachable.
+  let suppressedCount = 0
 
   while (queue.length > 0) {
     const item = queue.shift()
@@ -517,6 +549,17 @@ export function runImpact(opts: ImpactOptions): number {
     // Only the ROOT hop (name === rootName, the exact symbol the spec asked to disambiguate) can be scoped by fileHint via filterRefsForSymbol, mirroring resolveCallers'/runCallChain's own attribution pattern -- every hop beyond that resolves to a caller's bare symbol NAME with no file attached to disambiguate against.
     const scoped = fileHint !== undefined && name === rootName ? filterRefsForSymbol(refs, name, fileHint, getSyms) : refs
     for (const ref of scoped) {
+      // Skipped before the caller (or module-scope entry) is admitted so the BFS never walks
+      // THROUGH a test node -- a test-file caller that itself has real (non-test) callers must
+      // not drag them into the impacted set. Filter target is the call SITE (ref.filePath),
+      // never the resolved symbol's own definition site (the 0ec04da8 bug class documented
+      // above). Must run before the module-scope branch below too: it `continue`s before the
+      // normal caller-admission code, so a naive skip placed after it would miss test-file
+      // top-level references entirely.
+      if (opts.excludeTests === true && isTestFile(ref.filePath)) {
+        suppressedCount += 1
+        continue
+      }
       const newHop = depth + 1
       const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)
       if (enc === null) {
@@ -545,6 +588,14 @@ export function runImpact(opts: ImpactOptions): number {
     .slice(0, top)
 
   if (sorted.length === 0) {
+    // "No callers found" for a symbol that IS called -- only from tests -- reads as genuinely
+    // unreferenced and invites deleting live code. Name the suppressed count so the filtered
+    // view is never mistaken for absence. Flag-absent, suppressedCount is always 0 so this
+    // stays unreachable and output/exit code is byte-identical to today.
+    if (opts.excludeTests === true && suppressedCount > 0) {
+      emitErr(`No non-test impact found for '${opts.symbol}' (${suppressedCount} in test files hidden by --exclude-tests)`)
+      return 1
+    }
     emitErr(`No callers found for '${opts.symbol}'`)
     return 1
   }

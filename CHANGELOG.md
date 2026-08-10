@@ -5,6 +5,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ## [Unreleased]
 
 ### Added
+- **`call-chain` and `impact` now take `--exclude-tests`.** The two commands most polluted by test callers -- both walk the caller relation transitively, so any test touching the path got dragged in. Prunes test-file callers before they're admitted to the traversal (not just from the final output), so nothing walks through a test node either; when every caller was a test, the empty-result message names the hidden count instead of reading as genuinely unreferenced. Opt-in, matching `refs`/`callers`/`dead`. See [src/graph_commands.ts](src/graph_commands.ts), [src/cli.ts](src/cli.ts).
 - **`semantic` now takes `--grep <pattern>` to narrow by file path.** The only surgical-read query command that had no path filter at all -- every sibling (`refs`, `callers`, `dead`, `skeleton`/`outline`, `exports`) already has one. Matches the pattern against the file path as rendered (an anchored `--grep "^src/"` matches what the output shows, not the stored absolute path), regex falling back to a literal substring match when the pattern is not valid regex. Applies before the `--limit` slice in both the embeddings and full-text-fallback branches, and when it filters everything out the result names the active filter (`--json` sets `grepFilteredToEmpty: true`) instead of reading like the search found nothing. See [src/read_commands.ts](src/read_commands.ts), [src/cli.ts](src/cli.ts).
 
 ## [2.6.26] - 2026-08-09

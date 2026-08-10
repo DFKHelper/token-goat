@@ -3397,12 +3397,14 @@ export function buildProgram(): Command {
     .description('transitive callers up toward entry points (BFS, cycle-safe; accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('-d, --depth <n>', 'max BFS depth (default 8)')
     .option('-j, --json', 'output as JSON')
-    .action((symbol: string, opts: { depth?: string; json?: boolean }) =>
+    .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
+    .action((symbol: string, opts: { depth?: string; json?: boolean; excludeTests?: boolean }) =>
       runExit(() =>
         runCallChain({
           symbol,
           ...(opts.depth !== undefined ? { depth: requireInt('--depth', opts.depth) } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
@@ -3412,12 +3414,14 @@ export function buildProgram(): Command {
     .description('transitive set of callers impacted by a change (with hop depth; accepts file::symbol to disambiguate which same-named definition is meant)')
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
-    .action((symbol: string, opts: { top?: string; json?: boolean }) =>
+    .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
+    .action((symbol: string, opts: { top?: string; json?: boolean; excludeTests?: boolean }) =>
       runExit(() =>
         runImpact({
           symbol,
           ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
