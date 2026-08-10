@@ -1,0 +1,15 @@
+# Project map: token-goat
+Files: 264
+Languages: typescript 212, markdown 34, json 8, javascript 4, html 2, yaml 2, env_file 1, css 1
+
+## Top symbols
+- TerraformFilter (class)
+- PytestFilter (class)
+- GoTestFilter (class)
+- ToolFilter (class)
+- PsqlFilter (class)
+- AnsibleFilter (class)
+- AwsCliFilter (class)
+- CargoFilter (class)
+- MakeFilter (class)
+- PythonFilter (class)

@@ -1,0 +1,15 @@
+Compact hint - context: cool (2.9% full)
+Manifest: 197 tokens, 23 events
+
+# Recovery paths available after compaction
+token-goat recent
+  Revisit the files the session recently used.
+
+token-goat recall "task phrase"
+  Find a cached command, web result, or MCP result.
+
+token-goat handoff-resolve <name>
+  Restore a named compact handoff.
+
+token-goat resume <session-id>
+  Build a recovery packet for a prior session.

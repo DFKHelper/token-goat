@@ -1,0 +1,99 @@
+# c:/Projects/token-goat/src/bridges/copilot_cli_install.ts:1-288 (distance 0.549)
+/**
+ * Copilot CLI install/uninstall wiring.
+ *
+
+# c:/Projects/token-goat/src/cli_doctor.ts:423-510 (distance 0.697)
+/**
+ * Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse
+ * entry, the node binary baked into that entry's command still exists on disk (it goes stale
+
+# c:/Projects/token-goat/src/bridges/copilot_cli.ts:1-240 (distance 0.729)
+/**
+ * Copilot CLI hook shim.
+ *
+
+# c:/Projects/token-goat/tests/install_copilot_cli.test.ts:309-429 (distance 0.776)
+describe('copilot-instructions.md routing block', () => {
+  it('writes a delimited token-goat gate block on a fresh install and surfaces its path', () => {
+    const result = installCopilotCli()
+
+# c:/Projects/token-goat/tests/hook_event_harness_matrix.test.ts:1-63 (distance 0.801)
+/**
+ * Hook-event x harness bundle matrix (mirrors tests/command_matrix_e2e.test.ts's
+ * built-bundle philosophy, applied to hook EVENTS instead of CLI commands).
+
+# c:/Projects/token-goat/src/bridges/grok_install.ts:178-186 (distance 0.717)
+/**
+ * Is the Grok CLI integration currently present?
+ *
+
+# c:/Projects/token-goat/tests/install_copilot_cli.test.ts:492-668 (distance 0.769)
+describe('COPILOT_CLI_HOOK_SCRIPT', () => {
+  it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
+    const cwd = mkIsolated()
+
+# c:/Projects/token-goat/src/bridges/codex_install.ts:1-62 (distance 0.824)
+/**
+ * Codex CLI install / uninstall writer.
+ *
+
+# c:/Projects/token-goat/tests/wire_format_contract_matrix.test.ts:228-249 (distance 0.785)
+}
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe('PostToolUse')
+    expect(typeof parsed.hookSpecificOutput?.additionalContext).toBe('string')
+
+# c:/Projects/token-goat/tests/install_pi.test.ts:256-317 (distance 0.839)
+// Codex/Copilot CLI bridges' hook commands. resolveEntryPath() reads an
+  // install-time sidecar (see installPi in pi_install.ts) so callHook can invoke
+  // the real token-goat entry directly via process.execPath instead.
+
+# c:/Projects/token-goat/tests/wire_format_contract_matrix.test.ts:278-303 (distance 0.797)
+// This is the exact wire-format bug hook_registry.ts's own comment
+      // documents (2026-07-02): a pre_compact context output must NEVER be
+      // nested under hookSpecificOutput.additionalContext -- Claude Code's
+
+# c:/Projects/token-goat/src/bridges/relay_block.ts:12-121 (distance 0.855)
+export const BRIDGE_RELAY_JS = `// resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
+// the install step next to this plugin file) containing the absolute path to
+// the token-goat CLI entry that was running at install time. Unlike
+
+# c:/Projects/token-goat/tests/hook_event_harness_matrix.test.ts:453-478 (distance 0.811)
+expect(parsed.decision).toBe('block')
+    expect(typeof parsed.reason).toBe('string')
+  })
+
+# c:/Projects/token-goat/tests/install_copilot_cli.test.ts:39-159 (distance 0.813)
+beforeEach(() => {
+  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-copilot-cli-install-'))
+  const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+
+# c:/Projects/token-goat/src/bridges/grok_install.ts:1-71 (distance 0.813)
+/**
+ * Grok CLI (xAI's "Grok Build") install / uninstall writer.
+ *
+
+# c:/Projects/token-goat/tests/guards/cli_registration.test.ts:40-121 (distance 0.820)
+describe('CLI command registration', () => {
+  it('every cmd* handler in cli.ts is wired into an .action()', () => {
+    const handlers = declaredCmdHandlers()
+
+# c:/Projects/token-goat/src/util.ts:848-858 (distance 0.874)
+/**
+ * Build a hook command line that invokes the shim via `process.execPath` directly rather
+ * than relying on PATH/cmd.exe resolution (root cause of a real fail-closed deny-all class
+
+# c:/Projects/token-goat/src/bridges/registry.ts:39-76 (distance 0.876)
+/**
+ * Detect the running harness from environment variables.
+ *
+
+# c:/Projects/token-goat/src/cli.ts:462-633 (distance 0.838)
+async function cmdInstall(opts: {
+  project?: boolean
+  codex?: boolean
+
+# c:/Projects/token-goat/src/hooks_cli.ts:86-100 (distance 0.844)
+/**
+ * Grok CLI tool name -> internal PascalCase tool name.
+ *

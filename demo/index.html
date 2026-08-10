@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="A visual, evidence-backed Token-Goat approval demo." />
+    <title>Token-Goat | Context, under control</title>
+    <link rel="icon" href="assets/icon.png" />
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <main class="demo-shell">
+      <header class="topbar">
+        <a class="brand" href="README.md" aria-label="Open the Token-Goat README">
+          <img src="assets/logo.png" alt="Token-Goat" height="34" />
+        </a>
+        <p class="eyebrow">Approval demo / VS Code Copilot Chat</p>
+        <button class="presentation-button" type="button" data-action="present">
+          <span>Presentation mode</span>
+          <kbd>P</kbd>
+        </button>
+      </header>
+
+      <section class="hero" aria-labelledby="demo-title">
+        <div>
+          <p class="section-label">The working theory</p>
+          <h1 id="demo-title">Give the AI the material it needs, not everything it can drown in.</h1>
+          <p class="hero-copy">
+            Token-Goat lets an AI harness hand simple, deterministic work to the local CPU:
+            mapping a project, extracting a document section, querying data, measuring context, or folding
+            noisy output. The
+            harness gets a small, inspectable result and keeps its context for the actual task.
+            With less irrelevant material competing for attention, the AI has a clearer evidence set and
+            more room to reason about the task; that improves the conditions for useful work, without
+            promising that any AI decision will be correct.
+            When a long session is compacted, Token-Goat also keeps a recoverable trail of recent files,
+            cached results, handoffs, and compact session metadata so the agent can pick up the right
+            thread instead of guessing or reopening everything.
+          </p>
+          <p class="hero-safety"><strong>Safety:</strong> when Token-Goat detects a known prompt-injection pattern in fetched material, it marks that material as untrusted. In practical terms, a document or web page cannot quietly turn into instructions for the AI.</p>
+        </div>
+        <aside class="proof-panel" aria-label="Demo evidence summary">
+          <p class="section-label">This presentation contains</p>
+          <div class="proof-number">10</div>
+          <p>captured workflows backed by repeatable local command output</p>
+          <div class="proof-rule"></div>
+          <p class="muted">Click a workflow. The evidence pane changes to the exact local command output.</p>
+        </aside>
+      </section>
+
+      <section class="review-brief" aria-labelledby="review-title">
+        <div>
+          <p class="section-label">For the reviewer</p>
+          <h2 id="review-title">A short path to an informed pilot decision.</h2>
+        </div>
+        <div class="review-points">
+          <p><strong>Value:</strong> smaller tool-result payloads before a repeated context can be reused.</p>
+          <p><strong>Control:</strong> every narrowed result names the file, symbol, and line range.</p>
+          <p><strong>Proof:</strong> this page ships with repeatable commands, not simulated metrics.</p>
+        </div>
+      </section>
+
+      <section class="cache-reality" aria-labelledby="cache-title">
+        <div>
+          <p class="section-label">Cache is useful, not sufficient</p>
+          <h2 id="cache-title">Caching reuses context. It does not choose better context.</h2>
+        </div>
+        <div class="cache-copy">
+          <p>
+            Copilot Enterprise caching can make repeated prompt material cheaper or faster to process.
+            Keep that benefit. This demo measures a different layer: how much tool output enters the
+            active context for the first task and for each changed task. Token-Goat reduces that payload
+            before caching can help with later reuse.
+          </p>
+          <p>
+            GitHub's Copilot documentation says tool results are held in the context window. Token-Goat
+            narrows those results before they become conversation material. A cache can reuse a broad
+            result; it cannot make that result more relevant or give the context window its space back so
+            the AI can reason more clearly.
+          </p>
+          <a class="text-link" href="https://docs.github.com/en/copilot/concepts/agents/copilot-cli/context-management" target="_blank" rel="noopener noreferrer">
+            Read GitHub's context documentation <span>-&gt;</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="index-foundation" aria-labelledby="index-foundation-title">
+        <div>
+          <p class="section-label">The engine underneath</p>
+          <h2 id="index-foundation-title">Index once. Read the right thing afterward.</h2>
+        </div>
+        <div class="index-copy">
+          <p>Token-Goat parses the tracked project into a local SQLite catalog of symbols, sections, and references. Think of it as a small private table of contents for the material on that machine, not a copy of the whole project sent to the AI.</p>
+          <p>Maps, targeted reads, caller lookups, and semantic discovery query that catalog first. The AI gets the relevant file, section, or function only when the task calls for it.</p>
+          <div class="index-commands">
+            <code>token-goat index</code>
+            <span>Build or refresh the project catalog.</span>
+            <code>token-goat worker start</code>
+            <span>Keep changed files current in the background.</span>
+          </div>
+          <div class="index-example">
+            <span>Build, then use the index</span>
+            <code>&gt; token-goat index<br>Indexed 22 files into the symbol index.<br>Skipped 575 unchanged files.</code>
+            <code>&gt; token-goat symbol writeParseResult<br>Found: src/parser.ts, lines 2420-2473<br>Next step: read that function only.</code>
+          </div>
+        </div>
+      </section>
+
+      <section class="workbench" aria-labelledby="workflows-title">
+        <div class="workbench-heading">
+          <div>
+            <p class="section-label">Ten captured workflows</p>
+            <h2 id="workflows-title">Start with the job Copilot is being asked to do.</h2>
+          </div>
+        </div>
+
+        <nav class="workflow-grid" aria-label="Token-Goat workflow index">
+          <a class="workflow-card" href="#workflow-web">
+            <span class="workflow-index">01</span>
+            <span class="workflow-copy">
+              <strong>Reuse one useful part of a web page</strong>
+              <small>Retrieve the section that answers the question, not the full page.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-></span>
+          </a>
+          <a class="workflow-card" href="#workflow-pdf">
+            <span class="workflow-index">02</span>
+            <span class="workflow-copy">
+              <strong>Review only the relevant PDF pages</strong>
+              <small>Inspect metadata, outline, and the page range that answers the question.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-></span>
+          </a>
+          <a class="workflow-card" href="#workflow-compact">
+            <span class="workflow-index">03</span>
+            <span class="workflow-copy">
+              <strong>Start with a compact session hint</strong>
+              <small>Keep standing guidance available without filling the context window.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-></span>
+          </a>
+          <a class="workflow-card" href="#workflow-pptx">
+            <span class="workflow-index">04</span>
+            <span class="workflow-copy">
+              <strong>Read the decision in a large PowerPoint</strong>
+              <small>Extract the one slide’s text instead of handling a 24.3 MB attachment.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-></span>
+          </a>
+          <a class="workflow-card" href="#workflow-oracle">
+            <span class="workflow-index">05</span>
+            <span class="workflow-copy">
+              <strong>Explore an Oracle schema safely</strong>
+              <small>Start with the narrowest catalog slice, not a database dump.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-></span>
+          </a>
+          <a class="workflow-card" href="#workflow-map">
+            <span class="workflow-index">06</span>
+            <span class="workflow-copy">
+              <strong>Orient in an unfamiliar repo</strong>
+              <small>Map the project before Copilot starts opening files.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-&gt;</span>
+          </a>
+          <a class="workflow-card" href="#workflow-outline">
+            <span class="workflow-index">07</span>
+            <span class="workflow-copy">
+              <strong>Find the right implementation surface</strong>
+              <small>Outline a large file before asking for a change.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-&gt;</span>
+          </a>
+          <a class="workflow-card" href="#workflow-read">
+            <span class="workflow-index">08</span>
+            <span class="workflow-copy">
+              <strong>Read one function, with its boundaries</strong>
+              <small>Pull the symbol instead of the whole module.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-&gt;</span>
+          </a>
+          <a class="workflow-card" href="#workflow-semantic">
+            <span class="workflow-index">09</span>
+            <span class="workflow-copy">
+              <strong>Trace an integration question</strong>
+              <small>Use semantic search when the exact symbol is unknown.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-&gt;</span>
+          </a>
+          <a class="workflow-card" href="#workflow-budget">
+            <span class="workflow-index">10</span>
+            <span class="workflow-copy">
+              <strong>Measure context before a broad task</strong>
+              <small>Price the request before packing code into a prompt.</small>
+            </span>
+            <span class="card-arrow" aria-hidden="true">-&gt;</span>
+          </a>
+        </nav>
+      </section>
+
+      <section class="workflow-deck" id="workflow-deck" aria-label="Workflow evidence"></section>
+
+      <section class="safety-features" aria-labelledby="safety-features-title">
+        <div>
+          <p class="section-label">More than context trimming</p>
+          <h2 id="safety-features-title">Useful safeguards when context comes from outside the codebase.</h2>
+        </div>
+        <div class="feature-list">
+          <p><strong>Prompt injection fencing.</strong> When Token-Goat detects known attack patterns in fetched content, it marks the material as untrusted and fences it so it is not presented as instructions.</p>
+          <p><strong>Non-code-aware reads.</strong> PDFs are routed to metadata, outline, and page-scoped text extraction instead of a raw binary read. SQLite access is limited to read-only <code>SELECT</code> queries.</p>
+          <p><strong>Inspectable evidence.</strong> Screenshot capture, compact maps, symbol reads, semantic discovery, and context budgets make each narrowing decision visible to the reviewer.</p>
+        </div>
+      </section>
+
+      <section class="reviewer-boundary" aria-labelledby="reviewer-boundary-title">
+        <div>
+          <p class="section-label">Operating boundary</p>
+          <h2 id="reviewer-boundary-title">Local by default. Visible by design.</h2>
+        </div>
+        <div class="boundary-list">
+          <p><strong>Local processing.</strong> The index, caches, and compact handoffs stay on the developer machine. Token-Goat has no telemetry, analytics, background reporting, or silent outbound connections.</p>
+          <p><strong>Explicit network actions.</strong> Network access is limited to actions the user or agent explicitly requests, such as fetching an image or using an already authorized document integration.</p>
+          <p><strong>Reversible setup.</strong> The integration is installed per supported harness and can be removed with the matching uninstall command.</p>
+        </div>
+      </section>
+
+      <section class="copilot-section" aria-labelledby="copilot-title">
+        <div>
+          <p class="section-label">Where this fits</p>
+          <h2 id="copilot-title">Keep the AI coding interface developers already use.</h2>
+        </div>
+        <div class="copilot-copy">
+          <p>
+            Install Token-Goat once on each machine where it is enabled, then let the selected
+            AI-agent integration guide broad tool calls toward narrower, indexed reads in the background.
+            Copilot Chat is the interface shown in this demo, not the only supported path. Developers keep
+            using their usual AI coding tool; the commands remain available when someone wants to inspect
+            the evidence directly in a terminal.
+          </p>
+          <p>
+            Token-Goat recognizes <strong>101 distinct extensions</strong>: 83 source and structured-text
+            extensions for indexed reads, plus 20 formats with dedicated large-file guidance. HTML and HTM
+            appear in both groups. That includes PDFs, Office files, spreadsheets, web pages, logs, delimited
+            data, and transcripts.
+          </p>
+          <figure class="agent-command-capture">
+            <img src="screenshots/agent-uses-token-goat.png" alt="Terminal capture showing an AI agent invoking token-goat semantic, read, section, skeleton, and screenshot commands through its shell." />
+            <figcaption>Token-Goat commands appear as ordinary local shell commands to the AI agent.</figcaption>
+          </figure>
+          <code>token-goat install --copilot</code>
+          <a href="#setup-evidence" class="text-link" data-action="setup">Show captured setup details <span>-&gt;</span></a>
+        </div>
+      </section>
+
+      <section class="setup-evidence" id="setup-evidence" hidden aria-labelledby="setup-title">
+        <div>
+          <p class="section-label">Copilot setup evidence</p>
+          <h2 id="setup-title">What the Copilot integration installs.</h2>
+        </div>
+        <pre id="setup-output">Loading captured setup details...</pre>
+      </section>
+
+      <section class="feature-catalog" aria-labelledby="feature-catalog-title">
+        <div>
+          <p class="section-label">Everything Token-Goat can do</p>
+          <h2 id="feature-catalog-title">The complete feature list.</h2>
+          <p>Every registered command is listed below. After setup on a developer machine, supported AI agents can choose and use these tools through the installed integration or MCP server; this list is here so reviewers can see what is available.</p>
+          <div class="feature-catalog-summary" aria-label="Feature catalog totals">
+            <strong id="feature-command-count">-</strong>
+            <span>registered commands</span>
+            <small id="feature-category-count">- categories</small>
+          </div>
+        </div>
+        <div id="feature-catalog-list"></div>
+      </section>
+
+      <footer>
+        <p>All command captures were generated from this local token-goat working tree.</p>
+        <a href="README.md">Read the bundled documentation <span>-&gt;</span></a>
+        <a href="https://github.com/DFKHelper/token-goat" target="_blank" rel="noopener noreferrer">View the repository <span>-&gt;</span></a>
+      </footer>
+    </main>
+    <script src="./evidence.js"></script>
+    <script src="./features.js"></script>
+    <script src="./demo.js"></script>
+  </body>
+</html>
