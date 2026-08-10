@@ -2534,7 +2534,7 @@ describe('read_commands', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
       const { text: stdout } = runSkeleton({ file: 'a.ts', minLines: 10 })
-      expect(stdout).toContain('1 symbols')
+      expect(stdout).toContain('1 symbol')
       expect(stdout).toContain('30 lines')
     })
 
@@ -6831,15 +6831,15 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     )
     const { stdout } = capture(() => runRefs({ spec: 'login,refresh', top: 1 }))
     expect(stdout).toContain('login:')
-    expect(stdout).toContain('2 references across 1 files (showing top 1)')
+    expect(stdout).toContain('2 references across 1 file (showing top 1)')
     expect(stdout).toContain('refresh:')
-    expect(stdout).toContain('1 references across 1 files (showing top 1)')
+    expect(stdout).toContain('1 reference across 1 file (showing top 1)')
   })
 
   it('takes precedence over --callers for text output when both are set', () => {
     mockQueryRefs.mockReturnValue([ref('src/a.ts', 1, 'x'), ref('src/a.ts', 2, 'x')])
     const { stdout } = capture(() => runRefs({ spec: 'login', top: 5, callers: true }))
-    expect(stdout).toContain('2 references across 1 files')
+    expect(stdout).toContain('2 references across 1 file')
     // The caller-grouped per-line view (":line  context") is not also present.
     expect(stdout).not.toContain(':1  x')
   })
@@ -6851,7 +6851,7 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
       ref('tests/b.test.ts', 1, 'x'), ref('tests/b.test.ts', 2, 'x'),
     ])
     const { stdout } = capture(() => runRefs({ spec: 'login', top: 5, grep: '^src/' }))
-    expect(stdout).toContain('3 references across 1 files (showing top 1)')
+    expect(stdout).toContain('3 references across 1 file (showing top 1)')
     expect(stdout).not.toContain('tests/b.test.ts')
   })
 

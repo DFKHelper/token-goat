@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -368,7 +368,7 @@ export function runCallers(opts: CallersOptions): number {
   // Additive note only: printed solely when --exclude-tests actually hid something, so default
   // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
   if (opts.excludeTests === true && suppressed > 0) {
-    emit(`${entries.length} callers found (${excludeTestsHiddenNote(suppressed)})`)
+    emit(`${countNoun(entries.length, 'caller')} found (${excludeTestsHiddenNote(suppressed)})`)
   }
 
   for (const e of entries) {
@@ -827,7 +827,7 @@ export function runDead(opts: DeadOptions): number {
   // Additive note only: printed solely when --exclude-tests actually hid something, so default
   // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
   if (opts.excludeTests === true && suppressed > 0) {
-    emit(`${sliced.length} dead symbols (${excludeTestsHiddenNote(suppressed)})`)
+    emit(`${countNoun(sliced.length, 'dead symbol')} (${excludeTestsHiddenNote(suppressed)})`)
   }
 
   for (const r of sliced) {
