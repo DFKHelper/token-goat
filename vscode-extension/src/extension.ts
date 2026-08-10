@@ -413,6 +413,8 @@ export function activate(context: vscode.ExtensionContext): void {
           '`/paste` (whatever you copied — a ticket, an email, an error message), ' +
           '`/errors` (just the errors and warnings from the open log file), ' +
           '`/summarize`, `/reply`, `/actions`, `/explain` (plain-language answers about selected/copied text), ' +
+          '`/kb` (resolved ticket → knowledge-base article), ' +
+          '`/friendlier`, `/shorter`, `/formal` (tone rewrites for text you wrote), ' +
           'plus developer commands `/selection`, `/context`, `/symbol`, `/file`, `/diff`. ' +
           'Everything is compressed first, so long tickets and logs cost fewer chat tokens.'
         )
