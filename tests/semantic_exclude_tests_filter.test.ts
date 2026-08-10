@@ -233,7 +233,7 @@ describe('runSemantic --exclude-tests (FTS fallback branch)', () => {
 
     expect(code).toBe(0)
     expect(text).toContain('hidden by --exclude-tests')
-    expect(text).toContain('1 in test files')
+    expect(text).toContain('1 in test file hidden')
     expect(text).not.toContain('no matches for')
   })
 

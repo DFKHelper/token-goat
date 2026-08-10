@@ -1392,7 +1392,7 @@ describe('runCallers --exclude-tests', () => {
           const out = captureStdout(() => { expect(runCallers({ symbol: 'exclOnlyTested7w2', excludeTests: true })).toBe(1) })
           const all = out + errs.join('\n')
           expect(all).toContain('No non-test references found')
-          expect(all).toContain('1 in test files hidden by --exclude-tests')
+          expect(all).toContain('1 in test file hidden by --exclude-tests')
         } finally {
           errSpy.mockRestore()
         }
@@ -2764,7 +2764,7 @@ describe('runCallChain --exclude-tests', () => {
         })
         expect(withFlag).not.toContain('chainExclTestCaller3q7')
         expect(withFlag).not.toContain('chainExclGrandparent3q7')
-        expect(withFlag).toContain('(no non-test callers; 1 in test files hidden by --exclude-tests)')
+        expect(withFlag).toContain('(no non-test callers; 1 in test file hidden by --exclude-tests)')
       } finally {
         cwdSpy.mockRestore()
       }
@@ -2794,7 +2794,7 @@ describe('runCallChain --exclude-tests', () => {
         const withFlag = captureStdout(() => {
           expect(runCallChain({ symbol: 'chainExclEmptyFn5m2', excludeTests: true })).toBe(0)
         })
-        expect(withFlag).toContain('chainExclEmptyFn5m2  (no non-test callers; 1 in test files hidden by --exclude-tests)')
+        expect(withFlag).toContain('chainExclEmptyFn5m2  (no non-test callers; 1 in test file hidden by --exclude-tests)')
         // Distinguishable from the genuinely-caller-less message -- must not read as "no callers".
         expect(withFlag).not.toBe('chainExclEmptyFn5m2  (no callers)\n')
       } finally {
@@ -3167,7 +3167,7 @@ describe('runImpact --exclude-tests', () => {
         const errCaptured = captureStderr(() => {
           expect(runImpact({ symbol: 'impactExclTargetFn4n8', excludeTests: true })).toBe(1)
         })
-        expect(errCaptured).toContain(`No non-test impact found for 'impactExclTargetFn4n8' (1 in test files hidden by --exclude-tests)`)
+        expect(errCaptured).toContain(`No non-test impact found for 'impactExclTargetFn4n8' (1 in test file hidden by --exclude-tests)`)
       } finally {
         cwdSpy.mockRestore()
       }

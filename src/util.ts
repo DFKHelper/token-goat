@@ -786,6 +786,29 @@ export function grepFilteredToEmptyNotice(preFilterCount: number, grep: string, 
   return `  (all ${preFilterCount} ${noun} ${verb} filtered out by --grep ${grep} -- widen or drop the filter to see them)`
 }
 
+/**
+ * `3 references` / `1 reference` -- a count and a noun that agrees with it. Trivial, but the
+ * agreement was getting dropped: `refs --exclude-tests` rendered `1 references` because five
+ * call sites interpolated `${results.length} references` directly, and a test pinned that
+ * output as correct. Reach for this instead of interpolating a bare noun after a count.
+ */
+export function countNoun(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+/**
+ * The parenthetical every `--exclude-tests` surface appends when the flag hid something, e.g.
+ * `3 in test files hidden by --exclude-tests`. Shared rather than interpolated per call site
+ * because the noun has to agree with the count and it previously did not: fourteen call sites
+ * across refs/callers/dead/call-chain/impact/semantic each hard-coded the plural, so hiding a
+ * single reference reported "1 in test files hidden" -- which reads as a bug in the tool rather
+ * than as a report about the store, and one hidden ref is the most common way to reach this
+ * notice at all. Same reasoning as {@link grepFilteredToEmptyNotice} directly above.
+ */
+export function excludeTestsHiddenNote(count: number): string {
+  return `${count} in test ${count === 1 ? 'file' : 'files'} hidden by --exclude-tests`
+}
+
 /** Escapes regex metacharacters so a string is safely embeddable inside a `new RegExp(...)` pattern and matches only itself. */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

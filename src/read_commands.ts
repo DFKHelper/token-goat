@@ -20,7 +20,7 @@ import { fingerprintFile } from './fingerprint.js'
 import { searchSemantic, mergeNearbyHits, OVER_FETCH_FACTOR, MAX_OVER_FETCH } from './embeddings.js'
 import { readSection, listSections, extractSection, findContainingSection } from './section_reader.js'
 import type { SectionResult } from './section_reader.js'
-import { runGit, ensureNewline, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
+import { runGit, ensureNewline, foldPath, escapeRegExp, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, requireNonNegativeStrictInt, requirePositiveStrictInt, extractErrorMessage, buildContextWindow, renderContextWindow, isTestFile, type SourceContextLine } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -657,7 +657,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // The symbol IS indexed, just only ever in test files. Saying "No matches" here would be a
     // lie that stops the caller looking; name the filter that hid them instead.
     const label = opts.name ?? opts.grep ?? '*'
-    const notice = `no non-test matches for '${label}' (${hiddenByExcludeTests} in test ${hiddenByExcludeTests === 1 ? 'file' : 'files'} hidden by --exclude-tests)`
+    const notice = `no non-test matches for '${label}' (${excludeTestsHiddenNote(hiddenByExcludeTests)})`
     if (opts.json === true) {
       return { text: JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2), code: 0 }
     }
@@ -1697,17 +1697,17 @@ export function runRefs(opts: RefsOptions): number {
         continue
       }
       // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
-      lines.push(opts.excludeTests === true && suppressed > 0 ? `${sym}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${sym}: (no references found)`)
+      lines.push(opts.excludeTests === true && suppressed > 0 ? `${sym}: (no non-test references found; ${excludeTestsHiddenNote(suppressed)})` : `${sym}: (no references found)`)
       continue
     }
     lines.push(`${sym}:`)
     if (opts.top !== undefined) {
       lines.push(...renderTopFilesSummary(results, opts.top, suppressed))
     } else if (opts.callers === true) {
-      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       lines.push(...renderCallerGroups(results, opts.context ?? 0))
     } else {
-      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
   }
@@ -1778,17 +1778,17 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
         continue
       }
       // A symbol referenced only from tests must not read as unreferenced here either -- same reasoning as the single-spec path above. Flag-absent output is untouched: suppressed is always 0 then.
-      lines.push(opts.excludeTests === true && suppressed > 0 ? `${key}: (no non-test references found; ${suppressed} in test files hidden by --exclude-tests)` : `${key}: (no references found)`)
+      lines.push(opts.excludeTests === true && suppressed > 0 ? `${key}: (no non-test references found; ${excludeTestsHiddenNote(suppressed)})` : `${key}: (no references found)`)
       continue
     }
     lines.push(`${key}:`)
     if (opts.top !== undefined) {
       lines.push(...renderTopFilesSummary(results, opts.top, suppressed))
     } else if (opts.callers === true) {
-      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       lines.push(...renderCallerGroups(results, opts.context ?? 0))
     } else {
-      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${results.length} references (${suppressed} in test files hidden by --exclude-tests)`)
+      if (opts.excludeTests === true && suppressed > 0) lines.push(`  ${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`)
       for (const ref of results) lines.push(...renderRefLines(ref, opts.context ?? 0))
     }
   }
@@ -1850,7 +1850,7 @@ function runRefsSingle(opts: RefsOptions): number {
     }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
-      emitErr(`No non-test references found for '${symName}' (${suppressed} in test files hidden by --exclude-tests)`)
+      emitErr(`No non-test references found for '${symName}' (${excludeTestsHiddenNote(suppressed)})`)
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero references" -- the latter
@@ -1900,8 +1900,8 @@ function runRefsSingle(opts: RefsOptions): number {
     opts.top !== undefined
       ? renderTopFilesSummary(results, opts.top, suppressed)
       : opts.callers === true
-        ? [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...renderCallerGroups(results, opts.context ?? 0)]
-        : [...(opts.excludeTests === true && suppressed > 0 ? [`${results.length} references (${suppressed} in test files hidden by --exclude-tests)`] : []), ...results.flatMap((ref) => renderRefLines(ref, opts.context ?? 0, ''))]
+        ? [...(opts.excludeTests === true && suppressed > 0 ? [`${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`] : []), ...renderCallerGroups(results, opts.context ?? 0)]
+        : [...(opts.excludeTests === true && suppressed > 0 ? [`${countNoun(results.length, 'reference')} (${excludeTestsHiddenNote(suppressed)})`] : []), ...results.flatMap((ref) => renderRefLines(ref, opts.context ?? 0, ''))]
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
   recordReadStat('symbol_read', fullSourceBytes, text, symName)
@@ -1933,7 +1933,7 @@ function groupRefsByFile(refs: RefEntry[]): FileRefCount[] {
 function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: number): string[] {
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
-  const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${suppressed} in test files hidden by --exclude-tests)` : ''
+  const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${excludeTestsHiddenNote(suppressed)})` : ''
   const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})${suppressedNote}`]
   for (const { file, count } of shown) lines.push(`  ${count}  ${refsDisplayPath(file)}`)
   const omittedFiles = grouped.length - shown.length
@@ -5317,7 +5317,7 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     if (opts.excludeTests === true) {
       const suppressedTotal = suppressedHits + suppressedFts
       if (suppressedTotal > 0) {
-        const notice = `no non-test matches for '${query}' (${suppressedTotal} in test files hidden by --exclude-tests)`
+        const notice = `no non-test matches for '${query}' (${excludeTestsHiddenNote(suppressedTotal)})`
         if (opts.json === true) {
           const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
           return { text: JSON.stringify(payload, null, 2), code: 0 }
