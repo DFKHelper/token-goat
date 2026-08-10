@@ -122,6 +122,9 @@ function toRel(root: string, abs: string): string {
 }
 
 // Establish the precondition this suite's header assumes: the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state.
+// Explicit per-hook timeout: this hook tree-sitter-parses the repo's whole src tree (213 files, ~4.2MB) from scratch, which measures 20-32s even on a fast many-core machine and roughly doubles on a 4-vCPU CI runner -- past the 30s global hookTimeout, which is sized for ordinary hooks. Scoped here rather than raising that global bound, so every other hook keeps the tighter hang detection.
+const WHOLE_SRC_INDEX_TIMEOUT_MS = 120_000
+
 beforeAll(() => {
   const walk = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -130,7 +133,7 @@ beforeAll(() => {
       return child.endsWith('.ts') && !child.endsWith('.d.ts') ? [child] : []
     })
   for (const file of walk(resolve('src'))) indexFileSync(normalizePath(file))
-})
+}, WHOLE_SRC_INDEX_TIMEOUT_MS)
 
 // ---- enclosingSymbol --------------------------------------------------------
 
