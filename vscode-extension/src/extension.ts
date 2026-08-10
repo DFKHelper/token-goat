@@ -317,15 +317,17 @@ async function analyzeFolderPayload(target?: vscode.Uri): Promise<string> {
 // Canned plain-language prompts: the source is the selection if one exists,
 // otherwise the clipboard (tickets usually arrive via copy-paste), otherwise
 // the active file.
+const PLAIN_STYLE = 'Rules for your answer: use short sentences; no jargon or acronyms without a one-line plain-English explanation; put the single most important point first; numbered steps for anything the person must do; under 150 words unless the content truly needs more.'
+
 const CANNED_PROMPTS: Record<string, string> = {
-  summarize: 'Summarize this in plain language for a non-technical reader.',
-  reply: 'Draft a polite, plain-language reply to the person who wrote this.',
-  actions: 'List the concrete action items in this, with who should do each.',
-  explain: 'Explain what went wrong here in plain language, and what to try first.',
-  kb: 'Turn this resolved ticket into a short knowledge-base article: problem, cause, fix, and how to prevent it.',
-  friendlier: 'Rewrite my text below to sound friendlier while keeping the meaning.',
-  shorter: 'Rewrite my text below to be as short as possible while keeping the key facts.',
-  formal: 'Rewrite my text below in a formal, professional tone.',
+  summarize: `Summarize this for a non-technical reader. ${PLAIN_STYLE} Start with one sentence answering "what is this about and does it need me to do something?"`,
+  reply: `Draft a polite reply to the person who wrote this. ${PLAIN_STYLE} The reply should sound like a helpful human, not a form letter.`,
+  actions: `List what needs to be done and who should do it. ${PLAIN_STYLE} Format: a numbered list, one action per line, each starting with a verb.`,
+  explain: `Explain what went wrong and what to try first. ${PLAIN_STYLE} Structure: "What happened" (one or two sentences), "What to do" (numbered steps, easiest fix first), "If that doesn't work" (one line on the next step).`,
+  kb: `Turn this resolved ticket into a short knowledge-base article. ${PLAIN_STYLE} Sections: "The problem", "Why it happened", "How to fix it" (numbered steps), "How to avoid it next time".`,
+  friendlier: `Rewrite my text below so it sounds warm and friendly while keeping every fact. ${PLAIN_STYLE}`,
+  shorter: `Rewrite my text below as short as possible while keeping the key facts. ${PLAIN_STYLE}`,
+  formal: `Rewrite my text below in a formal, professional tone. Keep it clear — formal does not mean long sentences or big words.`,
 }
 
 async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<string> {
