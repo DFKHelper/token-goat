@@ -498,6 +498,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'read_count_deny',
       'read_dedup_hint',
       'grep_dedup_hint',
+      'grep:fold',
       'glob_dedup_hint',
       'diff_hint',
       'predictive_prefetch_hit',

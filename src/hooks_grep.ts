@@ -7,8 +7,12 @@
  * known match count meets hints.grep_dedup_min_matches, gets a recall-style advisory instead.
  */
 import { registerHook } from './hook_registry.js'
-import { makeDedupHintHandlers } from './hooks_common.js'
+import type { HookEvent } from './hook_registry.js'
+import type { HookOutput } from './types.js'
+import { makeDedupHintHandlers, passOutput, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
+import { recordStat } from './stats.js'
+import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating
  *  a numeric string. Mirrors hooks_read.ts's readIntToolInput. */
@@ -48,7 +52,7 @@ function grepSignature(toolInput: Record<string, unknown>): string | null {
   ])
 }
 
-const { post: postGrepHandler, pre: preGrepDedupHandler } = makeDedupHintHandlers({
+const { post: dedupPostHandler, pre: preGrepDedupHandler } = makeDedupHintHandlers({
   toolName: 'Grep',
   buildSignature: grepSignature,
   recordQuery: recordGrepQuery,
@@ -56,6 +60,97 @@ const { post: postGrepHandler, pre: preGrepDedupHandler } = makeDedupHintHandler
   minMatchesConfigKey: 'grep_dedup_min_matches',
   statName: 'grep_dedup_hint',
 })
+
+/** Strict `path:lineNo:` match-line shape required of every non-empty line before content-mode
+ *  folding is attempted. One line failing this bails the whole rewrite (guard 5). */
+const CONTENT_LINE_RE = /^(.+?):(\d+):(.*)$/s
+
+/** Lossless re-layout of Grep `content`-mode output: groups consecutive-in-source match lines
+ *  under a single `path:` header instead of repeating the path on every line, e.g.
+ *  `src/a.ts:12:x` + `src/a.ts:40:y` -> `src/a.ts` + `  12: x` + `  40: y`. Every matched line and
+ *  line number survives verbatim -- this only removes the repeated path prefix, never a match.
+ *  Bails to passOutput() unchanged if any of the mandatory safety guards fails (see module docs /
+ *  task spec): non-`content` output_mode, `multiline`, any context flag (`-A`/`-B`/`-C`/`context`),
+ *  `-n: false`, an unparseable line, fewer than 2 lines sharing a file, or the net-benefit floor. */
+function foldGrepContentHandler(event: HookEvent): HookOutput {
+  try {
+    if (getToolName(event) !== 'Grep') return passOutput()
+    const toolInput = getToolInput(event)
+    if (toolInput['output_mode'] !== 'content') return passOutput()
+    if (toolInput['multiline'] === true) return passOutput()
+    if (toolInput['-A'] !== undefined || toolInput['-B'] !== undefined || toolInput['-C'] !== undefined || toolInput['context'] !== undefined) {
+      return passOutput()
+    }
+    if (toolInput['-n'] === false) return passOutput()
+
+    const text = extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+    if (!text) return passOutput()
+
+    const rawLines = text.split(/\r\n|\r|\n/)
+    const parsed: Array<{ file: string; lineNo: string; rest: string }> = []
+    for (const line of rawLines) {
+      if (line.trim() === '') continue
+      const m = CONTENT_LINE_RE.exec(line)
+      if (!m) return passOutput()
+      parsed.push({ file: m[1]!, lineNo: m[2]!, rest: m[3]! })
+    }
+    if (parsed.length === 0) return passOutput()
+
+    // Group by file, preserving first-appearance order (never sorted).
+    const order: string[] = []
+    const groups = new Map<string, Array<{ lineNo: string; rest: string }>>()
+    for (const p of parsed) {
+      let group = groups.get(p.file)
+      if (group === undefined) {
+        group = []
+        groups.set(p.file, group)
+        order.push(p.file)
+      }
+      group.push({ lineNo: p.lineNo, rest: p.rest })
+    }
+
+    const hasSharedFile = order.some((f) => groups.get(f)!.length >= 2)
+    if (!hasSharedFile) return passOutput()
+
+    const foldedLines: string[] = []
+    for (const f of order) {
+      foldedLines.push(f)
+      for (const { lineNo, rest } of groups.get(f)!) {
+        foldedLines.push(`  ${lineNo}: ${rest}`)
+      }
+    }
+    const rewritten = foldedLines.join('\n')
+
+    const originalBytes = Buffer.byteLength(text, 'utf-8')
+    const rewrittenBytes = Buffer.byteLength(rewritten, 'utf-8')
+    if (
+      !isRewriteWorthwhile({
+        originalBytes,
+        rewrittenBytes,
+        noticeBytes: 0,
+        minNetSavingsBytes: resolveMinNetSavingsBytes(),
+      })
+    ) {
+      return passOutput()
+    }
+
+    const bytesDelta = originalBytes - rewrittenBytes
+    recordStat('grep:fold', bytesDelta, Math.round(bytesDelta / 4))
+    return { hookType: 'rewriteOutput', updatedOutput: rewritten }
+  } catch {
+    return passOutput()
+  }
+}
+
+/** Combines the dedup-count recorder (unconditional side effect, always passes) with the
+ *  content-mode path-folding rewrite above: the fold's rewrite wins when it fires, otherwise
+ *  this falls back to whatever the dedup handler returned (always `pass`). */
+function postGrepHandler(event: HookEvent): HookOutput {
+  const dedupResult = dedupPostHandler(event)
+  const foldResult = foldGrepContentHandler(event)
+  if (foldResult.hookType === 'rewriteOutput') return foldResult
+  return dedupResult
+}
 
 export { postGrepHandler, preGrepDedupHandler }
 
