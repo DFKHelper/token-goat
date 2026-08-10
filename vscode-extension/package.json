@@ -4,6 +4,7 @@
   "description": "Send compressed selections and surgical file reads to VS Code chat.",
   "version": "0.1.0",
   "publisher": "dfkhelper",
+  "icon": "icon.png",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
     "type": "git",
@@ -22,6 +23,7 @@
   "main": "./out/extension.js",
   "files": [
     "out/**",
+    "icon.png",
     "package.json",
     "README.md",
     "LICENSE"
