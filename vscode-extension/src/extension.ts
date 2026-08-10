@@ -53,16 +53,15 @@ async function openChat(query: string): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.chat.open', { query })
 }
 
-async function sendSelection(): Promise<void> {
+async function compressSelectionPayload(): Promise<string> {
   const editor = vscode.window.activeTextEditor
   if (!editor) throw new Error('No active editor is open.')
   const text = editor.document.getText(editor.selection)
   if (!text) throw new Error('Select text before sending a compressed payload.')
-  const payload = await withTemporaryText(text, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
-  await openChat(`Use this local token-goat compressed selection when useful:\n${payload}`)
+  return withTemporaryText(text, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
 }
 
-async function sendSurgicalRead(): Promise<void> {
+async function compressSurgicalPayload(): Promise<string> {
   const editor = vscode.window.activeTextEditor
   if (!editor) throw new Error('No active file is open.')
   const line = editor.selection.active.line
@@ -71,7 +70,16 @@ async function sendSurgicalRead(): Promise<void> {
   const sourceName = editor.document.isUntitled ? 'untitled document' : path.basename(editor.document.uri.fsPath)
   const excerpt = editor.document.getText(new vscode.Range(start, 0, end, 0))
   const payload = await withTemporaryText(excerpt, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
-  await openChat(`Surgical ${start + 1}-${end} line excerpt from ${sourceName}:\n${payload}`)
+  return `Surgical ${start + 1}-${end} line excerpt from ${sourceName}:\n${payload}`
+}
+
+async function sendSelection(): Promise<void> {
+  const payload = await compressSelectionPayload()
+  await openChat(`Use this local token-goat compressed selection when useful:\n${payload}`)
+}
+
+async function sendSurgicalRead(): Promise<void> {
+  await openChat(await compressSurgicalPayload())
 }
 
 function reportError(error: unknown): void {
@@ -84,6 +92,26 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('token-goat.sendSelection', () => sendSelection().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSurgicalRead', () => sendSurgicalRead().catch(reportError)),
   )
+
+  const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
+    try {
+      if (request.command === 'selection') {
+        stream.markdown(await compressSelectionPayload())
+      } else if (request.command === 'context') {
+        stream.markdown(await compressSurgicalPayload())
+      } else {
+        stream.markdown(
+          'Type `@token-goat /selection` to compress your highlighted code, ' +
+          'or `@token-goat /context` to compress the 51 lines around your cursor. ' +
+          'The compressed payload costs fewer chat tokens than pasting the raw code.'
+        )
+      }
+    } catch (error) {
+      stream.markdown(`token-goat: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (token.isCancellationRequested) return
+  })
+  context.subscriptions.push(participant)
 }
 
 export function deactivate(): void {}
