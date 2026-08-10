@@ -9,7 +9,7 @@ import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
-import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor } from './worker.js'
+import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { getDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
 import { emptyIndexMessage } from './index_health.js'
@@ -251,8 +251,6 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
 const DIRTY_QUEUE_BACKLOG_WARN_THRESHOLD = 500
 
 /** How stale the drain-heartbeat marker (touched at the end of every drainOnce cycle, see drainHeartbeatPathFor) can get before a running worker process is flagged as possibly wedged -- 30x the 2s default poll interval, generous margin against a slow cycle on a large repo. */
-const DRAIN_HEARTBEAT_STALE_MS = 60_000
-
 /**
  * Check the health of the dirty-reindex queue: how many files are pending, and -- when the
  * worker is running -- whether it's actually still completing drain cycles or has gone quiet
@@ -292,7 +290,7 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
     // No heartbeat yet -- worker may not have completed its first drain cycle since starting; not itself a fault.
   }
 
-  if (heartbeatAgeMs !== null && heartbeatAgeMs > DRAIN_HEARTBEAT_STALE_MS) {
+  if (heartbeatAgeMs !== null && heartbeatAgeMs > WORKER_HEARTBEAT_STALE_MS) {
     return {
       name: 'Dirty queue',
       status: 'warn',

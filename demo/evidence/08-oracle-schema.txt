@@ -1,0 +1,11 @@
+schema_name,table_name,column_name,data_type,description
+CATALOG,ASSET_ATTRIBUTES,ASSET_ID,TEXT,Unique asset identifier.
+CATALOG,ASSET_ATTRIBUTES,ATTRIBUTE_KEY,TEXT,Normalized attribute name.
+CATALOG,ASSET_ATTRIBUTES,ATTRIBUTE_VALUE,TEXT,Reported attribute value.
+CATALOG,ASSET_ATTRIBUTES,EFFECTIVE_DATE,DATE,Date this value became effective.
+CATALOG,ASSET_ATTRIBUTES,SOURCE_SYSTEM,TEXT,Originating system label.
+CATALOG,REFERENCE_CODES,CODE_SET,TEXT,Reference-code group.
+CATALOG,REFERENCE_CODES,CODE_VALUE,TEXT,Stored reference value.
+CATALOG,REFERENCE_CODES,DISPLAY_NAME,TEXT,Human-readable label.
+CATALOG,REFERENCE_CODES,STATUS,TEXT,Current lifecycle state.
+CATALOG,REFERENCE_CODES,UPDATED_AT,TIMESTAMP,Last catalog update time.
