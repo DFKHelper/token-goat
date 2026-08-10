@@ -1576,7 +1576,7 @@ const cases: Record<string, () => void | Promise<void>> = {
     const symbolEntry = manifest.find((e) => e.name === 'symbol')
     // Length-only would still pass on any placeholder/garbled description text -- pin the real
     // one so a regression that swapped/blanked/duplicated a command's description is caught.
-    expect(symbolEntry?.description).toBe('search for a symbol by name')
+    expect(symbolEntry?.description).toBe('search for a symbol by name, or project-wide by --grep name pattern')
     const workerEntry = manifest.find((e) => e.name === 'worker')
     expect(workerEntry?.subcommands.map((s) => s.name)).toContain('start')
 

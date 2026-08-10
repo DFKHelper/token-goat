@@ -577,6 +577,11 @@ export interface SymbolOptions {
    * index -- relevant for callers (e.g. an MCP server) whose cwd is not the workspace root.
    */
   projectRoot?: string
+  /** Only list symbols whose NAME matches this pattern, project-wide. Regex, falling back to a
+   * literal substring match when it does not compile -- see compileGrepMatcher. Mutually
+   * exclusive with `name`: an exact `name` match is already pinned to one identifier, so
+   * regex-filtering that same fixed name is never useful. */
+  grep?: string
 }
 
 /** Handle ``token-goat symbol <name>``. */
@@ -587,6 +592,22 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   if (opts.limit !== undefined && opts.limit <= 0) {
     return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
   }
+  // `--grep` IS the query when there is no exact name to anchor on. Combining it with a name is
+  // near-useless -- an exact `name = ?` match is already pinned to one identifier, so
+  // regex-filtering that same fixed name either matches everything or nothing -- and more
+  // likely a caller mistake than real intent, so reject the combination outright rather than
+  // silently pick a winner.
+  if (opts.name !== undefined && opts.grep !== undefined) {
+    return {
+      text: 'symbol: --grep cannot be combined with a name; drop the name to search by pattern, or drop --grep to search by exact name',
+      code: 1,
+    }
+  }
+  if (opts.name === undefined && opts.grep === undefined) {
+    return { text: 'symbol requires a name or --grep <pattern>', code: 1 }
+  }
+
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
@@ -596,15 +617,41 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     healStaleIndex(queryOpts.filePath)
   }
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
-  if (opts.limit !== undefined) queryOpts.limit = opts.limit
+  // `--grep` filters client-side on NAME (no regex support in SQL), so the SQL `LIMIT` must
+  // scan well past the caller's requested --limit -- otherwise a project whose matching symbols
+  // aren't in the first `limit` unfiltered rows silently under-returns. Over-fetch with
+  // FIND_SCAN_LIMIT (the same bound the near-name scan below already uses), filter, THEN slice
+  // to the real requested limit below: filtering after the slice would return however many of
+  // the top-N unfiltered rows happen to match, not N matching rows.
+  if (matchesGrep !== undefined) {
+    queryOpts.limit = FIND_SCAN_LIMIT
+  } else if (opts.limit !== undefined) {
+    queryOpts.limit = opts.limit
+  }
   // Only scope a bare-name search to projectRoot; when `file` already pins an exact indexed
   // path there's nothing left to disambiguate across projects.
   if (opts.file === undefined && opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
 
-  const results = querySymbols(queryOpts)
+  const rawResults = querySymbols(queryOpts)
+  const preFilterCount = rawResults.length
+  const effectiveLimit = opts.limit ?? 100
+  const filtered = matchesGrep !== undefined ? rawResults.filter((s) => matchesGrep(s.name)) : rawResults
+  const results = matchesGrep !== undefined ? filtered.slice(0, effectiveLimit) : filtered
+
+  if (matchesGrep !== undefined && filtered.length === 0 && preFilterCount > 0) {
+    // The scope (--file/--kind/--project) genuinely has symbols, but --grep matched none of
+    // them -- distinct from the `results.length === 0` branch below, which means there was
+    // nothing in scope at all. Same "filtered store renders as populated" trap already fixed
+    // for types/dead/exports.
+    if (opts.json === true) {
+      const text = JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2)
+      return { text, code: 0 }
+    }
+    return { text: grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'symbol', 'symbols'), code: 0 }
+  }
 
   if (results.length === 0) {
-    let text = `No matches for '${opts.name ?? '*'}'`
+    let text = `No matches for '${opts.name ?? opts.grep ?? '*'}'`
     // Resolved once here, before the near-name scan, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty, and only in text mode: --json's zero-result string isn't real JSON either way (see the comment below), so appending prose to it wouldn't gain anything and would look like an attempt at a JSON field.
     const emptyIndexRoot = opts.json !== true ? (opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : null
     const indexEmpty = emptyIndexRoot !== null && isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
@@ -634,17 +681,29 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results)
-    // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the
-    // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
-    // is not the real number of matching symbols -- countSymbols reruns the same filters with
-    // no LIMIT to report an honest total, the same distinction json_query's --head already
-    // makes (its totalCount survives --head unlike this one used to).
-    const trueTotal = countSymbols(queryOpts)
+    let trueTotal: number
+    let truncatedFlag: boolean
+    if (matchesGrep !== undefined) {
+      // No SQL regex support -- `filtered` is the exact post-`--grep` count within the
+      // FIND_SCAN_LIMIT scan window queried above, so it is the honest total for what --grep
+      // actually matched. countSymbols(queryOpts) would instead report the pre-grep count of
+      // the whole kind/file/rootDir scope, which contradicts the filtered rows below.
+      trueTotal = filtered.length
+      truncatedFlag = capped.truncated || results.length < filtered.length
+    } else {
+      // `results` is already truncated by querySymbols's own SQL `LIMIT` (opts.limit, or the
+      // default 100) before guardJsonRows ever sees it, so capped.totalCount (== results.length)
+      // is not the real number of matching symbols -- countSymbols reruns the same filters with
+      // no LIMIT to report an honest total, the same distinction json_query's --head already
+      // makes (its totalCount survives --head unlike this one used to).
+      trueTotal = countSymbols(queryOpts)
+      truncatedFlag = capped.truncated || trueTotal > results.length
+    }
     // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
     const items = capped.items.map((s) => ({ ...s, filePath: toDisplayPath(symbolDisplayRoot, s.filePath) }))
-    const payload = { items, truncated: capped.truncated || trueTotal > results.length, totalCount: trueTotal }
+    const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
     const text = JSON.stringify(payload, null, 2)
-    recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+    recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
     return { text, code: 0 }
   }
 
@@ -657,7 +716,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   })
   const warning = opts.file !== undefined ? staleWarning(resolveIndexPath(opts.file, opts.projectRoot ?? process.cwd())) : ''
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
-  recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file)
+  recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
   return { text, code: 0 }
 }
 
