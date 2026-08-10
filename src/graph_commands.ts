@@ -21,7 +21,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice } from './util.js'
+import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
@@ -321,7 +321,7 @@ export function runCallers(opts: CallersOptions): number {
     }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
-      emitErr(`No non-test references found for '${opts.symbol}' (${suppressed} in test files hidden by --exclude-tests)`)
+      emitErr(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`)
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero callers" -- same trap as
@@ -368,7 +368,7 @@ export function runCallers(opts: CallersOptions): number {
   // Additive note only: printed solely when --exclude-tests actually hid something, so default
   // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
   if (opts.excludeTests === true && suppressed > 0) {
-    emit(`${entries.length} callers found (${suppressed} in test files hidden by --exclude-tests)`)
+    emit(`${entries.length} callers found (${excludeTestsHiddenNote(suppressed)})`)
   }
 
   for (const e of entries) {
@@ -481,7 +481,7 @@ export function runCallChain(opts: CallChainOptions): number {
     // for absence. Flag-absent, suppressedCount is always 0 so this stays unreachable and output
     // is byte-identical to today.
     if (opts.excludeTests === true && suppressedCount > 0) {
-      emit(`${name}  (no non-test callers; ${suppressedCount} in test files hidden by --exclude-tests)`)
+      emit(`${name}  (no non-test callers; ${excludeTestsHiddenNote(suppressedCount)})`)
       return 0
     }
     emit(`${name}  (no callers)`)
@@ -606,7 +606,7 @@ export function runImpact(opts: ImpactOptions): number {
     // view is never mistaken for absence. Flag-absent, suppressedCount is always 0 so this
     // stays unreachable and output/exit code is byte-identical to today.
     if (opts.excludeTests === true && suppressedCount > 0) {
-      emitErr(`No non-test impact found for '${opts.symbol}' (${suppressedCount} in test files hidden by --exclude-tests)`)
+      emitErr(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`)
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero impact" -- same trap as
@@ -814,7 +814,7 @@ export function runDead(opts: DeadOptions): number {
     }
     // When --exclude-tests filtered EVERYTHING out, a bare "No dead symbols found." is indistinguishable from a genuinely clean codebase, so the agent concludes there is nothing to do while findings sit hidden behind the flag. Say what was suppressed. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
-      emit(`No dead symbols found (${suppressed} in test files hidden by --exclude-tests).`)
+      emit(`No dead symbols found (${excludeTestsHiddenNote(suppressed)}).`)
     } else {
       emit('No dead symbols found.')
     }
@@ -827,7 +827,7 @@ export function runDead(opts: DeadOptions): number {
   // Additive note only: printed solely when --exclude-tests actually hid something, so default
   // (flag-absent) output is untouched and a filtered view is never mistaken for the whole graph.
   if (opts.excludeTests === true && suppressed > 0) {
-    emit(`${sliced.length} dead symbols (${suppressed} in test files hidden by --exclude-tests)`)
+    emit(`${sliced.length} dead symbols (${excludeTestsHiddenNote(suppressed)})`)
   }
 
   for (const r of sliced) {

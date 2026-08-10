@@ -6331,7 +6331,7 @@ describe('runRefs --exclude-tests (single-symbol path, additive opt-in)', () => 
     expect(withFlag).toContain('src/auth.ts:10: login()')
     expect(withFlag).not.toContain('tests/auth.test.ts')
     expect(withFlag).not.toContain('tests/auth2.test.ts')
-    expect(withFlag).toContain('1 references (2 in test files hidden by --exclude-tests)')
+    expect(withFlag).toContain('1 reference (2 in test files hidden by --exclude-tests)')
     expect(withFlag).not.toEqual(withoutFlag)
   })
 
@@ -6503,7 +6503,7 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
     expect(withFlag).not.toContain('tests/cli.test.ts')
     expect(withFlag).not.toContain('tests/install.test.ts')
     expect(withFlag).not.toContain('tests/install2.test.ts')
-    expect(withFlag).toContain('1 in test files hidden by --exclude-tests')
+    expect(withFlag).toContain('1 in test file hidden by --exclude-tests')
     expect(withFlag).toContain('2 in test files hidden by --exclude-tests')
     expect(withFlag).not.toEqual(withoutFlag)
   })
@@ -6535,7 +6535,7 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
       expect(code).toBe(0)
     }).stdout
     expect(withFlag).toContain('no non-test references found')
-    expect(withFlag).toContain('1 in test files hidden by --exclude-tests')
+    expect(withFlag).toContain('1 in test file hidden by --exclude-tests')
     expect(withFlag).not.toContain('(no references found)')
   })
 
