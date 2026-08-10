@@ -99,7 +99,39 @@ async function compressText(text: string, extension: string): Promise<string> {
 }
 
 async function openChat(query: string): Promise<void> {
-  await vscode.commands.executeCommand('workbench.action.chat.open', { query })
+  await ensureDecoderSetup()
+  const hint = '\n\n(This message contains token-goat-compressed text. Decode it with the recovery command in the payload. If you cannot, tell the user to run: token-goat install --vscode)'
+  await vscode.commands.executeCommand('workbench.action.chat.open', { query: query + hint })
+}
+
+// The payload is only readable by the chat model when the workspace has
+// token-goat's MCP decoder (token-goat install --vscode). Check once per
+// session and offer to set it up instead of leaving the user staring at a
+// base64 blob.
+let decoderChecked = false
+
+async function ensureDecoderSetup(): Promise<void> {
+  if (decoderChecked) return
+  decoderChecked = true
+  const folder = vscode.workspace.workspaceFolders?.[0]
+  if (!folder) return
+  try {
+    const raw = await fs.readFile(path.join(folder.uri.fsPath, '.vscode', 'mcp.json'), 'utf8')
+    if (raw.includes('token-goat')) return
+  } catch {
+    // No mcp.json — fall through to the prompt below.
+  }
+  const choice = await vscode.window.showWarningMessage(
+    'token-goat compressed this for chat, but this workspace has no decoder set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
+    'Set up now', 'Not now',
+  )
+  if (choice !== 'Set up now') return
+  try {
+    await runTokenGoat(['install', '--vscode'], folder.uri.fsPath)
+    void vscode.window.showInformationMessage('token-goat decoder installed. Reload the window (Ctrl+Shift+P → Developer: Reload Window), then resend.')
+  } catch (error) {
+    reportError(error)
+  }
 }
 
 // Tokens-saved status bar: a running total makes the value visible to
@@ -403,6 +435,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
     try {
+      await ensureDecoderSetup()
       if (request.command === 'selection') {
         stream.markdown(await compressSelectionPayload())
       } else if (request.command === 'context') {
