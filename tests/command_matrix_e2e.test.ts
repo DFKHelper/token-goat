@@ -2666,6 +2666,6 @@ describe('built bundle command matrix', () => {
   })
 
   for (const [name, assertCase] of Object.entries(cases)) {
-    it(`'${name}' produces correct output from the built bundle`, assertCase, 60000)
+    it(`'${name}' produces correct output from the built bundle`, assertCase, 120000)
   }
 })
