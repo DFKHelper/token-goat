@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitest/config'
 
+import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
+
 export default defineConfig({
   test: {
     setupFiles: ['./tests/setup/isolate-home.ts', './tests/setup/reset-hint-stats.ts'],
@@ -19,6 +21,12 @@ export default defineConfig({
     // when this was removed. Left off locally so a real local failure is never silently retried
     // away mid-development.
     retry: process.env.CI ? 1 : 0,
+    // Keep the default reporter and add one that makes a CONSUMED retry visible. The retry above
+    // is deliberate, but it is also a flake-hiding mechanism by construction -- a test that fails
+    // then passes reads exactly like one that passed first time -- so without this a real flake
+    // can live in the suite indefinitely. The reporter never fails the build (that would undo the
+    // retry) and emits nothing at all when no test was retried.
+    reporters: ['default', new RetryVisibilityReporter()],
     pool: 'forks',
     minWorkers: 1,
     // 6 forked workers oversubscribe GitHub's 4-vCPU windows-latest runner by 50%, and Windows
