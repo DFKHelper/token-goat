@@ -43,9 +43,9 @@ In Copilot Chat, type `@token-goat` and pick one, or open the Command Palette
 
 **Private data is scrubbed by default.** Email addresses, phone numbers, ID
 numbers, and card numbers are replaced with `[… removed]` before anything
-reaches the chat input, and a status-bar note tells you how many items were
-removed. Turn it off via the `token-goat.scrubPii` setting if you need the
-raw text.
+reaches the chat input. The first time this happens, a dialog explains what
+was removed and offers a "Turn it off" button; after that, a quiet status-bar
+note counts the removals. The `token-goat.scrubPii` setting controls it.
 
 You can also right-click any file in the Explorer to send it compressed.
 
