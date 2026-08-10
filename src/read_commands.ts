@@ -885,7 +885,7 @@ function runLineRange(
   // A trailing newline terminates the last line rather than starting a new empty one; drop the phantom empty element split() appends so the line count matches editor/symbol-read conventions.
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
   if (start > allLines.length) {
-    return { text: `Line ${start} is past end of file (${allLines.length} lines): ${file}`, code: 1 }
+    return { text: `Line ${start} is past end of file (${countNoun(allLines.length, 'line')}): ${file}`, code: 1 }
   }
   const clampedEnd = Math.min(end, allLines.length)
   const slice = allLines.slice(start - 1, clampedEnd)
@@ -978,7 +978,7 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
   const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
-    `Ambiguous symbol '${symbol}' in '${file}': ${candidates.length} definitions match. ` +
+    `Ambiguous symbol '${symbol}' in '${file}': ${countNoun(candidates.length, 'definition')} match. ` +
       `Retry with one of the qualified commands below to pick one:`,
   ]
   const fileSymCache = new Map<string, SymbolEntry[]>()
@@ -1934,7 +1934,7 @@ function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: numb
   const grouped = groupRefsByFile(refs)
   const shown = grouped.slice(0, topN)
   const suppressedNote = suppressed !== undefined && suppressed > 0 ? ` (${excludeTestsHiddenNote(suppressed)})` : ''
-  const lines = [`${refs.length} references across ${grouped.length} files (showing top ${shown.length})${suppressedNote}`]
+  const lines = [`${countNoun(refs.length, 'reference')} across ${countNoun(grouped.length, 'file')} (showing top ${shown.length})${suppressedNote}`]
   for (const { file, count } of shown) lines.push(`  ${count}  ${refsDisplayPath(file)}`)
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
@@ -2232,7 +2232,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   }
 
   const totalLines = filtered.length > 0 ? Math.max(...filtered.map((s) => s.lineEnd)) : 0
-  const lines: string[] = [`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`]
+  const lines: string[] = [`# Skeleton: ${opts.file}  (${countNoun(filtered.length, 'symbol')}, ${countNoun(totalLines, 'line')})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
@@ -2299,7 +2299,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     return { text, code: 0 }
   }
 
-  const lines: string[] = [`# Outline: ${opts.file}  (${filtered.length} symbols)`]
+  const lines: string[] = [`# Outline: ${opts.file}  (${countNoun(filtered.length, 'symbol')})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
