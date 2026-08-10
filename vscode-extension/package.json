@@ -16,10 +16,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:token-goat.sendSelection",
-    "onCommand:token-goat.sendSurgicalRead"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "files": [
     "out/**",
@@ -41,8 +38,43 @@
         "title": "Send Lines Around Cursor to Chat (Compressed)",
         "category": "token-goat",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "token-goat.sendSymbol",
+        "title": "Send Symbol at Cursor to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(symbol-function)"
+      },
+      {
+        "command": "token-goat.sendFile",
+        "title": "Send Whole File to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(file)"
+      },
+      {
+        "command": "token-goat.sendDiff",
+        "title": "Send Git Diff to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(diff)"
       }
     ],
+    "configuration": {
+      "title": "token-goat",
+      "properties": {
+        "token-goat.contextLines": {
+          "type": "number",
+          "default": 25,
+          "minimum": 5,
+          "maximum": 200,
+          "description": "Lines above and below the cursor included by 'Send Lines Around Cursor'."
+        },
+        "token-goat.showStats": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a status-bar message with the compression savings after each send."
+        }
+      }
+    },
     "menus": {
       "editor/context": [
         {
@@ -54,6 +86,23 @@
           "command": "token-goat.sendSurgicalRead",
           "when": "editorTextFocus",
           "group": "token-goat@2"
+        },
+        {
+          "command": "token-goat.sendSymbol",
+          "when": "editorTextFocus",
+          "group": "token-goat@3"
+        },
+        {
+          "command": "token-goat.sendFile",
+          "when": "editorTextFocus",
+          "group": "token-goat@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "token-goat.sendFile",
+          "when": "!explorerResourceIsFolder",
+          "group": "token-goat@1"
         }
       ],
       "editor/title": [
@@ -82,7 +131,19 @@
           },
           {
             "name": "context",
-            "description": "Compress the 51 lines around the cursor and reply with the payload."
+            "description": "Compress the lines around the cursor and reply with the payload."
+          },
+          {
+            "name": "symbol",
+            "description": "Send the full body of the symbol under the cursor, compressed."
+          },
+          {
+            "name": "file",
+            "description": "Compress the whole active file and reply with the payload."
+          },
+          {
+            "name": "diff",
+            "description": "Compress the workspace's git diff (against HEAD) and reply with the payload."
           }
         ]
       }
