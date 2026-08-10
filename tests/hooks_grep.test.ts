@@ -79,6 +79,125 @@ describe('postGrepHandler', () => {
   })
 })
 
+describe('postGrepHandler content-mode path folding', () => {
+  function contentEvent(response: string, extraInput: Record<string, unknown> = {}): HookEvent {
+    return makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Grep',
+      toolInput: { pattern: 'foo', path: '/project/src', output_mode: 'content', ...extraInput },
+      sessionId: 'test',
+      raw: { tool_response: response },
+    })
+  }
+
+  // Repeats a long path enough times that the net savings clear the default 100-byte floor.
+  const FOLD_PATH = 'src/very/long/nested/directory/structure/file.ts'
+  function bigFoldableResponse(count = 20): { text: string; folded: string } {
+    const lines: string[] = []
+    for (let i = 1; i <= count; i++) lines.push(`${FOLD_PATH}:${i}:const x = ${i}`)
+    const folded = [FOLD_PATH, ...lines.map((_, i) => `  ${i + 1}: const x = ${i + 1}`)].join('\n')
+    return { text: lines.join('\n'), folded }
+  }
+
+  it('folds a multi-line-per-file content result losslessly, preserving every line number and match text', () => {
+    const { text, folded } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType === 'rewriteOutput') {
+      expect(result.updatedOutput).toBe(folded)
+      // Every original line number and match text still appears verbatim.
+      for (let i = 1; i <= 20; i++) {
+        expect(result.updatedOutput).toContain(`${i}: const x = ${i}`)
+      }
+      expect(result.updatedOutput).toContain(FOLD_PATH)
+    }
+  })
+
+  it('records a grep:fold stat with the correct UTF-8 byte delta, including a non-ASCII match line', () => {
+    // A CJK line inflates String.length vs UTF-8 byte length differently, so this would fail
+    // under a `.length`-based (rather than Buffer.byteLength-based) delta calculation.
+    const lines: string[] = []
+    for (let i = 1; i <= 20; i++) lines.push(`${FOLD_PATH}:${i}:const x = ${i}`)
+    lines.push(`${FOLD_PATH}:21:const 你好世界 = '测试字符串内容'`)
+    const text = lines.join('\n')
+
+    const result = postGrepHandler(contentEvent(text))
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') throw new Error('expected rewriteOutput')
+
+    const call = vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'grep:fold')
+    expect(call).toBeDefined()
+    const originalBytes = Buffer.byteLength(text, 'utf-8')
+    const rewrittenBytes = Buffer.byteLength(result.updatedOutput as string, 'utf-8')
+    expect(call![1]).toBe(originalBytes - rewrittenBytes)
+  })
+
+  it('bails unchanged when output_mode is not content', () => {
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Grep',
+      toolInput: { pattern: 'foo', path: '/project/src', output_mode: 'files_with_matches' },
+      raw: { tool_response: bigFoldableResponse().text },
+    })
+    const result = postGrepHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when multiline is true', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { multiline: true }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when a context flag (-A) is present', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { '-A': 3 }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when a context flag (-B) is present', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { '-B': 3 }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when a context flag (-C) is present', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { '-C': 3 }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when a context flag (context) is present', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { context: 3 }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when -n is explicitly false', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(text, { '-n': false }))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when one line does not match the strict path:lineNo: shape', () => {
+    const { text } = bigFoldableResponse()
+    const result = postGrepHandler(contentEvent(`${text}\nnot a valid match line`))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('bails unchanged when fewer than 2 lines share any file (nothing to fold)', () => {
+    const text = 'src/a.ts:1:const a = 1\nsrc/b.ts:2:const b = 2\nsrc/c.ts:3:const c = 3'
+    const result = postGrepHandler(contentEvent(text))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through unchanged when the fold would not clear the net-benefit floor', () => {
+    const text = 'src/a.ts:1:x\nsrc/a.ts:2:y'
+    const result = postGrepHandler(contentEvent(text))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
 describe('preGrepDedupHandler', () => {
   it('passes on the first occurrence of a pattern (nothing recorded yet)', () => {
     const result = preGrepDedupHandler(grepEvent('useEffect'))
