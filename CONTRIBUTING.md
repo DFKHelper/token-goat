@@ -19,7 +19,7 @@ Lefthook wires three fast checks into `pre-commit` — lint, then typecheck, the
 
 The pre-commit guards (`tests/guards/`) are pure-introspection invariants with no I/O: no bundle build, no SQLite DB, no git fixtures. They run in ~2s and exist to catch the *implemented-but-unregistered / unfunctional command* class before a commit lands, rather than discovering it later at push or in CI. Keep them fast — do not move the full suite, the built-bundle smoke tests, or the command matrix into pre-commit.
 
-The heavy coverage stays on `pre-push` / CI: the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.test.ts`), which runs every registered command against the shipped `dist/token-goat.mjs`. The suite is occasionally racy on Windows under heavy disk pressure; the gating fact is CI on `origin/main`, so when the pre-push hook hangs intermittently it is reasonable to push with `--no-verify`.
+The heavy coverage stays on `pre-push` / CI: the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which runs every registered command against the shipped `dist/token-goat.mjs`. The suite is occasionally racy on Windows under heavy disk pressure; the gating fact is CI on `origin/main`, so when the pre-push hook hangs intermittently it is reasonable to push with `--no-verify`.
 
 ### The index must never be allowed to grow unbounded
 

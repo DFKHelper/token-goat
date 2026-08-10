@@ -25,7 +25,7 @@ import { summarize } from '../src/stats.js'
 import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 // Minimal hand-authored single-page PDF (Helvetica text object), same fixture shape as
-// command_matrix_e2e.test.ts's MINIMAL_PDF.
+// tests/helpers/matrix_cases.ts' MINIMAL_PDF.
 const MINIMAL_PDF = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
   '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +

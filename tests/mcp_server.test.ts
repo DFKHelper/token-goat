@@ -271,7 +271,7 @@ describe('mcp_server', () => {
   // also uses for JSON-RPC framing. These tests confirm the captured text matches what the same
   // handler prints when called directly, proving the capture-and-adapt wiring is correct end to
   // end (a broken capture would either lose the text or, worse, still leak it to real stdout,
-  // which command_matrix_e2e.test.ts's real-process `mcp-serve` smoke test would catch as a
+  // which command_matrix_e2e.*.test.ts's real-process `mcp-serve` smoke test would catch as a
   // corrupted JSON-RPC stream).
   it('calls the refs tool against a real fixture file and matches runRefs()\'s own captured output', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-refs-'))

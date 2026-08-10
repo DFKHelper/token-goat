@@ -235,7 +235,7 @@ Commands such as `symbol`, `read`, `section`, `skeleton`, `outline`, `refs`, and
 
 **Refs via enclosing-scope resolution** — `extractRefs()` in [`src/parser.ts`](src/parser.ts) tracks the enclosing function/method/class during the tree walk and stores it in `refs.context`, enabling `refs --callers` to group usages by the containing symbol.
 
-**Two-tier testing model** — A fast pre-commit guard tier (`npm run test:guards`, ~2 s, no bundle, no DB, no git fixtures) lives in `tests/guards/`. The pre-push/CI tier runs the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.test.ts`), which indexes a real fixture against `dist/token-goat.mjs` and runs every registered command. Both tiers derive their command set from [`tests/registry.ts::allCommandNames()`](tests/registry.ts), so a newly registered command is automatically in scope for both — there is no second list to maintain. A registered command with no matrix case fails the coverage gate by design. See [AGENTS.md](AGENTS.md) for the full two-tier description.
+**Two-tier testing model** — A fast pre-commit guard tier (`npm run test:guards`, ~2 s, no bundle, no DB, no git fixtures) lives in `tests/guards/`. The pre-push/CI tier runs the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which indexes a real fixture against `dist/token-goat.mjs` and runs every registered command. Both tiers derive their command set from [`tests/registry.ts::allCommandNames()`](tests/registry.ts), so a newly registered command is automatically in scope for both — there is no second list to maintain. A registered command with no matrix case fails the coverage gate by design. See [AGENTS.md](AGENTS.md) for the full two-tier description.
 
 **Fail-soft hook handlers** — Every handler wrapped by `hooks_cli.ts::failSoft()` catches any exception, logs to stderr, and returns `{ continue: true }`. A broken token-goat must never interrupt the agent's work.
 
@@ -304,7 +304,7 @@ Steps:
    if (language === 'yourlang') return extractYourlang(content, filePath).symbols
    ```
    For a tree-sitter language, add a grammar load branch in `loadGrammar()` and a symbol-extraction branch in `parseContent()`.
-5. **Add a matrix case** — add at least one assertion to [`tests/command_matrix_e2e.test.ts`](tests/command_matrix_e2e.test.ts) to prove the new extractor works in the shipped bundle.
+5. **Add a matrix case** — add at least one assertion to the shared case table in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts) to prove the new extractor works in the shipped bundle; the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of that table, so a new case is picked up automatically.
 
 ## Adding a New Hook Event
 
@@ -328,7 +328,7 @@ Steps:
    }
    ```
 3. **Register in `buildProgram()`** — call `program.command('xxx').description('...').option(...)...action(guard(cmdXxx))`. The guard in [`tests/guards/cli_registration.test.ts`](tests/guards/cli_registration.test.ts) checks that every `cmd*` function appears in an `.action(...)` call and that every command in `allCommandNames()` appears in `--help` output — it will fail immediately if the handler is declared but not wired.
-4. **Add a matrix case** — add an entry to [`tests/command_matrix_e2e.test.ts`](tests/command_matrix_e2e.test.ts). The coverage gate at the bottom of that file fails automatically if a registered command has no case, using [`tests/registry.ts::allCommandNames()`](tests/registry.ts) as the single source of truth shared with the guard.
+4. **Add a matrix case** — add an entry to the shared case table in [`tests/helpers/matrix_cases.ts`](tests/helpers/matrix_cases.ts), which the four `tests/command_matrix_e2e.N.test.ts` shards each run an interleaved quarter of. The coverage gate in [`tests/command_matrix_e2e.1.test.ts`](tests/command_matrix_e2e.1.test.ts) fails automatically if a registered command has no case, using [`tests/registry.ts::allCommandNames()`](tests/registry.ts) as the single source of truth shared with the guard.
 
 
 ## Known Limitations

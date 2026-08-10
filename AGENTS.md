@@ -20,7 +20,7 @@ npm run lint        # ESLint
 Tests run in two tiers:
 
 - **`pre-commit` (fast, ~2s)** — lint + typecheck + `npm run test:guards`. The guards are pure-introspection invariants in `tests/guards/` (no bundle build, no DB, no git fixtures). They catch the structural bug class — an implemented-but-unregistered or unfunctional command — *before the commit lands*.
-- **`pre-push` / CI (full)** — the entire suite, including the built-bundle command matrix ([tests/command_matrix_e2e.test.ts](tests/command_matrix_e2e.test.ts)), which indexes a real fixture and runs every registered command against the shipped `dist/token-goat.mjs`, asserting real output.
+- **`pre-push` / CI (full)** — the entire suite, including the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which indexes a real fixture and runs every registered command against the shipped `dist/token-goat.mjs`, asserting real output.
 
 Both tiers derive their command set from one source, [tests/registry.ts](tests/registry.ts) (`allCommandNames()`), so a newly registered command is automatically in scope for the guard and the matrix — there is no second list to forget. **Every user-facing command must appear in the matrix**; a registered command with no matrix case fails the coverage gate by design.
 
