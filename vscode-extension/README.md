@@ -4,30 +4,62 @@ Send code to Copilot Chat using fewer tokens.
 
 ## What this does
 
-When you paste code into Copilot Chat, every line costs tokens. This
-extension runs your text through the local `token-goat` compressor first,
-then puts the much smaller result into the chat input box for you. The
-chat model understands the compressed form, so you get the same answers
-while spending fewer tokens.
+When you paste a long ticket, log file, or chunk of code into Copilot Chat,
+every line costs tokens. This extension shrinks the text first with the local
+`token-goat` compressor and puts the smaller version into the chat input box.
+The chat model understands the compressed form, so you get the same answers
+while spending fewer tokens. A little status-bar counter shows how many bytes
+you've saved.
 
-Nothing is sent automatically: the compressed text appears in the chat
-input and you press Enter yourself. Temporary files are deleted after
-each use.
+Nothing is sent automatically: the compressed text appears in the chat input
+and you press Enter yourself. Temporary files are deleted after each use.
 
-## The two commands
+## The everyday commands (no coding knowledge needed)
 
-Open the Command Palette (`Ctrl+Shift+P`) and type **token-goat**,
-right-click inside an editor, or use the goat icon in the editor title bar:
+In Copilot Chat, type `@token-goat` and pick one, or open the Command Palette
+(`Ctrl+Shift+P`) and type **token-goat**:
 
-- **token-goat: Send Selection to Chat (Compressed)** — takes the text
-  you have highlighted and sends it to chat in compressed form. Useful
-  when you want to ask about a specific snippet.
+- **Send Clipboard to Chat** (`/paste`) — copy a ticket, email, or error
+  message anywhere, then send it compressed. No file or selection needed.
+- **Summarize / Draft a Reply / Extract Action Items / Explain This Error**
+  (`/summarize`, `/reply`, `/actions`, `/explain`) — one click: takes the
+  selected text, or whatever you last copied, compresses it, and asks the
+  question in plain language.
+- **Send Errors/Warnings Only** (`/errors`) — open or right-click a log file
+  and send just the errors, warnings, and the lines around them, instead of
+  the whole multi-megabyte file.
+- **Send PDF/Word Document to Chat** — right-click a `.pdf` or `.docx`
+  attachment in the Explorer; the text is extracted and sent compressed.
+- **List Archive Contents** — right-click a `.zip` someone attached to see
+  what's inside without extracting it.
+- **Find Recurring Issues Across This Folder** — right-click a folder of
+  exported tickets; the extension bundles up to 20 text files into one
+  compressed "what keeps coming up?" question.
+- **Turn This Resolved Ticket into a KB Article** (`/kb`) — one click turns a
+  resolved thread into a problem/cause/fix draft.
+- **Make My Text Friendlier / Shorter / More Formal** (`/friendlier`,
+  `/shorter`, `/formal`) — rewrite what *you* wrote before you paste it back
+  into the ticket.
 
-- **token-goat: Send Lines Around Cursor to Chat (Compressed)** — no
-  selection needed. Grabs the 25 lines above and 25 lines below your
-  cursor (51 lines total) and sends them compressed, with the file name
-  and line range noted. Useful for "explain what's happening here"
-  questions.
+**Private data is scrubbed by default.** Email addresses, phone numbers, ID
+numbers, and card numbers are replaced with `[… removed]` before anything
+reaches the chat input, and a status-bar note tells you how many items were
+removed. Turn it off via the `token-goat.scrubPii` setting if you need the
+raw text.
+
+You can also right-click any file in the Explorer to send it compressed.
+
+## The developer commands
+
+Right-click inside a code editor, use the icon in the editor title bar, or
+`@token-goat` in chat:
+
+- **Send Selection** (`/selection`) — the highlighted text, compressed.
+- **Send Lines Around Cursor** (`/context`) — the 25 lines above and below
+  the cursor (configurable via `token-goat.contextLines`).
+- **Send Symbol at Cursor** (`/symbol`) — the full function/class under the
+  cursor, resolved through the token-goat index.
+- **Send Whole File** (`/file`) and **Send Git Diff** (`/diff`).
 
 ## Requirements
 

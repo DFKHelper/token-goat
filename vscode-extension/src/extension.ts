@@ -1,29 +1,32 @@
-import { execFile, type ExecFileException } from 'node:child_process'
+import { exec, execFile, type ExecFileException } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 
+// Only arguments containing shell metacharacters get quotes; cmd.exe's
+// /s /c quote-stripping mangles a command line where every argument is
+// pre-quoted, and the npm .cmd shim forwards via %*, so quotes must be
+// minimal and exact.
 function quoteWindowsArgument(argument: string): string {
   if (argument.includes('\0')) throw new Error('token-goat cannot launch with a NUL byte in its path')
-  return `"${argument
-    .replace(/\^/g, '^^')
-    .replace(/%/g, '%%')
-    .replace(/[&|<>()]/g, '^$&')}"`
+  if (!/[\s&|<>()^%"]/.test(argument)) return argument
+  return `"${argument.replace(/"/g, '\\"')}"`
 }
 
-function runTokenGoat(args: string[]): Promise<string> {
+function runTokenGoat(args: string[], cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const options = {
       encoding: 'utf8' as const,
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
+      cwd,
     }
     if (process.platform === 'win32') {
       // npm exposes global CLIs as .cmd shims on Windows. All arguments passed
       // here are fixed flags or generated temporary paths, never workspace paths.
       const commandLine = ['token-goat.cmd', ...args.map(quoteWindowsArgument)].join(' ')
-      execFile(process.env['ComSpec'] ?? 'cmd.exe', ['/d', '/v:off', '/s', '/c', commandLine], options, callback)
+      exec(commandLine, options, callback)
       return
     }
     execFile('token-goat', args, options, callback)
@@ -49,8 +52,79 @@ async function withTemporaryText<T>(text: string, extension: string, action: (fi
   }
 }
 
+// Tickets and logs carry emails, phone numbers, ID numbers, and card numbers.
+// Strip them before compression so they never reach the chat input.
+const PII_PATTERNS: Array<[RegExp, string]> = [
+  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, 'email'],
+  [/\b\d{3}-\d{2}-\d{4}\b/g, 'id-number'],
+  [/\b(?:\d[ -]?){13,16}\b/g, 'card-number'],
+  [/(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)/g, 'phone'],
+]
+
+let lastRedactions = 0
+
+function scrubPii(text: string): string {
+  lastRedactions = 0
+  if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('scrubPii', true)) return text
+  let out = text
+  for (const [pattern, label] of PII_PATTERNS) {
+    out = out.replace(pattern, () => {
+      lastRedactions++
+      return `[${label} removed]`
+    })
+  }
+  return out
+}
+
+// Single compression path for all text payloads: scrub, compress, report.
+async function compressText(text: string, extension: string): Promise<string> {
+  const payload = await withTemporaryText(scrubPii(text), extension, (file) => runTokenGoat(['compress-text', '--file', file]))
+  showStats(payload)
+  if (lastRedactions > 0) {
+    void vscode.window.setStatusBarMessage(`token-goat: removed ${lastRedactions} personal-data item(s) before sending`, 6000)
+  }
+  return payload
+}
+
 async function openChat(query: string): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.chat.open', { query })
+}
+
+// Tokens-saved status bar: a running total makes the value visible to
+// non-technical users who would never read a compression header.
+let savingsBar: vscode.StatusBarItem | undefined
+let savingsContext: vscode.ExtensionContext | undefined
+
+function updateSavingsBar(): void {
+  if (!savingsBar || !savingsContext) return
+  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
+  savingsBar.text = `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
+  savingsBar.tooltip = 'Total bytes token-goat compression has kept out of chat this installation.'
+}
+
+function recordSavings(payload: string): void {
+  const saved = /^bytes_saved: (\d+)$/m.exec(payload)
+  if (!saved || !savingsContext) return
+  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0) + Number(saved[1])
+  void savingsContext.globalState.update('tokensSavedBytes', total)
+  updateSavingsBar()
+}
+
+function contextRadius(): number {
+  return vscode.workspace.getConfiguration('token-goat').get<number>('contextLines', 25)
+}
+
+// compress-text prints original_bytes/compact_bytes/bytes_saved headers;
+// surface the savings so the user sees what the compression bought.
+function showStats(payload: string): void {
+  recordSavings(payload)
+  if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('showStats', true)) return
+  const original = /^original_bytes: (\d+)$/m.exec(payload)
+  const compact = /^compact_bytes: (\d+)$/m.exec(payload)
+  if (!original || !compact) return
+  void vscode.window.setStatusBarMessage(
+    `token-goat: ${original[1]} → ${compact[1]} bytes`, 5000,
+  )
 }
 
 async function compressSelectionPayload(): Promise<string> {
@@ -58,19 +132,183 @@ async function compressSelectionPayload(): Promise<string> {
   if (!editor) throw new Error('No active editor is open.')
   const text = editor.document.getText(editor.selection)
   if (!text) throw new Error('Select text before sending a compressed payload.')
-  return withTemporaryText(text, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
+  return compressText(text, '.txt')
 }
 
 async function compressSurgicalPayload(): Promise<string> {
   const editor = vscode.window.activeTextEditor
   if (!editor) throw new Error('No active file is open.')
+  const radius = contextRadius()
   const line = editor.selection.active.line
-  const start = Math.max(0, line - 25)
-  const end = Math.min(editor.document.lineCount, line + 26)
+  const start = Math.max(0, line - radius)
+  const end = Math.min(editor.document.lineCount, line + radius + 1)
   const sourceName = editor.document.isUntitled ? 'untitled document' : path.basename(editor.document.uri.fsPath)
   const excerpt = editor.document.getText(new vscode.Range(start, 0, end, 0))
-  const payload = await withTemporaryText(excerpt, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
+  const payload = await compressText(excerpt, '.txt')
   return `Surgical ${start + 1}-${end} line excerpt from ${sourceName}:\n${payload}`
+}
+
+// Resolve the symbol under the cursor via the token-goat index
+// (`scope "file:line"` prints "name\tkind\tfile:start-end", innermost first),
+// then pull its full body. Falls back to the cursor-window excerpt when the
+// project is not indexed or the cursor sits outside any symbol.
+async function compressSymbolPayload(): Promise<string> {
+  const editor = vscode.window.activeTextEditor
+  if (!editor || editor.document.isUntitled) throw new Error('Open a saved file to send the symbol at the cursor.')
+  const workspace = vscode.workspace.getWorkspaceFolder(editor.document.uri)
+  if (!workspace) throw new Error('The file is not inside the workspace folder.')
+  const relative = path.relative(workspace.uri.fsPath, editor.document.uri.fsPath)
+  const line = editor.selection.active.line + 1
+  let scope: string
+  try {
+    scope = await runTokenGoat(['scope', `${relative}:${line}`], workspace.uri.fsPath)
+  } catch {
+    return compressSurgicalPayload()
+  }
+  const first = scope.split('\n')[0]?.split('\t')
+  if (!first || first.length < 3) return compressSurgicalPayload()
+  const [name, kind, location] = first
+  const startLine = /:(\d+)-\d+$/.exec(location)?.[1]
+  const spec = startLine ? `${relative}::${name}@${startLine}` : `${relative}::${name}`
+  const body = await runTokenGoat(['read', spec], workspace.uri.fsPath)
+  const payload = await compressText(body, '.txt')
+  return `Symbol ${name} (${kind}) from ${path.basename(relative)}:\n${payload}`
+}
+
+async function compressFilePayload(target?: vscode.Uri): Promise<string> {
+  const editor = vscode.window.activeTextEditor
+  if (target && editor && editor.document.uri.fsPath === target.fsPath) {
+    // The target is open in the editor: compress the in-memory text so
+    // unsaved changes are included.
+    const sourceName = path.basename(target.fsPath)
+    const payload = await compressText(editor.document.getText(), path.extname(target.fsPath) || '.txt')
+    return `Whole file ${sourceName}:\n${payload}`
+  }
+  const file = target?.fsPath ?? editor?.document.uri.fsPath
+  if (!file) throw new Error('No file is open or selected.')
+  const payload = await compressText(await fs.readFile(file, 'utf8'), path.extname(file) || '.txt')
+  return `Whole file ${path.basename(file)}:\n${payload}`
+}
+
+async function compressClipboardPayload(): Promise<string> {
+  const text = await vscode.env.clipboard.readText()
+  if (!text.trim()) throw new Error('The clipboard has no text. Copy the ticket, log, or message first.')
+  const payload = await compressText(text, '.txt')
+  return `Compressed clipboard contents (${text.length} characters):\n${payload}`
+}
+
+// Keep signal lines (errors, failures, warnings, exceptions) plus two lines of
+// surrounding context so a multi-megabyte log becomes its actionable core.
+const LOG_SIGNAL = /error|fail|exception|warn|critical|fatal|denied|timeout|refused|unauthorized/i
+
+function extractLogSignal(text: string): string {
+  const lines = text.split('\n')
+  const kept = new Set<number>()
+  lines.forEach((line, i) => {
+    if (!LOG_SIGNAL.test(line)) return
+    for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) kept.add(j)
+  })
+  if (kept.size === 0) return text
+  const sorted = [...kept].sort((a, b) => a - b)
+  const out: string[] = []
+  let previous = -2
+  for (const i of sorted) {
+    if (i > previous + 1 && out.length > 0) out.push('...')
+    out.push(lines[i])
+    previous = i
+  }
+  return out.join('\n')
+}
+
+async function compressErrorsPayload(target?: vscode.Uri): Promise<string> {
+  const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
+  if (!file) throw new Error('Open a log file, or right-click one in the Explorer.')
+  const text = await fs.readFile(file, 'utf8')
+  const signal = extractLogSignal(text)
+  const payload = await compressText(signal, '.log')
+  return `Errors and warnings from ${path.basename(file)} (${text.length} → ${signal.length} characters before compression):\n${payload}`
+}
+
+async function zipListPayload(target?: vscode.Uri): Promise<string> {
+  const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
+  if (!file) throw new Error('Right-click a .zip/.vsix/.nupkg file in the Explorer first.')
+  return `Contents of ${path.basename(file)} (listed without extracting):\n${await runTokenGoat(['zip-list', file])}`
+}
+
+// Ticket attachments arrive as PDFs and Word documents; extract their text
+// with the CLI's document readers, then compress like any other payload.
+async function compressDocumentPayload(target?: vscode.Uri): Promise<string> {
+  const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
+  if (!file) throw new Error('Right-click a .pdf or .docx file in the Explorer first.')
+  const ext = path.extname(file).toLowerCase()
+  const reader = ext === '.pdf' ? 'pdf-extract' : ext === '.docx' ? 'docx-text' : undefined
+  if (!reader) throw new Error(`Cannot extract text from a '${ext}' file — use .pdf or .docx.`)
+  const text = await runTokenGoat([reader, file])
+  if (!text.trim()) throw new Error(`No extractable text found in ${path.basename(file)} (a scanned image-only PDF has no text layer).`)
+  const payload = await compressText(text, '.txt')
+  return `Text extracted from ${path.basename(file)}:\n${payload}`
+}
+
+// Right-click a folder of exported tickets/documents and ask one question
+// across all of them. Capped at 20 text-like files so a stray folder pick
+// can't launch a hundred CLI invocations.
+const BATCHABLE = /\.(txt|log|md|csv|json|ya?ml|xml|html?|eml)$/i
+const BATCH_LIMIT = 20
+
+async function analyzeFolderPayload(target?: vscode.Uri): Promise<string> {
+  if (!target) throw new Error('Right-click a folder in the Explorer first.')
+  const names = (await fs.readdir(target.fsPath, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && BATCHABLE.test(entry.name))
+    .slice(0, BATCH_LIMIT)
+  if (names.length === 0) throw new Error('That folder has no readable text files (.txt, .log, .csv, .md, …).')
+  const parts: string[] = []
+  for (const entry of names) {
+    const text = await fs.readFile(path.join(target.fsPath, entry.name), 'utf8')
+    parts.push(`=== ${entry.name} ===\n${text}`)
+  }
+  const payload = await compressText(parts.join('\n\n'), '.txt')
+  return `These are ${names.length} documents from the folder "${path.basename(target.fsPath)}". What are the top recurring issues or themes across them?\n${payload}`
+}
+
+// Canned plain-language prompts: the source is the selection if one exists,
+// otherwise the clipboard (tickets usually arrive via copy-paste), otherwise
+// the active file.
+const CANNED_PROMPTS: Record<string, string> = {
+  summarize: 'Summarize this in plain language for a non-technical reader.',
+  reply: 'Draft a polite, plain-language reply to the person who wrote this.',
+  actions: 'List the concrete action items in this, with who should do each.',
+  explain: 'Explain what went wrong here in plain language, and what to try first.',
+  kb: 'Turn this resolved ticket into a short knowledge-base article: problem, cause, fix, and how to prevent it.',
+  friendlier: 'Rewrite my text below to sound friendlier while keeping the meaning.',
+  shorter: 'Rewrite my text below to be as short as possible while keeping the key facts.',
+  formal: 'Rewrite my text below in a formal, professional tone.',
+}
+
+async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<string> {
+  const editor = vscode.window.activeTextEditor
+  const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : ''
+  const clipboard = selection ? '' : await vscode.env.clipboard.readText()
+  const fileText = selection || clipboard ? '' : editor && !editor.document.isUntitled ? editor.document.getText() : ''
+  const text = selection || clipboard || fileText
+  if (!text.trim()) throw new Error('Select some text, copy it to the clipboard, or open a file first.')
+  const source = selection ? 'the selected text' : clipboard ? 'the clipboard' : 'the open file'
+  const payload = await compressText(text, '.txt')
+  return `${CANNED_PROMPTS[kind]}\nCompressed source (${source}):\n${payload}`
+}
+
+async function compressDiffPayload(): Promise<string> {
+  const workspace = vscode.workspace.workspaceFolders?.[0]
+  if (!workspace) throw new Error('Open a workspace folder to send its git diff.')
+  const diff = await new Promise<string>((resolve, reject) => {
+    exec('git diff HEAD', { cwd: workspace.uri.fsPath, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) reject(new Error(stderr.trim() || 'git diff failed — is this a git repository?'))
+        else resolve(stdout)
+      })
+  })
+  if (!diff.trim()) throw new Error('The working tree has no changes against HEAD.')
+  const payload = await compressText(diff, '.diff')
+  return `Compressed git diff of ${workspace.name} against HEAD:\n${payload}`
 }
 
 async function sendSelection(): Promise<void> {
@@ -82,15 +320,73 @@ async function sendSurgicalRead(): Promise<void> {
   await openChat(await compressSurgicalPayload())
 }
 
+async function sendSymbol(): Promise<void> {
+  await openChat(await compressSymbolPayload())
+}
+
+async function sendFile(target?: vscode.Uri): Promise<void> {
+  await openChat(await compressFilePayload(target))
+}
+
+async function sendDiff(): Promise<void> {
+  await openChat(await compressDiffPayload())
+}
+
+async function sendClipboard(): Promise<void> {
+  await openChat(await compressClipboardPayload())
+}
+
+async function sendErrors(target?: vscode.Uri): Promise<void> {
+  await openChat(await compressErrorsPayload(target))
+}
+
+async function sendZipList(target?: vscode.Uri): Promise<void> {
+  await openChat(await zipListPayload(target))
+}
+
+async function sendDocument(target?: vscode.Uri): Promise<void> {
+  await openChat(await compressDocumentPayload(target))
+}
+
+async function sendFolderAnalysis(target?: vscode.Uri): Promise<void> {
+  await openChat(await analyzeFolderPayload(target))
+}
+
+async function sendCanned(kind: keyof typeof CANNED_PROMPTS): Promise<void> {
+  await openChat(await cannedPromptPayload(kind))
+}
+
 function reportError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
   void vscode.window.showErrorMessage(`token-goat: ${message}`)
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  savingsContext = context
+  savingsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
+  updateSavingsBar()
+  savingsBar.show()
+
   context.subscriptions.push(
+    savingsBar,
     vscode.commands.registerCommand('token-goat.sendSelection', () => sendSelection().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSurgicalRead', () => sendSurgicalRead().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendSymbol', () => sendSymbol().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendFile', (target?: vscode.Uri) => sendFile(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendDiff', () => sendDiff().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendClipboard', () => sendClipboard().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendErrors', (target?: vscode.Uri) => sendErrors(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendZipList', (target?: vscode.Uri) => sendZipList(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askSummarize', () => sendCanned('summarize').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askReply', () => sendCanned('reply').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askActions', () => sendCanned('actions').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askExplain', () => sendCanned('explain').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askKb', () => sendCanned('kb').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askFriendlier', () => sendCanned('friendlier').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askShorter', () => sendCanned('shorter').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askFormal', () => sendCanned('formal').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendDocument', (target?: vscode.Uri) => sendDocument(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendFolderAnalysis', (target?: vscode.Uri) => sendFolderAnalysis(target).catch(reportError)),
   )
 
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
@@ -99,11 +395,28 @@ export function activate(context: vscode.ExtensionContext): void {
         stream.markdown(await compressSelectionPayload())
       } else if (request.command === 'context') {
         stream.markdown(await compressSurgicalPayload())
+      } else if (request.command === 'symbol') {
+        stream.markdown(await compressSymbolPayload())
+      } else if (request.command === 'file') {
+        stream.markdown(await compressFilePayload())
+      } else if (request.command === 'diff') {
+        stream.markdown(await compressDiffPayload())
+      } else if (request.command === 'paste') {
+        stream.markdown(await compressClipboardPayload())
+      } else if (request.command === 'errors') {
+        stream.markdown(await compressErrorsPayload())
+      } else if (request.command && request.command in CANNED_PROMPTS) {
+        stream.markdown(await cannedPromptPayload(request.command))
       } else {
         stream.markdown(
-          'Type `@token-goat /selection` to compress your highlighted code, ' +
-          'or `@token-goat /context` to compress the 51 lines around your cursor. ' +
-          'The compressed payload costs fewer chat tokens than pasting the raw code.'
+          'Ask me to shrink something before it goes into chat. Subcommands: ' +
+          '`/paste` (whatever you copied — a ticket, an email, an error message), ' +
+          '`/errors` (just the errors and warnings from the open log file), ' +
+          '`/summarize`, `/reply`, `/actions`, `/explain` (plain-language answers about selected/copied text), ' +
+          '`/kb` (resolved ticket → knowledge-base article), ' +
+          '`/friendlier`, `/shorter`, `/formal` (tone rewrites for text you wrote), ' +
+          'plus developer commands `/selection`, `/context`, `/symbol`, `/file`, `/diff`. ' +
+          'Everything is compressed first, so long tickets and logs cost fewer chat tokens.'
         )
       }
     } catch (error) {
