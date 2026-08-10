@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+- **`semantic` now takes `--grep <pattern>` to narrow by file path.** The only surgical-read query command that had no path filter at all -- every sibling (`refs`, `callers`, `dead`, `skeleton`/`outline`, `exports`) already has one. Matches the pattern against the file path as rendered (an anchored `--grep "^src/"` matches what the output shows, not the stored absolute path), regex falling back to a literal substring match when the pattern is not valid regex. Applies before the `--limit` slice in both the embeddings and full-text-fallback branches, and when it filters everything out the result names the active filter (`--json` sets `grepFilteredToEmpty: true`) instead of reading like the search found nothing. See [src/read_commands.ts](src/read_commands.ts), [src/cli.ts](src/cli.ts).
+
 ## [2.6.26] - 2026-08-09
 
 ### Added

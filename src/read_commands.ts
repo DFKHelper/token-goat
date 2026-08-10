@@ -5007,6 +5007,8 @@ interface SemanticOptions {
   projectRoot?: string
   /** Emit machine-readable JSON instead of the human-formatted preview blocks, matching every other surgical-read command's --json convention (symbol, skeleton, outline, refs). */
   json?: boolean
+  /** Filter to hits whose FILE PATH matches this pattern (matched against the path as rendered under displayRoot, same convention as `refs --grep`). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. Applied before the `--limit` slice in both the embeddings and FTS-fallback branches. */
+  grep?: string
 }
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic
@@ -5061,7 +5063,16 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     undefined,
     rootDir,
   )
-  const hits = mergeNearbyHits(rawHits).slice(0, n)
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const mergedHits = mergeNearbyHits(rawHits)
+  // --grep narrows on the FILE PATH AS RENDERED (toDisplayPath), matching `refs --grep`'s
+  // convention -- an anchored `^src/` must match what the human/JSON output actually shows, not
+  // the stored absolute path. Applied here, between merge and slice, so `--limit 20 --grep
+  // '^src/'` returns 20 src/ hits rather than however many of the top-20 *unfiltered* hits
+  // happen to live under src/ -- the "filter must precede slice" trap this repo has hit before.
+  const preGrepHitCount = mergedHits.length
+  const filteredHits = matchesGrep !== undefined ? mergedHits.filter((h) => matchesGrep(toDisplayPath(rootDir, h.filePath))) : mergedHits
+  const hits = filteredHits.slice(0, n)
   if (hits.length > 0) {
     const enclosing = hits.map((h) => resolveEnclosingSymbol(h.filePath, h.startLine))
     if (opts.json === true) {
@@ -5098,8 +5109,36 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
   // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
   // distance threshold.
-  const results = searchSymbolsFts(query, n, undefined, rootDir)
+  //
+  // searchSymbolsFts caps at `n` at the DB level via its own SQL LIMIT, so filtering its output
+  // by --grep after the fact would already be too late (same trap as the embeddings branch
+  // above). When grep is set, over-fetch a larger candidate set using the same ratio the
+  // embeddings branch uses, filter, THEN slice to `n`. When grep is unset this call stays
+  // byte-identical to before so today's un-filtered behavior does not change.
+  let results: ReturnType<typeof searchSymbolsFts>
+  let preGrepFtsCount = 0
+  if (matchesGrep !== undefined) {
+    const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
+    const rawResults = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
+    preGrepFtsCount = rawResults.length
+    results = rawResults.filter((s) => matchesGrep(toDisplayPath(rootDir, s.filePath))).slice(0, n)
+  } else {
+    results = searchSymbolsFts(query, n, undefined, rootDir)
+  }
   if (results.length === 0) {
+    // Total number of hits that existed BEFORE --grep was applied, across both branches -- used
+    // to distinguish "--grep matched none of the N hits that do exist" (this is a real store
+    // that a filter emptied out) from a genuinely empty index/search, per this repo's
+    // filtered-store convention (dead/refs/exports/imports all draw this same distinction).
+    const preGrepTotal = preGrepHitCount + preGrepFtsCount
+    if (matchesGrep !== undefined && preGrepTotal > 0) {
+      const notice = grepFilteredToEmptyNotice(preGrepTotal, opts.grep ?? '', 'match', 'matches')
+      if (opts.json === true) {
+        const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, grepFilteredToEmpty: true, hint: notice.trim() }
+        return { text: JSON.stringify(payload, null, 2), code: 0 }
+      }
+      return { text: `token-goat: ${notice.trim()}`, code: 0 }
+    }
     // Only paid after both the embedding search and the FTS fallback already came back empty.
     const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
     if (opts.json === true) {
