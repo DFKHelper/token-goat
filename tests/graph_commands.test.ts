@@ -1095,7 +1095,7 @@ describe('runCallers integration', () => {
     })
     // Shape pin updated from "bare array" to the shared envelope; every row-level assertion
     // below (caller/line types, root-relative `file` spelling) is unchanged.
-    const arr = envelopeItems<{ caller: string; kind: string; file: string; line: number }>(captured)
+    const arr = envelopeItems<{ caller: string; kind: string; file: string; filePath: string; line: number }>(captured)
     expect(arr.length).toBeGreaterThan(0)
     expect(typeof arr[0]?.caller).toBe('string')
     expect(typeof arr[0]?.line).toBe('number')
@@ -1104,7 +1104,22 @@ describe('runCallers integration', () => {
     // is a real caller inside this repo, so every `file` must be root-relative.
     for (const e of arr) {
       expect(e.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
+      expect(e.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
     }
+    // Transitional dual-key release: `filePath` must carry the identical value as `file`.
+    expect(arr[0]?.filePath).toBe(arr[0]?.file)
+  })
+
+  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the
+  // identical value on every row -- this is the assertion that actually catches a divergence
+  // bug between the two keys, which a mere "the key exists" check would not.
+  it('emits filePath equal to file on every row (transitional dual-key release)', () => {
+    const captured = captureStdout(() => {
+      runCallers({ symbol: 'querySymbols', json: true })
+    })
+    const arr = envelopeItems<{ file: string; filePath: string }>(captured)
+    expect(arr.length).toBeGreaterThan(0)
+    for (const row of arr) expect(row.filePath).toBe(row.file)
   })
 
   // Negative control: a row outside the resolved project root must stay absolute, unmangled --
@@ -1117,8 +1132,9 @@ describe('runCallers integration', () => {
       const code = runCallers({ symbol: 'querySymbols', json: true })
       expect(code).toBe(0)
     })
-    const parsed = envelopeItems<{ file: string }>(captured)
+    const parsed = envelopeItems<{ file: string; filePath: string }>(captured)
     expect(parsed.some((r) => r.file === outOfProjectAbs)).toBe(true)
+    expect(parsed.some((r) => r.filePath === outOfProjectAbs)).toBe(true)
   })
 
   it('resolveCallers returns the same enclosing-function-aware entries runCallers prints', () => {
@@ -1598,18 +1614,33 @@ describe('runDead integration', () => {
     expect(errCaptured.toLowerCase()).toContain('top')
   })
 
+  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the
+  // identical value on every row -- this is the assertion that actually catches a divergence
+  // bug between the two keys, which a mere "the key exists" check would not.
+  it('emits filePath equal to file on every row (transitional dual-key release)', () => {
+    const captured = captureStdout(() => {
+      runDead({ json: true, top: 5 })
+    })
+    const parsed = envelopeItems<{ file: string; filePath: string }>(captured)
+    expect(parsed.length).toBeGreaterThan(0)
+    for (const row of parsed) expect(row.filePath).toBe(row.file)
+  })
+
   it('returns valid JSON for --json flag with --top 5', () => {
     const captured = captureStdout(() => {
       runDead({ json: true, top: 5 })
     })
     // Shape pin updated from "bare array" to the shared envelope; the path-spelling assertion
     // below is unchanged.
-    const parsed = envelopeItems<{ file: string }>(captured)
+    const parsed = envelopeItems<{ file: string; filePath: string }>(captured)
     // --json path-spelling: `file` used to echo querySymbols' raw absolute row verbatim. Every
     // row here comes from this repo's own scan, so every `file` must be root-relative.
     for (const r of parsed) {
       expect(r.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
+      expect(r.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
     }
+    // Transitional dual-key release: `filePath` must carry the identical value as `file`.
+    if (parsed[0] !== undefined) expect(parsed[0].filePath).toBe(parsed[0].file)
   })
 
   // Negative control: a row outside the resolved project root must stay absolute, unmangled --
@@ -1623,9 +1654,10 @@ describe('runDead integration', () => {
       const code = runDead({ json: true, top: 500 })
       expect(code).toBe(0)
     })
-    const parsed = envelopeItems<{ name: string; file: string }>(captured)
+    const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
     const row = parsed.find((r) => r.name === 'outOfProjectDeadFixture9x2')
     expect(row?.file).toBe(outOfProjectAbs)
+    expect(row?.filePath).toBe(outOfProjectAbs)
   })
 })
 
@@ -1767,11 +1799,13 @@ describe('runDead same-project name-collision scoping', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500 })
         })
-        const parsed = envelopeItems<{ name: string; file: string }>(captured)
+        const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
         // fileA's copy is truly dead and must be reported.
         expect(parsed.some((r) => r.name === 'collideFn9k2' && r.file === toRel(root, normA))).toBe(true)
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && r.filePath === toRel(root, normA))).toBe(true)
         // fileB's copy is genuinely called locally and must NOT be reported as dead.
         expect(parsed.some((r) => r.name === 'collideFn9k2' && r.file === toRel(root, normB))).toBe(false)
+        expect(parsed.some((r) => r.name === 'collideFn9k2' && r.filePath === toRel(root, normB))).toBe(false)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -1810,11 +1844,13 @@ describe('runDead virtual-dispatch rescue', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
         })
-        const parsed = envelopeItems<{ name: string; file: string }>(captured)
+        const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
         // The override is reachable only via Base's self-dispatch -- must not be flagged dead.
         expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, implFile))).toBe(false)
+        expect(parsed.some((r) => r.name === 'compressBody' && r.filePath === toRel(root, implFile))).toBe(false)
         // A genuinely unused sibling method on the same class must still be flagged.
         expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, implFile))).toBe(true)
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.filePath === toRel(root, implFile))).toBe(true)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -1865,9 +1901,11 @@ describe('runDead virtual-dispatch rescue', () => {
         const captured = captureStdout(() => {
           runDead({ json: true, top: 500, kind: 'method' })
         })
-        const parsed = envelopeItems<{ name: string; file: string }>(captured)
+        const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
         expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, factoryFile))).toBe(false)
+        expect(parsed.some((r) => r.name === 'compressBody' && r.filePath === toRel(root, factoryFile))).toBe(false)
         expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.file === toRel(root, factoryFile))).toBe(true)
+        expect(parsed.some((r) => r.name === 'neverCalledMethod9k2' && r.filePath === toRel(root, factoryFile))).toBe(true)
       } finally {
         cwdSpy.mockRestore()
       }

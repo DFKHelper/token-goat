@@ -345,7 +345,10 @@ export function runCallers(opts: CallersOptions): number {
     // `filtered`, so that slice also feeds `truncated`; in the bounded path the limit was already
     // applied in SQL, `entries === filtered`, and `filtered.length` is the honest count of what
     // this invocation actually resolved.
-    const rows = withContext.map((e) => ({ ...e, file: toDisplayPath(rootDir, e.file) }))
+    const rows = withContext.map((e) => {
+      const displayPath = toDisplayPath(rootDir, e.file)
+      return { ...e, file: displayPath, filePath: displayPath }
+    })
     const capped = guardJsonRows(rows)
     const limitTruncated = entries.length < filtered.length
     emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || limitTruncated, totalCount: filtered.length }, null, 2))
@@ -721,7 +724,10 @@ export function runDead(opts: DeadOptions): number {
     // `grepped.length` -- the post-`--exclude-tests`, post-`--grep`, PRE-`--top` count -- not
     // `sliced.length`, which would report the already-truncated page as if it were the total.
     // `--top` therefore also feeds `truncated`, same as the `--head` handling in read_commands.
-    const capped = guardJsonRows(sliced.map((r) => ({ ...r, file: toDisplayPath(rootDir, r.file) })))
+    const capped = guardJsonRows(sliced.map((r) => {
+      const displayPath = toDisplayPath(rootDir, r.file)
+      return { ...r, file: displayPath, filePath: displayPath }
+    }))
     const topTruncated = sliced.length < grepped.length
     emit(JSON.stringify({ items: capped.items, truncated: capped.truncated || topTruncated, totalCount: grepped.length }, null, 2))
     return 0
