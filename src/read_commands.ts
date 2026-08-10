@@ -3355,7 +3355,22 @@ export function runFind(opts: FindOptions): number {
   const symbols = rawSymbols.filter((s) =>
     s.name.toLowerCase().includes(patternLower),
   )
-  const files = [...new Set(symbols.map((s) => s.filePath))].slice(0, opts.limit ?? 50)
+  // A substring scan cannot reach a typo that drops, swaps, or mistypes a character: `getUserr`
+  // is neither a substring of `getUser` nor the reverse. That is the case this command is most
+  // often reached FOR -- it is what the docs point you to when an exact `symbol` lookup misses --
+  // so falling back to the same edit-distance ranking `Did you mean:` already uses turns the
+  // command's most common failure into an answer. Runs ONLY when the substring pass found
+  // nothing, so it can never reorder or displace a real match, and rankSimilarNames itself
+  // returns nothing for a query near nothing -- a miss stays a miss rather than becoming noise.
+  let fuzzyNames: string[] = []
+  if (symbols.length === 0) {
+    fuzzyNames = rankSimilarNames(rawSymbols.map((s) => s.name), opts.pattern)
+  }
+  const matched = fuzzyNames.length > 0
+    // Ordered by the ranking, not by index order, so the closest name's files come first.
+    ? fuzzyNames.flatMap((n) => rawSymbols.filter((s) => s.name === n))
+    : symbols
+  const files = [...new Set(matched.map((s) => s.filePath))].slice(0, opts.limit ?? 50)
   const truncated = rawSymbols.length === FIND_SCAN_LIMIT
 
   if (files.length === 0) {
@@ -3364,8 +3379,18 @@ export function runFind(opts: FindOptions): number {
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify({ files, truncated }, null, 2))
+    // Dedicated fields rather than prose folded into an existing one, matching this repo's
+    // "add a field, don't rewrite an existing one" convention. Absent on an exact hit, so a
+    // consumer can tell a real substring match from a typo-recovered one.
+    const fuzzyPayload = fuzzyNames.length > 0 ? { fuzzy: true, matchedNames: fuzzyNames } : {}
+    emit(JSON.stringify({ files, truncated, ...fuzzyPayload }, null, 2))
     return 0
+  }
+
+  // Say so when the result came from the typo fallback: silently returning files for a name the
+  // caller did not type reads as if their spelling was right, and they act on the wrong symbol.
+  if (fuzzyNames.length > 0) {
+    emitErr(`No symbol name contains '${opts.pattern}'; showing files for the nearest indexed ${fuzzyNames.length === 1 ? 'name' : 'names'}: ${fuzzyNames.join(', ')}`)
   }
 
   for (const f of files) {
