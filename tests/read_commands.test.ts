@@ -7191,3 +7191,56 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
     }
   })
 })
+
+// ---- runRefs unknown-symbol vs genuinely-zero-references (this task) --------
+
+describe('runRefs unknown symbol vs zero-references distinction', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
+    // resolveProjectRoot (not mocked in this file) shells out via runGit; the empty-result
+    // branch under test now always resolves rootDir (for the existence check), so this must be
+    // stubbed here too, matching the outer 'read_commands' describe's own beforeEach.
+    vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
+  })
+
+  it('reports "Symbol not found" plus a Did you mean suggestion for a typo of a real, indexed symbol', () => {
+    mockQueryRefs.mockReturnValue([])
+    mockCountRefs.mockReturnValue(0)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuerySymbols.mockImplementation((opts?: any) => {
+      if (opts?.name !== undefined) return [] // the existence check misses
+      // the near-name scan (no `name` filter) sees the full indexed set
+      return [
+        { name: 'refsTypoCandidateFn4m8k', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+      ]
+    })
+    const { stderr, stdout } = capture(() => {
+      const code = runRefs({ spec: 'refsTypoCandidateFn4m8' })
+      expect(code).toBe(1)
+    })
+    const all = stdout + stderr
+    expect(all).toContain('Symbol not found: refsTypoCandidateFn4m8')
+    expect(all).toContain('Did you mean:')
+    expect(all).toContain('refsTypoCandidateFn4m8k')
+    expect(all).not.toContain('No references found')
+  })
+
+  it('keeps today\'s exact "No references found" message, with no "Symbol not found" and no suggestion, for a real symbol that genuinely has zero references', () => {
+    mockQueryRefs.mockReturnValue([])
+    mockCountRefs.mockReturnValue(0)
+    // The symbol IS indexed (the existence check, called with `name`, finds it) -- only the
+    // reference query came back empty.
+    mockQuerySymbols.mockReturnValue([
+      { name: 'refsUnrefFn2p6j', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '', parent: '' },
+    ])
+    const { stderr, stdout } = capture(() => {
+      const code = runRefs({ spec: 'refsUnrefFn2p6j' })
+      expect(code).toBe(1)
+    })
+    const all = stdout + stderr
+    expect(all).toContain("No references found for 'refsUnrefFn2p6j'")
+    expect(all).not.toContain('Symbol not found')
+    expect(all).not.toContain('Did you mean')
+  })
+})

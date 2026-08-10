@@ -113,10 +113,26 @@ describe('empty-index hint', () => {
     expect(r.out).toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  it('refs: indexed project with a genuine miss keeps the old message unchanged', () => {
+  // 'noSuchSymbol' isn't indexed anywhere in indexedProjectDir (only 'gamma' is) -- this is the
+  // "unknown symbol" case, distinct from "indexed symbol, genuinely zero references" below.
+  // This assertion changed when that distinction was added: the old blanket "No references
+  // found" now reports the more accurate "Symbol not found" instead.
+  it('refs: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['refs', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).toContain('Symbol not found: noSuchSymbol')
+    expect(r.out).not.toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
+  })
+
+  // Anti-regression for the distinction above: a real, indexed symbol ('gamma', defined in
+  // c.ts, called nowhere) must still get today's exact "No references found" message -- proving
+  // the "Symbol not found" branch above only fires for names that truly aren't indexed.
+  it('refs: a real indexed symbol with genuinely zero references keeps the old message unchanged', () => {
+    const r = run(['refs', 'gamma'], indexedProjectDir, homeDir)
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain("No references found for 'gamma'")
+    expect(r.out).not.toContain('Symbol not found')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
@@ -139,10 +155,23 @@ describe('empty-index hint', () => {
     expect(r.out).toContain(EMPTY_INDEX_SNIPPET)
   })
 
-  it('callers: indexed project with a genuine miss keeps the old message unchanged', () => {
+  // Same distinction as refs above: 'noSuchSymbol' isn't indexed at all in indexedProjectDir,
+  // so this is now "Symbol not found", not the old blanket "No references found".
+  it('callers: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['callers', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).toContain('Symbol not found: noSuchSymbol')
+    expect(r.out).not.toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
+  })
+
+  // Anti-regression: a real, indexed symbol ('gamma') with genuinely zero callers must still
+  // get today's exact "No references found" message.
+  it('callers: a real indexed symbol with genuinely zero callers keeps the old message unchanged', () => {
+    const r = run(['callers', 'gamma'], indexedProjectDir, homeDir)
+    expect(r.status).not.toBe(0)
+    expect(r.out).toContain("No references found for 'gamma'")
+    expect(r.out).not.toContain('Symbol not found')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
