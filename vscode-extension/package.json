@@ -98,6 +98,42 @@
         "title": "Explain This Error in Plain Language",
         "category": "token-goat",
         "icon": "$(lightbulb)"
+      },
+      {
+        "command": "token-goat.askKb",
+        "title": "Turn This Resolved Ticket into a KB Article",
+        "category": "token-goat",
+        "icon": "$(book)"
+      },
+      {
+        "command": "token-goat.askFriendlier",
+        "title": "Make My Text Friendlier",
+        "category": "token-goat",
+        "icon": "$(smiley)"
+      },
+      {
+        "command": "token-goat.askShorter",
+        "title": "Make My Text Shorter",
+        "category": "token-goat",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "token-goat.askFormal",
+        "title": "Make My Text More Formal",
+        "category": "token-goat",
+        "icon": "$(briefcase)"
+      },
+      {
+        "command": "token-goat.sendDocument",
+        "title": "Send PDF/Word Document to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(file-pdf)"
+      },
+      {
+        "command": "token-goat.sendFolderAnalysis",
+        "title": "Find Recurring Issues Across This Folder",
+        "category": "token-goat",
+        "icon": "$(folder-opened)"
       }
     ],
     "configuration": {
@@ -114,6 +150,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show a status-bar message with the compression savings after each send."
+        },
+        "token-goat.scrubPii": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove email addresses, phone numbers, ID numbers, and card numbers before text is sent to chat."
         }
       }
     },
@@ -155,6 +196,16 @@
           "command": "token-goat.sendZipList",
           "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(zip|vsix|nupkg|jar|whl)$/i",
           "group": "token-goat@3"
+        },
+        {
+          "command": "token-goat.sendDocument",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(pdf|docx)$/i",
+          "group": "token-goat@4"
+        },
+        {
+          "command": "token-goat.sendFolderAnalysis",
+          "when": "explorerResourceIsFolder",
+          "group": "token-goat@5"
         }
       ],
       "editor/title": [
@@ -220,6 +271,22 @@
           {
             "name": "explain",
             "description": "Explain the selected/copied error in plain language."
+          },
+          {
+            "name": "kb",
+            "description": "Turn a resolved ticket into a short knowledge-base article."
+          },
+          {
+            "name": "friendlier",
+            "description": "Rewrite the selected/copied text to sound friendlier."
+          },
+          {
+            "name": "shorter",
+            "description": "Rewrite the selected/copied text as short as possible."
+          },
+          {
+            "name": "formal",
+            "description": "Rewrite the selected/copied text in a formal tone."
           }
         ]
       }
