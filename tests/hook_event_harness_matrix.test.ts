@@ -1,5 +1,5 @@
 /**
- * Hook-event x harness bundle matrix (mirrors tests/command_matrix_e2e.test.ts's
+ * Hook-event x harness bundle matrix (mirrors tests/command_matrix_e2e.*.test.ts's
  * built-bundle philosophy, applied to hook EVENTS instead of CLI commands).
  *
  * Every harness (Claude Code, Codex, Gemini, grok, Copilot CLI, pi, opencode,

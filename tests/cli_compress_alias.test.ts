@@ -48,7 +48,7 @@ async function runCli(argv: string[]): Promise<number | string | undefined> {
 }
 
 // A repeat count large enough to clear bash_compress's net-savings floor, matching
-// the existing `compress` case in tests/command_matrix_e2e.test.ts.
+// the existing `compress` case in tests/command_matrix_e2e.*.test.ts.
 const REPEAT_CMD = `"${process.execPath}" -e "for (let i = 0; i < 60; i++) console.log('compiling...')"`
 
 describe('compress command aliases', () => {

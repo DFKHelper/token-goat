@@ -5,7 +5,7 @@
  * buildResumePacket cap is mutation-verified in D2 (see end of file).
  * Command handlers are tested by driving them against a real isolated TOKEN_GOAT_HOME,
  * with output captured via process.stdout mocking. Real-bundle integration is
- * covered by tests/command_matrix_e2e.test.ts.
+ * covered by tests/command_matrix_e2e.*.test.ts.
  */
 
 import { tempConfigPath } from './helpers/temp-config.js'
