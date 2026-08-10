@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -458,16 +458,27 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
   )
 })
 
-/** Init a git repo with one committed file at `<repo>/a.txt`, returning the repo dir. */
-function initGitRepoWithFile(prefix: string): string {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'one\n')
+let gitFixtureSeed: string
+
+beforeAll(() => {
+  gitFixtureSeed = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-git-seed-'))
+  fs.writeFileSync(path.join(gitFixtureSeed, 'a.txt'), 'one\n')
   const git = (args: string[]): void => {
-    execFileSync('git', args, { cwd: tmpDir, stdio: 'ignore' })
+    execFileSync('git', args, { cwd: gitFixtureSeed, stdio: 'ignore' })
   }
   git(['init'])
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+})
+
+afterAll(() => {
+  fs.rmSync(gitFixtureSeed, { recursive: true, force: true })
+})
+
+/** Clone a committed Git seed so each fingerprint case starts from isolated state. */
+function initGitRepoWithFile(prefix: string): string {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  fs.cpSync(gitFixtureSeed, tmpDir, { recursive: true })
   return tmpDir
 }
 

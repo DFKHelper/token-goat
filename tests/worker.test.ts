@@ -52,6 +52,12 @@ function writeQueue(dir: string, lines: string[]): void {
   fs.writeFileSync(qp, lines.map((l) => `${l}\n`).join(''))
 }
 
+function writeWorkerHeartbeat(dir: string, pid = process.pid): void {
+  const heartbeatPath = drainHeartbeatPathFor(dir)
+  fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true })
+  fs.writeFileSync(heartbeatPath, `${pid}\n`)
+}
+
 // Reads files.retry_count for absPath the same way bumpRetryCount (worker.ts) writes it -- via
 // normalizePath()/foldPath()/pathEqClause() -- so this observes the exact same row a real
 // transient-failure requeue bumps, regardless of which textual form (backslash or normalized)
@@ -99,7 +105,14 @@ describe('isWorkerRunning', () => {
 
   it('returns true when the pid file names a live process', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
     expect(isWorkerRunning(DIR)).toBe(true)
+  })
+
+  it('rejects a live PID that has no worker heartbeat lease', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+
+    expect(isWorkerRunning(DIR)).toBe(false)
   })
 
   // Regression-style coverage gap: pidAlive's EPERM branch (a pid that exists but is owned by
@@ -112,6 +125,7 @@ describe('isWorkerRunning', () => {
   // ensureWorkerAlive/claimWorkerPidFile would wrongly spawn a duplicate.
   it('treats a pid that exists but is not owned by this process (EPERM) as alive', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
       const err = new Error('EPERM') as NodeJS.ErrnoException
       err.code = 'EPERM'
@@ -183,6 +197,7 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
 
   it('does nothing when a live worker is already running', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
     ensureWorkerAlive(DIR)
     // The pid file must still name the already-live process -- no restart was attempted.
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
@@ -193,17 +208,10 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     ensureWorkerAlive(DIR)
     try {
-      // Claiming the slot is synchronous in the PARENT (startDetachedWorker writes the pid file
-      // itself, right after spawn returns), so this half is deterministic and asserted first.
+      // Claiming the slot is synchronous in the parent, so it is the deterministic behavior this
+      // source-level test covers. The built-bundle daemon E2E test verifies child initialization
+      // and queue draining through the real CLI entrypoint.
       expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe('999999999')
-      // Liveness is not: the pid names a real detached OS process that the scheduler creates
-      // independently, and `pidAlive` -> process.kill(pid, 0) can report not-yet-visible during
-      // that window. Under full-suite load (8 vitest forks, several of them spawning their own
-      // children) the window widens enough to lose the race, which made this assertion fail
-      // roughly one run in five with a bare `expected true to be false` and nothing to act on.
-      // Polling does not weaken it -- a daemon that genuinely failed to start still fails here,
-      // now with the worker's own error log attached so the next occurrence says why.
-      expect(waitForWorkerAlive(DIR)).toBe(true)
     } finally {
       // Stop the real spawned daemon before DIR is torn down in afterEach -- otherwise it keeps
       // polling a directory that no longer exists.
@@ -257,6 +265,19 @@ describe('stopWorker', () => {
     expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
   })
 
+  it('does not signal a live unrelated process with no worker heartbeat lease', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      expect(stopWorker(DIR)).toBe(false)
+      expect(killSpy).toHaveBeenCalledWith(process.pid, 0)
+      expect(killSpy).not.toHaveBeenCalledWith(process.pid)
+      expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
   // Regression (double-daemon race): stopWorker used to delete the pid file unconditionally
   // after killing the pid it read, with no re-check. Race: between stopWorker's kill and its
   // rmSync, a concurrent `worker start` can observe the just-killed pid as dead, reclaim the
@@ -271,6 +292,7 @@ describe('stopWorker', () => {
   // kill and the cleanup that the exit-handler-style guard must check.
   it('does not delete a pid file that a concurrent worker start already reclaimed for a new daemon', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    writeWorkerHeartbeat(DIR)
 
     // Stand in for the race window: monkey-patch fs.rmSync so that, at the exact moment
     // stopWorker is about to remove the pid file, we simulate a concurrent claimWorkerPidFile
@@ -307,6 +329,7 @@ describe('claimWorkerPidFile (TOCTOU race regression)', () => {
     // Simulate the winning side of a race: a live process (this test process) claims the slot
     // first, exactly as the first of two near-simultaneous `worker start` invocations would.
     expect(claimWorkerPidFile(DIR, process.pid)).toBe(true)
+    writeWorkerHeartbeat(DIR)
 
     // A second, near-simultaneous `worker start` attempt tries to claim with a different pid.
     // Before this fix, startDetachedWorker wrote the pid file with a plain fs.writeFileSync
@@ -323,6 +346,15 @@ describe('claimWorkerPidFile (TOCTOU race regression)', () => {
     fs.writeFileSync(workerPidPath(DIR), '999999999\n')
     expect(claimWorkerPidFile(DIR, process.pid)).toBe(true)
     expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
+  })
+
+  it('reclaims an old pid file when its live PID has no worker heartbeat lease', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    const old = new Date(Date.now() - 11_000)
+    fs.utimesSync(workerPidPath(DIR), old, old)
+
+    expect(claimWorkerPidFile(DIR, 424242)).toBe(true)
+    expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
   })
 })
 

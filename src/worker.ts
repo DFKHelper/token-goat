@@ -40,6 +40,9 @@ export interface WorkerOptions {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
+export const WORKER_HEARTBEAT_STALE_MS = 60_000
+const WORKER_HEARTBEAT_REFRESH_MS = 5_000
+const WORKER_STARTUP_GRACE_MS = 10_000
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
@@ -62,6 +65,7 @@ const PRUNE_EVERY_N_DRAINS = 30
  * future multi-dataDir setup) don't share a single global cadence.
  */
 const drainCycleCounts = new Map<string, number>()
+const heartbeatWriteTimes = new Map<string, number>()
 
 /**
  * Per-dataDir last-known project root, opportunistically learned from the dirty paths
@@ -202,6 +206,36 @@ export function dirtyQueuePathFor(dir: string): string {
 /** Absolute path to the drain-heartbeat marker for `dir`, touched at the end of every `drainOnce` cycle (whether or not anything was processed) so a doctor check can distinguish "worker process alive" from "worker actually still draining" -- a deadlocked or wedged loop keeps its pid alive without ever reaching the touch below. */
 export function drainHeartbeatPathFor(dir: string): string {
   return path.join(dir, 'queue', 'drain-heartbeat')
+}
+
+function writeDrainHeartbeat(dir: string, force = false): void {
+  const now = Date.now()
+  if (!force && now - (heartbeatWriteTimes.get(dir) ?? 0) < WORKER_HEARTBEAT_REFRESH_MS) return
+  try {
+    fs.mkdirSync(path.dirname(drainHeartbeatPathFor(dir)), { recursive: true })
+    fs.writeFileSync(drainHeartbeatPathFor(dir), `${process.pid}\n`)
+    heartbeatWriteTimes.set(dir, now)
+  } catch {
+    // Best-effort liveness signal; failed heartbeat writes must not stop indexing.
+  }
+}
+
+function hasFreshWorkerHeartbeat(dir: string, pid: number): boolean {
+  try {
+    const heartbeatPath = drainHeartbeatPathFor(dir)
+    if (Date.now() - fs.statSync(heartbeatPath).mtimeMs > WORKER_HEARTBEAT_STALE_MS) return false
+    return fs.readFileSync(heartbeatPath, 'utf8').trim() === String(pid)
+  } catch {
+    return false
+  }
+}
+
+function pidFileIsWithinStartupGrace(dir: string): boolean {
+  try {
+    return Date.now() - fs.statSync(workerPidPath(dir)).mtimeMs < WORKER_STARTUP_GRACE_MS
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -581,6 +615,7 @@ export function processDirtyBatch(
   let indexed = 0
   for (const p of paths) {
     if (!p) continue
+    writeDrainHeartbeat(dir)
     // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from reindexing entirely -- skip before the existence/sha checks so a blocked path is never touched, not even pruned from the index if it happens to have been deleted underneath it.
     if (isUnderBlockedRoot(p, blockedRoots)) continue
     // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever.
@@ -776,13 +811,9 @@ export function drainOnce(
   // Now that both stages above have finished claiming/processing their batches for this cycle, it is safe to actually append this cycle's transient-failure requeues to the live queue -- see deferredRequeues' doc comment above for why this must happen last.
   for (const p of deferredRequeues) appendToDirtyQueue(dir, p)
 
-  // Touch the heartbeat marker last, unconditionally -- see drainHeartbeatPathFor's doc comment. Best-effort: a failed write here must not fail the drain cycle itself.
-  try {
-    fs.mkdirSync(path.dirname(drainHeartbeatPathFor(dir)), { recursive: true })
-    fs.writeFileSync(drainHeartbeatPathFor(dir), '')
-  } catch {
-    // best-effort
-  }
+  // Touch the heartbeat marker last even when the queue was empty, and keep it fresh during
+  // long batches through processDirtyBatch.
+  writeDrainHeartbeat(dir, true)
 
   return processed
 }
@@ -814,13 +845,14 @@ function readPidFile(dir: string): number | null {
 /**
  * Is a detached worker currently running for this project?
  *
- * True only when the pid file exists, names a numeric pid, and that pid maps to
- * a live process. A stale pid file (process gone) reads as not running.
+ * True only when the pid file names a live process that has recently written a
+ * PID-bound heartbeat. This rejects a stale PID whose number was reused by an
+ * unrelated process.
  */
 export function isWorkerRunning(dir: string = dataDir()): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
-  return pidAlive(pid)
+  return pidAlive(pid) && hasFreshWorkerHeartbeat(dir, pid)
 }
 
 /** Absolute path to the auto-heal rate-limit marker for `dir`. */
@@ -904,8 +936,8 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
 export function stopWorker(dir: string = dataDir()): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
-  const alive = pidAlive(pid)
-  if (alive) {
+  const running = isWorkerRunning(dir)
+  if (running) {
     try {
       process.kill(pid)
     } catch {
@@ -920,7 +952,7 @@ export function stopWorker(dir: string = dataDir()): boolean {
       // best-effort cleanup
     }
   }
-  return alive
+  return running
 }
 
 /**
@@ -962,7 +994,11 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
   }
   const existingPid = readPidFile(dir)
-  if (existingPid !== null && pidAlive(existingPid)) {
+  if (
+    existingPid !== null
+    && pidAlive(existingPid)
+    && (hasFreshWorkerHeartbeat(dir, existingPid) || pidFileIsWithinStartupGrace(dir))
+  ) {
     return false
   }
   // Stale, dead, or unreadable: reclaim the slot.
@@ -1148,6 +1184,6 @@ export function runDetachedWorkerDaemon(): void {
       }
     }
   })
+  writeDrainHeartbeat(dir, true)
   void runWorkerLoop(dir, safeInterval)
 }
-

@@ -227,7 +227,7 @@ function filterRefsForSymbol(
   filePath: string,
   getSyms: (fp: string) => SymbolEntry[],
 ): RefEntry[] {
-  return refs.filter((ref) => ref.filePath === filePath || !fileDefinesName(ref.filePath, name, getSyms))
+  return refs.filter((ref) => foldPath(ref.filePath) === foldPath(filePath) || !fileDefinesName(ref.filePath, name, getSyms))
 }
 
 /** Resolves callers of a symbol: enclosing-function-aware, unlike the file-grouping-only logic in read_commands.ts's `refs --callers`. Shared by `runCallers` and `runBrief`.

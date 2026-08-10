@@ -1,0 +1,55 @@
+# 54 lines (~705 tok)
+function writeParseResult(
+  filePath: string,
+  content: Buffer,
+  result: ParseResult,
+  dbPath: string,
+): void {
+  const db = getDb(dbPath)
+
+  // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file changes between the parse read and this write, a re-read here would record a SHA that does not match the symbols/refs actually written below, and the worker's SHA-gated incremental drain would skip reindexing a file whose stored SHA happens to match a later version, leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded string used for parsing) so this SHA is computed over the same bytes worker.ts's gate hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8 content would otherwise produce a different digest than hashing the raw bytes directly, permanently defeating the gate for any such file. writeParseResult's only caller (indexFileSync) always has a successfully-read Buffer in hand by the time it calls this -- a read failure returns or throws before reaching this call -- so there is never a "content is unreadable" case to fall back to a disk re-read for.
+  const sha = fingerprintContent(content)
+  const mtime = safeMtime(filePath)
+  const now = Date.now() / 1000
+
+  const writeAll = db.transaction(() => {
+    deleteFileRows(db, filePath)
+
+    db.prepare(
+      'INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(filePath, sha, mtime, result.language, now)
+
+    const insSym = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    for (const s of result.symbols) {
+      if (s.name === '' || s.kind === '') continue
+      // Bound every stored body regardless of which extractor produced it -- see
+      // MAX_SYMBOL_BODY_CHARS / boundSymbolBody. This is the single choke point through which
+      // all parsed symbols reach the DB, so capping here makes an unbounded-body bug in any one
+      // language extractor incapable of bloating global.db. An over-cap body is stored empty,
+      // not truncated, so resolveBody still serves the complete symbol from source on read.
+      insSym.run(
+        s.filePath,
+        s.name,
+        s.kind,
+        s.lineStart,
+        s.lineEnd,
+        boundSymbolBody(s.body),
+        boundSymbolDocstring(s.docstring),
+        s.parent,
+      )
+    }
+
+    const insRef = db.prepare(
+      'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (const r of result.refs) {
+      if (r.name === '') continue
+      insRef.run(r.filePath, r.name, r.line, r.col, r.context)
+    }
+  })
+
+  writeAll()
+}
