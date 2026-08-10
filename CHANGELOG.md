@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.6.26] - 2026-08-09
+
 ### Added
 - **`callers --json` and `dead --json` now also emit `filePath` alongside `file`.** Both fields carry the identical value this release, so existing consumers keep working unchanged while new consumers can switch to `filePath` (the spelling `types --json` already uses). `file` will be removed in a future release. See [src/graph_commands.ts](src/graph_commands.ts).
 - **Grep `content`-mode results now fold repeated file paths.** Matches under the same file previously repeated the full `path:lineNo:` prefix on every line; the post-hook now groups them under a single path header with indented `lineNo: text` lines beneath, losslessly (every match line and line number survives verbatim). Only applies to `output_mode: content` with no `-A`/`-B`/`-C`/`context`/`multiline`; `files_with_matches`, `count`, and context-mode results are untouched. See [src/hooks_grep.ts](src/hooks_grep.ts).
