@@ -270,6 +270,20 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // outline/skeleton/refs --json -- pinned as an exact equality (not just `.toContain`) so a
     // regression back to the absolute spelling is caught.
     expect(scopedPayload.items[0]?.filePath.replace(/\\/g, '/')).toBe('src/mod.ts')
+
+    // --exclude-tests: opt-in, additive, filtering on the DEFINITION site like `dead` (not a
+    // reference site, unlike refs/callers). exclDeadOnlyInTest is defined only in
+    // excldead.test.ts, so the flag empties the result -- and the empty view must name the
+    // filter rather than report the plain "No matches" a genuinely unindexed name gets, which
+    // is the difference between "wrong question" and "no answer".
+    const xtOff = run(['symbol', 'exclDeadOnlyInTest', '--project'])
+    expect(xtOff.status, xtOff.stderr).toBe(0)
+    expect(xtOff.stdout).toContain('excldead.test.ts')
+
+    const xtOn = run(['symbol', 'exclDeadOnlyInTest', '--project', '--exclude-tests'])
+    expect(xtOn.status, xtOn.stderr).toBe(0)
+    expect(xtOn.stdout).toContain('hidden by --exclude-tests')
+    expect(xtOn.stdout).not.toContain('No matches')
   },
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')

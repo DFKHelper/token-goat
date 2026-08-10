@@ -2877,7 +2877,8 @@ export function buildProgram(): Command {
     .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex); cannot be combined with <name>')
-    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string }) => {
+    .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
+    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -2893,6 +2894,7 @@ export function buildProgram(): Command {
           ...(projectRoot !== undefined ? { projectRoot } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       )
     })
