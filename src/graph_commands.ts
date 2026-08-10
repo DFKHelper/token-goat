@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { querySymbols, queryRefs, queryRefsByContext, searchSymbolsFts, distinctSymbolKinds } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
-import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean } from './read_commands.js'
+import { extractImports, importsExtensionFor, findSpecSeparator, guardJsonRows, resolveSymbolSpecOrEmitError, rankSimilarNames, didYouMean, unknownSymbolSuggestion } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, ensureNewline, isTestFile, foldPath, extractErrorMessage, buildContextWindow, renderContextWindow, compileGrepMatcher, grepFilteredToEmptyNotice } from './util.js'
@@ -324,6 +324,16 @@ export function runCallers(opts: CallersOptions): number {
       emitErr(`No non-test references found for '${opts.symbol}' (${suppressed} in test files hidden by --exclude-tests)`)
       return 1
     }
+    // Distinguish "not indexed at all" from "indexed, genuinely zero callers" -- same trap as
+    // above, one step earlier. `fileHint`, when set, already proved `name` exists in that file
+    // (the check at the top of this function), so this can only fire on the bare-name path.
+    if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
+      emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`)
+      // Same empty-index note as the "No references found" branch below -- an empty project
+      // index makes EVERY symbol look unindexed, so this must still surface the real cause.
+      if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+      return 1
+    }
     emitErr(`No references found for '${opts.symbol}'`)
     // Only paid after the query already came back empty, and only in text mode -- this branch
     // already emits plain prose regardless of --json (see runRefsSingle's sibling comment), so
@@ -413,7 +423,10 @@ export function runCallChain(opts: CallChainOptions): number {
       return 1
     }
   } else if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
-    emitErr(`Symbol not found: ${opts.symbol}`)
+    // Suggestion appended to the existing message rather than replacing it -- unlike
+    // refs/callers/impact this command already distinguishes "not indexed" from "no callers"
+    // (that's the whole point of this branch), so there's no separate wording to preserve here.
+    emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`)
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
@@ -594,6 +607,13 @@ export function runImpact(opts: ImpactOptions): number {
     // stays unreachable and output/exit code is byte-identical to today.
     if (opts.excludeTests === true && suppressedCount > 0) {
       emitErr(`No non-test impact found for '${opts.symbol}' (${suppressedCount} in test files hidden by --exclude-tests)`)
+      return 1
+    }
+    // Distinguish "not indexed at all" from "indexed, genuinely zero impact" -- same trap as
+    // runCallers/runRefsSingle. `fileHint`, when set, already proved `rootName` exists in that
+    // file (the check near the top of this function), so this can only fire on the bare-name path.
+    if (querySymbols({ name: rootName, rootDir, limit: 1 }).length === 0) {
+      emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(rootName, rootDir)}`)
       return 1
     }
     emitErr(`No callers found for '${opts.symbol}'`)

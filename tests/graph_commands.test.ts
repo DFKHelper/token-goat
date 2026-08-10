@@ -1182,6 +1182,59 @@ describe('runCallers integration', () => {
   })
 })
 
+// ---- runCallers unknown-symbol vs genuinely-zero-callers (this task) --------
+
+describe('runCallers unknown symbol vs zero-callers distinction', () => {
+  it('reports "Symbol not found" plus a Did you mean suggestion for a typo of a real, indexed symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-unknown-'))
+    try {
+      const defFile = join(root, 'callers-typo-def.ts')
+      writeFileSync(defFile, 'export function callersTypoCandidateFn8h2q() { return 1 }\n')
+      indexFileSync(normalizePath(defFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          const code = runCallers({ symbol: 'callersTypoCandidateFn8h2' })
+          expect(code).toBe(1)
+        })
+        expect(errCaptured).toContain('Symbol not found: callersTypoCandidateFn8h2')
+        expect(errCaptured).toContain('Did you mean:')
+        expect(errCaptured).toContain('callersTypoCandidateFn8h2q')
+        expect(errCaptured).not.toContain('No references found')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps today\'s exact "No references found" message, with no "Symbol not found" and no suggestion, for a real symbol that genuinely has zero callers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-callers-zerorefs-'))
+    try {
+      const defFile = join(root, 'callers-unref-def.ts')
+      writeFileSync(defFile, 'export function callersUnrefFn9k3v() { return 1 }\n')
+      indexFileSync(normalizePath(defFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          const code = runCallers({ symbol: 'callersUnrefFn9k3v' })
+          expect(code).toBe(1)
+        })
+        expect(errCaptured).toContain("No references found for 'callersUnrefFn9k3v'")
+        expect(errCaptured).not.toContain('Symbol not found')
+        expect(errCaptured).not.toContain('Did you mean')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- runCallers file::symbol spec (real disambiguation via resolveCallers' filePath param) ---
 
 describe('runCallers file::symbol spec', () => {
@@ -2351,6 +2404,33 @@ describe('runCallChain error handling and no-callers branch', () => {
     expect(errCaptured).toContain('Symbol not found: zzqxNopeDoesNotExist')
   })
 
+  // This task: the pre-existing "Symbol not found" message (asserted above) now carries a
+  // Did you mean suggestion when a near-name candidate is indexed, appended rather than
+  // replacing the existing wording.
+  it('appends a Did you mean suggestion to "Symbol not found" for a typo of a real, indexed symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-unknown-'))
+    try {
+      const defFile = join(root, 'chain-typo-def.ts')
+      writeFileSync(defFile, 'export function chainTypoCandidateFn3z9x() { return 1 }\n')
+      indexFileSync(normalizePath(defFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          const code = runCallChain({ symbol: 'chainTypoCandidateFn3z9' })
+          expect(code).toBe(1)
+        })
+        expect(errCaptured).toContain('Symbol not found: chainTypoCandidateFn3z9')
+        expect(errCaptured).toContain('Did you mean:')
+        expect(errCaptured).toContain('chainTypoCandidateFn3z9x')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   // Same nonexistent-symbol check must run before the --json branch, so a machine-consuming
   // caller never sees a fabricated `{ chains: [...] }` payload for a symbol that isn't indexed.
   it('rejects a nonexistent symbol under --json with exit 1 and no chains payload', () => {
@@ -2764,6 +2844,59 @@ describe('runImpact integration', () => {
   it('exits 1 for an unknown symbol', () => {
     const code = runImpact({ symbol: '__xyzzy_no_such_symbol_9f3k__' })
     expect(code).toBe(1)
+  })
+})
+
+// ---- runImpact unknown-symbol vs genuinely-zero-impact (this task) ----------
+
+describe('runImpact unknown symbol vs zero-impact distinction', () => {
+  it('reports "Symbol not found" plus a Did you mean suggestion for a typo of a real, indexed symbol', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-unknown-'))
+    try {
+      const defFile = join(root, 'impact-typo-def.ts')
+      writeFileSync(defFile, 'export function impactTypoCandidateFn6r4t() { return 1 }\n')
+      indexFileSync(normalizePath(defFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          const code = runImpact({ symbol: 'impactTypoCandidateFn6r4' })
+          expect(code).toBe(1)
+        })
+        expect(errCaptured).toContain('Symbol not found: impactTypoCandidateFn6r4')
+        expect(errCaptured).toContain('Did you mean:')
+        expect(errCaptured).toContain('impactTypoCandidateFn6r4t')
+        expect(errCaptured).not.toContain('No callers found')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps today\'s exact "No callers found" message, with no "Symbol not found" and no suggestion, for a real symbol that genuinely has zero impact', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-zeroimpact-'))
+    try {
+      const defFile = join(root, 'impact-unref-def.ts')
+      writeFileSync(defFile, 'export function impactUnrefFn7q5w() { return 1 }\n')
+      indexFileSync(normalizePath(defFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const errCaptured = captureStderr(() => {
+          const code = runImpact({ symbol: 'impactUnrefFn7q5w' })
+          expect(code).toBe(1)
+        })
+        expect(errCaptured).toContain("No callers found for 'impactUnrefFn7q5w'")
+        expect(errCaptured).not.toContain('Symbol not found')
+        expect(errCaptured).not.toContain('Did you mean')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

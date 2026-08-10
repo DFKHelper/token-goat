@@ -428,6 +428,24 @@ export function didYouMean(candidates: string[]): string {
   return lines.join('\n')
 }
 
+/**
+ * Shared by refs/callers/impact/call-chain's bare-name miss path: a typo'd or nonexistent
+ * symbol name reads identically to a real symbol with a genuinely empty result set ("no
+ * references"/"no callers"), which is the exact "invites deleting live code" trap this file
+ * already calls out for `--exclude-tests`. Callers already know the query came back empty
+ * (never paid on a successful lookup) and have already established `name` is NOT indexed --
+ * this only supplies the `Did you mean:` suggestion, same bounded-scan-then-rank shape as
+ * `runSymbol`'s own near-name scan above, scoped to `rootDir` so a same-named symbol in an
+ * unrelated project on the same machine (global.db is machine-wide) never leaks in as a
+ * suggestion. Returns '' when the index has no near-name candidates -- callers append this
+ * directly, so a leading newline is baked in only when there's something to show.
+ */
+export function unknownSymbolSuggestion(name: string, rootDir: string): string {
+  const rawSymbols = querySymbols({ limit: FIND_SCAN_LIMIT, rootDir })
+  const candidates = rankSimilarNames(rawSymbols.map((s) => s.name), name)
+  return candidates.length > 0 ? `\n${didYouMean(candidates)}` : ''
+}
+
 // Shared "file::symbol" spec-format error for `read`/`brief` when the argument has no `::`
 // separator and isn't a readable file. The old messages ("Symbol not found" for brief, "Could
 // not read" for read) asserted something false -- the name may well be indexed, and the
@@ -1749,12 +1767,25 @@ function runRefsSingle(opts: RefsOptions): number {
       emitErr(`No non-test references found for '${symName}' (${suppressed} in test files hidden by --exclude-tests)`)
       return 1
     }
+    // Distinguish "not indexed at all" from "indexed, genuinely zero references" -- the latter
+    // keeps today's message byte-identical (see unknownSymbolSuggestion's own doc comment for
+    // why this matters). Resolved here rather than hoisted to the top of the function since it's
+    // only ever paid once the query already came back empty.
+    const rootDir = resolveProjectRoot({ project: process.cwd() })
+    if (querySymbols({ name: symName, rootDir, limit: 1 }).length === 0) {
+      emitErr(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`)
+      // Same empty-index note as the "No references found" branch below -- an empty project
+      // index makes EVERY symbol look unindexed, so this must still surface the real cause
+      // instead of leaving the caller staring at a suggestion-free "not found" for a project
+      // that was simply never indexed.
+      if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+      return 1
+    }
     emitErr(`No references found for '${symName}'`)
     // Only paid after the query already came back empty, and only in text mode -- this branch
     // already emits plain prose regardless of --json (there's no separate opts.json check
     // here), so there's no JSON envelope to protect either way.
     if (opts.json !== true) {
-      const rootDir = resolveProjectRoot({ project: process.cwd() })
       if (isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     }
     return 1
