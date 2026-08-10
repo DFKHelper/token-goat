@@ -582,6 +582,8 @@ export interface SymbolOptions {
    * exclusive with `name`: an exact `name` match is already pinned to one identifier, so
    * regex-filtering that same fixed name is never useful. */
   grep?: string
+  /** `--exclude-tests`: drop symbols DEFINED in a test file (per isTestFile), matching the flag already on refs/callers/dead/semantic. Opt-in; omitted or false leaves output byte-identical to today. Like `--grep`, this filters client-side, so it forces the over-fetch below -- filtering after the SQL LIMIT would let suppressed test symbols occupy slots ahead of the cutoff and silently under-return. */
+  excludeTests?: boolean
 }
 
 /** Handle ``token-goat symbol <name>``. */
@@ -608,6 +610,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const excludeTests = opts.excludeTests === true
 
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
@@ -623,7 +626,10 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // FIND_SCAN_LIMIT (the same bound the near-name scan below already uses), filter, THEN slice
   // to the real requested limit below: filtering after the slice would return however many of
   // the top-N unfiltered rows happen to match, not N matching rows.
-  if (matchesGrep !== undefined) {
+  // `--exclude-tests` filters client-side on file path for the same reason and needs the same
+  // headroom: with a plain `--limit N`, N test-file symbols could fill the SQL result set and
+  // leave nothing to show after filtering, reporting "no matches" for a symbol that is indexed.
+  if (matchesGrep !== undefined || excludeTests) {
     queryOpts.limit = FIND_SCAN_LIMIT
   } else if (opts.limit !== undefined) {
     queryOpts.limit = opts.limit
@@ -635,8 +641,28 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const rawResults = querySymbols(queryOpts)
   const preFilterCount = rawResults.length
   const effectiveLimit = opts.limit ?? 100
-  const filtered = matchesGrep !== undefined ? rawResults.filter((s) => matchesGrep(s.name)) : rawResults
-  const results = matchesGrep !== undefined ? filtered.slice(0, effectiveLimit) : filtered
+  const anyClientFilter = matchesGrep !== undefined || excludeTests
+  const filtered = anyClientFilter
+    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)))
+    : rawResults
+  const results = anyClientFilter ? filtered.slice(0, effectiveLimit) : filtered
+
+  // How many rows `--exclude-tests` alone removed, counted after any `--grep` so the two filters
+  // don't double-report the same row. Only used to explain an empty result below.
+  const hiddenByExcludeTests = excludeTests
+    ? rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(s.name)) && isTestFile(s.filePath)).length
+    : 0
+
+  if (excludeTests && filtered.length === 0 && hiddenByExcludeTests > 0) {
+    // The symbol IS indexed, just only ever in test files. Saying "No matches" here would be a
+    // lie that stops the caller looking; name the filter that hid them instead.
+    const label = opts.name ?? opts.grep ?? '*'
+    const notice = `no non-test matches for '${label}' (${hiddenByExcludeTests} in test ${hiddenByExcludeTests === 1 ? 'file' : 'files'} hidden by --exclude-tests)`
+    if (opts.json === true) {
+      return { text: JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2), code: 0 }
+    }
+    return { text: `token-goat: ${notice}`, code: 0 }
+  }
 
   if (matchesGrep !== undefined && filtered.length === 0 && preFilterCount > 0) {
     // The scope (--file/--kind/--project) genuinely has symbols, but --grep matched none of
@@ -683,11 +709,12 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const capped = guardJsonRows(results)
     let trueTotal: number
     let truncatedFlag: boolean
-    if (matchesGrep !== undefined) {
-      // No SQL regex support -- `filtered` is the exact post-`--grep` count within the
-      // FIND_SCAN_LIMIT scan window queried above, so it is the honest total for what --grep
-      // actually matched. countSymbols(queryOpts) would instead report the pre-grep count of
-      // the whole kind/file/rootDir scope, which contradicts the filtered rows below.
+    if (anyClientFilter) {
+      // No SQL regex support, and no SQL notion of "is a test file" either -- `filtered` is the
+      // exact post-filter count within the FIND_SCAN_LIMIT scan window queried above, so it is
+      // the honest total for what --grep/--exclude-tests actually matched. countSymbols(queryOpts)
+      // would instead report the pre-filter count of the whole kind/file/rootDir scope, which
+      // contradicts the filtered rows below.
       trueTotal = filtered.length
       truncatedFlag = capped.truncated || results.length < filtered.length
     } else {
