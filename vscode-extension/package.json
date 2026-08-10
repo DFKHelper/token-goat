@@ -32,11 +32,59 @@
     "commands": [
       {
         "command": "token-goat.sendSelection",
-        "title": "token-goat: Send Selection as Compressed Payload"
+        "title": "Send Selection to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(send)"
       },
       {
         "command": "token-goat.sendSurgicalRead",
-        "title": "token-goat: Send Surgical Read Payload"
+        "title": "Send Lines Around Cursor to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "token-goat.sendSelection",
+          "when": "editorHasSelection",
+          "group": "token-goat@1"
+        },
+        {
+          "command": "token-goat.sendSurgicalRead",
+          "when": "editorTextFocus",
+          "group": "token-goat@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "token-goat.sendSelection",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "token-goat.sendSurgicalRead",
+          "when": "editorTextFocus",
+          "group": "navigation"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "token-goat-vscode.tokenGoat",
+        "name": "token-goat",
+        "description": "Compress your selection or the lines around your cursor so chat costs fewer tokens.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "selection",
+            "description": "Compress the current editor selection and reply with the payload."
+          },
+          {
+            "name": "context",
+            "description": "Compress the 51 lines around the cursor and reply with the payload."
+          }
+        ]
       }
     ]
   },
