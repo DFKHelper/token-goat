@@ -539,6 +539,140 @@ describe('read_commands', () => {
         }
       })
     })
+
+    // ---- runSymbol --grep (project-wide name-pattern search) --------------
+
+    describe('runSymbol --grep', () => {
+      it('errors clearly when neither a name nor --grep is given, without querying', () => {
+        const { text, code } = runSymbol({})
+        expect(code).toBe(1)
+        expect(text).toBe('symbol requires a name or --grep <pattern>')
+        expect(mockQuerySymbols).not.toHaveBeenCalled()
+      })
+
+      it('rejects combining an exact name with --grep, without querying', () => {
+        const { text, code } = runSymbol({ name: 'foo', grep: '^run' })
+        expect(code).toBe(1)
+        expect(text).toContain('--grep')
+        expect(text).toContain('cannot be combined')
+        expect(mockQuerySymbols).not.toHaveBeenCalled()
+      })
+
+      it('matches by regex project-wide with no positional name', () => {
+        const items: MockSymbol[] = [
+          { name: 'runWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+          { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        const { text, code } = runSymbol({ grep: '^run' })
+        expect(code).toBe(0)
+        expect(text).toContain('runWorker')
+        expect(text).not.toContain('stopWorker')
+      })
+
+      it('falls back to a literal substring match when the pattern does not compile as regex', () => {
+        const items: MockSymbol[] = [
+          { name: 'run(worker)', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+          { name: 'runOther', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        // '(worker' is invalid regex (unbalanced paren) -- must fall back to literal substring.
+        const { text, code } = runSymbol({ grep: '(worker' })
+        expect(code).toBe(0)
+        expect(text).toContain('run(worker)')
+        expect(text).not.toContain('runOther')
+      })
+
+      // This is the trap called out in the task spec: querySymbols applies a SQL LIMIT before
+      // --grep ever sees the rows. If the implementation naively passed the caller's small
+      // --limit straight through to the SQL query and filtered afterward, the unfiltered top-N
+      // would be dominated by non-matching noise and the matching rows past row N would never
+      // even be fetched. The over-fetch-then-filter-then-slice fix must still return a full
+      // --limit worth of MATCHING rows.
+      it('filters the SQL result BEFORE the --limit slice, not after (regression: --limit N --grep P must return up to N matching rows, not N unfiltered rows filtered down)', () => {
+        const items: MockSymbol[] = []
+        for (let i = 0; i < 40; i++) {
+          items.push({ name: `noise${i}`, kind: 'function', filePath: 'a.ts', lineStart: i + 1, lineEnd: i + 1, body: '', docstring: '' })
+        }
+        for (let i = 0; i < 10; i++) {
+          items.push({ name: `run${i}`, kind: 'function', filePath: 'a.ts', lineStart: 100 + i, lineEnd: 100 + i, body: '', docstring: '' })
+        }
+        // Mimics the real SQL `LIMIT ?` behavior: only returns as many rows as the query asked
+        // for. If runSymbol passes the caller's small --limit straight through instead of
+        // over-fetching, this mock hands back only noise rows and every 'run*' row is lost
+        // before --grep ever runs.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockImplementation((opts?: any) => {
+          const lim = (opts?.limit as number | undefined) ?? items.length
+          return items.slice(0, lim) as unknown as ReturnType<typeof mockQuerySymbols>
+        })
+        const { text, code } = runSymbol({ grep: '^run', limit: 3 })
+        expect(code).toBe(0)
+        const matchedNames = [...text.matchAll(/# (\S+) \(/g)].map((m) => m[1])
+        expect(matchedNames).toHaveLength(3)
+        for (const name of matchedNames) expect(name?.startsWith('run')).toBe(true)
+      })
+
+      it('composes with --kind and --file, forwarding both to the underlying query', () => {
+        const items: MockSymbol[] = [
+          { name: 'runFoo', kind: 'function', filePath: 'src/bar.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        const { code } = runSymbol({ grep: '^run', kind: 'function', file: 'src/bar.ts' })
+        expect(code).toBe(0)
+        expect(mockQuerySymbols).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'function', filePath: expect.stringContaining('bar.ts') as unknown as string }),
+        )
+      })
+
+      it('distinguishes filtered-to-empty (matches exist in scope, --grep hid all of them) from genuinely-empty, in text output', () => {
+        const items: MockSymbol[] = [
+          { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        const { text, code } = runSymbol({ grep: '^run' })
+        expect(code).toBe(0)
+        expect(text).toContain('--grep')
+        expect(text).toContain('filtered out')
+        expect(text).not.toBe('No matches for \'^run\'')
+      })
+
+      it('distinguishes filtered-to-empty from genuinely-empty in --json output (totalCount: 0, not the pre-filter count)', () => {
+        const items: MockSymbol[] = [
+          { name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        const { text, code } = runSymbol({ grep: '^run', json: true })
+        expect(code).toBe(0)
+        const parsed = JSON.parse(text) as { items: unknown[]; truncated: boolean; totalCount: number }
+        expect(parsed.items).toHaveLength(0)
+        expect(parsed.totalCount).toBe(0)
+      })
+
+      it('reports an honest post-grep totalCount in --json, not the pre-grep scope count from countSymbols', () => {
+        const items: MockSymbol[] = [
+          { name: 'runA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+          { name: 'runB', kind: 'function', filePath: 'a.ts', lineStart: 2, lineEnd: 2, body: '', docstring: '' },
+          { name: 'stopC', kind: 'function', filePath: 'a.ts', lineStart: 3, lineEnd: 3, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        // countSymbols would report the whole pre-grep scope (3) if it were used for grep's
+        // totalCount instead of the post-grep filtered count (2) -- contradicting the 2 rows
+        // actually returned.
+        mockCountSymbols.mockReturnValue(3)
+        const { text } = runSymbol({ grep: '^run', json: true })
+        const parsed = JSON.parse(text) as { items: unknown[]; truncated: boolean; totalCount: number }
+        expect(parsed.items).toHaveLength(2)
+        expect(parsed.totalCount).toBe(2)
+        expect(parsed.truncated).toBe(false)
+      })
+    })
   })
 
   // ---- runRead ------------------------------------------------------------

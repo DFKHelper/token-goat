@@ -2868,14 +2868,15 @@ export function buildProgram(): Command {
     }
 
   program
-    .command('symbol <name>')
-    .description('search for a symbol by name')
+    .command('symbol [name]')
+    .description('search for a symbol by name, or project-wide by --grep name pattern')
     .option('-l, --limit <n>', 'max results')
     .option('-f, --file <path>', 'restrict to one file')
     .option('-k, --kind <kind>', 'restrict to one kind (function, class, ...)')
     .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
     .option('-j, --json', 'output as JSON')
-    .action((name: string, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean }) => {
+    .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex); cannot be combined with <name>')
+    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -2884,12 +2885,13 @@ export function buildProgram(): Command {
       }
       return runExitText(() =>
         runSymbol({
-          name,
+          ...(name !== undefined ? { name } : {}),
           limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
           ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(projectRoot !== undefined ? { projectRoot } : {}),
           ...(opts.json === true ? { json: true } : {}),
+          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
         }),
       )
     })

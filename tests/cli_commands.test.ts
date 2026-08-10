@@ -44,12 +44,28 @@ describe('buildCommandManifest', () => {
 
   it('captures a real command\'s required argument', () => {
     const manifest = buildCommandManifest(buildProgram())
+    // Specimen is `read <spec>`, not `symbol`: `symbol`'s positional became OPTIONAL when
+    // `--grep` was added (the pattern is the query in that mode), so it no longer exercises the
+    // required-argument path this test exists for. `read` still takes exactly one required
+    // argument. The optional case `symbol` now represents is covered by the test below.
+    const read = manifest.find((e) => e.name === 'read')
+    expect(read).toBeDefined()
+    // Pin the exact count so a regression that dropped or duplicated the argument list (still
+    // non-empty) is caught too.
+    expect(read?.arguments.length).toBe(1)
+    expect(read?.arguments[0]?.required).toBe(true)
+  })
+
+  it('captures a real command\'s optional argument', () => {
+    const manifest = buildCommandManifest(buildProgram())
     const symbol = manifest.find((e) => e.name === 'symbol')
     expect(symbol).toBeDefined()
-    // `symbol <name>` takes exactly one required argument -- pin the exact count so a
-    // regression that dropped or duplicated the argument list (still non-empty) is caught too.
+    // `symbol [name]` takes exactly one OPTIONAL argument -- omitting the name is how a
+    // `--grep` pattern search is invoked. Pins the other half of the required/optional
+    // distinction, so a regression that marked every argument required (or dropped the
+    // argument list entirely) is caught rather than silently passing the case above.
     expect(symbol?.arguments.length).toBe(1)
-    expect(symbol?.arguments[0]?.required).toBe(true)
+    expect(symbol?.arguments[0]?.required).toBe(false)
   })
 
   it('captures a real command\'s registered aliases', () => {
