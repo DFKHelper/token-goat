@@ -1,0 +1,11 @@
+# Before
+Cached web page: 8,214 bytes
+Question: What fills an AI context window?
+
+# After
+Command: token-goat web-output d5d0ca9adcfd79ca --section "About the context window"
+Result: the complete named section that answers the question.
+
+## About the context window
+
+Every message, response, tool call, tool result, and system instruction is held in the AI's context window. Token-Goat keeps the original cached page available and returns the section needed for the current question.
