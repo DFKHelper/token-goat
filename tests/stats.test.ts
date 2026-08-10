@@ -19,6 +19,7 @@ import {
   SOURCE_WEB,
   SOURCE_MCP,
   SOURCE_SKILL,
+  SOURCE_CONTENT,
   SOURCE_OTHER,
 } from '../src/stats.js'
 
@@ -60,6 +61,14 @@ describe('stats', () => {
       expect(kindToSource('session_hint')).toBe(SOURCE_HINT)
       expect(kindToSource('read_replacement')).toBe(SOURCE_READ)
       expect(kindToSource('diff_hint')).toBe(SOURCE_HINT)
+    })
+
+    // hint_stats.ts's savedBytes reads by_source[SOURCE_HINT] wholesale, so any real-savings kind misfiled under SOURCE_HINT silently inflates the hint ledger's net benefit with bytes no hint produced. grep:fold is a lossless rewrite with real bytes removed, not an advisory, so it must classify as content -- same distinction agent_report_compact already documents against its advisory session_hint sibling.
+    it('classifies grep:fold as content, not hint, so it cannot inflate the hint ledger', () => {
+      expect(kindToSource('grep:fold')).toBe(SOURCE_CONTENT)
+      expect(kindToSource('grep:fold')).not.toBe(SOURCE_HINT)
+      // The advisory sibling stays a hint -- this fix must not drag it along.
+      expect(kindToSource('grep_dedup_hint')).toBe(SOURCE_HINT)
     })
 
     it('maps overhead kinds to their base source', () => {
@@ -189,9 +198,17 @@ describe('stats', () => {
       insert.run(now, 'image_shrink', 100, 500)
       insert.run(now, 'session_hint', 50, 200)
       insert.run(now, 'read_replacement', 75, 300)
+      insert.run(now, 'grep:fold', 25, 900)
 
       const summary = summarize(30, db)
       db.close()
+
+      // End-to-end proof of the classification above: a grep:fold row must aggregate into the content bucket and leave the hint bucket at exactly the one session_hint row's totals. If grep:fold were misfiled as a hint, SOURCE_HINT below would read 2 events / 1100 bytes and hint_stats.ts would report savings no hint earned.
+      expect(summary.by_source[SOURCE_CONTENT]).toEqual({
+        events: 1,
+        bytes_saved: 900,
+        tokens_saved: 25,
+      })
 
       expect(summary.by_source[SOURCE_IMAGE]).toEqual({
         events: 1,

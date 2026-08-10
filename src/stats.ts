@@ -82,7 +82,6 @@ const KIND_TO_SOURCE: Record<string, string> = {
   structured_file_hint: SOURCE_HINT,
   predictive_prefetch_hit: SOURCE_HINT,
   grep_dedup_hint: SOURCE_HINT,
-  'grep:fold': SOURCE_HINT,
   glob_dedup_hint: SOURCE_HINT,
   write_rewrite_hint: SOURCE_HINT,
   websearch_dedup_hint: SOURCE_HINT,
@@ -158,6 +157,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Decline counterpart to agent_report_compact: the fence-collapse net-benefit gate ran and found at least one over-long fence, but declined to rewrite because net savings did not clear the notice cost. Always recorded at (0, 0) -- see the recordStat call site -- so it never contributes to any savings total; it exists purely to make gate hit-rate and near-misses visible instead of the decline being invisible.
   agent_report_compact_declined: SOURCE_CONTENT,
   content_compress: SOURCE_CONTENT,
+  // Lossless re-layout of Grep content-mode output (hooks_grep.ts foldGrepContentHandler). SOURCE_CONTENT, not SOURCE_HINT, for the same reason as agent_report_compact above: its sibling grep_dedup_hint is advisory and saves nothing directly, whereas this is a real rewrite with real bytes removed. Filing it under the advisory bucket would silently add non-hint savings to hint_stats.ts's savedBytes (which reads by_source[SOURCE_HINT] wholesale) and overstate the hint ledger's net benefit.
+  'grep:fold': SOURCE_CONTENT,
   content_retrieve: SOURCE_CONTENT,
   handoff_create: SOURCE_CONTENT,
   handoff_resolve: SOURCE_CONTENT,
