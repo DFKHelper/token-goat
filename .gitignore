@@ -183,3 +183,5 @@ coverage/
 # (not *.webp -- no legitimate .webp assets are tracked in this repo, so this
 # stays narrow rather than blanket-ignoring real .webp files if any are added)
 .webp
+
+vscode-extension/*.vsix

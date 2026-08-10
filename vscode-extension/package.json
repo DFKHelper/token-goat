@@ -16,10 +16,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:token-goat.sendSelection",
-    "onCommand:token-goat.sendSurgicalRead"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "files": [
     "out/**",
@@ -41,8 +38,126 @@
         "title": "Send Lines Around Cursor to Chat (Compressed)",
         "category": "token-goat",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "token-goat.sendSymbol",
+        "title": "Send Symbol at Cursor to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(symbol-function)"
+      },
+      {
+        "command": "token-goat.sendFile",
+        "title": "Send Whole File to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(file)"
+      },
+      {
+        "command": "token-goat.sendDiff",
+        "title": "Send Git Diff to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "token-goat.sendClipboard",
+        "title": "Send Clipboard to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "token-goat.sendErrors",
+        "title": "Send Errors/Warnings Only to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "token-goat.sendZipList",
+        "title": "List Archive Contents in Chat (No Extraction)",
+        "category": "token-goat",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "token-goat.askSummarize",
+        "title": "Summarize This in Plain Language",
+        "category": "token-goat",
+        "icon": "$(note)"
+      },
+      {
+        "command": "token-goat.askReply",
+        "title": "Draft a Reply to This",
+        "category": "token-goat",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "token-goat.askActions",
+        "title": "Extract Action Items from This",
+        "category": "token-goat",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "token-goat.askExplain",
+        "title": "Explain This Error in Plain Language",
+        "category": "token-goat",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "token-goat.askKb",
+        "title": "Turn This Resolved Ticket into a KB Article",
+        "category": "token-goat",
+        "icon": "$(book)"
+      },
+      {
+        "command": "token-goat.askFriendlier",
+        "title": "Make My Text Friendlier",
+        "category": "token-goat",
+        "icon": "$(smiley)"
+      },
+      {
+        "command": "token-goat.askShorter",
+        "title": "Make My Text Shorter",
+        "category": "token-goat",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "token-goat.askFormal",
+        "title": "Make My Text More Formal",
+        "category": "token-goat",
+        "icon": "$(briefcase)"
+      },
+      {
+        "command": "token-goat.sendDocument",
+        "title": "Send PDF/Word Document to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(file-pdf)"
+      },
+      {
+        "command": "token-goat.sendFolderAnalysis",
+        "title": "Find Recurring Issues Across This Folder",
+        "category": "token-goat",
+        "icon": "$(folder-opened)"
       }
     ],
+    "configuration": {
+      "title": "token-goat",
+      "properties": {
+        "token-goat.contextLines": {
+          "type": "number",
+          "default": 25,
+          "minimum": 5,
+          "maximum": 200,
+          "description": "Lines above and below the cursor included by 'Send Lines Around Cursor'."
+        },
+        "token-goat.showStats": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a status-bar message with the compression savings after each send."
+        },
+        "token-goat.scrubPii": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove email addresses, phone numbers, ID numbers, and card numbers before text is sent to chat."
+        }
+      }
+    },
     "menus": {
       "editor/context": [
         {
@@ -54,6 +169,43 @@
           "command": "token-goat.sendSurgicalRead",
           "when": "editorTextFocus",
           "group": "token-goat@2"
+        },
+        {
+          "command": "token-goat.sendSymbol",
+          "when": "editorTextFocus",
+          "group": "token-goat@3"
+        },
+        {
+          "command": "token-goat.sendFile",
+          "when": "editorTextFocus",
+          "group": "token-goat@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "token-goat.sendFile",
+          "when": "!explorerResourceIsFolder",
+          "group": "token-goat@1"
+        },
+        {
+          "command": "token-goat.sendErrors",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(log|txt|out|err)$/i",
+          "group": "token-goat@2"
+        },
+        {
+          "command": "token-goat.sendZipList",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(zip|vsix|nupkg|jar|whl)$/i",
+          "group": "token-goat@3"
+        },
+        {
+          "command": "token-goat.sendDocument",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(pdf|docx)$/i",
+          "group": "token-goat@4"
+        },
+        {
+          "command": "token-goat.sendFolderAnalysis",
+          "when": "explorerResourceIsFolder",
+          "group": "token-goat@5"
         }
       ],
       "editor/title": [
@@ -82,7 +234,59 @@
           },
           {
             "name": "context",
-            "description": "Compress the 51 lines around the cursor and reply with the payload."
+            "description": "Compress the lines around the cursor and reply with the payload."
+          },
+          {
+            "name": "symbol",
+            "description": "Send the full body of the symbol under the cursor, compressed."
+          },
+          {
+            "name": "file",
+            "description": "Compress the whole active file and reply with the payload."
+          },
+          {
+            "name": "diff",
+            "description": "Compress the workspace's git diff (against HEAD) and reply with the payload."
+          },
+          {
+            "name": "paste",
+            "description": "Compress whatever is on the clipboard — a ticket, email, or error message."
+          },
+          {
+            "name": "errors",
+            "description": "Keep only the errors and warnings from the open log file, compressed."
+          },
+          {
+            "name": "summarize",
+            "description": "Summarize the selected/copied text in plain language."
+          },
+          {
+            "name": "reply",
+            "description": "Draft a plain-language reply to the selected/copied text."
+          },
+          {
+            "name": "actions",
+            "description": "List the action items in the selected/copied text."
+          },
+          {
+            "name": "explain",
+            "description": "Explain the selected/copied error in plain language."
+          },
+          {
+            "name": "kb",
+            "description": "Turn a resolved ticket into a short knowledge-base article."
+          },
+          {
+            "name": "friendlier",
+            "description": "Rewrite the selected/copied text to sound friendlier."
+          },
+          {
+            "name": "shorter",
+            "description": "Rewrite the selected/copied text as short as possible."
+          },
+          {
+            "name": "formal",
+            "description": "Rewrite the selected/copied text in a formal tone."
           }
         ]
       }
