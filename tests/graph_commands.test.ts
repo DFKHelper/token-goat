@@ -2646,6 +2646,107 @@ describe('runCallChain file-symbol cache hoisting', () => {
   })
 })
 
+// ---- runCallChain --exclude-tests --------------------------------------------
+
+describe('runCallChain --exclude-tests', () => {
+  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the
+  // final chain array (rather than skipping the test-file caller before it's admitted into the
+  // BFS), the grandparent (a real, production-file caller reached only THROUGH the test-file
+  // caller) would still leak into the result. It must not.
+  it('prunes a test-file caller before the BFS admits it, so a grandparent reachable only through it never leaks in', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-excl-prune-'))
+    try {
+      const defFile = join(root, 'chain-excl-def.ts')
+      const testFile = join(root, 'chain-excl-mid.test.ts')
+      const grandparentFile = join(root, 'chain-excl-grandparent.ts')
+      writeFileSync(defFile, 'export function chainExclTargetFn3q7() { return 1 }\n')
+      writeFileSync(testFile, 'function chainExclTestCaller3q7() { chainExclTargetFn3q7() }\n')
+      writeFileSync(grandparentFile, 'function chainExclGrandparent3q7() { chainExclTestCaller3q7() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+      indexFileSync(normalizePath(grandparentFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Flag absent: byte-identical to today -- the full 3-hop chain through the test caller.
+        const withoutFlag = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainExclTargetFn3q7' })).toBe(0)
+        })
+        expect(withoutFlag).toContain('chainExclTargetFn3q7 -> chainExclTestCaller3q7 -> chainExclGrandparent3q7')
+
+        // Flag present: the test caller is pruned, so its own (production) caller can never be
+        // reached -- not merely hidden after the fact.
+        const withFlag = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainExclTargetFn3q7', excludeTests: true })).toBe(0)
+        })
+        expect(withFlag).not.toContain('chainExclTestCaller3q7')
+        expect(withFlag).not.toContain('chainExclGrandparent3q7')
+        expect(withFlag).toContain('(no non-test callers; 1 in test files hidden by --exclude-tests)')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('names the suppressed count instead of "(no callers)" when every caller was a test', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-excl-empty-'))
+    try {
+      const defFile = join(root, 'chain-excl-empty-def.ts')
+      const testFile = join(root, 'chain-excl-empty-caller.test.ts')
+      writeFileSync(defFile, 'export function chainExclEmptyFn5m2() { return 1 }\n')
+      writeFileSync(testFile, 'function chainExclEmptyCaller5m2() { chainExclEmptyFn5m2() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainExclEmptyFn5m2' })).toBe(0)
+        })
+        expect(withoutFlag).toContain('chainExclEmptyFn5m2 -> chainExclEmptyCaller5m2')
+        expect(withoutFlag).not.toContain('(no callers)')
+
+        const withFlag = captureStdout(() => {
+          expect(runCallChain({ symbol: 'chainExclEmptyFn5m2', excludeTests: true })).toBe(0)
+        })
+        expect(withFlag).toContain('chainExclEmptyFn5m2  (no non-test callers; 1 in test files hidden by --exclude-tests)')
+        // Distinguishable from the genuinely-caller-less message -- must not read as "no callers".
+        expect(withFlag).not.toBe('chainExclEmptyFn5m2  (no callers)\n')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('flag absent leaves output byte-for-byte unchanged', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-chain-excl-unchanged-'))
+    try {
+      const defFile = join(root, 'chain-unchanged-def.ts')
+      const callerFile = join(root, 'chain-unchanged-caller.ts')
+      writeFileSync(defFile, 'export function chainUnchangedFn8h4() { return 1 }\n')
+      writeFileSync(callerFile, 'function chainUnchangedCaller8h4() { chainUnchangedFn8h4() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const before = captureStdout(() => { expect(runCallChain({ symbol: 'chainUnchangedFn8h4' })).toBe(0) })
+        const after = captureStdout(() => { expect(runCallChain({ symbol: 'chainUnchangedFn8h4' })).toBe(0) })
+        expect(after).toBe(before)
+        expect(before).toContain('chainUnchangedFn8h4 -> chainUnchangedCaller8h4')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 // ---- integration: runImpact against the real repo index -------------------
 
 describe('runImpact integration', () => {
@@ -2892,6 +2993,109 @@ describe('runImpact module-scope refs', () => {
       expect(moduleScopeEntry?.hops).toBe(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---- runImpact --exclude-tests ------------------------------------------------
+
+describe('runImpact --exclude-tests', () => {
+  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the
+  // final hop map (rather than skipping the test-file caller before it's enqueued for further
+  // BFS), the grandparent (a real, production-file caller reachable only THROUGH the test-file
+  // caller) would still leak into the impacted set. It must not.
+  it('prunes a test-file caller before it is enqueued, so a grandparent reachable only through it never leaks in', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-excl-prune-'))
+    try {
+      const defFile = join(root, 'impact-excl-def.ts')
+      const testFile = join(root, 'impact-excl-mid.test.ts')
+      const grandparentFile = join(root, 'impact-excl-grandparent.ts')
+      writeFileSync(defFile, 'export function impactExclTargetFn4n8() { return 1 }\n')
+      writeFileSync(testFile, 'function impactExclTestCaller4n8() { impactExclTargetFn4n8() }\n')
+      writeFileSync(grandparentFile, 'function impactExclGrandparent4n8() { impactExclTestCaller4n8() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+      indexFileSync(normalizePath(grandparentFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        // Flag absent: byte-identical to today -- both the test caller and its own caller show up.
+        const withoutFlag = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactExclTargetFn4n8', json: true })).toBe(0)
+        })
+        const parsedWithout = JSON.parse(withoutFlag) as Array<{ symbol: string; hops: number }>
+        expect(parsedWithout.map((e) => e.symbol)).toEqual(expect.arrayContaining(['impactExclTestCaller4n8', 'impactExclGrandparent4n8']))
+
+        // Flag present: the test caller is pruned before enqueue, so its own (production) caller
+        // can never be reached -- not merely hidden from the output afterward.
+        const errCaptured = captureStderr(() => {
+          expect(runImpact({ symbol: 'impactExclTargetFn4n8', excludeTests: true })).toBe(1)
+        })
+        expect(errCaptured).toContain(`No non-test impact found for 'impactExclTargetFn4n8' (1 in test files hidden by --exclude-tests)`)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('excludes a module-scope (top-level) reference whose call site is a test file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-excl-modscope-'))
+    try {
+      const defFile = join(root, 'impact-excl-mod-def.ts')
+      const testFile = join(root, 'impact-excl-mod.test.ts')
+      const prodFile = join(root, 'impact-excl-mod-prod.ts')
+      writeFileSync(defFile, 'export function impactExclModFn2y9() { return 1 }\n')
+      writeFileSync(testFile, 'impactExclModFn2y9()\n')
+      writeFileSync(prodFile, 'function impactExclModProdCaller2y9() { impactExclModFn2y9() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(testFile))
+      indexFileSync(normalizePath(prodFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const withoutFlag = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactExclModFn2y9', json: true })).toBe(0)
+        })
+        const parsedWithout = JSON.parse(withoutFlag) as Array<{ symbol: string; hops: number }>
+        expect(parsedWithout.some((e) => e.symbol.includes('(module scope)') && e.symbol.includes(normalizePath(testFile)))).toBe(true)
+
+        const withFlag = captureStdout(() => {
+          expect(runImpact({ symbol: 'impactExclModFn2y9', json: true, excludeTests: true })).toBe(0)
+        })
+        const parsedWith = JSON.parse(withFlag) as Array<{ symbol: string; hops: number }>
+        expect(parsedWith.some((e) => e.symbol.includes('(module scope)'))).toBe(false)
+        expect(parsedWith.some((e) => e.symbol === 'impactExclModProdCaller2y9')).toBe(true)
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('flag absent leaves output byte-for-byte unchanged', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-impact-excl-unchanged-'))
+    try {
+      const defFile = join(root, 'impact-unchanged-def.ts')
+      const callerFile = join(root, 'impact-unchanged-caller.ts')
+      writeFileSync(defFile, 'export function impactUnchangedFn6z1() { return 1 }\n')
+      writeFileSync(callerFile, 'function impactUnchangedCaller6z1() { impactUnchangedFn6z1() }\n')
+      indexFileSync(normalizePath(defFile))
+      indexFileSync(normalizePath(callerFile))
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+      try {
+        const before = captureStdout(() => { expect(runImpact({ symbol: 'impactUnchangedFn6z1' })).toBe(0) })
+        const after = captureStdout(() => { expect(runImpact({ symbol: 'impactUnchangedFn6z1' })).toBe(0) })
+        expect(after).toBe(before)
+        expect(before).toContain('impactUnchangedCaller6z1')
+      } finally {
+        cwdSpy.mockRestore()
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
