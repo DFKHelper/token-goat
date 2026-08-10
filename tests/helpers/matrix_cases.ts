@@ -1,20 +1,23 @@
 /**
- * Built-bundle command matrix (pre-push / CI tier — slow).
+ * Shared fixture, helpers, and case table for the built-bundle command matrix (see the sharded
+ * command_matrix_e2e.*.test.ts files). Builds the real shipping artifact (dist/token-goat.mjs),
+ * indexes one shared git fixture, then exposes EVERY registered command as a case that runs
+ * against the bundle and asserts real output. The case table is driven off the same registry the
+ * fast registration guard uses (tests/registry.ts::allCommandNames), so a newly registered
+ * command with no matrix case fails the coverage gate in command_matrix_e2e.1.test.ts
+ * automatically -- there is no second list to forget.
  *
- * Builds the real shipping artifact (dist/token-goat.mjs), indexes one shared
- * git fixture, then runs EVERY registered command against the bundle and asserts
- * real output. The case table is driven off the same registry the fast
- * registration guard uses (tests/registry.ts::allCommandNames), so a newly
- * registered command with no matrix case fails the coverage gate automatically —
- * there is no second list to forget.
+ * Most commands get a concrete output assertion. A small set is inherently unsuited to a
+ * hermetic real-output check and is verified for *reachability* instead (the bundle dispatches
+ * to the handler, it is not a Commander "unknown command" error, and it does not crash with a
+ * tree-shaken module error): `web-output` (process-local cache, always a miss in a fresh
+ * process) and `gdrive-sections` (needs network + a live public doc). These still catch the
+ * unregistered / tree-shaken-out-of-bundle bug class.
  *
- * Most commands get a concrete output assertion. A small set is inherently
- * unsuited to a hermetic real-output check and is verified for *reachability*
- * instead (the bundle dispatches to the handler, it is not a Commander
- * "unknown command" error, and it does not crash with a tree-shaken module
- * error): `web-output` (process-local cache, always a miss in a fresh process)
- * and `gdrive-sections` (needs network + a live public doc). These still catch
- * the unregistered / tree-shaken-out-of-bundle bug class.
+ * The 143 cases are sharded 4 ways across command_matrix_e2e.1.test.ts .. .4.test.ts via
+ * shardKeys() below, interleaved rather than sliced contiguously because per-case durations are
+ * heavily skewed (a few multi-second cases, most well under a second), so a contiguous slice
+ * would leave shards lopsided and defeat the point of sharding.
  */
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
@@ -22,40 +25,35 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import sharp from 'sharp'
+import { expect } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 
-import { allCommandNames } from './registry.js'
+import { BUNDLE, ROOT } from './bundle.js'
+import { buildDocxFixture, buildPptxFixture } from './ooxml_fixtures.js'
 
-import { BUNDLE, ROOT } from './helpers/bundle.js'
-import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
+export let repo: string // indexed fixture; default cwd for read commands
+export let dataBase: string // isolated data dir holding the shared index
+export let homeBase: string // fake OS home dir -- keeps `install`'s unconditional CLAUDE.md/skill writes (os.homedir()-based, not TOKEN_GOAT_HOME-scoped) off the real developer/CI machine's actual ~/.claude
 
-let repo: string // indexed fixture; default cwd for read commands
-let dataBase: string // isolated data dir holding the shared index
-let homeBase: string // fake OS home dir -- keeps `install`'s unconditional
-// CLAUDE.md/skill writes (os.homedir()-based, not TOKEN_GOAT_HOME-scoped) off
-// the real developer/CI machine's actual ~/.claude
+export const tempDirs: string[] = []
 
-const tempDirs: string[] = []
-
-function tgEnv(dir: string): NodeJS.ProcessEnv {
+export function tgEnv(dir: string): NodeJS.ProcessEnv {
   return { ...process.env, LOCALAPPDATA: dir, XDG_DATA_HOME: dir, HOME: homeBase, USERPROFILE: homeBase }
 }
 
-function mkIsolated(prefix: string): string {
+export function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
   return dir
 }
 
-interface RunResult {
+export interface RunResult {
   status: number | null
   stdout: string
   stderr: string
 }
 
-function run(
+export function run(
   args: string[],
   opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},
 ): RunResult {
@@ -70,7 +68,7 @@ function run(
 }
 
 /** A read command run against the shared indexed fixture. */
-function expectRead(args: string[], substr: string): void {
+export function expectRead(args: string[], substr: string): void {
   const r = run(args)
   expect(r.status, `${args.join(' ')} stderr: ${r.stderr}`).toBe(0)
   expect(r.stdout).toContain(substr)
@@ -81,7 +79,7 @@ function expectRead(args: string[], substr: string): void {
  * real built bundle before returning the rows. Row-list commands (`symbol`/`refs`/`skeleton`/
  * `outline`/`types`/`callers`/`dead`/`test-for`/`semantic`) all emit this shape unconditionally.
  */
-function envelopeItems<T>(stdout: string): T[] {
+export function envelopeItems<T>(stdout: string): T[] {
   const parsed: unknown = JSON.parse(stdout)
   expect(Array.isArray(parsed)).toBe(false)
   const payload = parsed as { items: T[]; truncated: boolean; totalCount: number }
@@ -91,7 +89,7 @@ function envelopeItems<T>(stdout: string): T[] {
   return payload.items
 }
 
-beforeAll(() => {
+export function setupMatrixFixture(): void {
   dataBase = mkIsolated('tg-matrix-data-')
   repo = mkIsolated('tg-matrix-repo-')
   homeBase = mkIsolated('tg-matrix-home-')
@@ -205,9 +203,9 @@ beforeAll(() => {
   const idx = run(['index', '.'])
   expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
   expect(idx.stdout).toMatch(/Indexed \d+ files/)
-}, 120000)
+}
 
-afterAll(() => {
+export function cleanupMatrixFixture(): void {
   for (const dir of tempDirs) {
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -215,26 +213,15 @@ afterAll(() => {
       // best-effort; a lingering detached worker can briefly hold a temp dir on Windows
     }
   }
-})
+}
 
-// Mitigates a known vitest 2.x/3.x infra flake (vitest-dev/vitest#6479, #8164, fixed upstream in
-// v4.0.0-beta.4 / v4.1.6+ via PR #8297; we are pinned to 2.1.9): birpc, vitest's fork<->main-thread
-// RPC layer, has a hardcoded 60s timeout on its own heartbeat calls (e.g. onTaskUpdate) in this
-// version, independent of the user-configurable testTimeout. Each `it()` case here runs `run()`,
-// which shells out via `spawnSync` -- fully synchronous, so it blocks this fork's event loop for
-// the whole subprocess lifetime and can't service that heartbeat while blocked. Under heavy
-// system load (the full ~249-file suite running many parallel forks, plus two other
-// subprocess/CPU-heavy tests earlier in this same file), that can occasionally push a heartbeat
-// round trip past the fixed 60s ceiling, surfacing as `[vitest-worker]: Timeout calling
-// "onTaskUpdate"` with zero actual test-assertion failures (already absorbed via
-// `retry: process.env.CI ? 1 : 0` in vitest.config.ts as a second line of defense). Explicitly
-// yielding the event loop after every test gives that heartbeat a guaranteed chance to be
-// serviced between tests, which is the documented vitest-community mitigation for this exact
-// issue on pre-4.1.6 vitest. It doesn't change what any test does or asserts.
-afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)))
+// Mitigates a known vitest 2.x/3.x infra flake (vitest-dev/vitest#6479, #8164, fixed upstream in v4.0.0-beta.4 / v4.1.6+ via PR #8297; we are pinned to 2.1.9): birpc, vitest's fork<->main-thread RPC layer, has a hardcoded 60s timeout on its own heartbeat calls (e.g. onTaskUpdate) in this version, independent of the user-configurable testTimeout. Each `it()` case here runs `run()`, which shells out via `spawnSync` -- fully synchronous, so it blocks this fork's event loop for the whole subprocess lifetime and can't service that heartbeat while blocked. Under heavy system load (the full suite running many parallel forks, plus two other subprocess/CPU-heavy tests earlier in this same file), that can occasionally push a heartbeat round trip past the fixed 60s ceiling, surfacing as `[vitest-worker]: Timeout calling "onTaskUpdate"` with zero actual test-assertion failures (already absorbed via `retry: process.env.CI ? 1 : 0` in vitest.config.ts as a second line of defense). Explicitly yielding the event loop after every test gives that heartbeat a guaranteed chance to be serviced between tests, which is the documented vitest-community mitigation for this exact issue on pre-4.1.6 vitest. It doesn't change what any test does or asserts.
+export function afterEachHeartbeatMitigation(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve))
+}
 
 // Minimal hand-authored single-page PDF (Helvetica text object) for the pdf-extract case below.
-const MINIMAL_PDF = '%PDF-1.4\n' +
+export const MINIMAL_PDF = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
   '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
   '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n' +
@@ -244,10 +231,10 @@ const MINIMAL_PDF = '%PDF-1.4\n' +
 
 /**
  * One assertion per registered command. Keys MUST equal the registered command
- * set (enforced by the coverage gate below). Read commands run against the
- * shared indexed fixture; stateful commands use their own isolated dirs.
+ * set (enforced by the coverage gate in command_matrix_e2e.1.test.ts). Read commands run
+ * against the shared indexed fixture; stateful commands use their own isolated dirs.
  */
-const cases: Record<string, () => void | Promise<void>> = {
+export const cases: Record<string, () => void | Promise<void>> = {
   index: () => {
     const r = run(['index', '.'])
     expect(r.status, r.stderr).toBe(0)
@@ -2550,122 +2537,10 @@ const cases: Record<string, () => void | Promise<void>> = {
   },
 }
 
-describe('built bundle image shrink (real sharp dlopen through the full CLI import graph)', () => {
-  // Regression test: embeddings.ts used to `require('@xenova/transformers')`
-  // eagerly at module load time. index_prune.ts (reachable from every real CLI
-  // invocation via cmdIndex) imports embeddings.ts, so every run of the built
-  // bundle loaded @xenova/transformers — and transitively its own bundled
-  // onnxruntime-node and a nested, differently-versioned copy of sharp's native
-  // libvips binaries — before image_shrink.ts's own `import('sharp')` ever ran.
-  // That poisoned the Windows DLL search order: the top-level sharp's dlopen
-  // then failed with ERR_DLOPEN_FAILED, caught and silently swallowed as
-  // "sharp unavailable" by loadSharp()'s catch block, so image shrinking was a
-  // silent no-op in the shipped binary despite every image_shrink.test.ts case
-  // passing (those import image_shrink.ts directly, never through the CLI's
-  // full import graph, so @xenova/transformers was never loaded in-process).
-  // This spawns the real dist/token-goat.mjs as a separate process and drives
-  // it through the actual `hook pre_tool_use` dispatch path with a real
-  // oversized image, asserting a genuine shrink happened — not just "no crash".
-  it('shrinks an oversized image end-to-end through the built bundle', async () => {
-    const side = 700 // 490,000px: comfortably under the default max_image_pixels cap
-    const noise = Buffer.allocUnsafe(side * side * 3)
-    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
-    const jpegBuf = await sharp(noise, { raw: { width: side, height: side, channels: 3 } })
-      .jpeg({ quality: 100 })
-      .toBuffer()
-    expect(jpegBuf.length).toBeGreaterThan(512 * 1024) // must clear image_shrink's own threshold
+/** Number of sharded command_matrix_e2e.*.test.ts files the case table is split across. */
+export const SHARD_COUNT = 4
 
-    const imgDir = mkIsolated('tg-matrix-img-')
-    const imgPath = path.join(imgDir, 'big.jpg')
-    fs.writeFileSync(imgPath, jpegBuf)
-
-    const payload = JSON.stringify({
-      tool_name: 'Read',
-      tool_input: { file_path: imgPath },
-      session_id: 'matrix-image-shrink',
-    })
-    // OCR is disabled here: this test's whole point is the sharp DLL-poisoning regression,
-    // predating OCR entirely. Leaving OCR on would make the assertion depend on real
-    // tesseract.js's confidence score for random noise (low, but not a contract) rather than
-    // deterministically exercising the pixel-shrink path this test actually targets. OCR's
-    // own built-bundle wiring gets its own smoke test below.
-    const r = run(['hook', 'pre_tool_use'], {
-      input: payload,
-      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false' },
-    })
-    expect(r.status, r.stderr).toBe(0)
-    expect(r.stderr).not.toContain('sharp unavailable')
-
-    const out = JSON.parse(r.stdout) as {
-      hookSpecificOutput?: { additionalContext?: string }
-    }
-    const context = out.hookSpecificOutput?.additionalContext ?? ''
-    expect(context).toContain('smaller')
-    expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
-  }, 30000)
-
-  // Regression coverage for the same class of bug the test above guards against, but for
-  // OCR's dependency instead of sharp's: 'tesseract.js' must be in esbuild.config.mjs's
-  // EXTERNAL_NATIVE_DEPS (see that file's comment) or esbuild would statically inline it into
-  // dist/token-goat.mjs, defeating graceful degradation on installs that skip optional deps --
-  // a bug that, like the sharp/DLL one above, would pass every image_ocr.test.ts/
-  // image_shrink.test.ts case (they import image_ocr.ts/image_shrink.ts directly from src,
-  // never through the built bundle) while being silently broken in the shipped binary. This
-  // spawns the real dist/token-goat.mjs against a genuinely text-heavy generated image and
-  // asserts only that the hook completes cleanly with SOME valid context output -- not that
-  // OCR specifically wins over the pixel-shrink path, since a CI runner with no cached
-  // eng.traineddata and no outbound network to fetch it is expected to fail open to the
-  // shrink path per this feature's own "must fail open" contract, not fail the test.
-  it('handles a text-heavy image end-to-end through the built bundle without crashing or hanging (OCR wiring smoke test)', async () => {
-    // A dense multi-line "terminal output" SVG, comfortably under the 16M-pixel decode cap
-    // (1400x900 = 1.26M) so it isn't rejected before OCR ever gets a chance to run, and
-    // rendered with PNG compression disabled so the byte count clears image_shrink's 512KB
-    // gate without needing extreme dimensions that would distort the text past legibility.
-    const lines = Array.from(
-      { length: 30 },
-      (_, i) =>
-        `<text x="20" y="${30 + i * 28}" font-family="monospace" font-size="22" fill="white">` +
-        `line ${i}: npm run build succeeded, tests passed 214/214</text>`,
-    ).join('')
-    const svg = Buffer.from(`<svg width="1400" height="900" xmlns="http://www.w3.org/2000/svg">` + `<rect width="1400" height="900" fill="black"/>${lines}</svg>`)
-    const textPng = await sharp(svg).png({ compressionLevel: 0 }).toBuffer()
-    expect(textPng.length).toBeGreaterThan(512 * 1024)
-
-    const imgDir = mkIsolated('tg-matrix-ocr-img-')
-    const imgPath = path.join(imgDir, 'text.png')
-    fs.writeFileSync(imgPath, textPng)
-
-    const payload = JSON.stringify({
-      tool_name: 'Read',
-      tool_input: { file_path: imgPath },
-      session_id: 'matrix-image-ocr',
-    })
-    const r = run(['hook', 'pre_tool_use'], { input: payload })
-    expect(r.status, r.stderr).toBe(0)
-
-    const out = JSON.parse(r.stdout) as {
-      hookSpecificOutput?: { additionalContext?: string }
-    }
-    const context = out.hookSpecificOutput?.additionalContext ?? ''
-    // Either path is acceptable (see comment above); a crash, a hang, or an empty/pass-through
-    // response with neither marker is not.
-    const gotOcrText = context.includes("OCR'd")
-    const gotShrunkImage = /data:image\/(jpeg|webp);base64,/.test(context)
-    expect(gotOcrText || gotShrunkImage, `unexpected context output: ${context.slice(0, 200)}`).toBe(true)
-  }, 30000)
-})
-
-describe('built bundle command matrix', () => {
-  it('every registered command has a matrix case (and vice versa)', () => {
-    const registered = new Set(allCommandNames())
-    const covered = new Set(Object.keys(cases))
-    const missing = [...registered].filter((n) => !covered.has(n)).sort()
-    const extra = [...covered].filter((n) => !registered.has(n)).sort()
-    expect(missing, 'registered commands with no matrix case').toEqual([])
-    expect(extra, 'matrix cases for commands that are not registered').toEqual([])
-  })
-
-  for (const [name, assertCase] of Object.entries(cases)) {
-    it(`'${name}' produces correct output from the built bundle`, assertCase, 120000)
-  }
-})
+/** Deterministic, interleaved slice of `cases`' keys for one shard (0-indexed). Interleaved rather than contiguous because per-case durations are heavily skewed, so a contiguous slice would leave shards lopsided. */
+export function shardKeys(shard: number): string[] {
+  return Object.keys(cases).sort().filter((_, i) => i % SHARD_COUNT === shard)
+}

@@ -21,7 +21,7 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "test:guards": "vitest run tests/guards",
-    "test:matrix": "vitest run tests/command_matrix_e2e.test.ts",
+    "test:matrix": "vitest run tests/command_matrix_e2e",
     "test:watch": "vitest",
     "lint": "eslint src tests",
     "dev": "tsx src/main.ts",
