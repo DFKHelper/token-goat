@@ -101,7 +101,7 @@ The compaction hook subprocess is the most latency-sensitive path in token-goat 
 | `PreToolUse(Read\|Grep\|Bash)` | Before read-like operations | Emit session hints; compress bash output; suggest surgical reads |
 | `PreToolUse(WebFetch)` | Before URL fetch | Shrink images; suggest cached responses on repeat fetch |
 | `PostToolUse(Edit\|Write\|MultiEdit)` | After file write | Mark file as edited; enqueue for incremental reindex; record content snapshot |
-| `PostToolUse(Read\|Grep\|Glob)` | After read-like operations | Update session cache with file accesses; emit diff hints |
+| `PostToolUse(Read\|Grep\|Glob)` | After read-like operations | Update session cache with file accesses; emit diff hints; fold repeated file paths in Grep `content`-mode output |
 | `PostToolUse(Bash)` | After command execution | Cache stdout/stderr for later recall |
 | `PostToolUse(WebFetch)` | After URL fetch | Cache response body; persist images to shrink cache |
 | `PostToolUse(Skill)` | After skill invocation | Cache skill body for post-compaction recall without re-invoke |
