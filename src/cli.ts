@@ -4264,6 +4264,10 @@ export function buildProgram(): Command {
       }),
     )
 
+  // addHelpText('after') attaches footer only to the top-level program help, not to subcommands -- commander does not inherit addHelpText to child command handlers.
+  const footer = '\nTip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).\n'
+  program.addHelpText('after', footer)
+
   return program
 }
 
