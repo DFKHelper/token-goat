@@ -56,6 +56,26 @@ async function openChat(query: string): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.chat.open', { query })
 }
 
+// Tokens-saved status bar: a running total makes the value visible to
+// non-technical users who would never read a compression header.
+let savingsBar: vscode.StatusBarItem | undefined
+let savingsContext: vscode.ExtensionContext | undefined
+
+function updateSavingsBar(): void {
+  if (!savingsBar || !savingsContext) return
+  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
+  savingsBar.text = `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
+  savingsBar.tooltip = 'Total bytes token-goat compression has kept out of chat this installation.'
+}
+
+function recordSavings(payload: string): void {
+  const saved = /^bytes_saved: (\d+)$/m.exec(payload)
+  if (!saved || !savingsContext) return
+  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0) + Number(saved[1])
+  void savingsContext.globalState.update('tokensSavedBytes', total)
+  updateSavingsBar()
+}
+
 function contextRadius(): number {
   return vscode.workspace.getConfiguration('token-goat').get<number>('contextLines', 25)
 }
@@ -63,6 +83,7 @@ function contextRadius(): number {
 // compress-text prints original_bytes/compact_bytes/bytes_saved headers;
 // surface the savings so the user sees what the compression bought.
 function showStats(payload: string): void {
+  recordSavings(payload)
   if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('showStats', true)) return
   const original = /^original_bytes: (\d+)$/m.exec(payload)
   const compact = /^compact_bytes: (\d+)$/m.exec(payload)
@@ -142,6 +163,76 @@ async function compressFilePayload(target?: vscode.Uri): Promise<string> {
   return `Whole file ${path.basename(file)}:\n${payload}`
 }
 
+async function compressClipboardPayload(): Promise<string> {
+  const text = await vscode.env.clipboard.readText()
+  if (!text.trim()) throw new Error('The clipboard has no text. Copy the ticket, log, or message first.')
+  const payload = await withTemporaryText(text, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
+  showStats(payload)
+  return `Compressed clipboard contents (${text.length} characters):\n${payload}`
+}
+
+// Keep signal lines (errors, failures, warnings, exceptions) plus two lines of
+// surrounding context so a multi-megabyte log becomes its actionable core.
+const LOG_SIGNAL = /error|fail|exception|warn|critical|fatal|denied|timeout|refused|unauthorized/i
+
+function extractLogSignal(text: string): string {
+  const lines = text.split('\n')
+  const kept = new Set<number>()
+  lines.forEach((line, i) => {
+    if (!LOG_SIGNAL.test(line)) return
+    for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) kept.add(j)
+  })
+  if (kept.size === 0) return text
+  const sorted = [...kept].sort((a, b) => a - b)
+  const out: string[] = []
+  let previous = -2
+  for (const i of sorted) {
+    if (i > previous + 1 && out.length > 0) out.push('...')
+    out.push(lines[i])
+    previous = i
+  }
+  return out.join('\n')
+}
+
+async function compressErrorsPayload(target?: vscode.Uri): Promise<string> {
+  const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
+  if (!file) throw new Error('Open a log file, or right-click one in the Explorer.')
+  const text = await fs.readFile(file, 'utf8')
+  const signal = extractLogSignal(text)
+  const payload = await withTemporaryText(signal, '.log', (tmp) => runTokenGoat(['compress-text', '--file', tmp]))
+  showStats(payload)
+  return `Errors and warnings from ${path.basename(file)} (${text.length} → ${signal.length} characters before compression):\n${payload}`
+}
+
+async function zipListPayload(target?: vscode.Uri): Promise<string> {
+  const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
+  if (!file) throw new Error('Right-click a .zip/.vsix/.nupkg file in the Explorer first.')
+  return `Contents of ${path.basename(file)} (listed without extracting):\n${await runTokenGoat(['zip-list', file])}`
+}
+
+// Canned plain-language prompts: the source is the selection if one exists,
+// otherwise the clipboard (tickets usually arrive via copy-paste), otherwise
+// the active file.
+const CANNED_PROMPTS: Record<string, string> = {
+  summarize: 'Summarize this in plain language for a non-technical reader.',
+  reply: 'Draft a polite, plain-language reply to the person who wrote this.',
+  actions: 'List the concrete action items in this, with who should do each.',
+  explain: 'Explain what went wrong here in plain language, and what to try first.',
+}
+
+async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<string> {
+  const editor = vscode.window.activeTextEditor
+  const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : ''
+  const clipboard = selection ? '' : await vscode.env.clipboard.readText()
+  const fileText = selection || clipboard ? '' : editor && !editor.document.isUntitled ? editor.document.getText() : ''
+  const text = selection || clipboard || fileText
+  if (!text.trim()) throw new Error('Select some text, copy it to the clipboard, or open a file first.')
+  const source = selection ? 'the selected text' : clipboard ? 'the clipboard' : 'the open file'
+  const payload = await withTemporaryText(text, '.txt', (file) => runTokenGoat(['compress-text', '--file', file]))
+  showStats(payload)
+  return `${CANNED_PROMPTS[kind]}\nCompressed source (${source}):\n${payload}`
+}
+
 async function compressDiffPayload(): Promise<string> {
   const workspace = vscode.workspace.workspaceFolders?.[0]
   if (!workspace) throw new Error('Open a workspace folder to send its git diff.')
@@ -179,18 +270,47 @@ async function sendDiff(): Promise<void> {
   await openChat(await compressDiffPayload())
 }
 
+async function sendClipboard(): Promise<void> {
+  await openChat(await compressClipboardPayload())
+}
+
+async function sendErrors(target?: vscode.Uri): Promise<void> {
+  await openChat(await compressErrorsPayload(target))
+}
+
+async function sendZipList(target?: vscode.Uri): Promise<void> {
+  await openChat(await zipListPayload(target))
+}
+
+async function sendCanned(kind: keyof typeof CANNED_PROMPTS): Promise<void> {
+  await openChat(await cannedPromptPayload(kind))
+}
+
 function reportError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
   void vscode.window.showErrorMessage(`token-goat: ${message}`)
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  savingsContext = context
+  savingsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
+  updateSavingsBar()
+  savingsBar.show()
+
   context.subscriptions.push(
+    savingsBar,
     vscode.commands.registerCommand('token-goat.sendSelection', () => sendSelection().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSurgicalRead', () => sendSurgicalRead().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendSymbol', () => sendSymbol().catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendFile', (target?: vscode.Uri) => sendFile(target).catch(reportError)),
     vscode.commands.registerCommand('token-goat.sendDiff', () => sendDiff().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendClipboard', () => sendClipboard().catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendErrors', (target?: vscode.Uri) => sendErrors(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.sendZipList', (target?: vscode.Uri) => sendZipList(target).catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askSummarize', () => sendCanned('summarize').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askReply', () => sendCanned('reply').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askActions', () => sendCanned('actions').catch(reportError)),
+    vscode.commands.registerCommand('token-goat.askExplain', () => sendCanned('explain').catch(reportError)),
   )
 
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
@@ -205,12 +325,20 @@ export function activate(context: vscode.ExtensionContext): void {
         stream.markdown(await compressFilePayload())
       } else if (request.command === 'diff') {
         stream.markdown(await compressDiffPayload())
+      } else if (request.command === 'paste') {
+        stream.markdown(await compressClipboardPayload())
+      } else if (request.command === 'errors') {
+        stream.markdown(await compressErrorsPayload())
+      } else if (request.command && request.command in CANNED_PROMPTS) {
+        stream.markdown(await cannedPromptPayload(request.command))
       } else {
         stream.markdown(
-          'Type `@token-goat` with a subcommand: `/selection` (highlighted code), ' +
-          '`/context` (lines around the cursor), `/symbol` (the function under the cursor), ' +
-          '`/file` (the whole active file), or `/diff` (the workspace git diff). ' +
-          'Each replies with a compressed payload that costs fewer chat tokens than pasting the raw code.'
+          'Ask me to shrink something before it goes into chat. Subcommands: ' +
+          '`/paste` (whatever you copied — a ticket, an email, an error message), ' +
+          '`/errors` (just the errors and warnings from the open log file), ' +
+          '`/summarize`, `/reply`, `/actions`, `/explain` (plain-language answers about selected/copied text), ' +
+          'plus developer commands `/selection`, `/context`, `/symbol`, `/file`, `/diff`. ' +
+          'Everything is compressed first, so long tickets and logs cost fewer chat tokens.'
         )
       }
     } catch (error) {

@@ -56,6 +56,48 @@
         "title": "Send Git Diff to Chat (Compressed)",
         "category": "token-goat",
         "icon": "$(diff)"
+      },
+      {
+        "command": "token-goat.sendClipboard",
+        "title": "Send Clipboard to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "token-goat.sendErrors",
+        "title": "Send Errors/Warnings Only to Chat (Compressed)",
+        "category": "token-goat",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "token-goat.sendZipList",
+        "title": "List Archive Contents in Chat (No Extraction)",
+        "category": "token-goat",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "token-goat.askSummarize",
+        "title": "Summarize This in Plain Language",
+        "category": "token-goat",
+        "icon": "$(note)"
+      },
+      {
+        "command": "token-goat.askReply",
+        "title": "Draft a Reply to This",
+        "category": "token-goat",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "token-goat.askActions",
+        "title": "Extract Action Items from This",
+        "category": "token-goat",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "token-goat.askExplain",
+        "title": "Explain This Error in Plain Language",
+        "category": "token-goat",
+        "icon": "$(lightbulb)"
       }
     ],
     "configuration": {
@@ -103,6 +145,16 @@
           "command": "token-goat.sendFile",
           "when": "!explorerResourceIsFolder",
           "group": "token-goat@1"
+        },
+        {
+          "command": "token-goat.sendErrors",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(log|txt|out|err)$/i",
+          "group": "token-goat@2"
+        },
+        {
+          "command": "token-goat.sendZipList",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(zip|vsix|nupkg|jar|whl)$/i",
+          "group": "token-goat@3"
         }
       ],
       "editor/title": [
@@ -144,6 +196,30 @@
           {
             "name": "diff",
             "description": "Compress the workspace's git diff (against HEAD) and reply with the payload."
+          },
+          {
+            "name": "paste",
+            "description": "Compress whatever is on the clipboard — a ticket, email, or error message."
+          },
+          {
+            "name": "errors",
+            "description": "Keep only the errors and warnings from the open log file, compressed."
+          },
+          {
+            "name": "summarize",
+            "description": "Summarize the selected/copied text in plain language."
+          },
+          {
+            "name": "reply",
+            "description": "Draft a plain-language reply to the selected/copied text."
+          },
+          {
+            "name": "actions",
+            "description": "List the action items in the selected/copied text."
+          },
+          {
+            "name": "explain",
+            "description": "Explain the selected/copied error in plain language."
           }
         ]
       }
