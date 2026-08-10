@@ -436,22 +436,30 @@ export function activate(context: vscode.ExtensionContext): void {
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
     try {
       await ensureDecoderSetup()
+      // A chat participant's reply is shown as the final answer — it never
+      // reaches the Copilot model, so streaming a compressed payload here
+      // would just display the blob. Instead, prefill the input box and let
+      // the user send it to the Copilot agent, which can decode it.
+      const handoff = async (question: string): Promise<void> => {
+        await openChat(question)
+        stream.markdown('Compressed and ready — press Enter in the input box to send it to Copilot (use Agent mode so it can decode the payload).')
+      }
       if (request.command === 'selection') {
-        stream.markdown(await compressSelectionPayload())
+        await handoff(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload()}`)
       } else if (request.command === 'context') {
-        stream.markdown(await compressSurgicalPayload())
+        await handoff(await compressSurgicalPayload())
       } else if (request.command === 'symbol') {
-        stream.markdown(await compressSymbolPayload())
+        await handoff(await compressSymbolPayload())
       } else if (request.command === 'file') {
-        stream.markdown(await compressFilePayload())
+        await handoff(await compressFilePayload())
       } else if (request.command === 'diff') {
-        stream.markdown(await compressDiffPayload())
+        await handoff(await compressDiffPayload())
       } else if (request.command === 'paste') {
-        stream.markdown(await compressClipboardPayload())
+        await handoff(await compressClipboardPayload())
       } else if (request.command === 'errors') {
-        stream.markdown(await compressErrorsPayload())
+        await handoff(await compressErrorsPayload())
       } else if (request.command && request.command in CANNED_PROMPTS) {
-        stream.markdown(await cannedPromptPayload(request.command))
+        await handoff(await cannedPromptPayload(request.command))
       } else {
         stream.markdown(
           'Ask me to shrink something before it goes into chat. Subcommands: ' +
