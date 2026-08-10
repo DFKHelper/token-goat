@@ -290,12 +290,13 @@ function requirePositiveInt(flag: string, raw: string): number {
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_commands.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean; grep?: string }): Promise<void> {
+async function cmdSemantic(query: string, opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   const { text, code } = await runSemantic(query, {
     limit,
     ...(opts.json === true ? { json: true } : {}),
     ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+    ...(opts.excludeTests === true ? { excludeTests: true } : {}),
   })
   // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only
   // the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
@@ -2953,6 +2954,7 @@ export function buildProgram(): Command {
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
+    .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
     .action(guard(cmdSemantic))
 
   program
