@@ -11,7 +11,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { getBashOutputId, recordBashOutput, recordBashRerun, recordCurlDownload, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordFileLineRange, recordFileRead, markFileTruncated, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, recordSymbolRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { resolveIndexPath, normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -454,7 +454,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean;
 }
 
 /** Extracts file path from `head -n X <path>` or `head -X <path>` commands. Returns null for unrecognized patterns or temp files. Also checks N < 10 (already surgical). */
-function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
   const m = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const n = parseInt(m[1] ?? m[2] ?? '0', 10)
@@ -464,7 +464,7 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
   const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql }
+  return { filePath, isDoc, isConfig, isSql, n }
 }
 
 function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
@@ -609,7 +609,7 @@ function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean;
 }
 
 // Extracts file path from `Get-Content <path> | Select-Object -First N` (PowerShell).
-function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean } | null {
+function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; n: number } | null {
   const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
   if (!m) return null
   const filePath = (m[2]?.trim() ?? '').replace(/^["']|["']$/g, '')
@@ -619,7 +619,7 @@ function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: b
   if (isTempPath(filePath)) return null
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
   const { isDoc, isConfig, isSql } = classifyDocConfig(filePath)
-  return { filePath, isDoc, isConfig, isSql }
+  return { filePath, isDoc, isConfig, isSql, n }
 }
 
 /**
@@ -1792,6 +1792,49 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
   return hints.length > 0 ? hints.join(' ') : null
 }
 
+// Classify a successful read-shaped Bash command by reusing the same extractors preBashHandler uses for its deny/hint logic, then feed the file path(s) into the session read-cache: recordFileRead for a provable whole-file dump, recordFileLineRange for a dump whose shown lines are known exactly (head/Select-Object -First always cover 1..n), and markFileTruncated for a dump whose shown lines are NOT known relative to the file (tail-style — the absolute start line depends on total file length, which isn't known here) so a later Read gets redirected to a surgical tool instead of being falsely told the whole file was already seen.
+// Ordering matters for correctness, not just readability: extractCatFile's trailing `-flag ...` catch-all also matches `Get-Content foo.ts -Tail 20` (same cmd0 alternation), so the narrower Get-Content extractors must run first or a partial Get-Content read would get recorded as a full one.
+// extractPowerShellWrappedGetContent is deliberately skipped here: its return value doesn't expose whether the trailing flag (if any) was -Raw (whole file) or -Tail/-First (partial), so classifying it either way would be a guess — skipping loses a caching opportunity but can't introduce a false full-read record.
+function recordBashFileReadsForSessionCache(cmd: string, cwd: string | null): void {
+  const resolve = (p: string) => resolveIndexPath(p, cwd ?? process.cwd())
+
+  const gcTail = extractGetContentTail(cmd)
+  if (gcTail !== null) {
+    markFileTruncated(resolve(gcTail.filePath))
+    return
+  }
+  const tail = extractTailFile(cmd)
+  if (tail !== null) {
+    markFileTruncated(resolve(tail.filePath))
+    return
+  }
+  const gcSelect = extractGetContentSelectFirst(cmd)
+  if (gcSelect !== null) {
+    recordFileLineRange(resolve(gcSelect.filePath), 1, gcSelect.n)
+    return
+  }
+  const head = extractHeadFile(cmd)
+  if (head !== null) {
+    recordFileLineRange(resolve(head.filePath), 1, head.n)
+    return
+  }
+  const cat = extractCatFile(cmd)
+  if (cat !== null) {
+    recordFileRead(resolve(cat.filePath))
+    return
+  }
+  const catMulti = extractCatFilesMulti(cmd)
+  if (catMulti !== null) {
+    for (const r of catMulti) recordFileRead(resolve(r.filePath))
+    return
+  }
+  const wslCat = extractWslCatFile(cmd)
+  if (wslCat !== null) {
+    recordFileRead(resolve(wslCat.filePath))
+    return
+  }
+}
+
 /**
  * post_tool_use handler for the Bash tool.
  *
@@ -1844,6 +1887,9 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         recordCurlDownload(curlDl.url, resolvedOutputPath)
       }
     }
+
+    // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen.
+    if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, cwd)
 
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 

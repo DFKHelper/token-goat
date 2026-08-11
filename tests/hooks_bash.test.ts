@@ -28,7 +28,7 @@ const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractCatFile, extractGhViewForBatchAdvisory, isHeadMovingGitCommand } from '../src/hooks_bash.js'
-import { getBashOutputId, recordFileRead, getCurlDownloadPath } from '../src/session.js'
+import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath } from '../src/paths.js'
@@ -3616,6 +3616,85 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       expect(dirty).not.toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('postBashHandler — feeds Bash file dumps into the session read-cache', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('a whole-file `cat` marks the file as read this session, so a later Read gets the dedup hint', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+    expect(wasFileReadThisSession(target)).toBe(false)
+
+    await postBashHandler(makePostBashEvent('cat package.json', '{ "name": "token-goat" }'))
+
+    expect(wasFileReadThisSession(target)).toBe(true)
+  })
+
+  it('`head -40 foo.ts` does NOT claim a full prior read — it records only the shown line range, not a whole-file read (the false-dedup guard)', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+    expect(wasFileReadThisSession(target)).toBe(false)
+
+    await postBashHandler(makePostBashEvent('head -40 package.json', 'line\n'.repeat(40)))
+
+    // The specific wrong behavior under test: a partial dump must never flip the full-read flag
+    // a later Read's dedup hint keys on. If this were true, a subsequent Read of package.json
+    // would be wrongly told "already read this session" despite 39/40+ lines never being shown.
+    expect(wasFileReadThisSession(target)).toBe(false)
+    expect(getFileLineRanges(target)).toContainEqual([1, 40])
+  })
+
+  it('`tail -40 foo.ts` cannot be expressed as an absolute line range (unknown file length), so it is recorded as a truncated read rather than a false full read', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+
+    await postBashHandler(makePostBashEvent('tail -40 package.json', 'line\n'.repeat(40)))
+
+    expect(wasFileTruncatedThisSession(target)).toBe(true)
+  })
+
+  it('`Get-Content foo.ts -Tail 40` is classified as a partial (truncated) read, not swallowed as a whole-file read by extractCatFile\'s trailing-flag catch-all (ordering regression)', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+
+    await postBashHandler(makePostBashEvent('Get-Content package.json -Tail 40', 'line\n'.repeat(40)))
+
+    expect(wasFileTruncatedThisSession(target)).toBe(true)
+    // If extractCatFile's generic trailing-flag match had run first, this would incorrectly be a full read instead.
+    expect(wasFileReadThisSession(target)).toBe(true) // markFileTruncated does mark the entry as read, but flagged truncated — the read-hint logic branches on that flag before treating it as a clean full read.
+  })
+
+  it('a failed `cat` records nothing — a nonzero exit code means the command never actually produced the content', async () => {
+    const target = resolveIndexPath('package.json', process.cwd())
+    const failedEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'cat package.json' },
+      sessionId: 'test-session',
+      agentId: undefined,
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: 'cat package.json' },
+        tool_response: { output: 'cat: package.json: Permission denied', exit_code: 1 },
+      },
+    }
+
+    await postBashHandler(failedEvent)
+
+    expect(wasFileReadThisSession(target)).toBe(false)
+  })
+
+  it('a `cat` of a temp scratch path is rejected by the extractor itself and records nothing', async () => {
+    const tempFile = join(tmpdir(), 'tg-bashcache-scratch.ts')
+    writeFileSync(tempFile, 'const x = 1\n')
+    try {
+      const target = resolveIndexPath(tempFile, process.cwd())
+      await postBashHandler(makePostBashEvent(`cat "${tempFile}"`, 'const x = 1\n'))
+
+      expect(wasFileReadThisSession(target)).toBe(false)
+    } finally {
+      rmSync(tempFile, { force: true })
     }
   })
 })
