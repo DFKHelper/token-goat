@@ -85,6 +85,50 @@ describe('runWasteCommand', () => {
     // Every section should fall through to the "none" placeholder line.
     expect((out.match(/ {2}none\n/g) ?? []).length).toBe(4)
     expect(process.exitCode).toBeUndefined()
+
+    // Zero-turn assistant-output section must render sensibly -- no NaN, no divide-by-zero,
+    // and the singular/plural noun must not print "0 turns" as "0 turn" (or vice versa).
+    expect(out).toContain('0 turns, 0 tok generated')
+    expect(out).not.toMatch(/NaN/)
+    expect(out).toContain('Re-send upper bound: 0 tok')
+  })
+
+  it('renders the count==1 singular form ("1 turn", not "1 turns") for a single assistant text turn', async () => {
+    const transcript = path.join(tempDir, 'one-turn.jsonl')
+    const lines = [
+      { message: { role: 'assistant', content: [{ type: 'text', text: 'a'.repeat(50) }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf-8')
+
+    const cap = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, transcript })
+    } finally {
+      cap.restore()
+    }
+
+    const out = cap.text()
+    expect(out).toMatch(/\b1 turn\b/)
+    expect(out).not.toMatch(/\b1 turns\b/)
+  })
+
+  it('exposes assistantOutput under a stable key in --json mode', async () => {
+    const transcript = path.join(tempDir, 'json-turn.jsonl')
+    const lines = [
+      { message: { role: 'assistant', content: [{ type: 'text', text: 'a'.repeat(50) }] } },
+    ]
+    fs.writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf-8')
+
+    const cap = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, transcript, json: true })
+    } finally {
+      cap.restore()
+    }
+
+    const parsed = JSON.parse(cap.text()) as { assistantOutput: { turnCount: number; generatedTokens: number; resendCeilingTokens: number } }
+    expect(parsed.assistantOutput.turnCount).toBe(1)
+    expect(parsed.assistantOutput.resendCeilingTokens).toBe(0)
   })
 
   it('formats the top-expensive-tool-calls section with tokens, name, and summary', async () => {

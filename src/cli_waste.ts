@@ -14,6 +14,7 @@ import * as path from 'node:path'
 
 import { resolveProjectRoot } from './project.js'
 import { buildWasteReport, findLatestTranscript, type WasteReport } from './waste.js'
+import { countNoun } from './util.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -64,6 +65,14 @@ function printReport(report: WasteReport): void {
       w(`  "${cmd.normalized}": ran ${cmd.count} times, ${cmd.avgTokens} tok each, ${cmd.totalTokens} tok total, uncompressed\n`)
     }
   }
+
+  // "ceiling"/"upper bound" MUST stay visible in the rendered label -- resendCeilingTokens is a
+  // cache-unaware worst case, not real spend; see the doc comment on AssistantOutputCost in waste.ts.
+  w('\n## Assistant output (re-send CEILING, not real spend)\n')
+  const ao = report.assistantOutput
+  w(`  ${countNoun(ao.turnCount, 'turn')}, ${ao.generatedTokens} tok generated\n`)
+  w(`  Re-send upper bound: ${ao.resendCeilingTokens} tok if every turn were resent at full price on every later request\n`)
+  w('  Real cost is substantially lower: prompt caching bills resent conversation history at cache-read rates, not full input price.\n')
 }
 
 /** Run the `token-goat waste` command. */
