@@ -673,6 +673,72 @@ describe('read_commands', () => {
         expect(parsed.truncated).toBe(false)
       })
     })
+
+    describe('--stats', () => {
+      it('text mode: header line carries the ref count and documented flag', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: 'does a thing' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 7]]))
+        const { text: stdout } = runSymbol({ name: 'myFn', stats: true })
+        expect(stdout).toContain('7 refs')
+        expect(stdout).toContain('documented')
+      })
+
+      it('without --stats: output is byte-identical to the pre-existing (no-suffix) expectation, and queryRefCounts is not called', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        const withStats = runSymbol({ name: 'myFn', stats: true })
+        mockQueryRefCounts.mockClear()
+        const withoutStats = runSymbol({ name: 'myFn' })
+        expect(withoutStats.text).toBe('# myFn (function) — src/foo.ts:1-1')
+        // Dead-wiring guard: prove --stats actually changes output rather than merely being
+        // accepted and ignored -- a byte-identical assertion alone can't catch a flag that was
+        // registered on the CLI but never forwarded into the handler.
+        expect(withStats.text).not.toBe(withoutStats.text)
+        expect(mockQueryRefCounts).not.toHaveBeenCalled()
+      })
+
+      it('JSON mode: refCount and hasDoc are present with --stats, absent without it', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 5]]))
+        const withStats = JSON.parse(runSymbol({ name: 'myFn', stats: true, json: true }).text) as {
+          items: { refCount?: number; hasDoc?: boolean }[]
+        }
+        expect(withStats.items[0]?.refCount).toBe(5)
+        expect(withStats.items[0]?.hasDoc).toBe(false)
+
+        const withoutStats = JSON.parse(runSymbol({ name: 'myFn', json: true }).text) as {
+          items: { refCount?: number; hasDoc?: boolean }[]
+        }
+        expect(withoutStats.items[0]?.refCount).toBeUndefined()
+        expect(withoutStats.items[0]?.hasDoc).toBeUndefined()
+      })
+
+      it('queryRefCounts is not called when a --grep search filters to zero matches, even with --stats set', () => {
+        const items: MockSymbol[] = [{ name: 'stopWorker', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' }]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        mockQueryRefCounts.mockClear()
+        runSymbol({ grep: '^run', stats: true })
+        expect(mockQueryRefCounts).not.toHaveBeenCalled()
+      })
+
+      it('queryRefCounts is called with every matched name when multiple candidates are returned (project-wide count per NAME, not per definition site)', () => {
+        const items: MockSymbol[] = [
+          { name: 'runA', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+          { name: 'runB', kind: 'function', filePath: 'b.ts', lineStart: 1, lineEnd: 1, body: '', docstring: '' },
+        ]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue(items as any)
+        mockQueryRefCounts.mockReturnValue(new Map([['runA', 1], ['runB', 2]]))
+        runSymbol({ grep: '^run', stats: true })
+        expect(mockQueryRefCounts).toHaveBeenCalledWith(['runA', 'runB'], expect.anything(), expect.anything())
+      })
+    })
   })
 
   // ---- runRead ------------------------------------------------------------

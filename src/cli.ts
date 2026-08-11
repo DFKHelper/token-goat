@@ -2878,7 +2878,8 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex); cannot be combined with <name>')
     .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
-    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean }) => {
+    .option('--stats', 'add per-result reference count and doc-coverage flag (project-wide count per NAME, not per definition site -- same-named symbols across files share a count)')
+    .action((name: string | undefined, opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; stats?: boolean }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -2895,6 +2896,7 @@ export function buildProgram(): Command {
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
+          ...(opts.stats === true ? { stats: true } : {}),
         }),
       )
     })

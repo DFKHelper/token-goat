@@ -288,6 +288,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(xtOn.status, xtOn.stderr).toBe(0)
     expect(xtOn.stdout).toContain('hidden by --exclude-tests')
     expect(xtOn.stdout).not.toContain('No matches')
+
+    // --stats against the real built bundle -- proves the flag reaches the shipping CLI and its
+    // handler forwarding, not just the in-process unit tests.
+    const stats = run(['symbol', 'alphaSym', '--stats'])
+    expect(stats.status, stats.stderr).toBe(0)
+    expect(stats.stdout).toMatch(/\[\d+ refs, (un)?documented\]/)
   },
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
