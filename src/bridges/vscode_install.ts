@@ -98,6 +98,8 @@ function writeGuidance(filePath: string): boolean {
     BEGIN,
     buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools'),
     '',
+    '**Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.',
+    '',
     'VS Code support: token-goat install --vscode configures a project-local stdio MCP server in .vscode/mcp.json under the servers root key. VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.',
     END,
   ].join('\n')

@@ -25,6 +25,9 @@ describe('VS Code project-local install', () => {
       expect(guidance).toContain('user guidance')
       expect(guidance).toContain('servers root key')
       expect(guidance).toContain('does not intercept')
+      // The decode contract: without it the model receives a compressed
+      // payload with no instruction to call retrieve_text and parrots the blob.
+      expect(guidance).toContain('retrieve_text')
       expect(installVscode(project).alreadyInstalled).toBe(true)
       expect(uninstallVscode(project)).toBe(true)
       const after = JSON.parse(fs.readFileSync(path.join(project, '.vscode', 'mcp.json'), 'utf8')) as Record<string, unknown>
