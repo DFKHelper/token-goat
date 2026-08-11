@@ -3863,13 +3863,15 @@ export function buildProgram(): Command {
     .option('--symbol', 'list symbols instead of files')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to changed files whose path matches this regex (falls back to a literal substring match when the pattern does not compile); applies to file paths even in --symbol mode')
-    .action((ref: string | undefined, opts: { since?: string; symbol?: boolean; json?: boolean; grep?: string }) =>
+    .option('--exclude-tests', 'hide changed files that live in a test file (opt-in; default output is unchanged); applies to file paths even in --symbol mode')
+    .action((ref: string | undefined, opts: { since?: string; symbol?: boolean; json?: boolean; grep?: string; excludeTests?: boolean }) =>
       runExit(() =>
         runChanged({
           ref: opts.since ?? ref ?? 'HEAD~5',
           ...(opts.symbol === true ? { symbolMode: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )

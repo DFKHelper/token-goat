@@ -1845,6 +1845,13 @@ function runRefsSingle(opts: RefsOptions): number {
     // over the --exclude-tests message below when both filters are active and --grep is what
     // zeroed the remaining set.
     if (matchesGrep !== undefined && preGrepCount > 0) {
+      // Exits 0, so under --json a prose notice would pair a success status with an unparseable
+      // body. Same `{items, truncated, totalCount}` envelope the populated branch emits, with the
+      // post-filter count; text mode keeps the human notice.
+      if (opts.json === true) {
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        return 0
+      }
       emit(grepFilteredToEmptyNotice(preGrepCount, opts.grep ?? '', 'reference', 'references'))
       return 0
     }
@@ -3468,6 +3475,8 @@ export interface ChangedOptions {
   projectRoot?: string
   /** Only list changed files whose path matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. In `--symbol` mode this still filters the file path, not the symbol name, since the command's primary listing is files. */
   grep?: string
+  /** Drop changed files that live in a test file. Opt-in; output is byte-identical when omitted. Filters the file path, so like `grep` above it applies in `--symbol` mode too -- and it prunes before the per-file index lookup, so a test file is never queried at all. */
+  excludeTests?: boolean
 }
 
 /**
@@ -3592,7 +3601,18 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 1
   }
 
+  // Every zero-row path below exits 0, so under --json a prose notice would hand the consumer a
+  // success status with an unparseable body. Emit the same `{items, truncated, totalCount}`
+  // envelope the populated branches do, with `totalCount: 0` -- the post-filter count, never the
+  // pre-filter one. Matches the branches already migrated in callers/dead/deps/types; text mode
+  // keeps every human notice verbatim.
+  const emptyEnvelope = (): number => {
+    emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+    return 0
+  }
+
   if (changedFiles.length === 0) {
+    if (opts.json === true) return emptyEnvelope()
     emit('No files changed.')
     return 0
   }
@@ -3603,7 +3623,25 @@ export function runChanged(opts: ChangedOptions = {}): number {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   if (matchesGrep !== undefined) changedFiles = changedFiles.filter((f) => matchesGrep(f))
   if (matchesGrep !== undefined && changedFiles.length === 0) {
+    if (opts.json === true) return emptyEnvelope()
     emit(grepFilteredToEmptyNotice(preGrepFileCount, opts.grep ?? '', 'changed file', 'changed files'))
+    return 0
+  }
+
+  // --exclude-tests runs at the same point as --grep and composes with it: a file must satisfy
+  // both. Checked after --grep so that when both filters are active, the --grep notice wins --
+  // the same precedence refs/dead already use.
+  let hiddenTestFiles = 0
+  if (opts.excludeTests === true) {
+    const kept = changedFiles.filter((f) => !isTestFile(f))
+    hiddenTestFiles = changedFiles.length - kept.length
+    changedFiles = kept
+  }
+  if (changedFiles.length === 0 && hiddenTestFiles > 0) {
+    if (opts.json === true) return emptyEnvelope()
+    // A bare "No files changed." here would read as a clean diff while real changes sit hidden
+    // behind the flag. Name the suppressed count instead.
+    emit(`No non-test files changed (${excludeTestsHiddenNote(hiddenTestFiles)})`)
     return 0
   }
 
@@ -3634,6 +3672,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       allSymbols.push(...scoped)
     }
     if (allSymbols.length === 0) {
+      if (opts.json === true) return emptyEnvelope()
       emit('No symbols changed.')
       return 0
     }
