@@ -224,6 +224,206 @@ describe('cmdConfig get', () => {
   })
 })
 
+// ── config layer attribution ─────────────────────────────────────────────────
+
+/**
+ * Every state of "which layer decided this key's effective value", asserted for `get` AND
+ * `list` in BOTH text and `--json`. The states are not independent: `raw project value !=
+ * effective value` has two causes (validation rejected/clamped it, or an env var outranked it)
+ * and reporting one as the other sends the reader to edit the wrong thing, so the pair is
+ * pinned as producing different output rather than each being checked in isolation.
+ *
+ * `compact_assist.min_events` is the project-layer probe precisely because it has NO entry in
+ * CONFIG_KEY_ENV_OVERRIDES -- no env var can confound it. `hints.min_file_lines_for_hint` is
+ * the env probe because it has one.
+ */
+describe('cmdConfig layer attribution', () => {
+  /** Both commands' text output for one key, so a test can assert they agree in a single place instead of two tests that could later be updated apart. */
+  function bothText(key: string): { get: string; listLine: string; listAll: string } {
+    stdoutLines.length = 0
+    cmdConfig({ action: 'get', key })
+    const get = captured().trim()
+    stdoutLines.length = 0
+    cmdConfig({ action: 'list' })
+    const listAll = captured()
+    const listLine = listAll.split('\n').find((l) => l.startsWith(`${key} =`)) ?? ''
+    return { get, listLine, listAll }
+  }
+
+  /** The `--json` twin of {@link bothText}: `get`'s payload and `list`'s `_sources` entry for the same key. */
+  function bothJson(key: string): { get: Record<string, unknown>; listSource: Record<string, unknown> | undefined; listAll: Record<string, unknown> } {
+    stdoutLines.length = 0
+    cmdConfig({ action: 'get', key, json: true })
+    const get = JSON.parse(captured()) as Record<string, unknown>
+    stdoutLines.length = 0
+    cmdConfig({ action: 'list', json: true })
+    const listAll = JSON.parse(captured()) as Record<string, unknown>
+    const sources = listAll['_sources'] as Record<string, Record<string, unknown>> | undefined
+    return { get, listSource: sources?.[key], listAll }
+  }
+
+  it('state global: no project file at all leaves both commands unannotated', () => {
+    const text = bothText('compact_assist.min_events')
+    expect(text.get).toBe('3')
+    expect(text.listLine).toBe('compact_assist.min_events = 3')
+    const json = bothJson('compact_assist.min_events')
+    expect(json.get['source']).toBe('global')
+    expect('projectPath' in json.get).toBe(false)
+    // Absence from _sources is what "global" means in list --json; an entry here would mean list disagrees with get.
+    expect(json.listSource).toBeUndefined()
+  })
+
+  it('state global: a project file setting only OTHER keys stays byte-identical for an untouched key', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      const text = bothText('compact_assist.max_manifest_tokens')
+      expect(text.get).not.toContain('#')
+      expect(text.listLine).not.toContain('#')
+      const json = bothJson('compact_assist.max_manifest_tokens')
+      expect(json.get['source']).toBe('global')
+      expect(json.listSource).toBeUndefined()
+    })
+  })
+
+  it('state project: an in-bounds project value took effect, and get and list say so identically', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', (dir) => {
+      const text = bothText('compact_assist.min_events')
+      expect(text.get).toBe('500  # from .token-goat.toml')
+      expect(text.listLine).toBe('compact_assist.min_events = 500  # from .token-goat.toml')
+      const json = bothJson('compact_assist.min_events')
+      expect(json.get['source']).toBe('project')
+      expect(String(json.get['projectPath'])).toContain(path.basename(dir))
+      expect(json.listSource).toEqual({ source: 'project', projectPath: json.get['projectPath'] })
+    })
+  })
+
+  it('state project: a project value that coincidentally equals the already-effective value is still project, not rejected', () => {
+    // 1000 is what compact_assist.min_events resolves to with no project file at all (see the global test above). Equality with the effective value is exactly the took-effect condition, so this must NOT be reported as rejected -- an "it differs, therefore something rejected it" reading would be fine here and wrong; this pins the direction.
+    inProjectDir('[compact_assist]\nmin_events = 1000\n', () => {
+      expect(bothText('compact_assist.min_events').get).toBe('1000  # from .token-goat.toml')
+      expect(bothJson('compact_assist.min_events').get['source']).toBe('project')
+    })
+  })
+
+  it('state project-invalid: an out-of-bounds project value names both values and the violated range', () => {
+    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
+      const text = bothText('compact_assist.min_events')
+      // The three things the reader needs: the project file sets this key, that value is not what is in effect, and what is.
+      expect(text.get).toBe('1000  # .token-goat.toml sets 4321 (outside the allowed range 0-1000), not in effect; using 1000')
+      expect(text.listLine).toBe('compact_assist.min_events = 1000  # .token-goat.toml sets 4321 (outside the allowed range 0-1000), not in effect; using 1000')
+      const json = bothJson('compact_assist.min_events')
+      expect(json.get['source']).toBe('project_invalid')
+      expect(json.get['projectValue']).toBe(4321)
+      expect(json.get['reason']).toBe('outside the allowed range 0-1000')
+      // Not overloaded onto source:'project' -- the value did not come from the project file as written.
+      expect(json.get['source']).not.toBe('project')
+      expect(json.listSource).toEqual({ source: 'project_invalid', projectPath: json.get['projectPath'], projectValue: 4321, reason: 'outside the allowed range 0-1000' })
+    })
+  })
+
+  it('state project-invalid: a wrong-typed project value reports the type mismatch, not a range', () => {
+    inProjectDir('[compact_assist]\nmin_events = "many"\n', () => {
+      const text = bothText('compact_assist.min_events')
+      expect(text.get).toContain('expected a number, got a string')
+      expect(text.get).not.toContain('allowed range')
+      expect(bothJson('compact_assist.min_events').get['reason']).toBe('expected a number, got a string')
+    })
+  })
+
+  it('state env: a SET env var outranks a valid project value, and is reported as env rather than as a rejected project value', () => {
+    expect(process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']).toBeUndefined()
+    process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT'] = '42'
+    try {
+      inProjectDir('[hints]\nmin_file_lines_for_hint = 33\n', () => {
+        const text = bothText('hints.min_file_lines_for_hint')
+        expect(text.get).toBe('42  # from $TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+        expect(text.listLine).toBe('hints.min_file_lines_for_hint = 42  # from $TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+        // The project value is 33 and the effective value is 42, so a difference-only rule would call this a rejected project value and send the reader to edit a file that is not the problem.
+        expect(text.get).not.toContain('.token-goat.toml')
+        expect(text.get).not.toContain('not in effect')
+        const json = bothJson('hints.min_file_lines_for_hint')
+        expect(json.get['source']).toBe('env')
+        expect(json.get['envVar']).toBe('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+        expect(json.listSource).toEqual({ source: 'env', envVar: 'TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT' })
+      })
+    } finally {
+      delete process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']
+      invalidateConfigCache()
+    }
+  })
+
+  it('the two causes of "project raw value differs from effective value" produce different output', () => {
+    // Both arms below have project raw != effective. If the implementation collapses them into one state, one of these two assertions must fail -- neither arm can pass with the other's rendering.
+    const rejected = inProjectDir('[hints]\nmin_file_lines_for_hint = 99999999\n', () => bothText('hints.min_file_lines_for_hint').get)
+    process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT'] = '42'
+    let env: string
+    try {
+      env = inProjectDir('[hints]\nmin_file_lines_for_hint = 33\n', () => bothText('hints.min_file_lines_for_hint').get)
+    } finally {
+      delete process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']
+      invalidateConfigCache()
+    }
+    expect(rejected).toContain('.token-goat.toml sets 99999999')
+    expect(rejected).not.toContain('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+    expect(env).toContain('$TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+    expect(env).not.toContain('.token-goat.toml')
+    expect(rejected).not.toBe(env)
+  })
+
+  it('state project-unparsed: a malformed project file is reported once by list and inline by get, and never as a per-key project override', () => {
+    inProjectDir('[compact_assist\nmin_events = 500\n', () => {
+      const text = bothText('compact_assist.min_events')
+      expect(text.get).toContain('failed to parse')
+      expect(text.get.startsWith('3')).toBe(true)
+      // A trailing `# ...` comment is a one-line suffix by construction; smol-toml's parse message is multi-line, and letting it through would make `VALUE=$(token-goat config get k)` capture several lines.
+      expect(text.get.split('\n')).toHaveLength(1)
+      // list states the file-level failure once in its footer; repeating it on every one of ~200 key lines would bury the per-key annotations it sits among.
+      expect(text.listLine).toBe('compact_assist.min_events = 3')
+      expect(text.listAll).toContain('failed to parse')
+      const json = bothJson('compact_assist.min_events')
+      expect(json.get['source']).toBe('project_unparsed')
+      // The one-lining above is presentation only: --json still carries the parser's full multi-line message, so nothing is actually lost.
+      expect(String(json.get['parseError'])).toContain('\n')
+      expect(json.listSource).toBeUndefined()
+      expect((json.listAll['_project_override'] as Record<string, unknown>)['parse_error']).not.toBeNull()
+    })
+  })
+
+  it('config validate reports a project value that will be ignored, and stays clean when the project value is fine', () => {
+    // Without this, a rejected project value is only discoverable by happening to `config get` that exact key.
+    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
+      cmdConfig({ action: 'validate', json: true })
+      const findings = (JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }>; ok: boolean }).findings
+      const f = findings.find((x) => x.kind === 'project_value_ignored')
+      expect(f?.key).toBe('compact_assist.min_events')
+      expect(f?.suggestion).toBe('4321 is outside the allowed range 0-1000; in effect: 1000')
+      expect(process.exitCode).toBe(1)
+      process.exitCode = 0
+      stdoutLines.length = 0
+      cmdConfig({ action: 'validate' })
+      // The explanation is not a near-miss key name, so it must not be rendered as "did you mean: <sentence>?".
+      expect(captured()).toContain('[project_value_ignored] compact_assist.min_events (4321 is outside the allowed range 0-1000; in effect: 1000)')
+      expect(captured()).not.toContain('did you mean: 4321')
+    })
+    stdoutLines.length = 0
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string }>; ok: boolean }
+      // An in-bounds project value is not a finding -- flagging every project override would make the gate useless.
+      expect(parsed.findings.some((x) => x.kind === 'project_value_ignored')).toBe(false)
+    })
+  })
+
+  it('config set warns about a project value that is clamped, naming both values, because the project layer still displaces the save', () => {
+    // _buildConfig merges the project raw tree OVER the global one and validates the merged result, so a clamped project value still wins over config.toml -- the save is as much a no-op as in the clean case. Staying silent here would be the mirror of the mislabel this whole change removes.
+    inProjectDir('[compact_assist]\nmin_events = 4321\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
+      expect(capturedErr()).toContain('sets it to 4321')
+      expect(capturedErr()).toContain('taking effect as 1000')
+      expect(capturedErr()).toContain('outside the allowed range 0-1000')
+    })
+  })
+})
+
 // ── config set → get round-trip (mutation-verify target) ─────────────────────
 
 describe('cmdConfig set', () => {

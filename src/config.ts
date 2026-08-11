@@ -816,9 +816,26 @@ function flattenRawKeys(raw: Record<string, unknown>): string[] {
   return keys
 }
 
+/** Dotted `section.key` -> raw value for the top two levels of a raw TOML tree, the value-carrying twin of {@link flattenRawKeys}. */
+function flattenRawValues(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [sectionName, val] of Object.entries(raw)) {
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      for (const [sub, v] of Object.entries(val as Record<string, unknown>)) {
+        out[`${sectionName}.${sub}`] = v
+      }
+    } else {
+      out[sectionName] = val
+    }
+  }
+  return out
+}
+
 export interface ProjectConfigInfo {
   path: string
   keys: string[]
+  /** Raw (pre-validation) value per dotted key in {@link ProjectConfigInfo.keys}. Empty when `parseError` is set. */
+  values: Record<string, unknown>
   parseError: string | null
 }
 
@@ -835,7 +852,93 @@ export function getProjectConfigInfo(projectRoot?: string): ProjectConfigInfo | 
   const p = projectConfigPath(root)
   if (!fs.existsSync(p)) return null
   const { raw, parseError } = readConfigToml(p)
-  return { path: p, keys: parseError === null ? flattenRawKeys(raw) : [], parseError }
+  if (parseError !== null) return { path: p, keys: [], values: {}, parseError }
+  return { path: p, keys: flattenRawKeys(raw), values: flattenRawValues(raw), parseError }
+}
+
+/** A field's declared numeric bounds, or `undefined` for keys with no declared constraint. Read-only accessor over NUMERIC_FIELD_BOUNDS so callers outside this module can name a violated range in a message without the table itself becoming mutable public API. */
+export function numericFieldBounds(key: string): { min: number; max: number; clampTo?: string } | undefined {
+  const b = NUMERIC_FIELD_BOUNDS[key]
+  return b === undefined ? undefined : { min: b.min, max: b.max, ...(b.clampTo !== undefined ? { clampTo: b.clampTo } : {}) }
+}
+
+/** Structural equality for raw TOML leaf values (scalars plus the one `number[]` field, `hints.backoff_thresholds`). Deliberately not `===` (wrong for arrays) and not `JSON.stringify` (order-sensitive for objects, and silently equates `undefined` with absent). */
+function rawValueEquals(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((el, i) => rawValueEquals(el, b[i]))
+  }
+  if (typeof a === 'object' && typeof b === 'object' && a !== null && b !== null) {
+    const ka = Object.keys(a as Record<string, unknown>)
+    const kb = Object.keys(b as Record<string, unknown>)
+    if (ka.length !== kb.length) return false
+    return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && rawValueEquals((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+  }
+  return false
+}
+
+/**
+ * Which configuration layer produced the effective value of one key. A closed union: adding a
+ * member makes every `switch` over it fail to compile until each consumer handles it, which is
+ * the point — `config get`, `config list`, and `config set`'s shadow warning all render from
+ * this one result rather than each re-deciding attribution (see resolveConfigKeyLayer).
+ */
+export type ConfigKeyLayer =
+  | { layer: 'global' }
+  | { layer: 'env'; envVar: string }
+  | { layer: 'project'; path: string }
+  | { layer: 'project-invalid'; path: string; rawValue: unknown; effectiveValue: unknown; reason: string | null }
+  | { layer: 'project-unparsed'; path: string; parseError: string }
+
+/** Why `rawValue` could not be used as-is, stated from the field's own declared constraints where it has them, or `null` when nothing in this module can justify a specific cause. Never guesses. */
+function rejectionReason(key: string, rawValue: unknown, effectiveValue: unknown, cfg: Record<string, unknown>): string | null {
+  if (typeof rawValue === 'number') {
+    const bounds = NUMERIC_FIELD_BOUNDS[key]
+    if (bounds !== undefined) {
+      if (rawValue < bounds.min || rawValue > bounds.max) return `outside the allowed range ${bounds.min}-${bounds.max}`
+      if (!Number.isInteger(rawValue) && Number.isInteger(effectiveValue)) return 'not a whole number'
+      const clamped = validateNumericField(key, rawValue, cfg)
+      if (clamped !== undefined && clamped !== rawValue && bounds.clampTo !== undefined) return `above ${bounds.clampTo}, which caps it`
+    }
+    return null
+  }
+  if (typeof rawValue === 'string') {
+    const allowed = validateEnumField(key, rawValue)
+    if (allowed !== undefined) return `not one of: ${allowed.join(', ')}`
+  }
+  if (effectiveValue !== undefined && typeof rawValue !== typeof effectiveValue) {
+    return `expected ${Array.isArray(effectiveValue) ? 'a list' : `a ${typeof effectiveValue}`}, got ${Array.isArray(rawValue) ? 'a list' : `a ${typeof rawValue}`}`
+  }
+  return null
+}
+
+/**
+ * Resolve which layer the effective value of `key` came from.
+ *
+ * Precedence mirrors the real load order (defaults -> config.toml -> .token-goat.toml -> env),
+ * highest-priority layer first, so the reported layer is the one that actually decided the
+ * value. Two consequences worth stating, because both were mis-modelled by the naive
+ * "project file lists the key, therefore the value came from it" rule this replaces:
+ *
+ * - An env var that is *set* wins outright, and is reported instead of the project file. Merely
+ *   being registered in CONFIG_KEY_ENV_OVERRIDES is not being set — testing registration is the
+ *   exact trap that made `config set` blame unset variables.
+ * - `project-invalid` is NOT "the global value won". _buildConfig merges the project raw tree
+ *   over the global one and validates the merged result, so a project value that gets clamped or
+ *   coerced still displaces the global file's value entirely; the effective value is whatever
+ *   validation produced from the project's value. The project layer is still in force, which is
+ *   why `config set` must keep warning about this state.
+ */
+export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg: Record<string, unknown>, projectInfo: ProjectConfigInfo | null): ConfigKeyLayer {
+  const envVar = (CONFIG_KEY_ENV_OVERRIDES[key] ?? []).find((name) => process.env[name] !== undefined)
+  if (envVar !== undefined) return { layer: 'env', envVar }
+  if (projectInfo === null) return { layer: 'global' }
+  if (projectInfo.parseError !== null) return { layer: 'project-unparsed', path: projectInfo.path, parseError: projectInfo.parseError }
+  if (!Object.prototype.hasOwnProperty.call(projectInfo.values, key)) return { layer: 'global' }
+  const rawValue = projectInfo.values[key]
+  if (rawValueEquals(rawValue, effectiveValue)) return { layer: 'project', path: projectInfo.path }
+  return { layer: 'project-invalid', path: projectInfo.path, rawValue, effectiveValue, reason: rejectionReason(key, rawValue, effectiveValue, cfg) }
 }
 
 /**
