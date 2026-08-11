@@ -14,7 +14,8 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, resolveConfigKeyLayer } from './config.js'
+import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -175,6 +176,58 @@ function flattenConfig(obj: Record<string, unknown>, prefix = ''): Array<[string
   return pairs
 }
 
+/** Render a raw config value the way both the `list` key=value lines and the annotations below spell it. */
+function renderValue(v: unknown): string {
+  return JSON.stringify(v)
+}
+
+/**
+ * The trailing `# ...` comment naming a non-default resolving layer, or `''` for `global`.
+ *
+ * Single source of every user-facing attribution string: `get` and `list` both call this, so
+ * they cannot drift into describing the same key differently. The empty string for `global`
+ * is load-bearing — that is the dominant path and its output must stay byte-identical.
+ */
+function layerAnnotation(state: ConfigKeyLayer): string {
+  switch (state.layer) {
+    case 'global':
+      return ''
+    case 'env':
+      return `  # from $${state.envVar}`
+    case 'project':
+      return '  # from .token-goat.toml'
+    case 'project-invalid':
+      return `  # .token-goat.toml sets ${renderValue(state.rawValue)}${state.reason !== null ? ` (${state.reason})` : ''}, not in effect; using ${renderValue(state.effectiveValue)}`
+    case 'project-unparsed':
+      // smol-toml's message is multi-line (it renders the offending source with a caret). A trailing `# ...` comment is a one-line suffix by construction, and `VALUE=$(token-goat config get k)` would otherwise capture several lines of it, so flatten to one line here; the full multi-line text is still available verbatim from `--json` and from the stderr warning loadConfig already emits.
+      return `  # .token-goat.toml failed to parse (${state.parseError.replace(/\s+/g, ' ').trim()}); ignored`
+    default: {
+      const exhaustive: never = state
+      return exhaustive
+    }
+  }
+}
+
+/** The `--json` twin of {@link layerAnnotation}: a closed `source` discriminator plus that state's extra fields. `get` spreads this beside `key`/`value`; `list` files it under `_sources[key]`. */
+function layerJson(state: ConfigKeyLayer): Record<string, unknown> {
+  switch (state.layer) {
+    case 'global':
+      return { source: 'global' }
+    case 'env':
+      return { source: 'env', envVar: state.envVar }
+    case 'project':
+      return { source: 'project', projectPath: state.path }
+    case 'project-invalid':
+      return { source: 'project_invalid', projectPath: state.path, projectValue: state.rawValue, reason: state.reason }
+    case 'project-unparsed':
+      return { source: 'project_unparsed', projectPath: state.path, parseError: state.parseError }
+    default: {
+      const exhaustive: never = state
+      return exhaustive
+    }
+  }
+}
+
 export function cmdConfig(opts: { action: string; key?: string; value?: string; json?: boolean }): void {
   const { action } = opts
 
@@ -184,6 +237,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     // global config.toml for the keys it sets, so surface which keys (if any) came from it
     // alongside the effective values loadConfig() already merged in.
     const projectInfo = getProjectConfigInfo()
+    const pairs = flattenConfig(cfg)
     if (opts.json === true) {
       const payload: Record<string, unknown> = { ...cfg }
       if (projectInfo !== null) {
@@ -193,13 +247,20 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
           parse_error: projectInfo.parseError,
         }
       }
+      // Per-key layer attribution, built from the same resolver `get --json` uses so the two commands cannot disagree about a key. Only non-global keys appear: emitting a `global` entry for all ~200 keys would bury the handful that actually came from somewhere else, and its absence is what "global" means.
+      const sources: Record<string, unknown> = {}
+      for (const [k, v] of pairs) {
+        const state = resolveConfigKeyLayer(k, v, cfg, projectInfo)
+        if (state.layer !== 'global' && state.layer !== 'project-unparsed') sources[k] = layerJson(state)
+      }
+      if (Object.keys(sources).length > 0) payload['_sources'] = sources
       emit(JSON.stringify(payload, null, 2))
       return
     }
-    const pairs = flattenConfig(cfg)
     for (const [k, v] of pairs) {
-      const fromProject = projectInfo !== null && projectInfo.keys.includes(k)
-      emit(`${k} = ${JSON.stringify(v)}${fromProject ? '  # from .token-goat.toml' : ''}`)
+      const state = resolveConfigKeyLayer(k, v, cfg, projectInfo)
+      // An unparsed project file is one fact about the whole file, not ~200 per-key facts: the footer below (and `_project_override.parse_error` above) states it once, so repeating it on every line would bury the per-key annotations it sits among. `config get` has no footer, so it renders that same state inline instead -- the states agree, only where each command has room to say it differs.
+      emit(`${k} = ${JSON.stringify(v)}${state.layer === 'project-unparsed' ? '' : layerAnnotation(state)}`)
     }
     if (projectInfo !== null) {
       emit('')
@@ -222,16 +283,15 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (!result.found) {
       throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
     }
-    // Which layer this value came from, the same question `list` already answers per key. Without it `get` reports a bare value that silently disagrees with config.toml whenever a project .token-goat.toml overrides the key, and the user has no way to tell from the output that a second file is in play.
-    const getProjectInfo = getProjectConfigInfo()
-    const fromProject = getProjectInfo !== null && getProjectInfo.parseError === null && getProjectInfo.keys.includes(opts.key)
+    // Which layer this value came from, the same question `list` answers per key, resolved by the same helper so the two commands cannot drift. Without it `get` reports a bare value that silently disagrees with config.toml whenever a project .token-goat.toml or an env var is in play, and the user has no way to tell from the output that a second layer decided it.
+    const getState = resolveConfigKeyLayer(opts.key, result.value, cfg, getProjectConfigInfo())
     if (opts.json === true) {
-      emit(JSON.stringify({ key: opts.key, value: result.value, source: fromProject ? 'project' : 'global', ...(fromProject ? { projectPath: getProjectInfo.path } : {}) }, null, 2))
+      emit(JSON.stringify({ key: opts.key, value: result.value, ...layerJson(getState) }, null, 2))
       return
     }
-    // The bare value line stays byte-identical for globally-resolved keys, so `VALUE=$(token-goat config get k)` and every existing caller are unaffected; only the previously-misleading project-override case gains the annotation, using the same `# from .token-goat.toml` wording `list` emits.
+    // The bare value line stays byte-identical for globally-resolved keys, so `VALUE=$(token-goat config get k)` and every existing caller are unaffected; only a value some other layer decided gains an annotation.
     const rendered = typeof result.value === 'string' ? result.value : JSON.stringify(result.value)
-    emit(fromProject ? `${rendered}  # from .token-goat.toml` : rendered)
+    emit(`${rendered}${layerAnnotation(getState)}`)
     return
   }
 
@@ -342,9 +402,14 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       }
     }
     // Exactly the same silent-no-op the env-shadowing warning above exists to prevent, via the other layer: `config set` writes the GLOBAL config.toml, so if this project's .token-goat.toml also sets this key, the save succeeds and changes nothing here. Warn with the same shape, and only when the project file actually pins this key -- a project config that sets unrelated keys is not shadowing anything.
-    const setProjectInfo = getProjectConfigInfo()
-    if (setProjectInfo !== null && setProjectInfo.parseError === null && setProjectInfo.keys.includes(key)) {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setProjectInfo.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
+    // Resolved by the same helper `get`/`list` use, so all three agree about which layer owns this key. Note this warns for project-invalid too, and deliberately: _buildConfig merges the project raw tree OVER the global one and validates the merged result, so even a value that gets clamped or coerced still displaces what was just saved -- the save is every bit as much a no-op here as in the clean case, just with a different value winning. The invalid case names both values so the reader is not told to look for a 4321 that `get` reports as 1000.
+    const effectiveCfg = loadConfig() as unknown as Record<string, unknown>
+    const setEffective = walkGet(effectiveCfg, parts)
+    const setState = resolveConfigKeyLayer(key, setEffective.found ? setEffective.value : undefined, effectiveCfg, getProjectConfigInfo())
+    if (setState.layer === 'project') {
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
+    } else if (setState.layer === 'project-invalid') {
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} sets it to ${JSON.stringify(setState.rawValue)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it in this project, taking effect as ${JSON.stringify(setState.effectiveValue)} — remove it there for this change to take effect here`)
     }
     if (opts.json === true) {
       emit(JSON.stringify({ key, value: coerced }, null, 2))
@@ -398,6 +463,22 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       }
     }
 
+    // A project .token-goat.toml value that validation rejects or clamps is otherwise invisible: nothing errors, and it only surfaces if the user happens to `config get` that one key. `validate` is where a config problem is meant to be found, so report it here too -- via the same resolver `get`/`list`/`set` use, so all four agree about the key.
+    const validateProjectInfo = getProjectConfigInfo()
+    if (validateProjectInfo !== null) {
+      const effCfg = loadConfig() as unknown as Record<string, unknown>
+      if (validateProjectInfo.parseError !== null) {
+        findings.push({ kind: 'project_parse_error', key: validateProjectInfo.path, suggestion: validateProjectInfo.parseError })
+      } else {
+        for (const k of validateProjectInfo.keys) {
+          const eff = walkGet(effCfg, k.split('.'))
+          const state = resolveConfigKeyLayer(k, eff.found ? eff.value : undefined, effCfg, validateProjectInfo)
+          if (state.layer !== 'project-invalid') continue
+          findings.push({ kind: 'project_value_ignored', key: k, suggestion: `${JSON.stringify(state.rawValue)}${state.reason !== null ? ` is ${state.reason}` : ' is not usable'}; in effect: ${JSON.stringify(state.effectiveValue)}` })
+        }
+      }
+    }
+
     // A non-empty findings list (including a parse_error) means the config is not clean --
     // exit non-zero so `config validate` is usable as a CI/script gate, not just a human-read
     // report that always looks "successful" regardless of what it found.
@@ -412,7 +493,9 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       return
     }
     for (const f of findings) {
-      const hint = f.suggestion !== undefined ? ` (did you mean: ${f.suggestion}?)` : ''
+      // "did you mean" only fits the kinds whose suggestion IS a near-miss key name. For the others the suggestion is an explanation (a parse error, a rejected value), and wrapping those in "did you mean:" asked the reader whether they meant a sentence.
+      const isNearMiss = f.kind === 'unknown_section' || f.kind === 'unknown_key'
+      const hint = f.suggestion === undefined ? '' : isNearMiss ? ` (did you mean: ${f.suggestion}?)` : ` (${f.suggestion})`
       emit(`[${f.kind}] ${f.key}${hint}`)
     }
     emit(`config validate: ${findings.length} issue(s) found`)
