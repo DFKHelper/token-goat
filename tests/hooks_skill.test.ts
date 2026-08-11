@@ -240,7 +240,8 @@ describe('preSkillHandler — oversized first-load gate', () => {
   it('still emits the plain pointer deny when the compact slice is itself oversized', async () => {
     const skillDir = path.join(sourceDir, 'huge-compact-skill');
     await fs.mkdir(skillDir, { recursive: true });
-    const compact = 'z'.repeat(6001);
+    // Original intent unchanged -- a slice too large to inline still gets the pointer. Only the bound moved: the inline decision no longer reuses the 6000-byte oversize gate, so the fixture has to clear COMPACT_INLINE_MAX_BYTES (24_000) to still be "oversized" for this purpose.
+    const compact = 'z'.repeat(24_001);
     const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(7000)}`;
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
 
@@ -249,6 +250,37 @@ describe('preSkillHandler — oversized first-load gate', () => {
     if (out.hookType === 'deny') {
       expect(out.message).toContain('token-goat skill-body huge-compact-skill --compact');
       expect(out.message).not.toContain(compact);
+    }
+  });
+
+  // The band this change actually opens: a slice over the 6000-byte oversize gate but under the inline cap used to be denied, and the agent then ran `skill-body --compact` and received these exact bytes one turn later, having also paid the deny text, a reasoning turn and a Bash spawn. Denying never withheld anything -- it only delayed it and added a round trip, which is why the old branch recorded traffic and zero savings.
+  it('inlines a compact slice that is over the oversize gate but under the inline cap', async () => {
+    const skillDir = path.join(sourceDir, 'midband-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'm'.repeat(9000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(50_000)}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('midband-skill', 'sess-mid'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny') {
+      expect(out.message).toContain(compact);
+      expect(out.message).not.toContain('--compact');
+    }
+  });
+
+  it('points rather than inlines when the compact slice saves nothing against the body', async () => {
+    const skillDir = path.join(sourceDir, 'degenerate-compact');
+    await fs.mkdir(skillDir, { recursive: true });
+    // A marker at the very end makes the "compact" slice the whole body: inlining it would hand over every byte while claiming a saving, so the pointer has to win even though the slice is under the cap.
+    const compact = 'q'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('degenerate-compact', 'sess-degen'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny') {
+      expect(out.message).toContain('token-goat skill-body degenerate-compact --compact');
     }
   });
 

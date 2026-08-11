@@ -20,7 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_stats.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isWithinQuietHours, statSize, toKB } from './util.js'
+import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -954,6 +954,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     recordActualRead(event, normalized)
     const rereadBytes = statSize(normalized) ?? 0
+    // What a blocked re-read may claim it saved. Gating below still uses the true size -- only the amount CREDITED is capped, because the counterfactual being priced is "the Read that didn't happen", and that Read would itself have been truncated. See PER_FILE_COUNTERFACTUAL_CEILING.
+    const rereadCredit = Math.min(rereadBytes, PER_FILE_COUNTERFACTUAL_CEILING)
 
     const config = loadConfig()
     if (config.hints.log_large_file_hint_outcomes) {
@@ -980,14 +982,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
-          recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+          recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
           return denyOutput(truncatedReadDenyMessage(normalized))
         }
       }
 
       // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
       if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
-        recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+        recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
         return denyOutput(
           'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
           ' ' + editAnywayHint(normalized),
@@ -997,8 +999,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
       const isSourceExt = isSourceExtension(basename)
       if (isSourceExt && reads >= 2) {
-        recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
-        recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+        recordStat('read_count_deny', rereadCredit, Math.round(rereadCredit / 4))
+        recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
         return denyOutput(
           'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
           ' ' + editAnywayHint(normalized),
@@ -1010,7 +1012,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (config.hints.reread_deny && !protectedRead && (rereadBytes >= config.hints.reread_deny_min_bytes || reads >= 2)) {
-      recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+      recordStat('session_hint', rereadCredit, Math.round(rereadCredit / 4))
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
         ' ' + editAnywayHint(normalized),
@@ -1020,8 +1022,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this
     // used to) over-counted the ledger on every quiet-hours re-read that produced no visible
     // output at all.
+    // Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
-      recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+      recordStat('session_hint', 0, 0)
     }
     return quietContextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
@@ -1057,7 +1060,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
-      recordStat('session_hint', size, Math.round(size / 4))
+      const denyCredit = Math.min(size, PER_FILE_COUNTERFACTUAL_CEILING)
+      recordStat('session_hint', denyCredit, Math.round(denyCredit / 4))
       return denyOutput(
         normalized + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' ' + editAnywayHint(normalized),
@@ -1074,8 +1078,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // degrades to passOutput() during hints.quiet_hours, and recording unconditionally here
     // (as this used to, before the deny-gate check above) over-counted the session_hint ledger
     // on every quiet-hours large-file read that produced no visible hint at all.
+    // Zero bytes for the same reason as the re-read note above: this is advisory, not a block. The Read proceeds and the whole file reaches the model anyway, so the hint is a cost, not a saving; the event is still counted because how often it fires is worth knowing.
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
-      recordStat('session_hint', size, Math.round(size / 4))
+      recordStat('session_hint', 0, 0)
     }
     return quietContextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
@@ -1245,7 +1250,8 @@ function postReadHandlerInner(event: HookEvent): HookOutput {
         const lineCount = countTextLines(fs.readFileSync(normalized, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
         if (lineCount >= minLines && meetsSavingsFloor(sz)) {
-          recordStat('session_hint', sz, Math.round(sz / 4))
+          // Advisory only -- the read is not blocked, so nothing was saved here either.
+          recordStat('session_hint', 0, 0)
           return quietContextOutput(
             normalized + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + normalized + '"` or `token-goat outline "' + normalized + '"` for structural navigation instead of a future full re-read.',
           )

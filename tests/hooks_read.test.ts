@@ -31,6 +31,7 @@ import { load as snapshotLoad } from '../src/snapshots.js'
 import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { summarize } from '../src/stats.js'
+import { PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
@@ -302,6 +303,46 @@ describe('preReadHandler', () => {
       if (result.hookType === 'context') {
         expect(result.context).toContain('already read this session')
       }
+    })
+
+    // The soft note does NOT block the read: the file's full contents still reach the model and the note is spent on top of them. Crediting the file's size here booked the whole file as saved on the one path where nothing was saved -- and this branch is the biggest single contributor to the session_hint ledger, so the overstatement was not marginal.
+    it('records the soft re-read note as an event with zero bytes saved, since the read still proceeds', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      cfg.hints.reread_deny = false
+      saveConfig(cfg)
+
+      const beforeBucket = summarize(30).by_kind['session_hint']
+      const beforeEvents = beforeBucket?.events ?? 0
+      const beforeBytes = beforeBucket?.bytes_saved ?? 0
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('context')
+
+      const afterBucket = summarize(30).by_kind['session_hint']
+      // Still counted -- how often the note fires is worth knowing; what it is worth is a separate question that only hint-stats' acted-on tracking can answer.
+      expect(afterBucket?.events ?? 0).toBe(beforeEvents + 1)
+      expect(afterBucket?.bytes_saved ?? 0).toBe(beforeBytes)
+    })
+
+    it('caps what a blocked re-read may claim against the per-file counterfactual ceiling', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      saveConfig(cfg)
+
+      const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      // Well past PER_FILE_COUNTERFACTUAL_CEILING: the Read this deny replaces would itself have been truncated, so the full on-disk size was never the real counterfactual.
+      const p = makeTmpFile('x'.repeat(400 * 1024))
+      recordFileRead(normalizePath(p))
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+
+      const delta = (summarize(30).by_kind['session_hint']?.bytes_saved ?? 0) - beforeBytes
+      expect(delta).toBeLessThanOrEqual(PER_FILE_COUNTERFACTUAL_CEILING)
+      // Not vacuous: it still credits the ceiling, rather than collapsing to zero.
+      expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING)
     })
 
     it('hints.reread_deny_min_bytes raises the size threshold a re-read must clear to be denied', () => {
