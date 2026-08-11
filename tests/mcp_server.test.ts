@@ -407,4 +407,30 @@ describe('mcp_server', () => {
     const retrievedBlock = (retrieved.content as any[])[0]
     expect(retrievedBlock.text).toBe(text)
   })
+
+  // Regression: VS Code Chat has no hook layer, so compress_text is its entire compression surface -- returning the base64url payload for an input where inlining it costs more tokens than the original text inflates the very context the tool claims to shrink.
+  it('withholds the compact payload when inlining it costs more tokens than the original text', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+    let seed = 987
+    const words: string[] = []
+    for (let i = 0; i < 3000; i++) { seed = (seed * 1103515245 + 12345) % 2147483648; words.push(seed.toString(36)) }
+
+    const losing = await client.callTool({ name: 'compress_text', arguments: { text: words.join(' ') } })
+    expect(losing.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const losingPayload = JSON.parse(((losing.content as any[])[0]).text) as Record<string, unknown>
+    expect(losingPayload['tokensSaved'] as number, 'a low-compressibility input must report a token cost').toBeLessThan(0)
+    expect(losingPayload['inlineWins']).toBe(false)
+    expect(losingPayload['compact'], 'the losing payload must not be returned to the client').toBeUndefined()
+    expect(losingPayload['payloadWithheld']).toBeTypeOf('string')
+
+    const winning = await client.callTool({ name: 'compress_text', arguments: { text: 'the same line repeated over and over again\n'.repeat(2000) } })
+    expect(winning.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const winningPayload = JSON.parse(((winning.content as any[])[0]).text) as Record<string, unknown>
+    expect(winningPayload['tokensSaved'] as number, 'a high-compressibility input must still be credited as a win').toBeGreaterThan(0)
+    expect(winningPayload['compact'], 'a winning compression must still return its payload').toBeTypeOf('string')
+    expect(winningPayload['payloadWithheld']).toBeUndefined()
+  })
 })
