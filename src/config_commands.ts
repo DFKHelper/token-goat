@@ -222,11 +222,16 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (!result.found) {
       throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
     }
+    // Which layer this value came from, the same question `list` already answers per key. Without it `get` reports a bare value that silently disagrees with config.toml whenever a project .token-goat.toml overrides the key, and the user has no way to tell from the output that a second file is in play.
+    const getProjectInfo = getProjectConfigInfo()
+    const fromProject = getProjectInfo !== null && getProjectInfo.parseError === null && getProjectInfo.keys.includes(opts.key)
     if (opts.json === true) {
-      emit(JSON.stringify({ key: opts.key, value: result.value }, null, 2))
+      emit(JSON.stringify({ key: opts.key, value: result.value, source: fromProject ? 'project' : 'global', ...(fromProject ? { projectPath: getProjectInfo.path } : {}) }, null, 2))
       return
     }
-    emit(typeof result.value === 'string' ? result.value : JSON.stringify(result.value))
+    // The bare value line stays byte-identical for globally-resolved keys, so `VALUE=$(token-goat config get k)` and every existing caller are unaffected; only the previously-misleading project-override case gains the annotation, using the same `# from .token-goat.toml` wording `list` emits.
+    const rendered = typeof result.value === 'string' ? result.value : JSON.stringify(result.value)
+    emit(fromProject ? `${rendered}  # from .token-goat.toml` : rendered)
     return
   }
 
@@ -328,14 +333,18 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     const envOverrides = CONFIG_KEY_ENV_OVERRIDES[key]
     if (envOverrides !== undefined) {
       const effective = walkGet(loadConfig() as unknown as Record<string, unknown>, parts)
+      // "effective differs from what I just wrote" holds for ANY overriding layer, env or the project .token-goat.toml below, so it cannot on its own justify naming an env var: an unset variable used to get named via a `?? envOverrides[0]` fallback, telling the user to unset something that does not exist while the real culprit went unmentioned. Warn only about a variable actually present in the environment. Merely defined counts -- a defined-but-empty value is a real override for the string-valued keys, and for the numeric/boolean ones the parse rejects it, so the effective value matches and this branch is never reached anyway.
       if (effective.found && effective.value !== coerced) {
-        const active = envOverrides.find((name) => {
-          const raw = process.env[name]
-          return raw !== undefined && raw.trim() !== ''
-        })
-        const envVar = active ?? envOverrides[0]
-        emitErr(`config set: warning: ${key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
+        const envVar = envOverrides.find((name) => process.env[name] !== undefined)
+        if (envVar !== undefined) {
+          emitErr(`config set: warning: ${key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
+        }
       }
+    }
+    // Exactly the same silent-no-op the env-shadowing warning above exists to prevent, via the other layer: `config set` writes the GLOBAL config.toml, so if this project's .token-goat.toml also sets this key, the save succeeds and changes nothing here. Warn with the same shape, and only when the project file actually pins this key -- a project config that sets unrelated keys is not shadowing anything.
+    const setProjectInfo = getProjectConfigInfo()
+    if (setProjectInfo !== null && setProjectInfo.parseError === null && setProjectInfo.keys.includes(key)) {
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setProjectInfo.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
     }
     if (opts.json === true) {
       emit(JSON.stringify({ key, value: coerced }, null, 2))
