@@ -68,13 +68,19 @@ try {
 }
 process.env['LOCALAPPDATA'] = dataHome
 process.env['XDG_DATA_HOME'] = dataHome
-// macOS ignores LOCALAPPDATA/XDG_DATA_HOME and derives Application Support
-// from HOME. Redirect it too so DATA_DIR never points at the developer's live
-// index or worker. USERPROFILE keeps spawned cross-platform tests consistent.
-if (process.platform === 'darwin') {
-  process.env['HOME'] = dataHome
-  process.env['USERPROFILE'] = dataHome
-}
+// macOS ignores LOCALAPPDATA/XDG_DATA_HOME and derives Application Support from HOME, so HOME has
+// to be redirected there for DATA_DIR to land in the sandbox at all.
+//
+// It is redirected on every platform, not just darwin, because HOME/USERPROFILE is also what
+// `os.homedir()` reads -- and code paths that call it directly (waste's transcript fallback to
+// `~/.claude/projects`, bootstrap-audit, the bridge installers, context-stats' CLAUDE.md walk)
+// escaped the sandbox entirely on Windows and Linux while LOCALAPPDATA/XDG_DATA_HOME were
+// redirected. That gap produced a real intermittent failure: the `waste --top` cases read the
+// developer's own live Claude Code session transcript (76 MB and growing during a dogfooding
+// session), spending ~7s per call parsing it, which blew the test timeout under full-suite
+// contention. Sandboxing HOME everywhere closes the class, not just that one instance.
+process.env['HOME'] = dataHome
+process.env['USERPROFILE'] = dataHome
 process.on('exit', () => {
   try {
     fs.rmSync(dataHome, { recursive: true, force: true })
