@@ -223,7 +223,7 @@ function readBoundedText(text: string | undefined, file: string | undefined): st
   return value
 }
 
-function formatCompression(result: ReturnType<typeof compressText>, forcePayload = false): string {
+function formatCompression(result: ReturnType<typeof compressText>, forcePayload = false, withheldNotice = 'payload withheld: inlining it would cost more tokens than the original text; pass --payload to print it anyway'): string {
   const lines = [
     `id: ${result.id}`,
     `encoding: ${result.encoding}`,
@@ -235,7 +235,7 @@ function formatCompression(result: ReturnType<typeof compressText>, forcePayload
   ]
   // The payload is base64url and tokenizes far worse per byte than the source text, so inlining it usually costs more tokens than it saves; print it only when it genuinely wins or the caller asked for it explicitly.
   if (!result.inlineWins && !forcePayload) {
-    lines.push('payload withheld: inlining it would cost more tokens than the original text; pass --payload to print it anyway')
+    lines.push(withheldNotice)
     return lines.join('\n')
   }
   lines.push('payload:', result.compact)
@@ -260,7 +260,7 @@ function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?:
 function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
   const result = resolveHandoff(name, { full: opts.full === true })
   if (result === null) throw new CliError(`no local handoff named "${name}" in this project`)
-  out(typeof result === 'string' ? result : formatCompression(result))
+  out(typeof result === 'string' ? result : formatCompression(result, false, 'payload withheld: inlining it would cost more tokens than the original text; pass --full to get the original text back outright'))
 }
 
 // Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3 rejects with an opaque "datatype mismatch" error).
