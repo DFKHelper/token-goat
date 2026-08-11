@@ -134,6 +134,35 @@ describe('cmdConfig list', () => {
   })
 })
 
+/**
+ * Run `fn` with cwd pointed at a throwaway project directory containing `.token-goat.toml`,
+ * which is how both the `get` layer annotation and the `set` shadow warning are reached
+ * (`resolveConfigProjectRoot()` keys off cwd).
+ *
+ * Cleanup is best-effort: on Windows, rmSync of a directory that was the process cwd moments
+ * earlier intermittently throws EPERM while the handle is still settling. The directory lives
+ * under the suite's isolated temp root, so leaking one on that race costs nothing, whereas
+ * letting it throw fails the test for a reason unrelated to what it asserts.
+ */
+function inProjectDir<T>(toml: string, fn: (dir: string) => T): T {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-projcfg-'))
+  const prevCwd = process.cwd()
+  try {
+    fs.writeFileSync(path.join(dir, '.token-goat.toml'), toml)
+    process.chdir(dir)
+    invalidateConfigCache()
+    return fn(dir)
+  } finally {
+    process.chdir(prevCwd)
+    invalidateConfigCache()
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // best-effort -- see docstring
+    }
+  }
+}
+
 // ── config get ───────────────────────────────────────────────────────────────
 
 describe('cmdConfig get', () => {
@@ -163,11 +192,78 @@ describe('cmdConfig get', () => {
   it('suggests a near-miss key ("did you mean") for a typo\'d known key', () => {
     expect(() => cmdConfig({ action: 'get', key: 'compact_assist.enabld' })).toThrow(/did you mean: compact_assist\.enabled/)
   })
+
+  it('annotates a value that came from a project .token-goat.toml', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      cmdConfig({ action: 'get', key: 'compact_assist.min_events' })
+      expect(captured()).toContain('500')
+      expect(captured()).toContain('# from .token-goat.toml')
+    })
+  })
+
+  it('leaves a globally-resolved value byte-identical even while a project .token-goat.toml exists for OTHER keys', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      cmdConfig({ action: 'get', key: 'compact_assist.enabled' })
+      // The project file is present but does not pin this key, so the annotation must not appear -- otherwise every key in a project with any config at all would be mislabeled as overridden.
+      expect(captured().trim()).toBe('true')
+    })
+  })
+
+  it('--json names the resolving layer in both directions', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', (dir) => {
+      cmdConfig({ action: 'get', key: 'compact_assist.min_events', json: true })
+      const overridden = JSON.parse(captured()) as Record<string, unknown>
+      expect(overridden['source']).toBe('project')
+      expect(String(overridden['projectPath'])).toContain(path.basename(dir))
+      stdoutLines.length = 0
+      cmdConfig({ action: 'get', key: 'compact_assist.enabled', json: true })
+      const global_ = JSON.parse(captured()) as Record<string, unknown>
+      expect(global_['source']).toBe('global')
+      expect('projectPath' in global_).toBe(false)
+    })
+  })
 })
 
 // ── config set → get round-trip (mutation-verify target) ─────────────────────
 
 describe('cmdConfig set', () => {
+  it('warns that a project .token-goat.toml shadows the key it just saved', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '77' })
+      expect(capturedErr()).toContain('.token-goat.toml')
+      expect(capturedErr()).toContain('overrides it in this project')
+    })
+  })
+
+  it('stays silent when a project .token-goat.toml exists but does not pin the key being set', () => {
+    inProjectDir('[compact_assist]\nmin_events = 500\n', () => {
+      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_tokens', value: '123' })
+      // A project config that sets unrelated keys shadows nothing; warning here would train the reader to ignore the warning entirely.
+      expect(capturedErr()).toBe('')
+    })
+  })
+
+  it('does not blame an unset env var when a project .token-goat.toml is what shadows the key', () => {
+    // The env-shadow guard keys off "effective value differs from what was just written", which is equally true of the project layer; it used to fall back to naming the first REGISTERED env var, so a project-file override told the reader to unset a variable that was never set.
+    expect(process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']).toBeUndefined()
+    inProjectDir('[hints]\nmin_file_lines_for_hint = 33\n', () => {
+      cmdConfig({action: 'set', key: 'hints.min_file_lines_for_hint', value: '77'})
+      expect(capturedErr()).not.toContain('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT')
+      expect(capturedErr()).toContain('overrides it in this project')
+    })
+  })
+
+  it('still warns about a genuinely set env var, naming it', () => {
+    process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT'] = '42'
+    try {
+      cmdConfig({action: 'set', key: 'hints.min_file_lines_for_hint', value: '7'})
+      expect(capturedErr()).toContain('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT is currently set')
+    } finally {
+      delete process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']
+      invalidateConfigCache()
+    }
+  })
+
   it('round-trip: set a value then get it back', () => {
     cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '99' })
     invalidateConfigCache()
