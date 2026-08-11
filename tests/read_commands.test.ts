@@ -1781,6 +1781,16 @@ describe('read_commands', () => {
         expect(stdout).toContain('undocumented')
       })
 
+      it('text mode: a single ref renders "1 ref", not "1 refs" -- the plural-only assertions above pass either way, so the singular branch needs its own pin', () => {
+        const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: 'does a thing' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([sym as any])
+        mockQueryRefCounts.mockReturnValue(new Map([['myFn', 1]]))
+        const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn', stats: true })
+        expect(stdout).toContain('[1 ref, documented]')
+        expect(stdout).not.toContain('1 refs')
+      })
+
       it('JSON mode: refCount is present with the right number', () => {
         const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 1, body: 'function myFn() {}', docstring: '' }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1796,7 +1806,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         mockQuerySymbols.mockReturnValue([sym as any])
         const { text: stdout } = runRead({ spec: 'src/foo.ts::myFn' })
-        expect(stdout).toContain('# 1 lines (~5 tok)\nfunction myFn() {}')
+        expect(stdout).toContain('# 1 line (~5 tok)\nfunction myFn() {}')
         expect(mockQueryRefCounts).not.toHaveBeenCalled()
       })
 

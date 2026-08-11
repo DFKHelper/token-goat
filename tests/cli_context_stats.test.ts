@@ -273,7 +273,8 @@ describe('cli_context_stats', () => {
       // touched MEMORY.md. Assert it actually delegated to memory_prune and rewrote the file.
       expect(output).not.toContain('not yet implemented')
       expect(output).toContain('[--fix] Pruned MEMORY.md')
-      expect(output).toContain('removed 1 dead-link entries')
+      expect(output).toContain('removed 1 dead-link entry')
+      expect(output).not.toContain('1 dead-link entries')
       const rewritten = fs.readFileSync(memFile, 'utf-8')
       expect(rewritten).not.toContain('Stale entry')
     })

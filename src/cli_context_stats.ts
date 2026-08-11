@@ -14,6 +14,7 @@ import * as path from 'node:path'
 import { confirmAndApply } from './confirm_apply.js'
 import { pruneIndex } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
+import { countNoun } from './util.js'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -215,9 +216,9 @@ export async function runContextStats(opts: ContextStatsOptions = {}): Promise<v
         )
         if (applyResult.applied.length > 0) {
           process.stdout.write('[--fix] Pruned MEMORY.md\n')
-          process.stdout.write(`  removed ${pruneResult.removedDead.length} dead-link entries\n`)
-          process.stdout.write(`  removed ${pruneResult.removedDup.length} duplicate entries\n`)
-          process.stdout.write(`  kept ${pruneResult.kept} entries\n`)
+          process.stdout.write(`  removed ${countNoun(pruneResult.removedDead.length, 'dead-link entry', 'dead-link entries')}\n`)
+          process.stdout.write(`  removed ${countNoun(pruneResult.removedDup.length, 'duplicate entry', 'duplicate entries')}\n`)
+          process.stdout.write(`  kept ${countNoun(pruneResult.kept, 'entry', 'entries')}\n`)
           process.stdout.write(`  ${pruneResult.tokensSaved} tok saved\n`)
         } else {
           process.stdout.write(

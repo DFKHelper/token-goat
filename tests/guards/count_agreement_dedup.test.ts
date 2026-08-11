@@ -35,8 +35,16 @@ const HARDCODED_HIDDEN_NOTE = /\$\{[^}]*\} in test files hidden by --exclude-tes
  * first draft of this guard listed only references/callers/symbols and immediately caught two
  * live sites its own list did NOT cover (`${allLines.length} lines`, `${grouped.length} files`),
  * so extend this list whenever a new count-dependent summary line appears.
+ *
+ * The count expression is deliberately any `${...}`, not just `${....length}`: formatStatsSuffix
+ * shipped `${refCounts.get(sym.name) ?? 0} refs` and the read/brief header shipped `${bodyLen}
+ * lines`, and both were invisible to a `.length`-anchored pattern. The `#` lookbehind exempts an
+ * identifier rather than a count -- `${repo}#${opts.pr} files` names one PR's file list, so `1
+ * file` would be wrong there, not right. A bare SCREAMING_CASE interpolation is likewise exempt:
+ * `${FIND_SCAN_LIMIT} symbols` names a compile-time cap, not a runtime count, so it can never be
+ * 1 and reads correctly as a plural.
  */
-const BARE_COUNT_NOUN = /\$\{[^}]*\.length\} (references|callers|symbols|lines|files|definitions|matches|hits)\b/
+const BARE_COUNT_NOUN = /(?<!#)\$\{(?![A-Z0-9_]+\})[^}]*\} (references|refs|callers|symbols|lines|files|definitions|matches|hits|events|entries)\b/
 
 describe('count/noun agreement is centralized, not re-interpolated per call site', () => {
   it.each(FILES)('%s does not hard-code the --exclude-tests plural', (file) => {

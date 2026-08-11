@@ -744,6 +744,18 @@ describe('cmdCompactHint', () => {
     expect(typeof parsed.eventCount).toBe('number')
   })
 
+  // A session with exactly one recorded event used to render "1 events". The zero-event and
+  // multi-event cases both pass regardless of the singular branch, so pin count==1 explicitly.
+  it('text mode: a single recorded event renders "1 event", not "1 events"', () => {
+    const session = { files: [], hintsShown: [], webFetches: [['https://example.com/only', 'w0']], bashOutputs: [], curlDownloads: [] }
+    storeBlob(SESSIONS_SUBDIR, 'compact-hint-one-event', session)
+
+    cmdCompactHint({ sessionId: 'compact-hint-one-event' })
+    const out = capturedOutput()
+    expect(out).toContain('1 event\n')
+    expect(out).not.toContain('1 events')
+  })
+
   it('includes autocompact budget line when --trigger auto is set', () => {
     cmdCompactHint({ trigger: 'auto' })
     expect(capturedOutput()).toContain('Auto-compact')

@@ -1297,7 +1297,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const bodyLen = match.lineEnd - match.lineStart + 1
   const statsStr = formatStatsSuffix(refCounts, match)
   const lines: string[] = [
-    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
+    `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
     body,
   ]
   const warning = staleWarning(match.filePath)
@@ -2093,7 +2093,7 @@ function hasRealDocstring(docstring: string): boolean {
  */
 function formatStatsSuffix(refCounts: Map<string, number> | undefined, sym: { name: string; docstring: string }): string {
   return refCounts !== undefined
-    ? `  [${refCounts.get(sym.name) ?? 0} refs, ${hasRealDocstring(sym.docstring) ? 'documented' : 'undocumented'}]`
+    ? `  [${countNoun(refCounts.get(sym.name) ?? 0, 'ref')}, ${hasRealDocstring(sym.docstring) ? 'documented' : 'undocumented'}]`
     : ''
 }
 
@@ -3270,7 +3270,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     `# ${match.name}  ${match.kind}  ${toDisplayPath(rootDir, match.filePath)}:${match.lineStart}-${match.lineEnd}`,
-    `# ${bodyLen} lines (~${Math.ceil(body.length / 4)} tok)`,
+    `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)`,
     body,
     '',
   ]

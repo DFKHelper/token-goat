@@ -149,7 +149,7 @@ import {
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { readSection, listSections } from './section_reader.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot, sleepSync, countNoun } from './util.js'
 import { colorStdout, stripAnsi } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError } from './config.js'
 import { runStats } from './cli_stats.js'
@@ -325,7 +325,7 @@ export async function cmdIndex(
     if (opts.forceWalk === true) {
       process.stderr.write(
         `token-goat: --force-walk raised the walk cap to ${MAX_FILES_SCANNED_FORCED} files; ` +
-          `indexing ${files.length} files may take a long time and produce a large index. ` +
+          `indexing ${countNoun(files.length, 'file')} may take a long time and produce a large index. ` +
           `Run 'token-goat doctor' afterwards to check index size.\n`,
       )
     }
@@ -423,7 +423,7 @@ export async function cmdIndex(
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
   out(
-    `Indexed ${indexed} files into the symbol index.` +
+    `Indexed ${countNoun(indexed, 'file')} into the symbol index.` +
       `${skipped > 0 ? ` Skipped ${skipped} unchanged file(s).` : ''}` +
       `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
       `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,

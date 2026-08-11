@@ -25,6 +25,7 @@ import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import { fmtBytes } from './render/ansi.js'
 import type { StatsData } from './render/types.js'
 import { registerReset } from './reset.js'
+import { countNoun } from './util.js'
 
 interface StatsBucket {
   events: number
@@ -328,7 +329,7 @@ function noStatsMessage(windowDays: number, homeDir?: string): string {
   const db = getGlobalDb(homeDir)
   const total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
   if (total === 0) return 'No stats recorded yet.'
-  return `No stats in the last ${windowDays} days (${total} recorded outside this window; use --window-days 0 for all time).`
+  return `No stats in the last ${countNoun(windowDays, 'day')} (${total} recorded outside this window; use --window-days 0 for all time).`
 }
 
 export function recordStat(
@@ -552,7 +553,7 @@ function _buildStatsData(summary: StatsSummary, windowDays: number): StatsData {
     period_start: periodStart,
     period_end: now,
     version: VERSION,
-    window_label: windowDays > 0 ? `last ${windowDays} days` : 'all time',
+    window_label: windowDays > 0 ? `last ${countNoun(windowDays, 'day')}` : 'all time',
     totals: {
       events: summary.total_events,
       bytes: summary.total_bytes_saved,
