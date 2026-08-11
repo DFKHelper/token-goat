@@ -363,6 +363,9 @@ function pruneOldBackups(p: string): void {
   }
 }
 
+// Per-file ceiling on a single file's contribution to a bytes-saved stat's counterfactual "what reading it whole would have cost" side, deliberately NOT read from config: it's derived from two independent, unrelated sources landing within 8% of each other -- token-goat's own FILE_TYPE_THRESHOLDS.generic (src/hints/file_type_handler.ts) is 100_000, the size above which token-goat itself intercepts an unrecognized file rather than letting it be read whole, so "the agent would have read the whole file" is contradicted by token-goat's own behavior past that point; and Claude Code's Read tool truncates at 2000 lines by default, which at this repo's measured ~54 bytes/line (read_commands.ts: 271,673 bytes / ~5000 lines) puts Read's real ceiling at ~108,000 bytes -- and it stays a hardcoded constant rather than a config knob because coupling the ledger's unit to a user-configurable threshold would let a config change silently rewrite historical stat comparability. Lives in util.ts rather than beside its original caller (sumFileSizes) because the re-read hook credits the same counterfactual per file and must not import read_commands.ts to say so: that module's eval cost is a large share of hook startup.
+export const PER_FILE_COUNTERFACTUAL_CEILING = 100_000
+
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs the caller indefinitely), and how old an unreleased lock file must be before a crashed holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
