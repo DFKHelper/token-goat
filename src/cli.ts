@@ -2928,13 +2928,15 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--limit <n>', 'max callers to show (default: 20)')
     .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
-    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string }) =>
+    .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
+    .action((spec: string, opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean }) =>
       runExit(() =>
         runBrief({
           spec,
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )

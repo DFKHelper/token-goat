@@ -3067,6 +3067,90 @@ describe('read_commands', () => {
       expect(mockResolveCallers).not.toHaveBeenCalled()
     })
 
+    // ---- brief --exclude-tests ---------------------------------------------
+    // brief was the last member of the refs/callers/dead/symbol/semantic/changed family without
+    // this flag, and the one where it bites hardest: it caps callers at --limit 20 by default, so
+    // for a symbol exercised mostly by tests the whole window is noise (measured on this repo's own
+    // index, loadConfig's caller output is 56% test call sites).
+    const briefSym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
+    const prodCaller = { caller: 'prodCaller', kind: 'function', file: 'src/g.ts', line: 3 }
+    const testCaller = { caller: 'testCaller', kind: 'function', file: 'tests/g.test.ts', line: 9 }
+
+    it('--exclude-tests drops callers whose call site is a test file, keeping production ones', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, testCaller])
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', excludeTests: true }) })
+      expect(stdout).toContain('prodCaller')
+      expect(stdout).not.toContain('testCaller')
+    })
+
+    it('--exclude-tests makes the caller count agree with the rows actually shown', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, testCaller])
+      // The uncapped COUNT(*) counts test refs too. Trusting it while filtering the list would print "Callers (2):" above a single row -- the exact count-vs-rows disagreement tests/guards/count_agreement_dedup.test.ts exists to catch.
+      mockQueryRefCounts.mockReturnValueOnce(new Map([['myFunc', 2]]))
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', excludeTests: true }) })
+      expect(stdout).toContain('Callers (1)')
+      expect(stdout).not.toContain('Callers (2)')
+      expect(stdout).not.toContain('more elided')
+    })
+
+    it('--exclude-tests scans unbounded rather than filtering a pre-capped page', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller])
+      capture(() => { runBrief({ spec: 'f.ts::myFunc', excludeTests: true }) })
+      // Filtering resolveCallers' default 500-row page would silently under-return whenever test refs occupy slots real callers would otherwise hold; the flag has to reach the query so the scan is unbounded before the filter runs.
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.anything(), true)
+    })
+
+    it('--exclude-tests says the filter emptied the caller block rather than reporting zero callers', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([testCaller])
+      const { stdout } = capture(() => {
+        // A bare "Callers (0):" reads as "nothing calls this", which for a test-only symbol is the opposite of the truth and invites deleting live code.
+        expect(runBrief({ spec: 'f.ts::myFunc', excludeTests: true })).toBe(0)
+      })
+      expect(stdout).toContain('no non-test callers')
+      expect(stdout).toContain('1 in test file hidden by --exclude-tests')
+    })
+
+    it('omitting --exclude-tests leaves output byte-identical, test callers and all', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, testCaller])
+      mockQueryRefCounts.mockReturnValueOnce(new Map([['myFunc', 2]]))
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc' }) })
+      expect(stdout).toContain('testCaller')
+      expect(stdout).toContain('Callers (2)')
+      expect(stdout).not.toContain('--exclude-tests')
+    })
+
+    it('--json reports hiddenByExcludeTests only when the filter actually hid something', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller, testCaller])
+      const withFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, excludeTests: true }) }).stdout
+      const parsedOn = JSON.parse(withFlag) as { hiddenByExcludeTests?: number; totalCallers: number; callers: unknown[] }
+      expect(parsedOn.hiddenByExcludeTests).toBe(1)
+      expect(parsedOn.totalCallers).toBe(1)
+      expect(parsedOn.callers).toHaveLength(1)
+      const withoutFlag = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true }) }).stdout
+      // Absent, not zero: the field must not appear at all in default output.
+      expect(JSON.parse(withoutFlag)).not.toHaveProperty('hiddenByExcludeTests')
+    })
+
+    it('--exclude-tests that hides nothing adds no note and no JSON field', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([briefSym as any])
+      mockResolveCallers.mockReturnValue([prodCaller])
+      const { stdout } = capture(() => { runBrief({ spec: 'f.ts::myFunc', json: true, excludeTests: true }) })
+      expect(JSON.parse(stdout)).not.toHaveProperty('hiddenByExcludeTests')
+    })
+
     it('assembles symbol, callers, and section into JSON shape', () => {
       const sym: MockSymbol = { name: 'myFunc', kind: 'function', filePath: 'f.ts', lineStart: 10, lineEnd: 20, body: 'function myFunc() {}', docstring: '' }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3154,7 +3238,8 @@ describe('read_commands', () => {
       // Third arg is the resolved symbol's own filePath -- runBrief passes it through so
       // resolveCallers can disambiguate a same-named symbol defined elsewhere (regression:
       // task #136, same-project name-collision merging in callers/dead).
-      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts')
+      // Original intent preserved: no explicit limit is passed, so the caller list comes back on resolveCallers' own default page and the elided count must come from the uncapped COUNT(*), not this list's length. The trailing rootDir/excludeTests args arrived with `brief --exclude-tests`; rootDir is already resolved here, so threading it avoids a second git shell-out for the same value, and `false` pins that the unbounded-scan path stays off by default.
+      expect(mockResolveCallers).toHaveBeenCalledWith('myFunc', undefined, 'f.ts', expect.any(String), false)
       expect(stdout).toContain('Callers (10):')
       expect(stdout).toContain('...(5 more elided)')
     })
