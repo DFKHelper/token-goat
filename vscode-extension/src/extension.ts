@@ -128,7 +128,7 @@ async function ensureDecoderSetup(): Promise<void> {
   if (choice !== 'Set up now') return
   try {
     await runTokenGoat(['install', '--vscode'], folder.uri.fsPath)
-    void vscode.window.showInformationMessage('token-goat decoder installed. Reload the window (Ctrl+Shift+P → Developer: Reload Window), then resend.')
+    void vscode.window.showInformationMessage('token-goat decoder installed. Two steps left: reload the window (Ctrl+Shift+P → Developer: Reload Window), then start the server when VS Code asks — or via Ctrl+Shift+P → "MCP: List Servers" → token-goat → Start. Compressed payloads also need Agent mode in chat.')
   } catch (error) {
     reportError(error)
   }
