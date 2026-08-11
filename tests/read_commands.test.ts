@@ -5590,11 +5590,62 @@ describe('read_commands', () => {
         expect(all).not.toContain('1 in test files')
       })
 
+      // Found in review. --grep runs first, so when it leaves only test files and
+      // --exclude-tests then empties the list, the unqualified "No non-test files changed" is
+      // true of the --grep slice but false of the diff: src/app.ts changed and is not a test.
+      it('names --grep too when it is what hid the non-test files, instead of claiming none changed', () => {
+        gitOk('src/app.ts\ntests/app.test.ts\n')
+        const result = capture(() => {
+          expect(runChanged({ ref: 'HEAD~1', grep: '^tests/', excludeTests: true })).toBe(0)
+        })
+        const all = result.stdout + result.stderr
+        expect(all).toContain('1 in test file hidden by --exclude-tests')
+        expect(all).toContain('did not match the filter')
+        // The precise claim that was false: src/app.ts is a changed non-test file.
+        expect(all).not.toContain('No non-test files changed')
+      })
+
+      it('keeps the unqualified wording when --grep is absent, so the message is not padded with an irrelevant filter', () => {
+        gitOk('tests/a.test.ts\n')
+        const result = capture(() => { runChanged({ ref: 'HEAD~1', excludeTests: true }) })
+        const all = result.stdout + result.stderr
+        expect(all).toContain('No non-test files changed')
+        expect(all).not.toContain('did not match the filter')
+      })
+
+      // --grep active but discarding nothing: every changed file matched, so there is no
+      // second filter to blame and the unqualified wording is the accurate one.
+      it('keeps the unqualified wording when --grep matched everything it saw', () => {
+        gitOk('tests/a.test.ts\ntests/b.test.ts\n')
+        const result = capture(() => { runChanged({ ref: 'HEAD~1', grep: '^tests/', excludeTests: true }) })
+        const all = result.stdout + result.stderr
+        expect(all).toContain('No non-test files changed')
+        expect(all).not.toContain('did not match the filter')
+      })
+
       it('emits an empty envelope under --json when it filters everything out', () => {
         gitOk('tests/a.test.ts\n')
         const { stdout } = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true, json: true })).toBe(0) })
         expect(() => JSON.parse(stdout)).not.toThrow()
         expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
+      })
+
+      // Found in review: --symbol capped each file's symbol query at a bare 1000. A changed
+      // symbol past that cutoff read as absent -- "No symbols changed." in text, and an empty
+      // envelope with `truncated: false` under --json, which asserts nothing was cut. Asserted on
+      // the query argument rather than via a 1000-symbol fixture, which would be slow to build
+      // and would pin the old cap's exact value rather than the intent.
+      it('does not silently cap each file\'s symbol query, which would hide a changed symbol past the cutoff', () => {
+        const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+        const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockQuerySymbols.mockReturnValue([])
+        capture(() => { runChanged({ symbolMode: true }) })
+        const limits = mockQuerySymbols.mock.calls.map((c) => (c[0] as { limit?: number }).limit ?? 0)
+        expect(limits.length).toBeGreaterThan(0)
+        for (const limit of limits) expect(limit).toBeGreaterThanOrEqual(20_000)
       })
 
       it('applies in --symbol mode, where it filters the file path', () => {

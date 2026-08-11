@@ -985,7 +985,9 @@ function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[]
   const getFileSyms = (filePath: string): SymbolEntry[] => {
     let fileSyms = fileSymCache.get(filePath)
     if (fileSyms === undefined) {
-      fileSyms = querySymbols({ filePath, limit: 1000 })
+      // FIND_SCAN_LIMIT, not a bare 1000: both call sites mean "every symbol in this file", and a
+      // silent cap makes a symbol past the cutoff read as absent rather than truncated.
+      fileSyms = querySymbols({ filePath, limit: FIND_SCAN_LIMIT })
       fileSymCache.set(filePath, fileSyms)
     }
     return fileSyms
@@ -3631,6 +3633,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   // --exclude-tests runs at the same point as --grep and composes with it: a file must satisfy
   // both. Checked after --grep so that when both filters are active, the --grep notice wins --
   // the same precedence refs/dead already use.
+  const postGrepFileCount = changedFiles.length
   let hiddenTestFiles = 0
   if (opts.excludeTests === true) {
     const kept = changedFiles.filter((f) => !isTestFile(f))
@@ -3641,6 +3644,21 @@ export function runChanged(opts: ChangedOptions = {}): number {
     if (opts.json === true) return emptyEnvelope()
     // A bare "No files changed." here would read as a clean diff while real changes sit hidden
     // behind the flag. Name the suppressed count instead.
+    //
+    // When --grep is ALSO active it has already narrowed the set, so "No non-test files changed"
+    // would be true only within the --grep scope and false about the diff: `--grep '^tests/'
+    // --exclude-tests` on a diff touching both src/ and tests/ empties the list here, and the
+    // unqualified wording claims no non-test file changed while src/ files plainly did. Name
+    // both filters in that case so the sentence is true of the whole diff, not just the slice
+    // --grep left behind.
+    const grepRemoved = preGrepFileCount - postGrepFileCount
+    if (matchesGrep !== undefined && grepRemoved > 0) {
+      emit(
+        `No non-test files matched --grep ${opts.grep ?? ''} ` +
+          `(${excludeTestsHiddenNote(hiddenTestFiles)}; ${countNoun(grepRemoved, 'other changed file')} did not match the filter)`,
+      )
+      return 0
+    }
     emit(`No non-test files changed (${excludeTestsHiddenNote(hiddenTestFiles)})`)
     return 0
   }
@@ -3661,7 +3679,10 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
     const allSymbols: SymbolEntry[] = []
     for (const f of changedFiles) {
-      const fileSymbols = querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: 1000 })
+      // FIND_SCAN_LIMIT, not a bare 1000 -- see the note at the other call site: a symbol past the
+      // cap would make `changed --symbol` report "No symbols changed." (and `truncated: false`)
+      // for a file whose changed symbol is simply beyond the cutoff.
+      const fileSymbols = querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: FIND_SCAN_LIMIT })
       const hunks = hunksByFile.get(f)
       // No hunks parsed for this file (rename, binary, or the diff call failed) —
       // fall back to every symbol in the file rather than silently dropping it.
