@@ -139,14 +139,20 @@ async function ensureDecoderSetup(): Promise<void> {
 let savingsBar: vscode.StatusBarItem | undefined
 let savingsContext: vscode.ExtensionContext | undefined
 
+// ~4 characters per token is the standard rough estimate for English text;
+// the counter says "≈" because bytes are what compress-text measures.
+function approxTokens(bytes: number): number {
+  return Math.round(bytes / 4)
+}
+
 function updateSavingsBar(): void {
   if (!savingsBar || !savingsContext) return
   const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
   savingsBar.text = total > 0
-    ? `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
+    ? `$(gist-secret) token-goat: ≈${approxTokens(total).toLocaleString()} tokens saved`
     : '$(gist-secret) token-goat'
   savingsBar.tooltip = total > 0
-    ? 'Total bytes token-goat compression has kept out of chat this installation.'
+    ? `About ${approxTokens(total).toLocaleString()} tokens kept out of chat so far (${total.toLocaleString()} bytes compressed away; ~4 characters per token).`
     : 'token-goat is ready. Compress something into chat and this counter shows what you saved.'
 }
 
@@ -171,7 +177,7 @@ function showStats(payload: string): void {
   const compact = /^compact_bytes: (\d+)$/m.exec(payload)
   if (!original || !compact) return
   void vscode.window.setStatusBarMessage(
-    `token-goat: ${original[1]} → ${compact[1]} bytes`, 5000,
+    `token-goat: ${original[1]} → ${compact[1]} bytes (≈${approxTokens(Number(original[1]) - Number(compact[1]))} tokens saved)`, 5000,
   )
 }
 
