@@ -22,7 +22,7 @@ import { applyHintTracking, classifyReadHint, meetsSavingsFloor } from './hint_s
 import { normalizePath } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState, markHintShown } from './session.js'
 import { writeSessionManifest, readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
@@ -553,7 +553,9 @@ function contextPressureAdvisorySuffix(): string {
  */
 function isProtectedRecentRead(normalized: string, n: number): boolean {
   if (n <= 0) return false
-  const ranked = Array.from(getSessionFiles().entries()).sort((a, b) => {
+  // Pre-compaction reads are excluded from the ranking entirely, not just from being protected themselves: this exemption is about content the model still holds, so a stale entry must not occupy one of the n protection slots and push a genuinely-recent post-compaction read out of the window.
+  const compactedAt = getCompactedAt()
+  const ranked = Array.from(getSessionFiles().entries()).filter(([, e]) => e.lastReadAt >= compactedAt).sort((a, b) => {
     const byRecency = b[1].lastReadAt - a[1].lastReadAt
     return byRecency !== 0 ? byRecency : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
   })
