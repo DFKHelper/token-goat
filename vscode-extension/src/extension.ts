@@ -99,7 +99,39 @@ async function compressText(text: string, extension: string): Promise<string> {
 }
 
 async function openChat(query: string): Promise<void> {
-  await vscode.commands.executeCommand('workbench.action.chat.open', { query })
+  await ensureDecoderSetup()
+  const hint = '\n\n(This message contains token-goat-compressed text. Decode it with the recovery command in the payload. If you cannot, tell the user to run: token-goat install --vscode)'
+  await vscode.commands.executeCommand('workbench.action.chat.open', { query: query + hint })
+}
+
+// The payload is only readable by the chat model when the workspace has
+// token-goat's MCP decoder (token-goat install --vscode). Check once per
+// session and offer to set it up instead of leaving the user staring at a
+// base64 blob.
+let decoderChecked = false
+
+async function ensureDecoderSetup(): Promise<void> {
+  if (decoderChecked) return
+  decoderChecked = true
+  const folder = vscode.workspace.workspaceFolders?.[0]
+  if (!folder) return
+  try {
+    const raw = await fs.readFile(path.join(folder.uri.fsPath, '.vscode', 'mcp.json'), 'utf8')
+    if (raw.includes('token-goat')) return
+  } catch {
+    // No mcp.json — fall through to the prompt below.
+  }
+  const choice = await vscode.window.showWarningMessage(
+    'token-goat compressed this for chat, but this workspace has no decoder set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
+    'Set up now', 'Not now',
+  )
+  if (choice !== 'Set up now') return
+  try {
+    await runTokenGoat(['install', '--vscode'], folder.uri.fsPath)
+    void vscode.window.showInformationMessage('token-goat decoder installed. Two steps left: reload the window (Ctrl+Shift+P → Developer: Reload Window), then start the server when VS Code asks — or via Ctrl+Shift+P → "MCP: List Servers" → token-goat → Start. Compressed payloads also need Agent mode in chat.')
+  } catch (error) {
+    reportError(error)
+  }
 }
 
 // Tokens-saved status bar: a running total makes the value visible to
@@ -107,11 +139,21 @@ async function openChat(query: string): Promise<void> {
 let savingsBar: vscode.StatusBarItem | undefined
 let savingsContext: vscode.ExtensionContext | undefined
 
+// ~4 characters per token is the standard rough estimate for English text;
+// the counter says "≈" because bytes are what compress-text measures.
+function approxTokens(bytes: number): number {
+  return Math.round(bytes / 4)
+}
+
 function updateSavingsBar(): void {
   if (!savingsBar || !savingsContext) return
   const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
-  savingsBar.text = `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
-  savingsBar.tooltip = 'Total bytes token-goat compression has kept out of chat this installation.'
+  savingsBar.text = total > 0
+    ? `$(gist-secret) token-goat: ≈${approxTokens(total).toLocaleString()} tokens saved`
+    : '$(gist-secret) token-goat'
+  savingsBar.tooltip = total > 0
+    ? `About ${approxTokens(total).toLocaleString()} tokens kept out of chat so far (${total.toLocaleString()} bytes compressed away; ~4 characters per token).`
+    : 'token-goat is ready. Compress something into chat and this counter shows what you saved.'
 }
 
 function recordSavings(payload: string): void {
@@ -135,7 +177,7 @@ function showStats(payload: string): void {
   const compact = /^compact_bytes: (\d+)$/m.exec(payload)
   if (!original || !compact) return
   void vscode.window.setStatusBarMessage(
-    `token-goat: ${original[1]} → ${compact[1]} bytes`, 5000,
+    `token-goat: ${original[1]} → ${compact[1]} bytes (≈${approxTokens(Number(original[1]) - Number(compact[1]))} tokens saved)`, 5000,
   )
 }
 
@@ -285,15 +327,17 @@ async function analyzeFolderPayload(target?: vscode.Uri): Promise<string> {
 // Canned plain-language prompts: the source is the selection if one exists,
 // otherwise the clipboard (tickets usually arrive via copy-paste), otherwise
 // the active file.
+const PLAIN_STYLE = 'Rules for your answer: use short sentences; no jargon or acronyms without a one-line plain-English explanation; put the single most important point first; numbered steps for anything the person must do; under 150 words unless the content truly needs more.'
+
 const CANNED_PROMPTS: Record<string, string> = {
-  summarize: 'Summarize this in plain language for a non-technical reader.',
-  reply: 'Draft a polite, plain-language reply to the person who wrote this.',
-  actions: 'List the concrete action items in this, with who should do each.',
-  explain: 'Explain what went wrong here in plain language, and what to try first.',
-  kb: 'Turn this resolved ticket into a short knowledge-base article: problem, cause, fix, and how to prevent it.',
-  friendlier: 'Rewrite my text below to sound friendlier while keeping the meaning.',
-  shorter: 'Rewrite my text below to be as short as possible while keeping the key facts.',
-  formal: 'Rewrite my text below in a formal, professional tone.',
+  summarize: `Summarize this for a non-technical reader. ${PLAIN_STYLE} Start with one sentence answering "what is this about and does it need me to do something?"`,
+  reply: `Draft a polite reply to the person who wrote this. ${PLAIN_STYLE} The reply should sound like a helpful human, not a form letter.`,
+  actions: `List what needs to be done and who should do it. ${PLAIN_STYLE} Format: a numbered list, one action per line, each starting with a verb.`,
+  explain: `Explain this in plain language, whatever it is — an error, a changelog entry, a message, documentation. If the text describes a problem someone is hitting, include "What to do" (numbered steps, easiest first) and "If that doesn't work" (one line). If it does not describe a problem, just explain what it says and what it means for the reader — do not invent a problem, do not add steps, and do not remark on what kind of text it is. ${PLAIN_STYLE}`,
+  kb: `Turn this resolved ticket into a short knowledge-base article. ${PLAIN_STYLE} Sections: "The problem", "Why it happened", "How to fix it" (numbered steps), "How to avoid it next time".`,
+  friendlier: `Rewrite my text below so it sounds warm and friendly while keeping every fact. ${PLAIN_STYLE}`,
+  shorter: `Rewrite my text below as short as possible while keeping the key facts. ${PLAIN_STYLE}`,
+  formal: `Rewrite my text below in a formal, professional tone. Keep it clear — formal does not mean long sentences or big words.`,
 }
 
 async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<string> {
@@ -403,22 +447,31 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
     try {
+      await ensureDecoderSetup()
+      // A chat participant's reply is shown as the final answer — it never
+      // reaches the Copilot model, so streaming a compressed payload here
+      // would just display the blob. Instead, prefill the input box and let
+      // the user send it to the Copilot agent, which can decode it.
+      const handoff = async (question: string): Promise<void> => {
+        await openChat(question)
+        stream.markdown('Compressed and ready — press Enter in the input box to send it to Copilot (use Agent mode so it can decode the payload).')
+      }
       if (request.command === 'selection') {
-        stream.markdown(await compressSelectionPayload())
+        await handoff(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload()}`)
       } else if (request.command === 'context') {
-        stream.markdown(await compressSurgicalPayload())
+        await handoff(await compressSurgicalPayload())
       } else if (request.command === 'symbol') {
-        stream.markdown(await compressSymbolPayload())
+        await handoff(await compressSymbolPayload())
       } else if (request.command === 'file') {
-        stream.markdown(await compressFilePayload())
+        await handoff(await compressFilePayload())
       } else if (request.command === 'diff') {
-        stream.markdown(await compressDiffPayload())
+        await handoff(await compressDiffPayload())
       } else if (request.command === 'paste') {
-        stream.markdown(await compressClipboardPayload())
+        await handoff(await compressClipboardPayload())
       } else if (request.command === 'errors') {
-        stream.markdown(await compressErrorsPayload())
+        await handoff(await compressErrorsPayload())
       } else if (request.command && request.command in CANNED_PROMPTS) {
-        stream.markdown(await cannedPromptPayload(request.command))
+        await handoff(await cannedPromptPayload(request.command))
       } else {
         stream.markdown(
           'Ask me to shrink something before it goes into chat. Subcommands: ' +
