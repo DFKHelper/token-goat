@@ -338,13 +338,11 @@ function detectSkillFile(filePath: string): string | null {
 }
 
 /**
- * Compute a compact unified-style diff between two versions of a doc file.
+ * Compute a compact unified-style diff between two versions of a doc file, reporting whether the body had to be truncated.
  *
- * Strips the common prefix/suffix to isolate the changed region, then formats
- * it as a truncated unified diff (at most 50 changed lines). Returns '' when
- * the contents are identical.
+ * Strips the common prefix/suffix to isolate the changed region, then formats it as a truncated unified diff (at most 50 changed lines). `text` is '' when the contents are identical. `truncated` is true when the changed region did not fit in the 50-line cap, i.e. the body deliberately omits changed lines -- callers that decide whether to serve the diff INSTEAD of the file must consult it, because the omitted lines are content the reader still needs (see {@link loadSnapshotDiff}).
  */
-export function buildLineDiff(oldContent: string, newContent: string, label: string): string {
+function buildLineDiffDetailed(oldContent: string, newContent: string, label: string): { readonly text: string; readonly truncated: boolean } {
   const oldLines = oldContent.split('\n')
   const newLines = newContent.split('\n')
 
@@ -362,7 +360,7 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
     newSuffix--
   }
 
-  if (prefix === oldLines.length && prefix === newLines.length) return ''
+  if (prefix === oldLines.length && prefix === newLines.length) return { text: '', truncated: false }
 
   const changedOld = oldLines.slice(prefix, oldSuffix)
   const changedNew = newLines.slice(prefix, newSuffix)
@@ -387,14 +385,20 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
     `@@ -${prefix + 1},${shownRemoved} +${prefix + 1},${shownAdded} @@`,
   ]
 
-  if (allChanges.length <= MAX_LINES) {
+  const truncated = allChanges.length > MAX_LINES
+  if (!truncated) {
     out.push(...allChanges)
   } else {
     out.push(...allChanges.slice(0, MAX_LINES))
     out.push(`... (${allChanges.length - MAX_LINES} more changed lines)`)
   }
 
-  return out.join('\n')
+  return { text: out.join('\n'), truncated }
+}
+
+/** String-only view of {@link buildLineDiffDetailed}, for the display-only callers (`cli.ts`'s history/restore previews, `confirm_apply.ts`'s change preview) that render a diff alongside the content rather than in place of it, and so do not care whether the body was truncated. */
+export function buildLineDiff(oldContent: string, newContent: string, label: string): string {
+  return buildLineDiffDetailed(oldContent, newContent, label).text
 }
 
 type SnapshotDiffResult =
@@ -425,8 +429,10 @@ function loadSnapshotDiff(sessionId: string, normalized: string, basename: strin
     const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
     const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
     if (oldContent === currentContent) return { kind: 'unchanged', currentContent }
-    const diff = buildLineDiff(oldContent, currentContent, basename)
+    const { text: diff, truncated } = buildLineDiffDetailed(oldContent, currentContent, basename)
     if (diff === '') return { kind: 'none' }
+    // A truncated body is never servable in place of the file. savedBytes below is measured against the diff TEXT, so every changed line the 50-line cap omits makes the diff shorter and the apparent saving larger -- the widest changes would clear the savings floor most easily while hiding the most content, and the caller's "Here is what changed" wording would be false. Fail soft to 'none' so the caller falls through to its generic re-read handling, exactly as it already does when a diff misses the savings floor.
+    if (truncated) return { kind: 'none' }
     const savedBytes = Math.max(0, currentContent.length - diff.length)
     return { kind: 'diff', diff, savedBytes, currentContent }
   } catch {

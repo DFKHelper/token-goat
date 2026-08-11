@@ -2539,6 +2539,54 @@ Some content that makes the file large enough`
     })
   })
 
+  // A .md file needs no serve_diff_on_reread flag (isDocDiffable is unconditional), so this exercises shipped default behavior. buildLineDiff caps its body at 50 changed lines; because savedBytes was derived from the already-truncated diff text, withholding MORE content made the computed saving LARGER, so the widest changes cleared the savings floor most easily and were served as "Here is what changed" while hiding most of what changed.
+  function manyLineDoc(midValue: string): string {
+    const head = Array.from({ length: 100 }, (_, i) => `Stable heading line ${i} with enough text to give the file real byte weight.`)
+    const middle = Array.from({ length: 100 }, (_, i) => `Changed body line ${i}: ${midValue} -- padded so the diff body is not trivially small.`)
+    const tail = Array.from({ length: 100 }, (_, i) => `Trailing line ${i} with enough text to give the file real byte weight.`)
+    return [...head, ...middle, ...tail].join('\n') + '\n'
+  }
+
+  it('never serves a diff whose body was truncated, even though truncation makes the computed savings look enormous', () => {
+    withMinTokensSaved(1000, () => {
+      const content1 = manyLineDoc('original')
+      const p = tmpFileExt(content1, '.md')
+      snapshotFirstRead(p, content1)
+      // 100 contiguous changed lines -> 200 diff body lines, far past buildLineDiff's 50-line cap.
+      fs.writeFileSync(p, manyLineDoc('rewritten'))
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        // The message must not claim "here is what changed" while omitting most of what changed.
+        expect(result.message).not.toContain('```diff')
+        expect(result.message).not.toContain('more changed lines')
+        // Pin the branch it falls through to, so "no truncated diff" can't silently become "no output at all": the pre-existing markdown re-read deny, which redirects to a surgical read and leaves an escape hatch.
+        expect(result.message).toContain('Markdown file already read this session')
+        expect(result.message).toContain('token-goat section')
+      }
+    })
+  })
+
+  it('still serves a diff when the change fits inside the 50-line cap (the truncation guard is not a blanket kill-switch)', () => {
+    withMinTokensSaved(0, () => {
+      const base = Array.from({ length: 200 }, (_, i) => `Stable line ${i} with enough text to give the file real byte weight.`)
+      const content1 = base.join('\n') + '\n'
+      const p = tmpFileExt(content1, '.md')
+      snapshotFirstRead(p, content1)
+      const changed = [...base]
+      changed[100] = 'Stable line 100 REWRITTEN with enough text to give the file real byte weight.'
+      fs.writeFileSync(p, changed.join('\n') + '\n')
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('```diff')
+        expect(result.message).toContain('+Stable line 100 REWRITTEN')
+      }
+    })
+  })
+
   it('flag ON: serves "unchanged" with a section hint on re-read of an unchanged .css', () => {
     pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
