@@ -277,7 +277,7 @@ describe('built bundle end-to-end indexing', () => {
   it('index then symbol resolves a known symbol from the built bundle', () => {
     const idx = runBundle(['index', repo])
     expect(idx.status).toBe(0)
-    expect(idx.stdout).toMatch(/Indexed \d+ files/)
+    expect(idx.stdout).toMatch(/Indexed \d+ files? /)
 
     const sym = runBundle(['symbol', 'knownBundleSymbol'])
     expect(sym.status).toBe(0)
@@ -553,7 +553,7 @@ describe('built bundle non-git walk-index (--walk)', () => {
       // --force-walk implies --walk, raises the cap, and still excludes .env.
       const idx = runBundle(['index', '--force-walk', walkDir])
       expect(idx.status).toBe(0)
-      expect(idx.stdout).toMatch(/Indexed 1 files/)
+      expect(idx.stdout).toMatch(/Indexed 1 file into/)
       expect(idx.stderr).toMatch(/--force-walk raised the walk cap/)
 
       const sym = runBundle(['symbol', 'walkE2ESymbol'])
@@ -659,7 +659,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
 
     const idx = runRel(['index', '.'])
     expect(idx.status).toBe(0)
-    expect(idx.stdout).toMatch(/Indexed \d+ files/)
+    expect(idx.stdout).toMatch(/Indexed \d+ files? /)
   }, 60000)
 
   afterAll(() => {

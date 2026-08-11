@@ -76,7 +76,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     restoreTty = setTty(false)
     const { dir, dbPath } = makeTestDir('tg-idxprog-plain-')
     const { stdout, stderr } = await withStdoutStderrCapture(() => cmdIndex(dir, { walk: true, dbPath }))
-    expect(stdout).toMatch(/^Indexed \d+ files into the symbol index\.\n?$/)
+    expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     expect(stderr).toBe('')
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -91,7 +91,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     restoreTty = setTty(undefined)
     const { dir, dbPath } = makeTestDir('tg-idxprog-ci-')
     const { stdout, stderr } = await withStdoutStderrCapture(() => cmdIndex(dir, { walk: true, dbPath }))
-    expect(stdout).toMatch(/^Indexed \d+ files into the symbol index\.\n?$/)
+    expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     expect(stderr).toBe('')
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -106,7 +106,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     restoreTty = setTty(true)
     const { dir, dbPath } = makeTestDir('tg-idxprog-nocolor-')
     const { stdout, stderr } = await withStdoutStderrCapture(() => cmdIndex(dir, { walk: true, dbPath }))
-    expect(stdout).toMatch(/^Indexed \d+ files into the symbol index\.\n?$/)
+    expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     expect(stderr).toBe('')
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -121,7 +121,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     restoreTty = setTty(true)
     const { dir, dbPath } = makeTestDir('tg-idxprog-tty-')
     const { stdout, stderr } = await withStdoutStderrCapture(() => cmdIndex(dir, { walk: true, dbPath }))
-    expect(stdout).toMatch(/^Indexed \d+ files into the symbol index\.\n?$/)
+    expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     // At least one progress repaint was written to stderr, carrying the done/total shape.
     expect(stderr).toMatch(/\d+\/2 files/)
     // The last thing written to stderr before the process moved on must be a line-clear (carriage
@@ -143,7 +143,7 @@ describe('cmdIndex manual-run progress reporting', () => {
     restoreTty = setTty(undefined)
     const { dir, dbPath } = makeTestDir('tg-idxprog-cc-')
     const { stdout } = await withStdoutStderrCapture(() => cmdIndex(dir, { walk: true, dbPath }))
-    expect(stdout).toMatch(/^Indexed \d+ files into the symbol index\.\n?$/)
+    expect(stdout).toMatch(/^Indexed \d+ files? into the symbol index\.\n?$/)
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {

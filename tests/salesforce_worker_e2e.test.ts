@@ -185,7 +185,7 @@ describe('Salesforce DX built bundle smoke', () => {
 
     const indexed = runBundle(repo, dataBase, ['index', repo])
     expect(indexed.status, indexed.stderr).toBe(0)
-    expect(indexed.stdout).toMatch(/Indexed \d+ files/)
+    expect(indexed.stdout).toMatch(/Indexed \d+ files? /)
 
     // Exercise every user-visible read seam against the shipped bundle, not only the adapter.
     const apexFile = 'force-app/main/default/classes/SafeNavigationService.cls'

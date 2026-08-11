@@ -121,7 +121,7 @@ describe('token savings regression benchmark', () => {
 
     const indexed = runBundle(repo, dataBase, ['index', repo])
     expect(indexed.status, indexed.stderr).toBe(0)
-    expect(indexed.stdout).toMatch(/Indexed \d+ files/)
+    expect(indexed.stdout).toMatch(/Indexed \d+ files? /)
 
     const results: Array<{ label: string; fullBytes: number; outputBytes: number; percent: number; floor: number }> = []
 

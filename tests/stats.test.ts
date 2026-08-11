@@ -610,6 +610,57 @@ describe('stats', () => {
       expect(output).toContain('1 recorded outside this window')
     })
 
+    // --window-days 1 is a reachable flag value, and the window label used to read "last 1 days".
+    // A 30-day assertion passes whether or not the singular branch works, so pin count==1 directly.
+    it('renders "last 1 day", not "last 1 days", when --window-days is 1', () => {
+      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-window-one-'))
+      const platform = process.platform
+      const homeDataDir =
+        platform === 'win32'
+          ? path.join(customHome, 'AppData', 'Local', 'dfk-helper', 'token-goat')
+          : platform === 'darwin'
+            ? path.join(customHome, 'Library', 'Application Support', 'token-goat')
+            : path.join(customHome, '.local', 'share', 'token-goat')
+      fs.mkdirSync(homeDataDir, { recursive: true })
+      const dbPath = path.join(homeDataDir, 'global.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+      const sixtyDaysAgo = Math.floor(Date.now() / 1000) - 60 * 24 * 60 * 60
+      db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)').run(sixtyDaysAgo, 'symbol_read', 100, 20)
+      db.close()
+
+      let output = ''
+      const originalLog = console.log
+      const origIsTty = process.stdout.isTTY
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+      console.log = (msg: string) => {
+        output += msg + '\n'
+      }
+
+      try {
+        _renderStats({ windowDays: 1, homeDir: customHome })
+      } finally {
+        console.log = originalLog
+        Object.defineProperty(process.stdout, 'isTTY', { value: origIsTty, configurable: true })
+        closeAllDbs()
+        fs.rmSync(customHome, { recursive: true, force: true })
+      }
+
+      expect(output).toContain('No stats in the last 1 day (')
+      expect(output).not.toContain('last 1 days')
+    })
+
     it('formats and prints stats summary', () => {
       const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-summary-'))
       const platform = process.platform

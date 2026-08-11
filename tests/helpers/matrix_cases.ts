@@ -206,7 +206,7 @@ export function setupMatrixFixture(): void {
 
   const idx = run(['index', '.'])
   expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
-  expect(idx.stdout).toMatch(/Indexed \d+ files/)
+  expect(idx.stdout).toMatch(/Indexed \d+ files? /)
 }
 
 export function cleanupMatrixFixture(): void {
@@ -242,7 +242,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
   index: () => {
     const r = run(['index', '.'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toMatch(/Indexed \d+ files/)
+    expect(r.stdout).toMatch(/Indexed \d+ files? /)
   },
   symbol: () => {
     expectRead(['symbol', 'alphaSym'], 'alphaSym')
@@ -293,7 +293,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // handler forwarding, not just the in-process unit tests.
     const stats = run(['symbol', 'alphaSym', '--stats'])
     expect(stats.status, stats.stderr).toBe(0)
-    expect(stats.stdout).toMatch(/\[\d+ refs, (un)?documented\]/)
+    expect(stats.stdout).toMatch(/\[\d+ refs?, (un)?documented\]/)
   },
   read: () => {
     expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1')
@@ -314,7 +314,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // just the in-process unit tests.
     const stats = run(['read', 'src/mod.ts::alphaSym', '--stats'])
     expect(stats.status, stats.stderr).toBe(0)
-    expect(stats.stdout).toMatch(/\[\d+ refs, (un)?documented\]/)
+    expect(stats.stdout).toMatch(/\[\d+ refs?, (un)?documented\]/)
     // file::symbol@LINE anchor, round-tripped through the real built bundle. `dupfile.ts`
     // deliberately has two definitions named 'dup' (a class method and a top-level function) --
     // the ambiguity error's own suggested retry is parsed out and re-run rather than hardcoding
@@ -362,7 +362,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expectRead(['skeleton', 'src/mod.ts'], 'alphaSym')
     const r = run(['skeleton', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toMatch(/\d+ refs/)
+    expect(r.stdout).toMatch(/\d+ refs?/)
     // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
     // Same flag on skeleton, exercised on the shipping bundle rather than only in unit tests.
     const skGrep = run(['skeleton', 'src/mod.ts', '--grep', 'alphaSym'])
@@ -379,7 +379,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expectRead(['outline', 'src/mod.ts'], 'alphaSym')
     const r = run(['outline', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toMatch(/\d+ refs/)
+    expect(r.stdout).toMatch(/\d+ refs?/)
     // Comma-separated multi-file spec: both files reported, each with a symbol unique to it.
     // A multi-file spec with --json must be ONE parseable document, not two concatenated ones.
     const multiJson = run(['outline', 'src/mod.ts,caller.ts', '--json'])

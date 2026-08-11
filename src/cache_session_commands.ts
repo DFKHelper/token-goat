@@ -14,7 +14,7 @@ import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, loadSessionCache, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
 import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
-import { ensureNewline, pad, requireNonNegativeStrictInt } from './util.js'
+import { ensureNewline, pad, requireNonNegativeStrictInt, countNoun } from './util.js'
 import { loadConfig } from './config.js'
 
 function emitErr(text: string): void {
@@ -380,7 +380,7 @@ export function cmdCompactHint(opts: { sessionId?: string; trigger?: string; jso
   }
   process.stdout.write(`Compact hint — context: ${pressure.tier} (${pct}% full)\n`)
   if (sessionId !== null) process.stdout.write(`Session: ${sessionId}\n`)
-  process.stdout.write(`Manifest: ${manifestTokens} tokens, ${eventCount} events\n`)
+  process.stdout.write(`Manifest: ${manifestTokens} tokens, ${countNoun(eventCount, 'event')}\n`)
   if (opts.trigger === 'auto') {
     const remaining = Math.max(0, Math.round((1 - pressure.fillFraction) * CONTEXT_AUTOCOMPACT_TOKENS))
     process.stdout.write(`Auto-compact at ${CONTEXT_AUTOCOMPACT_TOKENS.toLocaleString()} tokens; ~${remaining.toLocaleString()} remaining\n`)
