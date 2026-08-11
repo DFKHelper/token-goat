@@ -246,10 +246,12 @@ function cmdContentCompress(text: string | undefined, opts: { file?: string; pay
   out(formatCompression(compressText(readBoundedText(text, opts.file)), opts.payload === true))
 }
 
-function cmdRetrieve(id: string): void {
+function cmdRetrieve(id: string, opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean }): void {
   const text = retrieveText(id)
   if (text === null) throw new CliError(`no token-goat content for id: ${id}. The local cache may have expired.`)
-  out(text)
+  // retrieve is the lossless round-trip for compress-text; other commands print `recovery: token-goat retrieve <id>` promising the original bytes back, so with no narrowing flag it must stay byte-verbatim -- only opt into sibling head/tail elision once the caller explicitly asks for a slice.
+  const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.full !== true
+  _applyFiltersAndPrint(text, noNarrowing ? { ...opts, full: true } : opts)
 }
 
 function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?: string }): void {
@@ -3088,6 +3090,12 @@ export function buildProgram(): Command {
   program
     .command('retrieve <id>')
     .description('retrieve original text previously stored by token-goat compress')
+    .option('--head <n>', 'show first N lines')
+    .option('--tail <n>', 'show last N lines')
+    .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
+    .option('--section <heading>', 'extract a specific section from the retrieved text')
+    .option('--full', 'print the entire retrieved text with no head/tail elision (default behaviour when no other flag is given)')
     .action(guard(cmdRetrieve))
 
   program
