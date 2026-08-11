@@ -351,6 +351,114 @@ describe('cmdConfig layer attribution', () => {
     }
   })
 
+  /** Set `vars` for the duration of `fn`, restoring exactly (including previously-unset) afterwards. */
+  function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
+    const prev = new Map(Object.keys(vars).map((k) => [k, process.env[k]]))
+    Object.assign(process.env, vars)
+    invalidateConfigCache()
+    try {
+      return fn()
+    } finally {
+      for (const [k, v] of prev) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      invalidateConfigCache()
+    }
+  }
+
+  it('state env-invalid: an out-of-range env var is reported as clamped, not as being in effect', () => {
+    // The exact asymmetry this pair closes: an env var and a project file that both supply an out-of-range value are the same situation, and reading back "# from $VAR" tells someone who set 99999999 that 99999999 is what they got.
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '99999999' }, () => {
+      const text = bothText('hints.min_file_lines_for_hint')
+      expect(text.get).toBe('1000000  # $TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT sets 99999999 (outside the allowed range 0-1000000), not in effect; using 1000000')
+      expect(text.listLine).toBe('hints.min_file_lines_for_hint = 1000000  # $TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT sets 99999999 (outside the allowed range 0-1000000), not in effect; using 1000000')
+      const json = bothJson('hints.min_file_lines_for_hint')
+      expect(json.get['source']).toBe('env_invalid')
+      expect(json.get['envValue']).toBe(99999999)
+      expect(json.get['reason']).toBe('outside the allowed range 0-1000000')
+      // Not overloaded onto source:'env' -- the value in effect is not what the variable asked for.
+      expect(json.get['source']).not.toBe('env')
+      expect(json.listSource).toEqual({ source: 'env_invalid', envVar: 'TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT', envValue: 99999999, reason: 'outside the allowed range 0-1000000' })
+    })
+  })
+
+  it('state env-invalid: an unparseable or empty env var is reported as contributing nothing', () => {
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: 'abc' }, () => {
+      const text = bothText('hints.min_file_lines_for_hint')
+      // envInt rejects a non-integer string outright and falls back, so the variable is set and yet supplies nothing at all -- previously indistinguishable from it having been applied.
+      expect(text.get).toContain('$TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT sets "abc"')
+      expect(text.get).toContain('expected a number, got a string')
+      expect(text.get).toContain('not in effect')
+      expect(bothJson('hints.min_file_lines_for_hint').get['source']).toBe('env_invalid')
+    })
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '   ' }, () => {
+      expect(bothText('hints.min_file_lines_for_hint').get).toContain('(empty)')
+      expect(bothJson('hints.min_file_lines_for_hint').get['reason']).toBe('empty')
+    })
+  })
+
+  it('state env-invalid: a boolean env var set to a non-boolean word is reported, not silently dropped', () => {
+    withEnv({ TOKEN_GOAT_COMPACT_ASSIST: 'maybe' }, () => {
+      const text = bothText('compact_assist.enabled')
+      expect(text.get).toContain('$TOKEN_GOAT_COMPACT_ASSIST sets "maybe"')
+      expect(text.get).toContain('expected a boolean, got a string')
+      expect(bothJson('compact_assist.enabled').get['source']).toBe('env_invalid')
+    })
+  })
+
+  it('state env: an env var whose value parses to exactly what is already in effect is in-effect, not rejected', () => {
+    // The in-effect condition is equality with the effective value, not "the variable changed something". Reporting this as rejected would be the mirror-image false alarm of the bug being fixed.
+    const already = bothText('hints.min_file_lines_for_hint').get
+    expect(already).not.toContain('#')
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: already }, () => {
+      expect(bothText('hints.min_file_lines_for_hint').get).toBe(`${already}  # from $TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT`)
+      expect(bothJson('hints.min_file_lines_for_hint').get['source']).toBe('env')
+    })
+    // Same value, spelled with surrounding whitespace the way a shell export easily produces: envInt trims before parsing, so this is still the in-effect state.
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: ` ${already} ` }, () => {
+      expect(bothJson('hints.min_file_lines_for_hint').get['source']).toBe('env')
+    })
+  })
+
+  it('state global: an unset env var leaves an env-overridable key byte-identical', () => {
+    expect(process.env['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT']).toBeUndefined()
+    const text = bothText('hints.min_file_lines_for_hint')
+    expect(text.get).not.toContain('#')
+    expect(text.listLine).not.toContain('#')
+    const json = bothJson('hints.min_file_lines_for_hint')
+    expect(json.get['source']).toBe('global')
+    expect(json.listSource).toBeUndefined()
+  })
+
+  it('config set names both values when a clamped env var still shadows the save', () => {
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '99999999' }, () => {
+      cmdConfig({ action: 'set', key: 'hints.min_file_lines_for_hint', value: '7' })
+      expect(capturedErr()).toContain('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT is currently set to 99999999')
+      expect(capturedErr()).toContain('taking effect as 1000000')
+      expect(capturedErr()).toContain('outside the allowed range 0-1000000')
+    })
+  })
+
+  it('config validate reports a clamped env var, and stays clean when the env value is fine', () => {
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '99999999' }, () => {
+      cmdConfig({ action: 'validate', json: true })
+      const findings = (JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }> }).findings
+      const f = findings.find((x) => x.kind === 'env_value_ignored')
+      expect(f?.key).toBe('hints.min_file_lines_for_hint')
+      expect(f?.suggestion).toBe('$TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT is 99999999 (outside the allowed range 0-1000000); in effect: 1000000')
+      expect(process.exitCode).toBe(1)
+      process.exitCode = 0
+    })
+    stdoutLines.length = 0
+    withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '42' }, () => {
+      cmdConfig({ action: 'validate', json: true })
+      const findings = (JSON.parse(captured()) as { findings: Array<{ kind: string }> }).findings
+      // An in-range env var is not a finding -- flagging every env override would make the gate useless.
+      expect(findings.some((x) => x.kind === 'env_value_ignored')).toBe(false)
+    })
+  })
+
   it('the two causes of "project raw value differs from effective value" produce different output', () => {
     // Both arms below have project raw != effective. If the implementation collapses them into one state, one of these two assertions must fail -- neither arm can pass with the other's rendering.
     const rejected = inProjectDir('[hints]\nmin_file_lines_for_hint = 99999999\n', () => bothText('hints.min_file_lines_for_hint').get)

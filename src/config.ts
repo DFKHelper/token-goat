@@ -4,7 +4,7 @@ import { parse, stringify } from 'smol-toml'
 
 import { KNOWN_HARNESS_NAMES } from './bridges/registry.js'
 import { configPath, projectConfigPath } from './constants.js'
-import { envBool, envInt, envStr } from './env.js'
+import { envBool, envInt, envStr, TRUTHY_ENV_VALUES, FALSY_ENV_VALUES } from './env.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
@@ -887,6 +887,7 @@ function rawValueEquals(a: unknown, b: unknown): boolean {
 export type ConfigKeyLayer =
   | { layer: 'global' }
   | { layer: 'env'; envVar: string }
+  | { layer: 'env-invalid'; envVar: string; rawValue: unknown; effectiveValue: unknown; reason: string | null }
   | { layer: 'project'; path: string }
   | { layer: 'project-invalid'; path: string; rawValue: unknown; effectiveValue: unknown; reason: string | null }
   | { layer: 'project-unparsed'; path: string; parseError: string }
@@ -914,6 +915,44 @@ function rejectionReason(key: string, rawValue: unknown, effectiveValue: unknown
 }
 
 /**
+ * What an env var's string would become under the same coercion `_buildConfig` applies to it,
+ * BEFORE any bounds clamping — so the caller can compare what was asked for against what took
+ * effect and tell "clamped" from "in effect".
+ *
+ * Mirrors env.ts's envInt/envBool/envStr deliberately rather than calling them, because those
+ * return the fallback on a value they cannot use, which is indistinguishable from that value
+ * having been accepted. The three outcomes here keep that distinction:
+ *   - `null`      — this field's type has no env coercion this function can reproduce faithfully;
+ *                   the caller must not claim anything about whether the value took effect.
+ *   - `'unusable'` — the helper would reject the string outright and fall back, so the variable
+ *                   contributes nothing at all despite being set.
+ *   - `{ parsed }` — the pre-clamp value the helper would derive.
+ *
+ * Numeric fields assume the integer parse (envInt), which holds because every numeric key in
+ * CONFIG_KEY_ENV_OVERRIDES is integer-bounded; tests/guards/env_numeric_fields_are_integer.test.ts
+ * fails if a float-bounded field ever gains an env override, rather than letting this silently
+ * start calling valid floats unusable.
+ */
+function coerceEnvLike(rawStr: string, effectiveValue: unknown): { parsed: unknown } | 'unusable' | null {
+  const norm = rawStr.trim()
+  if (typeof effectiveValue === 'number') {
+    if (norm === '' || !/^[+-]?\d+$/.test(norm)) return 'unusable'
+    const val = parseInt(norm, 10)
+    return Number.isFinite(val) ? { parsed: val } : 'unusable'
+  }
+  if (typeof effectiveValue === 'boolean') {
+    const lower = norm.toLowerCase()
+    if (TRUTHY_ENV_VALUES.has(lower)) return { parsed: true }
+    if (FALSY_ENV_VALUES.has(lower)) return { parsed: false }
+    return 'unusable'
+  }
+  if (typeof effectiveValue === 'string') {
+    return norm === '' ? 'unusable' : { parsed: norm }
+  }
+  return null
+}
+
+/**
  * Resolve which layer the effective value of `key` came from.
  *
  * Precedence mirrors the real load order (defaults -> config.toml -> .token-goat.toml -> env),
@@ -932,7 +971,19 @@ function rejectionReason(key: string, rawValue: unknown, effectiveValue: unknown
  */
 export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg: Record<string, unknown>, projectInfo: ProjectConfigInfo | null): ConfigKeyLayer {
   const envVar = (CONFIG_KEY_ENV_OVERRIDES[key] ?? []).find((name) => process.env[name] !== undefined)
-  if (envVar !== undefined) return { layer: 'env', envVar }
+  if (envVar !== undefined) {
+    // Being set is not the same as being in effect -- the exact distinction this resolver exists to draw for the project layer, and the env layer needs it for the identical reason: an env var holding an out-of-range value is clamped, and reporting a bare "from $VAR" tells a reader who set 99999999 that 99999999 is what they got.
+    const rawStr = process.env[envVar] ?? ''
+    const judged = coerceEnvLike(rawStr, effectiveValue)
+    // Type this function cannot coerce faithfully (today: the one number[] field). Claiming either "in effect" or "rejected" would be a guess, so report the layer and stop -- same policy as rejectionReason returning null rather than inventing a cause.
+    if (judged === null) return { layer: 'env', envVar }
+    if (judged === 'unusable') {
+      // Set but unparseable, so the variable contributed nothing and the effective value came from a lower layer. Reported as env rather than as that lower layer on purpose: "why is my variable not working" is the question this state exists to answer, and the lower layer is visible from the value itself.
+      return { layer: 'env-invalid', envVar, rawValue: rawStr, effectiveValue, reason: rawStr.trim() === '' ? 'empty' : rejectionReason(key, rawStr, effectiveValue, cfg) }
+    }
+    if (rawValueEquals(judged.parsed, effectiveValue)) return { layer: 'env', envVar }
+    return { layer: 'env-invalid', envVar, rawValue: judged.parsed, effectiveValue, reason: rejectionReason(key, judged.parsed, effectiveValue, cfg) }
+  }
   if (projectInfo === null) return { layer: 'global' }
   if (projectInfo.parseError !== null) return { layer: 'project-unparsed', path: projectInfo.path, parseError: projectInfo.parseError }
   if (!Object.prototype.hasOwnProperty.call(projectInfo.values, key)) return { layer: 'global' }
