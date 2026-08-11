@@ -22,6 +22,7 @@ import {
   runOutline,
   runSemantic,
   runRefs,
+  runBrief,
   runChanged,
   runGrep,
   runImports,
@@ -338,6 +339,39 @@ export function createMcpServer(): McpServer {
           ...(json === true ? { json: true } : {}),
           ...(limit !== undefined ? { limit } : {}),
           ...(top !== undefined ? { top } : {}),
+        }),
+      )
+    },
+  )
+
+  server.registerTool(
+    'brief',
+    {
+      description:
+        'One-shot symbol orientation: signature, location, token count, body, callers, and containing doc section, in a single call ' +
+        '(spec: file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported -- ' +
+        'unlike refs, a bare symbol name with no file is not accepted). ' +
+        'Prefer this over separate read + refs calls when the goal is to understand a symbol, not just fetch its source: it folds the ' +
+        'work of read (body) and refs --callers (call sites) into one result, at a fraction of the combined round-trip cost.',
+      inputSchema: {
+        spec: z
+          .string()
+          .describe('file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported'),
+        limit: z.number().int().positive().optional().describe('max callers to show (default: 20)'),
+        json: z.boolean().optional().describe('output as JSON'),
+        context: z.number().int().nonnegative().optional().describe('lines of call-site source to show before and after each caller (default 0)'),
+        excludeTests: z.boolean().optional().describe('hide callers whose call site lives in a test file (opt-in; default output is unchanged)'),
+      },
+    },
+    (args) => {
+      const { spec, limit, json, context, excludeTests } = args
+      return toCallToolResultFromExitCode(() =>
+        runBrief({
+          spec,
+          ...(json === true ? { json: true } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          ...(context !== undefined ? { context } : {}),
+          ...(excludeTests === true ? { excludeTests: true } : {}),
         }),
       )
     },

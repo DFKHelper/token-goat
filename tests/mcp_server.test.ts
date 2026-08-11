@@ -8,7 +8,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { buildProjectMap, formatProjectMap } from '../src/baseline.js'
 import { createMcpServer } from '../src/mcp_server.js'
-import { runOutline, runRead, runSection, runSkeleton, runRefs, runChanged, runGrep, runImports, runExports } from '../src/read_commands.js'
+import { runOutline, runRead, runSection, runSkeleton, runRefs, runBrief, runChanged, runGrep, runImports, runExports } from '../src/read_commands.js'
 import { runGit } from '../src/util.js'
 
 const TOOL_NAMES = [
@@ -19,6 +19,7 @@ const TOOL_NAMES = [
   'skeleton',
   'semantic',
   'refs',
+  'brief',
   'map',
   'changed',
   'grep',
@@ -294,6 +295,28 @@ describe('mcp_server', () => {
     // line reads "fixture.ts:<n>: caller" rather than literally containing "helper".
     expect(block.text).toContain('fixture.ts')
     expect(block.text).toContain('caller')
+  })
+
+  it('calls the brief tool against a real fixture file and matches runBrief()\'s own captured output', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-brief-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, 'function helper() {\n  return 1\n}\n\nfunction caller() {\n  return helper() + helper()\n}\n')
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying.
+    runSkeleton({ file: fixture, forceRefresh: true })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const spec = `${fixture}::helper`
+    const result = await client.callTool({ name: 'brief', arguments: { spec } })
+    const expected = captureStdout(() => runBrief({ spec }))
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toBe(expected.text)
+    expect(block.text).toContain('fixture.ts')
+    expect(block.text).toContain('function helper()')
   })
 
   it('calls the map tool against a real fixture directory and matches buildProjectMap/formatProjectMap\'s own output', async () => {

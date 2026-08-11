@@ -1859,6 +1859,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`)
       })
       expect(toolNames.sort()).toEqual([
+        'brief',
         'changed',
         'compress_text',
         'exports',
