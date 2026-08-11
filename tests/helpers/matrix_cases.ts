@@ -197,6 +197,10 @@ export function setupMatrixFixture(): void {
     path.join(repo, 'src', 'mod.ts'),
     'export function gammaSym(): number {\n  return 3\n}\n',
   )
+  // ...and one test file, so `changed --exclude-tests` has something to actually hide. A trailing
+  // comment rather than a new function on purpose: it puts a test-file path in the file-mode diff
+  // without adding a symbol, so the hunk-scoping assertions on `--symbol` above stay untouched.
+  fs.appendFileSync(path.join(repo, 'exclcaller.test.ts'), '// touched by the second commit\n')
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
   git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'second'])
 
@@ -643,6 +647,28 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const grepBadRegex = run(['changed', '--since', 'HEAD~1', '--grep', '[unclosed'])
     expect(grepBadRegex.status, grepBadRegex.stderr).toBe(0)
     expect(grepBadRegex.stdout + grepBadRegex.stderr).not.toMatch(/unknown command|is not a function/)
+
+    // --exclude-tests through the real bundle. The second commit touched both src/mod.ts and
+    // exclcaller.test.ts, so the flag has something to hide -- asserting the test path is gone
+    // while the production one remains is what catches the flag being registered on the command
+    // but never forwarded into runChanged, which a byte-identical no-op check cannot see.
+    const exclOff = run(['changed', '--since', 'HEAD~1'])
+    expect(exclOff.status, exclOff.stderr).toBe(0)
+    expect(exclOff.stdout).toMatch(/exclcaller\.test\.ts/)
+    const exclOn = run(['changed', '--since', 'HEAD~1', '--exclude-tests'])
+    expect(exclOn.status, exclOn.stderr).toBe(0)
+    expect(exclOn.stdout).toMatch(/mod\.ts/)
+    expect(exclOn.stdout).not.toMatch(/exclcaller\.test\.ts/)
+
+    // Every zero-row path must stay parseable under --json: exit 0 with a prose body hands a
+    // consumer a success status it cannot read.
+    const jsonGrepEmpty = run(['changed', '--since', 'HEAD~1', '--grep', 'nomatch-zz-12345', '--json'])
+    expect(jsonGrepEmpty.status, jsonGrepEmpty.stderr).toBe(0)
+    expect(() => JSON.parse(jsonGrepEmpty.stdout)).not.toThrow()
+    expect((JSON.parse(jsonGrepEmpty.stdout) as { totalCount: number }).totalCount).toBe(0)
+    const jsonNoChange = run(['changed', '--since', 'HEAD', '--json'])
+    expect(jsonNoChange.status, jsonNoChange.stderr).toBe(0)
+    expect(() => JSON.parse(jsonNoChange.stdout)).not.toThrow()
   },
   diff: () => {
     // gammaSym was added by the second commit; alphaSym/betaSym are untouched by it.

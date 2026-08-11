@@ -5486,6 +5486,132 @@ describe('read_commands', () => {
       expect(arg.filePath).not.toBe(resolveIndexPath('subdir/touched.ts', subdir))
       expect(arg.filePath).not.toContain(path.join('subdir', 'subdir'))
     })
+
+    // --json emitting prose is a success status with an unparseable body: the caller gets exit 0
+    // and JSON.parse throws. `callers`/`dead`/`deps`/`types` were migrated to always emit the
+    // envelope; `changed` kept prose on all three of its zero-row paths. Each is pinned
+    // separately because they are three distinct early returns, not one shared branch.
+    describe('--json always emits a parseable envelope, never prose', () => {
+      function parse(stdout: string): { items: unknown[]; truncated: boolean; totalCount: number } {
+        return JSON.parse(stdout) as { items: unknown[]; truncated: boolean; totalCount: number }
+      }
+
+      it('emits an empty envelope, not "No files changed.", when nothing changed', () => {
+        gitOk('')
+        const { stdout } = capture(() => { expect(runChanged({ json: true })).toBe(0) })
+        expect(() => parse(stdout)).not.toThrow()
+        expect(parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
+      })
+
+      it('emits an empty envelope in --symbol mode when nothing changed', () => {
+        gitOk('')
+        const { stdout } = capture(() => { expect(runChanged({ json: true, symbolMode: true })).toBe(0) })
+        expect(() => parse(stdout)).not.toThrow()
+        expect(parse(stdout).items).toEqual([])
+      })
+
+      it('emits an empty envelope when --grep filters every changed file out', () => {
+        gitOk('src/a.ts\nsrc/b.ts\n')
+        const { stdout } = capture(() => { expect(runChanged({ ref: 'HEAD~1', json: true, grep: '^nomatch/' })).toBe(0) })
+        expect(() => parse(stdout)).not.toThrow()
+        // totalCount is the POST-filter count, matching the populated branch and the siblings --
+        // never the pre-filter 2, which would claim rows the payload does not carry.
+        expect(parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
+      })
+
+      it('emits an empty envelope when the changed files carry no indexed symbols', () => {
+        const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+        const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockQuerySymbols.mockReturnValue([])
+        const { stdout } = capture(() => { expect(runChanged({ json: true, symbolMode: true })).toBe(0) })
+        expect(() => parse(stdout)).not.toThrow()
+        expect(parse(stdout).items).toEqual([])
+      })
+
+      // Text mode is the control: the human notices must survive the migration verbatim, so this
+      // fix cannot be "made green" by deleting the prose branch outright.
+      it('keeps the human notices in text mode', () => {
+        gitOk('')
+        expect(capture(() => { runChanged({}) }).stdout).toContain('No files changed')
+        gitOk('src/a.ts\nsrc/b.ts\n')
+        const filtered = capture(() => { runChanged({ ref: 'HEAD~1', grep: '^nomatch/' }) })
+        expect(filtered.stdout + filtered.stderr).toContain('were filtered out by --grep')
+      })
+    })
+
+    // --exclude-tests: the last member of the refs/callers/dead/call-chain/impact/semantic/symbol
+    // family that lacked it. Filters the changed-FILE path, so it applies in --symbol mode too,
+    // exactly as --grep already documents for itself.
+    describe('--exclude-tests', () => {
+      it('drops changed test files and keeps the rest', () => {
+        gitOk('src/a.ts\ntests/a.test.ts\nsrc/b.spec.ts\n')
+        const { stdout } = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true })).toBe(0) })
+        expect(stdout).toContain('src/a.ts')
+        expect(stdout).not.toContain('tests/a.test.ts')
+        expect(stdout).not.toContain('src/b.spec.ts')
+      })
+
+      it('is byte-identical to the unfiltered output when omitted', () => {
+        gitOk('src/a.ts\ntests/a.test.ts\n')
+        const off = capture(() => { runChanged({ ref: 'HEAD~1' }) }).stdout
+        gitOk('src/a.ts\ntests/a.test.ts\n')
+        const explicitlyOff = capture(() => { runChanged({ ref: 'HEAD~1', excludeTests: false }) }).stdout
+        expect(explicitlyOff).toBe(off)
+        expect(off).toContain('tests/a.test.ts')
+      })
+
+      it('composes with --grep -- a file must satisfy both', () => {
+        gitOk('src/a.ts\nsrc/a.test.ts\ntests/b.ts\nvendor/c.ts\n')
+        const { stdout } = capture(() => { runChanged({ ref: 'HEAD~1', excludeTests: true, grep: '^src/' }) })
+        expect(stdout).toContain('src/a.ts')
+        expect(stdout).not.toContain('src/a.test.ts')
+        expect(stdout).not.toContain('tests/b.ts')
+        expect(stdout).not.toContain('vendor/c.ts')
+      })
+
+      it('names the hidden count and exits 0 when it filters everything out, rather than reading as "nothing changed"', () => {
+        gitOk('tests/a.test.ts\ntests/b.test.ts\n')
+        const result = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true })).toBe(0) })
+        const all = result.stdout + result.stderr
+        expect(all).toContain('2 in test files hidden by --exclude-tests')
+        expect(all).not.toContain('No files changed')
+      })
+
+      // Singular branch pinned separately: a fixture landing on count===1 is otherwise never
+      // asserted, which is exactly how "1 in test files" shipped across the rest of the family.
+      it('uses singular wording when exactly one test file was hidden', () => {
+        gitOk('tests/only.test.ts\n')
+        const result = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true })).toBe(0) })
+        const all = result.stdout + result.stderr
+        expect(all).toContain('1 in test file hidden by --exclude-tests')
+        expect(all).not.toContain('1 in test files')
+      })
+
+      it('emits an empty envelope under --json when it filters everything out', () => {
+        gitOk('tests/a.test.ts\n')
+        const { stdout } = capture(() => { expect(runChanged({ ref: 'HEAD~1', excludeTests: true, json: true })).toBe(0) })
+        expect(() => JSON.parse(stdout)).not.toThrow()
+        expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
+      })
+
+      it('applies in --symbol mode, where it filters the file path', () => {
+        const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: 'a.ts\ntests/a.test.ts\n', stderr: '' }
+        const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockQuerySymbols.mockReturnValue([])
+        capture(() => { runChanged({ symbolMode: true, excludeTests: true }) })
+        // The test file must never reach the index query at all -- filtering the rendered output
+        // instead would still pay the lookup and still leak via any file-level side effect.
+        for (const call of mockQuerySymbols.mock.calls) {
+          expect((call[0] as { filePath?: string }).filePath ?? '').not.toContain('a.test.ts')
+        }
+      })
+    })
   })
 
   // ---- runDiff --------------------------------------------------------------
@@ -6399,6 +6525,20 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
     const all = result.stdout + result.stderr
     expect(all).toContain('all 2 references were filtered out by --grep')
     expect(all).not.toContain('no references found')
+  })
+
+  // The same branch under --json handed the caller exit 0 plus an unparseable prose body, the
+  // defect already fixed for callers/dead/deps/types. Text mode above is the control.
+  it('emits an empty envelope under --json when --grep filters every reference out', () => {
+    const rows = [ref('src/a.ts', 1, 'f()'), ref('src/b.ts', 2, 'f()')]
+    mockQueryRefs.mockReturnValue(rows)
+    mockCountRefs.mockReturnValue(rows.length)
+    const { stdout } = capture(() => {
+      expect(runRefs({ spec: 'f', grep: '^nomatch/', json: true })).toBe(0)
+    })
+    expect(() => JSON.parse(stdout)).not.toThrow()
+    // totalCount is the post-filter count, never the pre-filter 2.
+    expect(JSON.parse(stdout)).toEqual({ items: [], truncated: false, totalCount: 0 })
   })
 
   // Singular count branch: a bug shipped once where every fixture happened to filter 2+ items, leaving the count === 1 branch unasserted -- this pins both the verb ("was") and the noun ("reference", not "references").
