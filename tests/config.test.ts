@@ -742,6 +742,41 @@ describe('cross-field config clamping', () => {
     }
   })
 
+  // The static guard in tests/guards/hints_env_override_coverage.test.ts proves each new env override LINE exists; these prove the vars actually reach loadConfig() at runtime, one per helper type (envInt/envBool/envStr), including the cache-fingerprint path the earlier ENV_KEYS drift broke.
+  function withEnv<T>(key: string, value: string, fn: () => T): T {
+    const orig = process.env[key]
+    try {
+      process.env[key] = value
+      return fn()
+    } finally {
+      if (orig === undefined) delete process.env[key]
+      else process.env[key] = orig
+    }
+  }
+
+  it('TOKEN_GOAT_PROTECT_RECENT_READS overrides hints.protect_recent_reads (envInt)', () => {
+    expect(loadConfig().hints.protect_recent_reads).toBe(4)
+    withEnv('TOKEN_GOAT_PROTECT_RECENT_READS', '0', () => {
+      expect(loadConfig().hints.protect_recent_reads).toBe(0)
+    })
+    // Restoring the env must restore the value, proving the cache fingerprint tracks this var in both directions rather than latching the override.
+    expect(loadConfig().hints.protect_recent_reads).toBe(4)
+  })
+
+  it('TOKEN_GOAT_REREAD_DENY overrides hints.reread_deny (envBool)', () => {
+    const dflt = loadConfig().hints.reread_deny
+    withEnv('TOKEN_GOAT_REREAD_DENY', dflt ? 'false' : 'true', () => {
+      expect(loadConfig().hints.reread_deny).toBe(!dflt)
+    })
+    expect(loadConfig().hints.reread_deny).toBe(dflt)
+  })
+
+  it('TOKEN_GOAT_QUIET_HOURS overrides hints.quiet_hours (envStr)', () => {
+    withEnv('TOKEN_GOAT_QUIET_HOURS', '22-06', () => {
+      expect(loadConfig().hints.quiet_hours).toBe('22-06')
+    })
+  })
+
   it('picks up a mid-process change to TOKEN_GOAT_OCR_ENABLED without an explicit invalidateConfigCache() call (regression: same ENV_KEYS omission as glob_dedup_min_matches above)', () => {
     const orig = process.env['TOKEN_GOAT_OCR_ENABLED']
     try {

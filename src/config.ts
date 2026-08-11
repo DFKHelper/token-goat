@@ -1286,6 +1286,18 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.session_start_reminder = validatedBool(hi_raw['session_start_reminder'], hi.session_start_reminder)
   hi.session_start_reminder = envBool('TOKEN_GOAT_SESSION_START_REMINDER', hi.session_start_reminder)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
+  // Scalar hints fields that were readable from config.toml but had no env override, so the only way to change them for a single run (a dogfood check, a one-off CLI invocation, a test) was to write a config.toml into the data dir and remember to delete it. Every other scalar hints field already had one; these were the leftovers. Registered in CONFIG_KEY_ENV_OVERRIDES below too, which is what feeds allEnvKeys() -- so each is automatically covered by loadConfig()'s cache fingerprint and by withoutConfigEnv()'s transient-override strip, and cannot leak into a persisted config.toml. `backoff_thresholds` is deliberately excluded: it is the one non-scalar hints field (number[]), and there is no existing env helper that parses a list, so giving it one would mean inventing a serialization format rather than following the established pattern -- see the coverage guard in tests/guards/hints_env_override_coverage.test.ts, which pins that exemption.
+  hi.reread_deny = envBool('TOKEN_GOAT_REREAD_DENY', hi.reread_deny)
+  hi.reread_deny_min_bytes = envInt('TOKEN_GOAT_REREAD_DENY_MIN_BYTES', hi.reread_deny_min_bytes, ...boundsOf('hints.reread_deny_min_bytes'))
+  hi.protect_recent_reads = envInt('TOKEN_GOAT_PROTECT_RECENT_READS', hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
+  hi.truncated_read_min_lines = envInt('TOKEN_GOAT_TRUNCATED_READ_MIN_LINES', hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
+  hi.diff_hint_min_tokens_saved = envInt('TOKEN_GOAT_DIFF_HINT_MIN_TOKENS_SAVED', hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
+  hi.min_file_lines_for_hint = envInt('TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT', hi.min_file_lines_for_hint, ...boundsOf('hints.min_file_lines_for_hint'))
+  hi.git_hint_max_ms = envInt('TOKEN_GOAT_GIT_HINT_MAX_MS', hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
+  hi.stable_doc_compacts = envBool('TOKEN_GOAT_STABLE_DOC_COMPACTS', hi.stable_doc_compacts)
+  hi.context_threshold_advisory = envBool('TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY', hi.context_threshold_advisory)
+  hi.pre_skill_advisory = envBool('TOKEN_GOAT_PRE_SKILL_ADVISORY', hi.pre_skill_advisory)
+  hi.quiet_hours = envStr('TOKEN_GOAT_QUIET_HOURS', hi.quiet_hours)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
   if (Array.isArray(triggers_raw)) {
@@ -1431,6 +1443,17 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.mcp_dedup_ttl_secs': ['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'],
   'hints.session_start_reminder': ['TOKEN_GOAT_SESSION_START_REMINDER'],
   'hints.min_session_hint_savings_bytes': ['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'],
+  'hints.reread_deny': ['TOKEN_GOAT_REREAD_DENY'],
+  'hints.reread_deny_min_bytes': ['TOKEN_GOAT_REREAD_DENY_MIN_BYTES'],
+  'hints.protect_recent_reads': ['TOKEN_GOAT_PROTECT_RECENT_READS'],
+  'hints.truncated_read_min_lines': ['TOKEN_GOAT_TRUNCATED_READ_MIN_LINES'],
+  'hints.diff_hint_min_tokens_saved': ['TOKEN_GOAT_DIFF_HINT_MIN_TOKENS_SAVED'],
+  'hints.min_file_lines_for_hint': ['TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT'],
+  'hints.git_hint_max_ms': ['TOKEN_GOAT_GIT_HINT_MAX_MS'],
+  'hints.stable_doc_compacts': ['TOKEN_GOAT_STABLE_DOC_COMPACTS'],
+  'hints.context_threshold_advisory': ['TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY'],
+  'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
+  'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
   'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
   'webfetch.max_file_count': ['TOKEN_GOAT_WEB_CACHE_MAX_FILES'],
   'webfetch.max_bytes': ['TOKEN_GOAT_WEB_CACHE_MAX_BYTES'],
