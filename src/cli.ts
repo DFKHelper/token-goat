@@ -223,21 +223,27 @@ function readBoundedText(text: string | undefined, file: string | undefined): st
   return value
 }
 
-function formatCompression(result: ReturnType<typeof compressText>): string {
-  return [
+function formatCompression(result: ReturnType<typeof compressText>, forcePayload = false): string {
+  const lines = [
     `id: ${result.id}`,
     `encoding: ${result.encoding}`,
     `original_bytes: ${result.originalBytes}`,
     `compact_bytes: ${result.compactBytes}`,
     `bytes_saved: ${result.bytesSaved}`,
+    `tokens_saved: ${result.tokensSaved}`,
     `recovery: ${result.recovery}`,
-    'payload:',
-    result.compact,
-  ].join('\n')
+  ]
+  // The payload is base64url and tokenizes far worse per byte than the source text, so inlining it usually costs more tokens than it saves; print it only when it genuinely wins or the caller asked for it explicitly.
+  if (!result.inlineWins && !forcePayload) {
+    lines.push('payload withheld: inlining it would cost more tokens than the original text; pass --payload to print it anyway')
+    return lines.join('\n')
+  }
+  lines.push('payload:', result.compact)
+  return lines.join('\n')
 }
 
-function cmdContentCompress(text: string | undefined, opts: { file?: string }): void {
-  out(formatCompression(compressText(readBoundedText(text, opts.file))))
+function cmdContentCompress(text: string | undefined, opts: { file?: string; payload?: boolean }): void {
+  out(formatCompression(compressText(readBoundedText(text, opts.file)), opts.payload === true))
 }
 
 function cmdRetrieve(id: string): void {
@@ -3076,6 +3082,7 @@ export function buildProgram(): Command {
     .command('compress-text [text]')
     .description('compress arbitrary local text and print an opaque recovery ID plus compact payload')
     .option('--file <path>', 'read text from a local file instead of the argument')
+    .option('--payload', 'always print the compact payload, even when inlining it costs more tokens than the original text')
     .action(guard(cmdContentCompress))
 
   program

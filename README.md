@@ -779,7 +779,7 @@ token-goat handoff-resolve review-notes
 token-goat handoff-resolve review-notes --full
 ```
 
-`token-goat compress-text` returns a stable opaque ID, a deflate/base64url payload, byte metadata, and a recovery command. `token-goat retrieve` restores the locally cached text. Handoffs are created with `token-goat handoff-create` and resolved with `token-goat handoff-resolve`; they are named and project-local, and resolve compactly by default or in full with `--full`. Content is limited to 512 KiB and stored in a bounded local cache with secret redaction. `token-goat stats` includes these outcomes alongside existing savings.
+`token-goat compress-text` returns a stable opaque ID, size metadata, an estimated token delta, and a recovery command. The deflate/base64url payload tokenizes far worse per byte than plain text, so for most real inputs inlining it costs more tokens than the original: it is printed only when it genuinely wins, and `--payload` forces it for the self-contained case where you need a blob that decodes on another machine. A negative `tokens_saved` is a cost, not a saving. `token-goat retrieve` restores the locally cached text. Handoffs are created with `token-goat handoff-create` and resolved with `token-goat handoff-resolve`; they are named and project-local, and resolve compactly by default or in full with `--full`. Content is limited to 512 KiB and stored in a bounded local cache with secret redaction. `token-goat stats` includes these outcomes alongside existing savings.
 
 **VS Code** — add it to `.vscode/mcp.json` under the `"servers"` key (this is the correct root key for VS Code's MCP config; it is not `"mcpServers"`):
 

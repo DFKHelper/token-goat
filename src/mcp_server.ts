@@ -30,6 +30,7 @@ import {
 import { recordStat } from './stats.js'
 import {
   compressText,
+  type CompressionResult,
   createHandoff,
   resolveHandoff,
   retrieveText,
@@ -74,6 +75,13 @@ function toCallToolResult(result: { text: string; code: number }): CallToolResul
     content: [{ type: 'text', text: mcpFriendlyText(result.text) }],
     isError: result.code !== 0,
   }
+}
+
+// VS Code Chat has no hook layer, so this tool is its entire compression surface: return the base64url payload only when inlining it is genuinely cheaper in tokens than the original text, otherwise the "compression" tool would inflate the very context it claims to shrink.
+function compressionPayload(result: CompressionResult): Record<string, unknown> {
+  if (result.inlineWins) return { ...result }
+  const { compact: _compact, ...rest } = result
+  return { ...rest, payloadWithheld: 'inlining the compact payload would cost more tokens than the original text; use the recovery command to retrieve it' }
 }
 
 function toRawCallToolResult(result: { text: string; code: number }): CallToolResult {
@@ -451,7 +459,7 @@ export function createMcpServer(): McpServer {
         text: z.string().max(CONTENT_MAX_INPUT_CHARS).describe('text to compress'),
       },
     },
-    (args) => toCallToolResult({ text: JSON.stringify(compressText(args.text), null, 2), code: 0 }),
+    (args) => toCallToolResult({ text: JSON.stringify(compressionPayload(compressText(args.text)), null, 2), code: 0 }),
   )
 
   server.registerTool(
@@ -506,7 +514,7 @@ export function createMcpServer(): McpServer {
         ? toCallToolResult({ text: `no local handoff named "${args.name}" in this project`, code: 1 })
         : typeof result === 'string'
           ? toRawCallToolResult({ text: result, code: 0 })
-          : toCallToolResult({ text: JSON.stringify(result, null, 2), code: 0 })
+          : toCallToolResult({ text: JSON.stringify(compressionPayload(result), null, 2), code: 0 })
     },
   )
 
