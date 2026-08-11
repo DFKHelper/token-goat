@@ -194,6 +194,8 @@ function layerAnnotation(state: ConfigKeyLayer): string {
       return ''
     case 'env':
       return `  # from $${state.envVar}`
+    case 'env-invalid':
+      return `  # $${state.envVar} sets ${renderValue(state.rawValue)}${state.reason !== null ? ` (${state.reason})` : ''}, not in effect; using ${renderValue(state.effectiveValue)}`
     case 'project':
       return '  # from .token-goat.toml'
     case 'project-invalid':
@@ -215,6 +217,8 @@ function layerJson(state: ConfigKeyLayer): Record<string, unknown> {
       return { source: 'global' }
     case 'env':
       return { source: 'env', envVar: state.envVar }
+    case 'env-invalid':
+      return { source: 'env_invalid', envVar: state.envVar, envValue: state.rawValue, reason: state.reason }
     case 'project':
       return { source: 'project', projectPath: state.path }
     case 'project-invalid':
@@ -385,28 +389,29 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     const lockResult = withFileLock(lockPath, applySet, { waitMs: LOCK_WAIT_MS_HARDENED })
     const coerced = lockResult === undefined ? applySet() : lockResult
     invalidateConfigCache()
-    // The write above only ever touches the env-free persisted config, so if an env var
-    // currently overrides this same key, loadConfig() (env-layered, same as `get`/`list`)
-    // will keep returning the env-forced value instead of what was just saved — surface
-    // that shadowing here or the user is told the change succeeded when it has no runtime
-    // effect until the env var is unset.
-    const envOverrides = CONFIG_KEY_ENV_OVERRIDES[key]
-    if (envOverrides !== undefined) {
-      const effective = walkGet(loadConfig() as unknown as Record<string, unknown>, parts)
-      // "effective differs from what I just wrote" holds for ANY overriding layer, env or the project .token-goat.toml below, so it cannot on its own justify naming an env var: an unset variable used to get named via a `?? envOverrides[0]` fallback, telling the user to unset something that does not exist while the real culprit went unmentioned. Warn only about a variable actually present in the environment. Merely defined counts -- a defined-but-empty value is a real override for the string-valued keys, and for the numeric/boolean ones the parse rejects it, so the effective value matches and this branch is never reached anyway.
-      if (effective.found && effective.value !== coerced) {
-        const envVar = envOverrides.find((name) => process.env[name] !== undefined)
-        if (envVar !== undefined) {
-          emitErr(`config set: warning: ${key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
-        }
-      }
-    }
-    // Exactly the same silent-no-op the env-shadowing warning above exists to prevent, via the other layer: `config set` writes the GLOBAL config.toml, so if this project's .token-goat.toml also sets this key, the save succeeds and changes nothing here. Warn with the same shape, and only when the project file actually pins this key -- a project config that sets unrelated keys is not shadowing anything.
-    // Resolved by the same helper `get`/`list` use, so all three agree about which layer owns this key. Note this warns for project-invalid too, and deliberately: _buildConfig merges the project raw tree OVER the global one and validates the merged result, so even a value that gets clamped or coerced still displaces what was just saved -- the save is every bit as much a no-op here as in the clean case, just with a different value winning. The invalid case names both values so the reader is not told to look for a 4321 that `get` reports as 1000.
+    // The write above only ever touches the env-free persisted config, so if any higher layer
+    // overrides this same key, loadConfig() (env- and project-layered, same as `get`/`list`)
+    // keeps returning that layer's value instead of what was just saved — surface the shadowing
+    // here or the user is told the change succeeded when it has no runtime effect.
+    //
+    // All four warnings below resolve through the one helper `get`/`list`/`validate` use, so no
+    // command re-decides attribution on its own. That is what keeps two properties true at once:
+    // a variable is named only when it is actually present in the environment (an unset one used
+    // to get named via a `?? envOverrides[0]` fallback, sending the reader after something that
+    // did not exist), and a layer whose value was clamped or rejected still reports as shadowing,
+    // because it is -- `_buildConfig` merges project over global and validates the merged result,
+    // so the save is every bit as much a no-op as in the clean case, just with a different value
+    // winning. Those states name both values, so the reader is never told to look for a 4321 that
+    // `config get` reports as 1000.
     const effectiveCfg = loadConfig() as unknown as Record<string, unknown>
     const setEffective = walkGet(effectiveCfg, parts)
     const setState = resolveConfigKeyLayer(key, setEffective.found ? setEffective.value : undefined, effectiveCfg, getProjectConfigInfo())
-    if (setState.layer === 'project') {
+    const shadowed = setEffective.found && setEffective.value !== coerced
+    if (shadowed && setState.layer === 'env') {
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set and overrides it at runtime — unset ${setState.envVar} for this change to take effect`)
+    } else if (shadowed && setState.layer === 'env-invalid') {
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set to ${JSON.stringify(setState.rawValue)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it at runtime, taking effect as ${JSON.stringify(setState.effectiveValue)} — unset ${setState.envVar} for this change to take effect`)
+    } else if (setState.layer === 'project') {
       emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
     } else if (setState.layer === 'project-invalid') {
       emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} sets it to ${JSON.stringify(setState.rawValue)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it in this project, taking effect as ${JSON.stringify(setState.effectiveValue)} — remove it there for this change to take effect here`)
@@ -476,6 +481,17 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
           if (state.layer !== 'project-invalid') continue
           findings.push({ kind: 'project_value_ignored', key: k, suggestion: `${JSON.stringify(state.rawValue)}${state.reason !== null ? ` is ${state.reason}` : ' is not usable'}; in effect: ${JSON.stringify(state.effectiveValue)}` })
         }
+      }
+    }
+
+    // Same reasoning as project_value_ignored above, one layer up: an env var set to a value that gets clamped or cannot be parsed does nothing, silently, and `validate` is where a config problem is meant to be found. Iterates only registered overrides, and resolveConfigKeyLayer reports env* only for a variable actually present in the environment, so an unset one is never mentioned.
+    {
+      const effCfg = loadConfig() as unknown as Record<string, unknown>
+      for (const envKey of Object.keys(CONFIG_KEY_ENV_OVERRIDES)) {
+        const eff = walkGet(effCfg, envKey.split('.'))
+        const state = resolveConfigKeyLayer(envKey, eff.found ? eff.value : undefined, effCfg, null)
+        if (state.layer !== 'env-invalid') continue
+        findings.push({ kind: 'env_value_ignored', key: envKey, suggestion: `$${state.envVar} is ${JSON.stringify(state.rawValue)}${state.reason !== null ? ` (${state.reason})` : ''}; in effect: ${JSON.stringify(state.effectiveValue)}` })
       }
     }
 
