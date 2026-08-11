@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+- **`waste --top 0`/`--top -1` test coverage no longer reads the real developer transcript.** Both cases in `cli_limit_validation.test.ts` called `waste` without `--transcript`, so `findLatestTranscript` fell back to `os.homedir()/.claude/projects/<slug>` -- a path `isolate-home.ts`'s test setup does not sandbox outside its darwin branch. On a machine actively running Claude Code against this repo, that resolves to the developer's own live, growing session transcript (observed at 76 MB), read and parsed synchronously on every call (~6.7s unloaded). Under full-suite parallel-fork contention that was enough margin to intermittently blow the 30s test timeout, surfacing as a bare timeout at the `await runCli(...)` call itself rather than an assertion failure. Both tests now point `--transcript` at a small isolated fixture, matching every other `waste` test in the suite. See [tests/cli_limit_validation.test.ts](tests/cli_limit_validation.test.ts).
+
 ## [2.6.27] - 2026-08-10
 
 ### Added

@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
 import { getDb } from '../src/db.js'
@@ -388,16 +388,45 @@ describe('stats --window-days validation', () => {
 // `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls
 // like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
 describe('waste --top 0 validation', () => {
+  // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and
+  // findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which
+  // isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data
+  // dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code
+  // against this repo -- i.e. any real dogfooding session, including the one that authored this
+  // fix -- that resolves to the developer's own live, actively-growing session transcript
+  // (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call.
+  // Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough
+  // margin to blow the 30s test timeout, attributed to the `await runCli(...)` call itself
+  // (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame.
+  // A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and
+  // fast regardless of what the host machine's real Claude Code session looks like.
+  let transcriptDir: string
+  let transcriptPath: string
+
+  beforeEach(() => {
+    transcriptDir = mkdtempSync(join(tmpdir(), 'tg-waste-top-'))
+    transcriptPath = join(transcriptDir, 'fake-session.jsonl')
+    writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({ message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'echo hi' } }] } })}\n`,
+      'utf8',
+    )
+  })
+
+  afterEach(() => {
+    rmSync(transcriptDir, { recursive: true, force: true })
+  })
+
   it('accepts --top 0 like every other --top flag instead of requiring a strictly-positive value', async () => {
     captureStderr()
-    await runCli(['waste', '--top', '0'])
+    await runCli(['waste', '--transcript', transcriptPath, '--top', '0'])
     // Pre-fix this exits 1 with "--top must be a positive number, got: \"0\"".
     expect(stderr.join('')).not.toContain('must be a positive number')
   })
 
   it('still rejects a negative --top with a clean error', async () => {
     captureStderr()
-    const code = await runCli(['waste', '--top', '-1'])
+    const code = await runCli(['waste', '--transcript', transcriptPath, '--top', '-1'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--top')
   })
