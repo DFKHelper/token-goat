@@ -79,6 +79,14 @@ export interface ParsedToolCall {
 export interface ParsedTranscript {
   calls: ParsedToolCall[]
   resultTextById: Map<string, string>
+  /**
+   * Per-assistant-turn estimated token total of that turn's own `type:'text'` content blocks
+   * (one entry per assistant message that had at least one text block; a pure tool_use message
+   * with no text contributes no entry at all, so `assistantTurns.length` counts turns that
+   * actually said something, not every assistant message -- this is the count `assistantOutputCost`
+   * uses for its resend multiplier, so it deliberately excludes silent tool-only turns).
+   */
+  assistantTurns: number[]
 }
 
 export function safeStringify(value: unknown): string {
@@ -148,6 +156,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
   const raw = fs.readFileSync(transcriptPath, 'utf-8')
   const calls: ParsedToolCall[] = []
   const resultTextById = new Map<string, string>()
+  const assistantTurns: number[] = []
   let seq = 0
 
   for (const line of raw.split('\n')) {
@@ -163,9 +172,17 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     const o = obj as Record<string, unknown>
     const message = o['message']
     if (message === null || typeof message !== 'object') continue
-    const content = (message as Record<string, unknown>)['content']
+    const messageObj = message as Record<string, unknown>
+    const content = messageObj['content']
     if (!Array.isArray(content)) continue
+    const role = typeof messageObj['role'] === 'string' ? messageObj['role'] : null
     const cwd = typeof o['cwd'] === 'string' ? (o['cwd'] as string) : null
+
+    // Assistant-authored text blocks in this message, if any -- accumulated across the whole
+    // message and pushed once below, not per-block, since a turn's cost is what gets resent as
+    // one unit on every later request.
+    let turnTextTokens = 0
+    let sawTextBlock = false
 
     for (const block of content) {
       if (block === null || typeof block !== 'object') continue
@@ -191,11 +208,19 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
         if (!resultTextById.has(id)) {
           resultTextById.set(id, extractResultText(b['content']))
         }
+      } else if (role === 'assistant' && b['type'] === 'text' && typeof b['text'] === 'string') {
+        // Deliberately NOT counting tool_use blocks here: their cost is already attributed via
+        // the tool-result ledger above (costPerCall/tokensByTool/tokensByFile), so summing them
+        // again here would double-count the same tokens under a different label.
+        sawTextBlock = true
+        turnTextTokens += estimateTokens(b['text'])
       }
     }
+
+    if (role === 'assistant' && sawTextBlock) assistantTurns.push(turnTextTokens)
   }
 
-  return { calls, resultTextById }
+  return { calls, resultTextById, assistantTurns }
 }
 
 // ---- cost attribution -----------------------------------------------------
@@ -345,6 +370,39 @@ export async function repeatedUncompressedBashCommands(costs: ToolCallCost[]): P
   return out.sort((a, b) => b.totalTokens - a.totalTokens)
 }
 
+// ---- assistant output cost ----------------------------------------------------
+
+export interface AssistantOutputCost {
+  /** Number of assistant text turns (see `ParsedTranscript.assistantTurns`). */
+  turnCount: number
+  /** Sum of every turn's tokens -- what was paid ONCE, as output, to produce this text. Real spend. */
+  generatedTokens: number
+  /**
+   * A cache-UNAWARE upper bound, NOT real spend: turn `i`'s tokens counted once for every LATER
+   * turn that would resend it as conversation-history input (`turnCount - 1 - i` later turns).
+   * This is a ceiling because Claude Code's prompt caching bills a repeated conversation prefix
+   * at cache-read rates -- a fraction of the full input-token price -- not the full rate this sum
+   * assumes for every resend. Presenting this number as actual cost would be a fabricated
+   * statistic; it exists to bound how bad unbounded verbosity COULD get, the same reason the Read
+   * counterfactual elsewhere in this file is capped rather than left unbounded. Callers MUST
+   * render it labeled as a ceiling/upper bound, never as spend (see cli_waste.ts).
+   */
+  resendCeilingTokens: number
+}
+
+/** Cost of the assistant's own text output, from `ParsedTranscript.assistantTurns`. See {@link AssistantOutputCost}. */
+export function assistantOutputCost(assistantTurns: number[]): AssistantOutputCost {
+  const turnCount = assistantTurns.length
+  let generatedTokens = 0
+  let resendCeilingTokens = 0
+  for (let i = 0; i < turnCount; i++) {
+    const tokens = assistantTurns[i] ?? 0
+    generatedTokens += tokens
+    resendCeilingTokens += tokens * (turnCount - 1 - i)
+  }
+  return { turnCount, generatedTokens, resendCeilingTokens }
+}
+
 // ---- report -------------------------------------------------------------------
 
 export interface WasteReport {
@@ -355,6 +413,7 @@ export interface WasteReport {
   topCalls: Array<{ seq: number; name: string; summary: string; tokens: number }>
   neverTouchedAgain: NeverTouchedFile[]
   repeatedUncompressedBash: RepeatedBashCommand[]
+  assistantOutput: AssistantOutputCost
 }
 
 export async function buildWasteReport(transcriptPath: string, opts: { topN?: number } = {}): Promise<WasteReport> {
@@ -370,5 +429,6 @@ export async function buildWasteReport(transcriptPath: string, opts: { topN?: nu
     topCalls: topExpensiveCalls(costs, topN).map((c) => ({ seq: c.seq, name: c.name, summary: c.summary, tokens: c.tokens })),
     neverTouchedAgain: neverTouchedAgain(costs),
     repeatedUncompressedBash: await repeatedUncompressedBashCommands(costs),
+    assistantOutput: assistantOutputCost(parsed.assistantTurns),
   }
 }

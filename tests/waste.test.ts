@@ -16,6 +16,7 @@ vi.mock('node:os', async (importOriginal) => {
 })
 
 import {
+  assistantOutputCost,
   buildWasteReport,
   costPerCall,
   findLatestTranscript,
@@ -71,6 +72,18 @@ function toolResultLine(toolUseId: string, text: string): unknown {
   return {
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text }] }] },
   }
+}
+
+/** An assistant message with one or more `type:'text'` content blocks (and optionally other blocks interleaved). */
+function assistantTextLine(...texts: string[]): unknown {
+  return {
+    message: { role: 'assistant', content: texts.map((text) => ({ type: 'text', text })) },
+  }
+}
+
+/** Mirrors overflow_guard.ts's estimateTokens formula for hand-computing expected values in fixtures. */
+function estimateTokensFixture(text: string): number {
+  return Math.max(1, Math.floor(text.length / 3) + 1)
 }
 
 describe('projectTranscriptsDir / findLatestTranscript', () => {
@@ -321,6 +334,72 @@ describe('repeatedUncompressedBashCommands', () => {
   })
 })
 
+describe('parseTranscript / assistantTurns', () => {
+  it('sums estimateTokens over an assistant text turn and pushes one entry per turn', () => {
+    const transcript = writeFixture(tempDir, [assistantTextLine('a'.repeat(50))])
+    const { assistantTurns } = parseTranscript(transcript)
+    expect(assistantTurns).toEqual([Math.max(1, Math.floor(50 / 3) + 1)])
+  })
+
+  it('does not count tool_use blocks toward assistantTurns (already attributed via the tool-result ledger)', () => {
+    const transcript = writeFixture(tempDir, [
+      toolUseLine('t1', 'Bash', { command: 'x'.repeat(90) }), // large input text, but not a text block
+      toolResultLine('t1', 'ok'),
+    ])
+    const { assistantTurns } = parseTranscript(transcript)
+    expect(assistantTurns).toEqual([])
+  })
+
+  it('pushes no turn entry at all for a pure tool_use assistant message with no text block', () => {
+    const transcript = writeFixture(tempDir, [
+      {
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }, { type: 'text', text: 'ran ls' }],
+        },
+      },
+      {
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'pwd' } }] },
+      },
+    ])
+    const { assistantTurns } = parseTranscript(transcript)
+    // Only the first message had a text block; the second (tool_use only) contributes nothing.
+    expect(assistantTurns).toEqual([estimateTokensFixture('ran ls')])
+  })
+
+  it('ignores text blocks on non-assistant (user/tool_result) messages', () => {
+    const transcript = writeFixture(tempDir, [
+      { message: { role: 'user', content: [{ type: 'text', text: 'user typed this' }] } },
+    ])
+    const { assistantTurns } = parseTranscript(transcript)
+    expect(assistantTurns).toEqual([])
+  })
+})
+
+describe('assistantOutputCost', () => {
+  it('computes generatedTokens and the resend ceiling by hand on a 3-turn fixture', () => {
+    // Turn sizes chosen so estimateTokens (max(1, floor(len/3)+1)) yields distinct, easy values:
+    // len 2 -> 1 tok, len 5 -> 2 tok, len 8 -> 3 tok.
+    const turns = [1, 2, 3]
+    const result = assistantOutputCost(turns)
+    expect(result.turnCount).toBe(3)
+    expect(result.generatedTokens).toBe(6) // 1 + 2 + 3
+    // Hand-computed resend ceiling: turn i resent on each of the (turnCount-1-i) LATER turns.
+    // turn0: 1 tok * 2 later turns = 2; turn1: 2 tok * 1 later turn = 2; turn2: 3 tok * 0 later turns = 0.
+    expect(result.resendCeilingTokens).toBe(4) // 2 + 2 + 0
+  })
+
+  it('renders a zero-turn transcript sensibly (no NaN, no division by zero)', () => {
+    const result = assistantOutputCost([])
+    expect(result).toEqual({ turnCount: 0, generatedTokens: 0, resendCeilingTokens: 0 })
+  })
+
+  it('yields a zero resend ceiling for a single turn (nothing later to resend it to)', () => {
+    const result = assistantOutputCost([42])
+    expect(result).toEqual({ turnCount: 1, generatedTokens: 42, resendCeilingTokens: 0 })
+  })
+})
+
 describe('buildWasteReport', () => {
   it('assembles totals, per-tool/per-file breakdowns, and waste signals from a transcript file', async () => {
     const transcript = writeFixture(tempDir, [
@@ -343,5 +422,21 @@ describe('buildWasteReport', () => {
     expect(report.topCalls.length).toBe(3)
     expect(report.neverTouchedAgain.some((f) => f.filePath === '/orphan.ts')).toBe(true)
     expect(report.repeatedUncompressedBash.some((c) => c.normalized === 'git status')).toBe(true)
+    // No assistant text turns in this fixture -- sensible zero, not NaN/undefined.
+    expect(report.assistantOutput).toEqual({ turnCount: 0, generatedTokens: 0, resendCeilingTokens: 0 })
+  })
+
+  it('populates assistantOutput from the transcript\'s assistant text turns', async () => {
+    const transcript = writeFixture(tempDir, [
+      assistantTextLine('a'.repeat(50)),
+      toolUseLine('t1', 'Bash', { command: 'ls' }),
+      toolResultLine('t1', 'ok'),
+      assistantTextLine('b'.repeat(50)),
+    ])
+    const report = await buildWasteReport(transcript)
+    expect(report.assistantOutput.turnCount).toBe(2)
+    const perTurn = estimateTokensFixture('a'.repeat(50))
+    expect(report.assistantOutput.generatedTokens).toBe(perTurn * 2)
+    expect(report.assistantOutput.resendCeilingTokens).toBe(perTurn * 1) // turn0 resent once, on turn1
   })
 })

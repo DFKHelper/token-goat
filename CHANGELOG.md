@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 - **`symbol --stats`** adds a per-result reference count and doc-coverage flag, closing the last gap in the `--stats` family (`read`/`skeleton`/`outline` already had it). Most useful on `symbol`, since it's the one command that can return several same-named candidates across files and a ref count helps pick the real one. See [src/read_commands.ts](src/read_commands.ts), [src/cli.ts](src/cli.ts).
+- **`token-goat waste` now counts the assistant's own text output**, not just tool calls. It reports generated tokens (real spend, paid once) plus a `resendCeilingTokens` re-send upper bound, labeled explicitly as a cache-unaware ceiling rather than actual cost -- Claude Code's prompt caching bills resent conversation history at cache-read rates, well below the full input price this bound assumes. See [src/waste.ts](src/waste.ts), [src/cli_waste.ts](src/cli_waste.ts).
 
 ### Internal
 - **Tests now sandbox `HOME`/`USERPROFILE` on every platform, not just macOS.** `LOCALAPPDATA`/`XDG_DATA_HOME` were redirected everywhere, but `HOME` only on darwin -- so any code path calling `os.homedir()` directly (waste's transcript fallback to `~/.claude/projects`, bootstrap-audit, the bridge installers, context-stats' CLAUDE.md walk) escaped the sandbox entirely on Windows and Linux. That gap caused a real intermittent failure rather than a theoretical one; sandboxing `HOME` everywhere closes the class. See [tests/setup/isolate-home.ts](tests/setup/isolate-home.ts).
