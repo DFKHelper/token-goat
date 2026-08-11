@@ -223,6 +223,7 @@ function coerce(raw: unknown): SerializedSession {
     globQueries,
     outstandingAgentSpawns,
     ...(typeof o['lastTabContext'] === 'string' ? { lastTabContext: o['lastTabContext'] } : {}),
+    ...(typeof o['compactedAt'] === 'number' ? { compactedAt: o['compactedAt'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
 }
@@ -364,13 +365,19 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     const prev = byPath.get(key)
     byPath.set(key, prev ? mergeFileEntry(prev, e) : e)
   }
+  // Compaction epoch is max-wins: it only ever moves forward, so whichever side saw the most recent compaction is authoritative and a concurrent process that predates the stamp can never roll it back. This is exactly why session.ts records an epoch instead of resetting each entry's readCount -- a readCount reset merges to a no-op here (see mergeFileEntry), a max-merged scalar does not.
+  const compactedAt = Math.max(disk.compactedAt ?? 0, mem.compactedAt ?? 0)
+  // Sed line ranges carry no timestamp of their own, so they cannot be filtered per-range against the epoch the way FileEntry.lastReadAt can. Instead drop the ranges of any side that had not yet observed the winning epoch: they were recorded by a process whose view predates the compaction, so they may describe content the model no longer holds. Erring toward dropping only costs a full read that was already going to be correct; keeping them would keep serving "you already saw lines N-M" against invisible content.
+  const diskRanges = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRanges ?? []) : []
+  const memRanges = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileLineRanges ?? []) : []
   return {
     files: Array.from(byPath.values()),
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
     webFetches: mergePairs(disk.webFetches, mem.webFetches),
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),
-    fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
+    fileLineRanges: mergeLineRanges(diskRanges, memRanges),
+    ...(compactedAt > 0 ? { compactedAt } : {}),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),

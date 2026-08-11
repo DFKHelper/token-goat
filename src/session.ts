@@ -116,6 +116,9 @@ let _curlDownloadsAtLoad = new Map<string, string>()
 // path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
 let _fileLineRanges = new Map<string, Array<[number, number]>>()
 
+// Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
+let _compactedAt = 0
+
 // `${sub}::${spec}` keys for `token-goat symbol|read|section` invocations already run this session (CLI-side re-read dedup).
 let _cliReads = new Set<string>()
 
@@ -274,14 +277,32 @@ export function getSessionFiles(): ReadonlyMap<string, FileEntry> {
 }
 
 /**
- * True if `filePath` was read at least once this session (`readCount > 0`).
+ * True if `filePath` was read at least once this session (`readCount > 0`) AND that read is
+ * still in the model's context (its `lastReadAt` is at or after the last compaction epoch).
  *
  * A file that was only edited (never read) returns false, matching the
  * re-read-hint semantics: there is no prior read to dedup against.
+ *
+ * This means "content is currently in the model's context", not "this session touched this
+ * file at some point" -- consumers that want the historical fact (the compact manifest, stats,
+ * hot/recent listings, edit tracking) must read `getSessionFiles()`/`readCount` directly
+ * instead of calling this.
  */
 export function wasFileReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
-  return entry !== undefined && entry.readCount > 0
+  return entry !== undefined && entry.readCount > 0 && entry.lastReadAt >= _compactedAt
+}
+
+/** Unix-ms of the last context compaction this session, or 0 if none. See `_compactedAt`. */
+export function getCompactedAt(): number {
+  return _compactedAt
+}
+
+/** Stamp a context-compaction epoch at `now`, invalidating every earlier read for context-presence purposes. Also clears the sed line-range ledger, which is the same "content is in context" assumption at sub-file granularity. Monotonic: an out-of-order or replayed stamp never moves the epoch backwards. Callers must build anything that depends on the pre-compaction read set (e.g. the compact manifest) BEFORE calling this. */
+export function markCompacted(now: number = Date.now()): void {
+  if (now <= _compactedAt) return
+  _compactedAt = now
+  _fileLineRanges = new Map()
 }
 
 /**
@@ -611,6 +632,8 @@ export interface SerializedSession {
   globQueries?: Array<[string, number]>
   outstandingAgentSpawns?: Array<[string, number]>
   lastTabContext?: string
+  /** Unix-ms of the most recent context compaction, or absent if none. Merged max-wins by session_store.ts so a stamp made by one hook process is never lost to a concurrent process that predates it. See `_compactedAt`. */
+  compactedAt?: number
   /**
    * Unix time in *seconds* at which this session's on-disk cache was first
    * written. Set exactly once by `session_store.ts::saveSessionState` and
@@ -636,6 +659,7 @@ export function exportSessionState(): SerializedSession {
     globQueries: Array.from(_globQueries.entries()),
     outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
     ...(_lastTabContext !== null ? { lastTabContext: _lastTabContext } : {}),
+    ...(_compactedAt > 0 ? { compactedAt: _compactedAt } : {}),
   }
 }
 
@@ -668,6 +692,7 @@ export function importSessionState(s: SerializedSession): void {
   _outstandingAgentSpawns = (s.outstandingAgentSpawns ?? []).map(([prompt, ts]) => ({ prompt, ts }))
   _outstandingAgentSpawnsAtLoad = [..._outstandingAgentSpawns]
   _lastTabContext = s.lastTabContext ?? null
+  _compactedAt = s.compactedAt ?? 0
 }
 
 registerReset(() => {
@@ -688,5 +713,6 @@ registerReset(() => {
   _outstandingAgentSpawns = []
   _outstandingAgentSpawnsAtLoad = []
   _lastTabContext = null
+  _compactedAt = 0
   _sessionId = null
 })

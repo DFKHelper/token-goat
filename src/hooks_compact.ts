@@ -10,7 +10,7 @@
 
 import { spawnSync } from 'node:child_process'
 
-import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns } from './session.js'
+import { getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, markCompacted } from './session.js'
 import type { FileEntry } from './session.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -352,8 +352,13 @@ function buildMemEpochSection(): string[] {
  * even for an otherwise empty session (the counts confirm nothing was dropped).
  */
 export function preCompactHandler(event: HookEvent): HookOutput {
-  if (!loadConfig().compact_assist.enabled) return passOutput()
-  return contextOutput(buildManifest(event.sessionId, getCwd(event)))
+  // Order is load-bearing: buildManifest reads getSessionFiles(), and markCompacted stamps the epoch that makes every one of those reads count as no-longer-in-context. Stamping first would not corrupt the manifest today (it reads readCount/wasEdited directly rather than going through wasFileReadThisSession), but the dependency is real -- any future manifest input that asks "is this still in context" would silently render empty. Build first, stamp second.
+  // The stamp is NOT gated on compact_assist.enabled: compaction happens whether or not we inject a manifest, so the read ledger must be invalidated either way. Gating it would leave hooks_read.ts serving diffs and "unchanged" denials against content the model can no longer see, for every user who turned the manifest off.
+  const out = loadConfig().compact_assist.enabled
+    ? contextOutput(buildManifest(event.sessionId, getCwd(event)))
+    : passOutput()
+  markCompacted()
+  return out
 }
 
 registerHook('pre_compact', preCompactHandler)
