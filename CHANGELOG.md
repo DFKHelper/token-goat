@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Internal
+- **Tests now sandbox `HOME`/`USERPROFILE` on every platform, not just macOS.** `LOCALAPPDATA`/`XDG_DATA_HOME` were redirected everywhere, but `HOME` only on darwin -- so any code path calling `os.homedir()` directly (waste's transcript fallback to `~/.claude/projects`, bootstrap-audit, the bridge installers, context-stats' CLAUDE.md walk) escaped the sandbox entirely on Windows and Linux. That gap caused a real intermittent failure rather than a theoretical one; sandboxing `HOME` everywhere closes the class. See [tests/setup/isolate-home.ts](tests/setup/isolate-home.ts).
+
 ### Fixed
 - **`waste --top 0`/`--top -1` test coverage no longer reads the real developer transcript.** Both cases in `cli_limit_validation.test.ts` called `waste` without `--transcript`, so `findLatestTranscript` fell back to `os.homedir()/.claude/projects/<slug>` -- a path `isolate-home.ts`'s test setup does not sandbox outside its darwin branch. On a machine actively running Claude Code against this repo, that resolves to the developer's own live, growing session transcript (observed at 76 MB), read and parsed synchronously on every call (~6.7s unloaded). Under full-suite parallel-fork contention that was enough margin to intermittently blow the 30s test timeout, surfacing as a bare timeout at the `await runCli(...)` call itself rather than an assertion failure. Both tests now point `--transcript` at a small isolated fixture, matching every other `waste` test in the suite. See [tests/cli_limit_validation.test.ts](tests/cli_limit_validation.test.ts).
 
