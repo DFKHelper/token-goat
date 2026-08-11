@@ -142,8 +142,12 @@ let savingsContext: vscode.ExtensionContext | undefined
 function updateSavingsBar(): void {
   if (!savingsBar || !savingsContext) return
   const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
-  savingsBar.text = `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
-  savingsBar.tooltip = 'Total bytes token-goat compression has kept out of chat this installation.'
+  savingsBar.text = total > 0
+    ? `$(gist-secret) token-goat: ${total.toLocaleString()} bytes saved`
+    : '$(gist-secret) token-goat'
+  savingsBar.tooltip = total > 0
+    ? 'Total bytes token-goat compression has kept out of chat this installation.'
+    : 'token-goat is ready. Compress something into chat and this counter shows what you saved.'
 }
 
 function recordSavings(payload: string): void {
