@@ -177,6 +177,33 @@ describe('markdown hard re-read deny survives an intervening unrelated tool call
   })
 })
 
+describe('the compaction epoch survives the process boundary (shipping-path coverage for fd77cdd6)', () => {
+  it('an identical re-read is denied before pre_compact and passes through after it, driven end-to-end through the built bundle', () => {
+    const mdFile = path.join(repo, 'epoch-notes.md')
+    fs.writeFileSync(mdFile, '# Epoch\n\n## One\naaa aaa aaa\n\n## Two\nbbb bbb bbb\n')
+    const sessionId = 'e2e-compact-epoch'
+    const readPayload = { session_id: sessionId, tool_name: 'Read', tool_input: { file_path: mdFile } }
+
+    expect(runHook('pre_tool_use', readPayload).status).toBe(0)
+    expect(runHook('post_tool_use', { ...readPayload, tool_response: { content: fs.readFileSync(mdFile, 'utf8') } }).status).toBe(0)
+
+    // Baseline in a separate process: without a compaction the re-read is still denied, so a later pass-through can only be the epoch and not a broken ledger.
+    const beforeCompact = runHook('pre_tool_use', readPayload)
+    expect(beforeCompact.status).toBe(0)
+    expect((JSON.parse(beforeCompact.stdout) as { decision?: string }).decision).toBe('block')
+
+    // The compaction itself, in its own process -- this is the stamp whose cross-process persistence the unit tests can only assert through an in-memory export.
+    const compact = runHook('pre_compact', { session_id: sessionId })
+    expect(compact.status).toBe(0)
+
+    // The fix: the model no longer holds the file, so the identical re-read must pass through as a full read rather than being denied or answered with a diff against a baseline it cannot see.
+    const afterCompact = runHook('pre_tool_use', readPayload)
+    expect(afterCompact.status).toBe(0)
+    expect(afterCompact.stdout).not.toMatch(/"decision":"block"/)
+    expect(afterCompact.stdout).not.toMatch(/unchanged since last read/i)
+  })
+})
+
 describe('sibling subagents get independent re-read dedup ledgers (regression: agent_id salting)', () => {
   it('a sibling subagent\'s genuinely-first read of a file already read by another subagent in the same session is not denied', () => {
     const mdFile = path.join(repo, 'shared-notes.md')
