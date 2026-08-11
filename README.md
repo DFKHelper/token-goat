@@ -598,7 +598,7 @@ token-goat pdf-extract manual.pdf --pages 12-15 --layout --head 120
 | `token-goat pr-slice <pr>` | Surgical GitHub PR reads via `gh` — one file's diff, a single review-comment thread, the description, or CI check statuses, instead of pulling the whole PR payload into context. |
 | `token-goat bridges-status` | Parity matrix of which hooks/commands are wired for each supported harness (Claude Code, Codex, opencode, openclaw, Grok, etc.), side by side. |
 | `token-goat commands` | Machine-readable manifest of every registered command, its description, options, and arguments (including subcommands like `worker start`). `--json` emits it as structured JSON for external tooling (shell completion, doc generators, scripts) instead of the default text listing. `--grep PATTERN` narrows the manifest to commands whose name, description, or aliases match; a parent command that matches keeps all its subcommands, a parent that only has a matching child keeps just that child; no matches prints `no matches` and exits 0. |
-| `token-goat mcp-serve` | Run token-goat as an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic tools. |
+| `token-goat mcp-serve` | Run token-goat as an MCP stdio server exposing read/symbol/section/outline/skeleton/semantic/brief tools. |
 | `token-goat version` | Print the token-goat version. |
 | `token-goat statusline` | Claude Code statusline command surfacing session stats (bytes saved, hint efficacy, cache hit rate) inline in the terminal. |
 | `token-goat lockdeps [path]` | Summarize lock file dependencies as a compact table. Reads poetry.lock, uv.lock, requirements.txt, Pipfile.lock, package-lock.json, Cargo.lock, and yarn.lock. Direct dependencies only — optional and transitive entries excluded. `--json` for structured output. |
@@ -767,7 +767,7 @@ harness is the closest real signal available.
 token-goat mcp-serve
 ```
 
-Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing surgical-read tools plus `compress_text`, `retrieve_text`, `handoff_create`, and `handoff_resolve`. These local-only tools use bounded, redacted storage; MCP never intercepts a client's built-in file reads.
+Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing surgical-read tools (including `brief`, a one-shot symbol orientation call bundling body, callers, and containing doc section) plus `compress_text`, `retrieve_text`, `handoff_create`, and `handoff_resolve`. These local-only tools use bounded, redacted storage; MCP never intercepts a client's built-in file reads.
 
 ### Generic compression and handoffs
 
