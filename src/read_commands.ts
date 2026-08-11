@@ -584,6 +584,8 @@ export interface SymbolOptions {
   grep?: string
   /** `--exclude-tests`: drop symbols DEFINED in a test file (per isTestFile), matching the flag already on refs/callers/dead/semantic. Opt-in; omitted or false leaves output byte-identical to today. Like `--grep`, this filters client-side, so it forces the over-fetch below -- filtering after the SQL LIMIT would let suppressed test symbols occupy slots ahead of the cutoff and silently under-return. */
   excludeTests?: boolean
+  /** `--stats`: add a per-result reference count and doc-coverage flag, same shape as read/skeleton/outline's `--stats`. Opt-in; omitted or false leaves output byte-identical to today, and the extra `queryRefCounts` round trip is only paid when this is set. `symbol` is the one command in the family where this matters most for disambiguation -- it can return several same-named candidates across files -- but that is also where its known limitation bites hardest: `queryRefCounts` keys by symbol NAME (project-wide), not by definition site, so several same-named symbols in different files (e.g. under `--grep`) all show the identical count rather than a per-file one. Documented, not fixed, here for the same reason it is not fixed in read/skeleton/outline. */
+  stats?: boolean
 }
 
 /** Handle ``token-goat symbol <name>``. */
@@ -705,6 +707,18 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // projectRoot (or none) resolves the same way for either output mode.
   const symbolDisplayRoot = getDisplayRoot(opts.projectRoot)
 
+  // Only queried when --stats is actually requested, and only after every early-return above --
+  // a zero-result or filtered-to-empty call must not pay for an extra DB round trip. Same call
+  // shape as read's single-symbol lookup and prepareSymbolListing's skeleton/outline lookup.
+  const refCounts =
+    opts.stats === true
+      ? queryRefCounts(
+          results.map((s) => s.name),
+          globalDbPath(),
+          resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }),
+        )
+      : undefined
+
   if (opts.json === true) {
     const capped = guardJsonRows(results)
     let trueTotal: number
@@ -727,7 +741,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       truncatedFlag = capped.truncated || trueTotal > results.length
     }
     // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
-    const items = capped.items.map((s) => ({ ...s, filePath: toDisplayPath(symbolDisplayRoot, s.filePath) }))
+    const items = capped.items.map((s) => ({
+      ...s,
+      filePath: toDisplayPath(symbolDisplayRoot, s.filePath),
+      ...(refCounts !== undefined ? { refCount: refCounts.get(s.name) ?? 0, hasDoc: hasRealDocstring(s.docstring) } : {}),
+    }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
     const text = JSON.stringify(payload, null, 2)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
@@ -736,7 +754,8 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
-    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}`
+    const statsStr = formatStatsSuffix(refCounts, sym)
+    const header = `# ${sym.name} (${sym.kind}) — ${toDisplayPath(symbolDisplayRoot, sym.filePath)}:${sym.lineStart}-${sym.lineEnd}${statsStr}`
     const body = resolveBody(sym)
     const preview = body.split(/\r?\n/).slice(0, 5).join('\n')
     return preview.trim() !== '' ? `${header}\n${preview}` : header
