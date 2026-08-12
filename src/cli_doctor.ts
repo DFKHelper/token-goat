@@ -11,8 +11,7 @@ import { parse } from 'smol-toml'
 import { extractErrorMessage, toKB } from './util.js'
 import { isWorkerRunning, dirtyQueuePathFor, drainHeartbeatPathFor, WORKER_HEARTBEAT_STALE_MS } from './worker.js'
 import { getDb } from './db.js'
-import { projectScopeClause } from './sql_path.js'
-import { emptyIndexMessage } from './index_health.js'
+import { emptyIndexMessage, getProjectIndexCounts } from './index_health.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
@@ -189,8 +188,9 @@ export function checkSymbolBodySize(dbPath: string): DoctorResult {
  * isn't openable), this check quietly no-ops rather than duplicating that
  * failure.
  *
- * `rootDir`, when given, scopes both counts to files under that project root via {@link
- * projectScopeClause} -- the same helper map/semantic/find/dead already use (see commit
+ * `rootDir`, when given, scopes both counts to files under that project root via
+ * `getProjectIndexCounts` (index_health.ts), which uses sql_path.ts's `projectScopeClause` --
+ * the same helper map/semantic/find/dead already use (see commit
  * 6a5ac228). Without it, `global.db`'s machine-wide sharing across every project ever indexed
  * means an unrelated project's symbols can mask this exact project's own parser being broken:
  * fileCount/symbolCount would count every project's rows, so a project with 0 of its own
@@ -203,18 +203,7 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
     return { name: 'Symbols', status: 'ok', message: 'no database yet' }
   }
   try {
-    const db = getDb(dbPath)
-    const countScoped = (table: string, column: string): number => {
-      if (rootDir === undefined) {
-        return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
-      }
-      const scope = projectScopeClause(column)
-      return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(scope.param(rootDir)) as {
-        c: number
-      }).c
-    }
-    const fileCount = countScoped('files', 'path')
-    const symbolCount = countScoped('symbols', 'file_path')
+    const { fileCount, symbolCount } = getProjectIndexCounts(dbPath, rootDir)
     if (fileCount > 0 && symbolCount === 0) {
       return {
         name: 'Symbols',

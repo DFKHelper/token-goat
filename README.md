@@ -767,7 +767,7 @@ harness is the closest real signal available.
 token-goat mcp-serve
 ```
 
-Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing surgical-read tools (including `brief`, a one-shot symbol orientation call bundling body, callers, and containing doc section) plus `compress_text`, `retrieve_text`, `handoff_create`, and `handoff_resolve`. These local-only tools use bounded, redacted storage; MCP never intercepts a client's built-in file reads.
+Runs token-goat as an MCP ([Model Context Protocol](https://modelcontextprotocol.io)) stdio server, exposing surgical-read tools (including `brief`, a one-shot symbol orientation call bundling body, callers, and containing doc section, and `index_status`, which reports whether a project's index has ever been populated, current file/symbol counts, dirty-queue depth, worker liveness, and embeddings availability — call it after an unexpectedly empty result from another tool, since an MCP-only client has no hook layer to warn it apart from a genuine "not found") plus `compress_text`, `retrieve_text`, `handoff_create`, and `handoff_resolve`. These local-only tools use bounded, redacted storage; MCP never intercepts a client's built-in file reads.
 
 ### Generic compression and handoffs
 

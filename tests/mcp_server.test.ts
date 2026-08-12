@@ -18,6 +18,7 @@ const TOOL_NAMES = [
   'outline',
   'skeleton',
   'semantic',
+  'index_status',
   'refs',
   'brief',
   'map',
@@ -216,6 +217,57 @@ describe('mcp_server', () => {
     expect(excludeTestsOnlyBlock.text).toContain('keep.ts')
     expect(excludeTestsOnlyBlock.text).toContain('other.ts')
     expect(excludeTestsOnlyBlock.text).not.toContain('other.spec.ts')
+  })
+
+  // index_status is the fix for the MCP-only gap (no hook layer to tell "no match" apart from "never indexed"); this test must be discriminating -- a populated project must report indexedForProject: true with real counts, a never-indexed one must report false with zero counts, so a stub that always reports "indexed" fails it.
+  it('index_status reports different state for a populated project than a never-indexed one', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-index-status-'))
+    const fixture = path.join(tempDir, 'fixture.ts')
+    fs.writeFileSync(fixture, 'function indexedFn() {\n  return 1\n}\n')
+    // forceRefresh: true so the fresh fixture is indexed synchronously before querying.
+    runSkeleton({ file: fixture, forceRefresh: true })
+
+    const neverIndexedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-index-status-never-'))
+    fs.writeFileSync(path.join(neverIndexedDir, 'untouched.ts'), 'function untouchedFn() {\n  return 1\n}\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const populated = await client.callTool({ name: 'index_status', arguments: { projectRoot: tempDir } })
+    expect(populated.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const populatedBody = JSON.parse((populated.content as any[])[0].text as string) as {
+      projectRoot: string
+      databaseExists: boolean
+      indexedForProject: boolean
+      fileCount: number
+      symbolCount: number
+      dirtyQueueDepth: number
+      workerAlive: boolean
+      embeddingsEnabled: boolean
+      embeddingsAvailable: boolean
+    }
+    expect(populatedBody.indexedForProject).toBe(true)
+    expect(populatedBody.fileCount).toBeGreaterThan(0)
+    expect(populatedBody.symbolCount).toBeGreaterThan(0)
+    expect(populatedBody.databaseExists).toBe(true)
+
+    const neverIndexed = await client.callTool({ name: 'index_status', arguments: { projectRoot: neverIndexedDir } })
+    expect(neverIndexed.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const neverIndexedBody = JSON.parse((neverIndexed.content as any[])[0].text as string) as {
+      indexedForProject: boolean
+      fileCount: number
+      symbolCount: number
+    }
+    expect(neverIndexedBody.indexedForProject).toBe(false)
+    expect(neverIndexedBody.fileCount).toBe(0)
+    expect(neverIndexedBody.symbolCount).toBe(0)
+
+    // The two responses must genuinely differ, not just happen to have different literal values.
+    expect(populatedBody.indexedForProject).not.toBe(neverIndexedBody.indexedForProject)
+
+    fs.rmSync(neverIndexedDir, { recursive: true, force: true })
   })
 
   // The section/skeleton/outline tools had zero successful-call coverage before this: only

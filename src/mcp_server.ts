@@ -8,12 +8,14 @@
  * command applies to both surfaces automatically.
  */
 
+import * as fs from 'fs'
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseline.js'
-import { VERSION } from './constants.js'
+import { VERSION, dataDir, globalDbPath } from './constants.js'
 import {
   runSymbol,
   runRead,
@@ -37,6 +39,13 @@ import {
   retrieveText,
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
+import { resolveProjectRoot } from './project.js'
+import { getProjectIndexCounts } from './index_health.js'
+import { getDirtyPathsFor, isWorkerRunning } from './worker.js'
+import { getDb } from './db.js'
+import { embeddingsDepsAvailable } from './embeddings.js'
+import { loadConfig } from './config.js'
+import { extractErrorMessage } from './util.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
 // doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal
@@ -311,6 +320,69 @@ export function createMcpServer(): McpServer {
           ...(projectRoot !== undefined ? { projectRoot } : {}),
         }),
       )
+    },
+  )
+
+  server.registerTool(
+    'index_status',
+    {
+      description:
+        'Report whether the index for a project can be trusted right now: whether it has ever been indexed at all, ' +
+        'current file/symbol counts, dirty-reindex-queue depth, whether the background worker is alive, and whether ' +
+        'embeddings are available (semantic silently degrades to full-text search without them). Call this after an ' +
+        'unexpectedly empty result from another token-goat tool (symbol/read/semantic/refs/brief/...) to tell apart ' +
+        '"no match" from "the index is not ready yet" -- an MCP-only client has no hook layer to warn about this on ' +
+        'its own, so an empty tool result and a stale/unindexed project look identical without this check.',
+      inputSchema: {
+        projectRoot: makeProjectRootField('check'),
+      },
+    },
+    (args) => {
+      const { projectRoot } = args
+      const rootDir = projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+      const dbPath = globalDbPath()
+      const databaseExists = fs.existsSync(dbPath)
+
+      let fileCount = 0
+      let symbolCount = 0
+      let queryError: string | undefined
+      if (databaseExists) {
+        try {
+          const counts = getProjectIndexCounts(dbPath, rootDir)
+          fileCount = counts.fileCount
+          symbolCount = counts.symbolCount
+        } catch (err) {
+          queryError = extractErrorMessage(err)
+        }
+      }
+
+      const resolvedDataDir = dataDir()
+      const dirtyQueueDepth = getDirtyPathsFor(resolvedDataDir).length
+      const workerAlive = isWorkerRunning(resolvedDataDir)
+
+      let embeddingsAvailable = false
+      if (databaseExists && queryError === undefined) {
+        try {
+          embeddingsAvailable = embeddingsDepsAvailable(getDb(dbPath))
+        } catch {
+          embeddingsAvailable = false
+        }
+      }
+      const embeddingsEnabled = loadConfig(rootDir).indexing?.embeddings_enabled ?? true
+
+      const status = {
+        projectRoot: rootDir,
+        databaseExists,
+        indexedForProject: fileCount > 0,
+        fileCount,
+        symbolCount,
+        ...(queryError !== undefined ? { queryError } : {}),
+        dirtyQueueDepth,
+        workerAlive,
+        embeddingsEnabled,
+        embeddingsAvailable,
+      }
+      return toCallToolResult({ text: JSON.stringify(status, null, 2), code: 0 })
     },
   )
 
