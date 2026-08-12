@@ -26,5 +26,5 @@ Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of thi
 
 **Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.
 
-VS Code support: token-goat install --vscode configures a project-local stdio MCP server in .vscode/mcp.json under the servers root key. VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.
+VS Code support: token-goat install --vscode configures a stdio MCP server under the servers root key in your user-profile mcp.json by default (add --project for the workspace .vscode/mcp.json instead). VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.
 <!-- token-goat-vscode-end -->

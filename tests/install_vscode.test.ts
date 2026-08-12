@@ -1,8 +1,15 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { installVscode, uninstallVscode } from '../src/bridges/vscode_install.js'
+import { installVscode, uninstallVscode, vscodeUserMcpPath } from '../src/bridges/vscode_install.js'
+
+const savedAppData = process.env['APPDATA']
+
+afterEach(() => {
+  if (savedAppData === undefined) delete process.env['APPDATA']
+  else process.env['APPDATA'] = savedAppData
+})
 
 describe('VS Code project-local install', () => {
   it('merges servers and guidance without replacing unrelated content', () => {
@@ -12,7 +19,8 @@ describe('VS Code project-local install', () => {
       fs.mkdirSync(path.join(project, '.github'), { recursive: true })
       fs.writeFileSync(path.join(project, '.vscode', 'mcp.json'), JSON.stringify({ other: true, servers: { other: { type: 'stdio' } } }))
       fs.writeFileSync(path.join(project, '.github', 'copilot-instructions.md'), 'user guidance\n')
-      installVscode(project)
+      const result = installVscode({ project: true, projectRoot: project })
+      expect(result.scope).toBe('project')
       const config = JSON.parse(fs.readFileSync(path.join(project, '.vscode', 'mcp.json'), 'utf8')) as Record<string, unknown>
       expect(config['other']).toBe(true)
       expect((config['servers'] as Record<string, unknown>)['other']).toEqual({ type: 'stdio' })
@@ -28,8 +36,8 @@ describe('VS Code project-local install', () => {
       // The decode contract: without it the model receives a compressed
       // payload with no instruction to call retrieve_text and parrots the blob.
       expect(guidance).toContain('retrieve_text')
-      expect(installVscode(project).alreadyInstalled).toBe(true)
-      expect(uninstallVscode(project)).toBe(true)
+      expect(installVscode({ project: true, projectRoot: project }).alreadyInstalled).toBe(true)
+      expect(uninstallVscode({ project: true, projectRoot: project })).toBe(true)
       const after = JSON.parse(fs.readFileSync(path.join(project, '.vscode', 'mcp.json'), 'utf8')) as Record<string, unknown>
       expect((after['servers'] as Record<string, unknown>)['other']).toEqual({ type: 'stdio' })
       expect((after['servers'] as Record<string, unknown>)['token-goat']).toBeUndefined()
@@ -44,7 +52,7 @@ describe('VS Code project-local install', () => {
     try {
       fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
       fs.writeFileSync(path.join(project, '.vscode', 'mcp.json'), '{not json')
-      expect(() => installVscode(project)).toThrow(/malformed VS Code MCP JSON/)
+      expect(() => installVscode({ project: true, projectRoot: project })).toThrow(/malformed VS Code MCP JSON/)
     } finally {
       fs.rmSync(project, { recursive: true, force: true })
     }
@@ -58,7 +66,7 @@ describe('VS Code project-local install', () => {
         path.join(project, '.vscode', 'mcp.json'),
         '// user comment\n{\n  "servers": {\n    "other": { "type": "stdio" },\n  },\n}\n',
       )
-      installVscode(project)
+      installVscode({ project: true, projectRoot: project })
       const config = fs.readFileSync(path.join(project, '.vscode', 'mcp.json'), 'utf8')
       expect(config).toContain('// user comment')
       expect(config).toContain('"other"')
@@ -77,8 +85,76 @@ describe('VS Code project-local install', () => {
         path.join(project, '.vscode', 'mcp.json'),
         JSON.stringify({ servers: { 'token-goat': { type: 'http', url: 'http://example.test/mcp' } } }),
       )
-      expect(() => installVscode(project)).toThrow(/non-token-goat-managed server/)
+      expect(() => installVscode({ project: true, projectRoot: project })).toThrow(/non-token-goat-managed server/)
     } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('VS Code user-scope install (default, no --project)', () => {
+  it('writes to the user-profile mcp.json, not the project-local one, when --project is omitted', () => {
+    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-'))
+    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userscope-project-'))
+    process.env['APPDATA'] = userDir
+    try {
+      const result = installVscode({ projectRoot: project })
+      expect(result.scope).toBe('user')
+      expect(result.mcpPath).toBe(vscodeUserMcpPath())
+      expect(fs.existsSync(path.join(project, '.vscode', 'mcp.json'))).toBe(false)
+      const config = JSON.parse(fs.readFileSync(result.mcpPath, 'utf8')) as Record<string, unknown>
+      expect((config['servers'] as Record<string, unknown>)['token-goat']).toEqual({
+        type: 'stdio',
+        command: process.execPath,
+        args: [path.join(process.cwd(), 'dist', 'token-goat.mjs'), 'mcp-serve'],
+      })
+      expect(uninstallVscode({ projectRoot: project })).toBe(true)
+      const after = JSON.parse(fs.readFileSync(result.mcpPath, 'utf8')) as Record<string, unknown>
+      expect((after['servers'] as Record<string, unknown>)['token-goat']).toBeUndefined()
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves unrelated servers already in the user-profile mcp.json', () => {
+    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-merge-'))
+    process.env['APPDATA'] = userDir
+    try {
+      const mcpPath = vscodeUserMcpPath()
+      fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+      fs.writeFileSync(mcpPath, JSON.stringify({ servers: { other: { type: 'stdio' } } }))
+      installVscode({})
+      const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>
+      expect((config['servers'] as Record<string, unknown>)['other']).toEqual({ type: 'stdio' })
+      expect((config['servers'] as Record<string, unknown>)['token-goat']).toBeDefined()
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to double-register when the other scope already has a managed entry', () => {
+    const userDir = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-userdir-dup-'))
+    const project = fs.mkdtempSync(path.join(process.cwd(), '.tg-vscode-project-dup-'))
+    process.env['APPDATA'] = userDir
+    try {
+      // Install project scope first, then attempt the default (user scope) install.
+      installVscode({ project: true, projectRoot: project })
+      expect(() => installVscode({ projectRoot: project })).toThrow(/already registered in VS Code project scope/)
+      expect(fs.existsSync(vscodeUserMcpPath())).toBe(false)
+
+      // And the reverse: user scope first, then project scope should refuse too.
+      uninstallVscode({ project: true, projectRoot: project })
+      installVscode({ projectRoot: project })
+      expect(() => installVscode({ project: true, projectRoot: project })).toThrow(/already registered in VS Code user scope/)
+      const projectMcpPath = path.join(project, '.vscode', 'mcp.json')
+      if (fs.existsSync(projectMcpPath)) {
+        const config = JSON.parse(fs.readFileSync(projectMcpPath, 'utf8')) as Record<string, unknown>
+        const servers = (config['servers'] as Record<string, unknown> | undefined) ?? {}
+        expect(servers['token-goat']).toBeUndefined()
+      }
+    } finally {
+      fs.rmSync(userDir, { recursive: true, force: true })
       fs.rmSync(project, { recursive: true, force: true })
     }
   })
