@@ -1573,6 +1573,8 @@ export interface RefsOptions {
   excludeTests?: boolean
   /** Only list references whose call-site FILE PATH matches this pattern (rows render as `file:line: symbol`, so this is the field each row is keyed on -- matched against the path as RENDERED under displayRoot, so an anchored `--grep "^src/"` matches what the caller sees; the high-value case is a wide-fanout symbol where that drops test/vendored hits). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
+  /** Workspace root to scope this lookup to: resolves the `file::symbol` defining-file hint against, and scopes queryRefs' call-site rows to this root (the same `queryOpts.rootDir` mechanism `symbol` uses) so refs from other projects in the shared global index never surface. Optional and unset for CLI callers, who resolve against `process.cwd()` -- see `resolveAgainstProjectRoot`/`SemanticOptions.projectRoot` for the established convention this mirrors. */
+  projectRoot?: string
 }
 
 /**
@@ -1697,6 +1699,7 @@ export function runRefs(opts: RefsOptions): number {
     if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
     let results = applyTypedRefsTier(sym, file, queryRefs(queryOpts))
     let suppressed = 0
     if (opts.excludeTests === true) {
@@ -1782,6 +1785,7 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
     if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
     else if (opts.limit !== undefined) queryOpts.limit = opts.limit
     else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+    if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
     let results = applyTypedRefsTier(symbol, file, queryRefs(queryOpts))
     let suppressed = 0
     if (opts.excludeTests === true) {
@@ -1853,7 +1857,7 @@ function runRefsSingle(opts: RefsOptions): number {
 
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // `file` in `file::symbol` names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call below, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result to same-file references only.
-  const defFileHint = symbol !== undefined ? resolveIndexPath(file) : undefined
+  const defFileHint = symbol !== undefined ? resolveIndexPath(file, opts.projectRoot ?? process.cwd()) : undefined
   // --grep needs the same full-headroom query as --exclude-tests, since it also filters the
   // resolved set client-side (on filePath) AFTER the query -- slicing to the requested limit
   // before it runs would silently under-return by letting non-matching refs occupy slots ahead
@@ -1861,6 +1865,7 @@ function runRefsSingle(opts: RefsOptions): number {
   if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = REFS_TOP_SCAN_LIMIT
+  if (opts.projectRoot !== undefined) queryOpts.rootDir = opts.projectRoot
 
   let results = applyTypedRefsTier(symName, defFileHint, queryRefs(queryOpts))
   let suppressed = 0
@@ -1905,7 +1910,7 @@ function runRefsSingle(opts: RefsOptions): number {
     // keeps today's message byte-identical (see unknownSymbolSuggestion's own doc comment for
     // why this matters). Resolved here rather than hoisted to the top of the function since it's
     // only ever paid once the query already came back empty.
-    const rootDir = resolveProjectRoot({ project: process.cwd() })
+    const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
     if (querySymbols({ name: symName, rootDir, limit: 1 }).length === 0) {
       emitErr(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`)
       // Same empty-index note as the "No references found" branch below -- an empty project

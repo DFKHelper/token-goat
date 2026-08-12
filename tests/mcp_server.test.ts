@@ -390,8 +390,12 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    const result = await client.callTool({ name: 'refs', arguments: { spec: 'helper' } })
-    const expected = captureStdout(() => runRefs({ spec: 'helper' }))
+    // projectRoot: tempDir -- refs is now root-confined like every other MCP tool (see
+    // mcp_server_root_divergence.test.ts), and the fixture lives outside this repo's own
+    // workspace root, so without it the server's default root (its own cwd) would scope the
+    // query away from the fixture entirely.
+    const result = await client.callTool({ name: 'refs', arguments: { spec: 'helper', projectRoot: tempDir } })
+    const expected = captureStdout(() => runRefs({ spec: 'helper', projectRoot: tempDir }))
 
     expect(result.isError).toBe(false)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
