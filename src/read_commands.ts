@@ -5227,11 +5227,6 @@ function previewLines(body: string, n: number): string {
   return body.split(/\r?\n/).slice(0, n).join('\n')
 }
 
-/** `name (kind) — file:start-end` header line for a symbol. */
-function symbolHeader(s: SymbolEntry, root: string): string {
-  return `# ${s.name} (${s.kind}) — ${toDisplayPath(root, s.filePath)}:${s.lineStart}-${s.lineEnd}`
-}
-
 interface SemanticOptions {
   limit?: number
   /**
@@ -5261,6 +5256,21 @@ interface SemanticOptions {
 // `guard` wrapper, which prefixes it with "token-goat: " before printing to stderr) on a
 // no-matches miss instead of returning a code. The "token-goat: " prefix is baked into the
 // returned text here so the CLI's output stays byte-identical to that historical path.
+// Reciprocal Rank Fusion constant (score = sum over lists of 1/(RRF_K + rank)) -- the conventional k=60, chosen because RRF needs only each list's RANK (not its raw score), which sidesteps having to normalize dense cosine/L2 distance against BM25's unbounded score on incomparable scales.
+const RRF_K = 60
+
+// One row of runSemantic's fused dense+BM25 candidate set: dense-sourced rows carry a non-null distance and (when resolveEnclosingSymbol found a containing symbol) a name/kind pulled from that containment lookup, while FTS-sourced rows always carry the exact symbol's own name/kind and a null distance (BM25 has no notion of vector distance) -- a row present in both lists keeps its dense fields (distance, containment-derived name/kind) and simply accumulates the FTS list's rank into its score.
+interface FusedSemanticHit {
+  filePath: string
+  startLine: number
+  endLine: number
+  name: string | null
+  kind: string | null
+  distance: number | null
+  previewText: string
+  rrf: number
+}
+
 async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
   // Same reasoning as runSymbol above: a limit of 0 (or negative) would silently query for
   // zero results instead of surfacing a clear "you asked for nothing" error.
@@ -5290,16 +5300,8 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
   }
   const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
 
-  // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
-  // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
-  // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
-  // than throwing when either is unavailable or nothing has been embedded yet, so this is
-  // always safe to try before falling back to keyword search.
-  //
-  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its
-  // own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits
-  // in the SAME file before truncation, instead of merging an already-capped set of `n` raw
-  // hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
+  // Real embedding-vector similarity search: chunks/chunk_vectors are populated during indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers and sqlite-vec dependencies are present -- searchSemantic degrades to an empty array rather than throwing when either is unavailable or nothing has been embedded yet, so this is always safe to try; BM25 (below) is now ALWAYS consulted too, never gated on this returning zero hits, since a single weak dense hit used to make an exact BM25 keyword match unreachable.
+  // Over-fetch a larger candidate set (same ratio searchSemantic already uses internally for its own ANN over-fetch) so mergeNearbyHits has headroom to consolidate nearby/overlapping hits in the SAME file before truncation, instead of merging an already-capped set of `n` raw hits — which can silently drop a hit that would have merged, or shrink the result below `n`.
   const overFetchForMerge = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
   const rawHits = await searchSemantic(
     getDb(globalDbPath()),
@@ -5309,154 +5311,133 @@ async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text
     undefined,
     rootDir,
   )
-  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const mergedHits = mergeNearbyHits(rawHits)
-  // --grep narrows on the FILE PATH AS RENDERED (toDisplayPath), matching `refs --grep`'s
-  // convention -- an anchored `^src/` must match what the human/JSON output actually shows, not
-  // the stored absolute path. Applied here, between merge and slice, so `--limit 20 --grep
-  // '^src/'` returns 20 src/ hits rather than however many of the top-20 *unfiltered* hits
-  // happen to live under src/ -- the "filter must precede slice" trap this repo has hit before.
-  //
-  // --exclude-tests rides the same seam for the same reason: filtering after the slice would
-  // return however many of the top-`n` hits happen not to be tests, rather than `n` non-test
-  // hits. It is checked against the STORED path (isTestFile), not the rendered one, because
-  // whether a file is a test is a property of the file itself, not of how it is displayed.
-  const preGrepHitCount = mergedHits.length
+  // BM25 full-text search over symbol names/bodies/docstrings, over-fetched for the same reason as the dense side above: searchSymbolsFts caps at the DB level via its own SQL LIMIT, so a post-hoc filter (--grep/--exclude-tests) or a post-hoc fusion rank on an already-`n`-capped result would silently under-represent this list relative to the dense one -- always called now (previously gated behind the dense branch returning zero hits), reusing the same OVER_FETCH_FACTOR/MAX_OVER_FETCH ratio the dense branch already uses.
+  const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
+  const ftsRows = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
+
+  // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; a dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
+  const fused = new Map<string, FusedSemanticHit>()
+  mergedHits.forEach((h, denseRank) => {
+    const enclosing = resolveEnclosingSymbol(h.filePath, h.startLine)
+    const key = enclosing !== null ? `${h.filePath}::${enclosing.name}` : `${h.filePath}::L${h.startLine}`
+    fused.set(key, {
+      filePath: h.filePath,
+      startLine: h.startLine,
+      endLine: h.endLine,
+      name: enclosing?.name ?? null,
+      kind: enclosing?.kind ?? null,
+      distance: h.distance,
+      previewText: h.text,
+      rrf: 1 / (RRF_K + denseRank),
+    })
+  })
+  ftsRows.forEach((s, ftsRank) => {
+    const key = `${s.filePath}::${s.name}`
+    const existing = fused.get(key)
+    if (existing !== undefined) {
+      // Already present from the dense pass -- keep its dense-sourced fields (distance, containment-derived name/kind) and just add this list's rank contribution to the score.
+      existing.rrf += 1 / (RRF_K + ftsRank)
+    } else {
+      fused.set(key, {
+        filePath: s.filePath,
+        startLine: s.lineStart,
+        endLine: s.lineEnd,
+        name: s.name,
+        kind: s.kind,
+        distance: null,
+        previewText: s.body,
+        rrf: 1 / (RRF_K + ftsRank),
+      })
+    }
+  })
+  // Map insertion order (JS Map iterates in insertion order) puts every dense-pass row ahead of any FTS-only row it didn't merge with, so a stable sort's tie-break (identical RRF score, e.g. both lists' rank-0) prefers the dense-backed row -- deliberate, since a dense hit is a direct answer to the query's semantics while a tied BM25-only row only matched a shared term.
+  const fusedHits = Array.from(fused.values()).sort((a, b) => b.rrf - a.rrf)
+
+  // --grep narrows on the FILE PATH AS RENDERED (toDisplayPath), matching `refs --grep`'s convention -- an anchored `^src/` must match what the human/JSON output actually shows, not the stored absolute path; applied here, between fusion and slice, so `--limit 20 --grep '^src/'` returns 20 src/ hits rather than however many of the top-20 *unfiltered* hits happen to live under src/ -- the "filter must precede slice" trap this repo has hit before.
+  // --exclude-tests rides the same seam for the same reason: filtering after the slice would return however many of the top-`n` hits happen not to be tests, rather than `n` non-test hits -- it is checked against the STORED path (isTestFile), not the rendered one, because whether a file is a test is a property of the file itself, not of how it is displayed.
+  const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
+  const preFilterCount = fusedHits.length
   const keepHit = (h: { filePath: string }): boolean => {
     if (opts.excludeTests === true && isTestFile(h.filePath)) return false
     return matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))
   }
   const anyFilter = matchesGrep !== undefined || opts.excludeTests === true
-  const filteredHits = anyFilter ? mergedHits.filter(keepHit) : mergedHits
-  // Counted on the grep-surviving set, so the number reported by the --exclude-tests notice is
-  // "tests hidden among the hits you actually asked for", not tests hidden repo-wide.
-  const suppressedHits = opts.excludeTests === true
-    ? mergedHits.filter((h) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))) && isTestFile(h.filePath)).length
+  const filteredHits = anyFilter ? fusedHits.filter(keepHit) : fusedHits
+  // Counted on the grep-surviving set, so the number reported by the --exclude-tests notice is "tests hidden among the hits you actually asked for", not tests hidden repo-wide.
+  const suppressedTotal = opts.excludeTests === true
+    ? fusedHits.filter((h) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, h.filePath))) && isTestFile(h.filePath)).length
     : 0
   const hits = filteredHits.slice(0, n)
+
+  // Which list(s) actually contributed a candidate decides the reported `source` -- 'hybrid' only when both lists had at least one raw hit (even if they didn't fuse into the same row), never 'embeddings' silently standing in for a result that is partly BM25.
+  const hadDense = mergedHits.length > 0
+  const hadFts = ftsRows.length > 0
+  const source = hadDense && hadFts ? 'hybrid' : hadDense ? 'embeddings' : 'fts'
+
   if (hits.length > 0) {
-    const enclosing = hits.map((h) => resolveEnclosingSymbol(h.filePath, h.startLine))
     if (opts.json === true) {
       // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(rootDir, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
-      const items = hits.map((h, i) => ({
+      const items = hits.map((h) => ({
         filePath: toDisplayPath(rootDir, h.filePath),
-        name: enclosing[i]?.name ?? null,
-        kind: enclosing[i]?.kind ?? null,
+        name: h.name,
+        kind: h.kind,
         startLine: h.startLine,
         endLine: h.endLine,
         distance: h.distance,
-        preview: previewLines(h.text, 3),
+        preview: previewLines(h.previewText, 3),
       }))
-      // Same {items, truncated, totalCount} envelope guardJsonRows returns for symbol/refs/
-      // skeleton/outline's --json mode (see the comment at the grep --json call site) -- a bare
-      // {source, items} payload would silently hand a JSON consumer fewer hits than actually
-      // matched with no way to tell "capped by the overflow guard" apart from "there just
-      // weren't more", and would let `--limit 500 --json` emit an unbounded payload.
+      // Same {items, truncated, totalCount} envelope guardJsonRows returns for symbol/refs/skeleton/outline's --json mode (see the comment at the grep --json call site) -- a bare {source, items} payload would silently hand a JSON consumer fewer hits than actually matched with no way to tell "capped by the overflow guard" apart from "there just weren't more", and would let `--limit 500 --json` emit an unbounded payload.
       const capped = guardJsonRows(items)
-      const text = JSON.stringify({ source: 'embeddings', ...capped }, null, 2)
+      const text = JSON.stringify({ source, ...capped }, null, 2)
       recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
       return { text, code: 0 }
     }
-    const blocks = hits.map((h, i) => {
-      const enc = enclosing[i] ?? null
-      const suffix = enc !== null ? ` — inside ${enc.name} (${enc.kind})` : ''
-      return `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})${suffix}\n${previewLines(h.text, 3)}`
+    // A dense-sourced row (distance !== null) renders the distance-annotated block the embeddings branch always used, including the "— inside NAME (KIND)" containment suffix when resolved; an FTS-only row (distance === null, always symbol-backed) renders the plain "name (kind) — path" header the FTS fallback always used, with no "distance" or "inside" wording, since it IS the symbol, not a chunk found to be inside one.
+    const blocks = hits.map((h) => {
+      if (h.distance !== null) {
+        const suffix = h.name !== null ? ` — inside ${h.name} (${h.kind})` : ''
+        return `# ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})${suffix}\n${previewLines(h.previewText, 3)}`
+      }
+      return `# ${h.name} (${h.kind}) — ${toDisplayPath(rootDir, h.filePath)}:${h.startLine}-${h.endLine}\n${previewLines(h.previewText, 3)}`
     })
     const text = guardText(blocks.join('\n\n'), 'semantic')
     recordReadStat('semantic_search', sumFileSizes(hits.map((h) => h.filePath)), text, query)
     return { text, code: 0 }
   }
 
-  // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
-  // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
-  // distance threshold.
-  //
-  // searchSymbolsFts caps at `n` at the DB level via its own SQL LIMIT, so filtering its output
-  // by --grep after the fact would already be too late (same trap as the embeddings branch
-  // above). When grep is set, over-fetch a larger candidate set using the same ratio the
-  // embeddings branch uses, filter, THEN slice to `n`. When grep is unset this call stays
-  // byte-identical to before so today's un-filtered behavior does not change.
-  // --exclude-tests needs the same over-fetch as --grep, for the same DB-LIMIT reason.
-  let results: ReturnType<typeof searchSymbolsFts>
-  let preGrepFtsCount = 0
-  let suppressedFts = 0
-  if (anyFilter) {
-    const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-    const rawResults = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
-    preGrepFtsCount = rawResults.length
-    if (opts.excludeTests === true) {
-      suppressedFts = rawResults.filter((s) => (matchesGrep === undefined || matchesGrep(toDisplayPath(rootDir, s.filePath))) && isTestFile(s.filePath)).length
-    }
-    results = rawResults.filter(keepHit).slice(0, n)
-  } else {
-    results = searchSymbolsFts(query, n, undefined, rootDir)
-  }
-  if (results.length === 0) {
-    // Total number of hits that existed BEFORE --grep was applied, across both branches -- used
-    // to distinguish "--grep matched none of the N hits that do exist" (this is a real store
-    // that a filter emptied out) from a genuinely empty index/search, per this repo's
-    // filtered-store convention (dead/refs/exports/imports all draw this same distinction).
-    const preGrepTotal = preGrepHitCount + preGrepFtsCount
-    if (matchesGrep !== undefined && preGrepTotal > 0) {
-      const notice = grepFilteredToEmptyNotice(preGrepTotal, opts.grep ?? '', 'match', 'matches')
-      if (opts.json === true) {
-        const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, grepFilteredToEmpty: true, hint: notice.trim() }
-        return { text: JSON.stringify(payload, null, 2), code: 0 }
-      }
-      return { text: `token-goat: ${notice.trim()}`, code: 0 }
-    }
-    // Same distinction one flag over: "--exclude-tests hid every hit there was" is a filtered
-    // store, not an empty one, so it exits 0 with a notice naming the count instead of the
-    // exit-1 "no matches" below. Checked after --grep so a run with both flags reports the
-    // narrower grep story first, matching runRefs's ordering.
-    if (opts.excludeTests === true) {
-      const suppressedTotal = suppressedHits + suppressedFts
-      if (suppressedTotal > 0) {
-        const notice = `no non-test matches for '${query}' (${excludeTestsHiddenNote(suppressedTotal)})`
-        if (opts.json === true) {
-          const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
-          return { text: JSON.stringify(payload, null, 2), code: 0 }
-        }
-        return { text: `token-goat: ${notice}`, code: 0 }
-      }
-    }
-    // Only paid after both the embedding search and the FTS fallback already came back empty.
-    const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
+  // Total number of fused hits that existed BEFORE --grep was applied -- used to distinguish "--grep matched none of the N hits that do exist" (this is a real store that a filter emptied out) from a genuinely empty index/search, per this repo's filtered-store convention (dead/refs/exports/imports all draw this same distinction).
+  if (matchesGrep !== undefined && preFilterCount > 0) {
+    const notice = grepFilteredToEmptyNotice(preFilterCount, opts.grep ?? '', 'match', 'matches')
     if (opts.json === true) {
-      // A dedicated field, never prose folded into an existing string field -- same "add a field,
-      // don't rewrite an existing one" convention doctor's own {status, message} shape follows,
-      // and consistent with this payload's own {source, items, truncated, totalCount} envelope.
-      const payload = indexEmpty
-        ? { source: 'fts', items: [], truncated: false, totalCount: 0, indexEmpty: true, hint: emptyIndexMessage(rootDir) }
-        : { source: 'fts', items: [], truncated: false, totalCount: 0 }
-      const text = JSON.stringify(payload, null, 2)
-      return { text, code: 1 }
+      const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, grepFilteredToEmpty: true, hint: notice.trim() }
+      return { text: JSON.stringify(payload, null, 2), code: 0 }
     }
-    const text = indexEmpty
-      ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
-      : `token-goat: no matches for '${query}'`
+    return { text: `token-goat: ${notice.trim()}`, code: 0 }
+  }
+  // Same distinction one flag over: "--exclude-tests hid every hit there was" is a filtered store, not an empty one, so it exits 0 with a notice naming the count instead of the exit-1 "no matches" below -- checked after --grep so a run with both flags reports the narrower grep story first, matching runRefs's ordering.
+  if (opts.excludeTests === true && suppressedTotal > 0) {
+    const notice = `no non-test matches for '${query}' (${excludeTestsHiddenNote(suppressedTotal)})`
+    if (opts.json === true) {
+      const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
+      return { text: JSON.stringify(payload, null, 2), code: 0 }
+    }
+    return { text: `token-goat: ${notice}`, code: 0 }
+  }
+  // Only paid after both the dense search and the BM25 search already came back empty.
+  const indexEmpty = isIndexEmptyForProject(globalDbPath(), rootDir)
+  if (opts.json === true) {
+    // A dedicated field, never prose folded into an existing string field -- same "add a field, don't rewrite an existing one" convention doctor's own {status, message} shape follows, and consistent with this payload's own {source, items, truncated, totalCount} envelope.
+    const payload = indexEmpty
+      ? { source: 'fts', items: [], truncated: false, totalCount: 0, indexEmpty: true, hint: emptyIndexMessage(rootDir) }
+      : { source: 'fts', items: [], truncated: false, totalCount: 0 }
+    const text = JSON.stringify(payload, null, 2)
     return { text, code: 1 }
   }
-  if (opts.json === true) {
-    // Same root-relative rewrite as the embeddings branch above.
-    const items = results.map((s) => ({
-      filePath: toDisplayPath(rootDir, s.filePath),
-      name: s.name,
-      kind: s.kind,
-      startLine: s.lineStart,
-      endLine: s.lineEnd,
-      distance: null,
-      preview: previewLines(s.body, 3),
-    }))
-    const capped = guardJsonRows(items)
-    const text = JSON.stringify({ source: 'fts', ...capped }, null, 2)
-    recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
-    return { text, code: 0 }
-  }
-  const blocks = results.map((s) => `${symbolHeader(s, rootDir)}\n${previewLines(s.body, 3)}`)
-  const text = guardText(blocks.join('\n\n'), 'semantic')
-  recordReadStat('semantic_search', sumFileSizes(results.map((s) => s.filePath)), text, query)
-  return { text, code: 0 }
+  const text = indexEmpty
+    ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
+    : `token-goat: no matches for '${query}'`
+  return { text, code: 1 }
 }
 
 
