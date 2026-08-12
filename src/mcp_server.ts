@@ -248,7 +248,7 @@ function specFilePart(spec: string): string {
  * the whole call, or the confinement is trivially bypassed by appending an in-root path.
  */
 function rejectOutsideRoot(targets: readonly string[], resolvedRoot: string, splitCommas = true): CallToolResult | null {
-  if (!loadConfig().mcp.confine_reads_to_project_root) return null
+  if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return null
   for (const raw of targets) {
     for (const part of splitCommas ? raw.split(',') : [raw]) {
       const file = specFilePart(part).trim()
