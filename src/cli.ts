@@ -2844,6 +2844,12 @@ export function buildProgram(): Command {
     .name('token-goat')
     .description('Surgical token-reduction companion for AI coding agents')
     .version(VERSION, '-v, --version', 'print the token-goat version')
+    // Lets a caller (e.g. the VS Code extension) convey a project root explicitly
+    // instead of setting the spawned process's own working directory to it -- an
+    // attacker-controlled workspace should never be the cwd a shell/launcher resolves
+    // a binary name against, but commands that key off process.cwd() for project
+    // resolution still need a way to be told where that root is.
+    .option('--cwd <path>', 'run as if invoked from this directory (overrides the real working directory)')
 
   // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.
   // A handler that already set process.exitCode itself (a deliberate non-zero exit without throwing) is left alone -- only the still-undefined default gets the success fallback.
@@ -2851,6 +2857,16 @@ export function buildProgram(): Command {
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
       process.exitCode = undefined
+      const cwdOverride = program.opts<{ cwd?: string }>().cwd
+      if (cwdOverride !== undefined) {
+        try {
+          process.chdir(cwdOverride)
+        } catch (e) {
+          err(`token-goat: --cwd ${cwdOverride}: ${extractErrorMessage(e)}`)
+          process.exitCode = 1
+          return
+        }
+      }
       // loadConfig() silently falls back to defaults on a config.toml parse failure, same as when the file is simply missing -- surface the distinction here, once per invocation, so a corrupt config doesn't look identical to "no config yet" for every command.
       loadConfig()
       const parseErr = getLastConfigParseError()

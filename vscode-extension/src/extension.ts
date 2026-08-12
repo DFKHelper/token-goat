@@ -1,45 +1,15 @@
-import { exec, execFile, type ExecFileException } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
+import { assertSafeArgSegment, runGitDiff, runTokenGoat } from './launcher'
 import { formatSavingsBar, parseStatsJson, type StatsJson } from './savings'
 
-// Only arguments containing shell metacharacters get quotes; cmd.exe's
-// /s /c quote-stripping mangles a command line where every argument is
-// pre-quoted, and the npm .cmd shim forwards via %*, so quotes must be
-// minimal and exact.
-function quoteWindowsArgument(argument: string): string {
-  if (argument.includes('\0')) throw new Error('token-goat cannot launch with a NUL byte in its path')
-  if (!/[\s&|<>()^%"]/.test(argument)) return argument
-  return `"${argument.replace(/"/g, '\\"')}"`
-}
-
-function runTokenGoat(args: string[], cwd?: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const options = {
-      encoding: 'utf8' as const,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-      cwd,
-    }
-    if (process.platform === 'win32') {
-      // npm exposes global CLIs as .cmd shims on Windows. All arguments passed
-      // here are fixed flags or generated temporary paths, never workspace paths.
-      const commandLine = ['token-goat.cmd', ...args.map(quoteWindowsArgument)].join(' ')
-      exec(commandLine, options, callback)
-      return
-    }
-    execFile('token-goat', args, options, callback)
-
-    function callback(error: ExecFileException | null, stdout: string, stderr: string): void {
-      if (error) {
-        reject(new Error(stderr.trim() || `token-goat exited with code ${error.code ?? 'unknown'}`))
-        return
-      }
-      resolve(stdout.trim())
-    }
-  })
+// Workspace Trust is the only barrier stopping a hostile repo's file/symbol content from reaching token-goat's argv (see package.json's untrustedWorkspaces capability, which keeps the extension from activating at all in an untrusted workspace) — this is the belt-and-suspenders check for any call site that still consumes workspace-derived input after that gate.
+function requireTrustedWorkspace(action: string): void {
+  if (!vscode.workspace.isTrusted) {
+    throw new Error(`${action} is disabled in an untrusted workspace.`)
+  }
 }
 
 async function withTemporaryText<T>(text: string, extension: string, action: (file: string) => Promise<T>): Promise<T> {
@@ -128,6 +98,7 @@ async function ensureDecoderSetup(): Promise<void> {
   )
   if (choice !== 'Set up now') return
   try {
+    requireTrustedWorkspace('Installing the token-goat decoder')
     await runTokenGoat(['install', '--vscode'], folder.uri.fsPath)
     void vscode.window.showInformationMessage('token-goat decoder installed. Two steps left: reload the window (Ctrl+Shift+P → Developer: Reload Window), then start the server when VS Code asks — or via Ctrl+Shift+P → "MCP: List Servers" → token-goat → Start. Compressed payloads also need Agent mode in chat.')
   } catch (error) {
@@ -205,11 +176,13 @@ async function compressSurgicalPayload(): Promise<string> {
 // then pull its full body. Falls back to the cursor-window excerpt when the
 // project is not indexed or the cursor sits outside any symbol.
 async function compressSymbolPayload(): Promise<string> {
+  requireTrustedWorkspace('Sending a symbol')
   const editor = vscode.window.activeTextEditor
   if (!editor || editor.document.isUntitled) throw new Error('Open a saved file to send the symbol at the cursor.')
   const workspace = vscode.workspace.getWorkspaceFolder(editor.document.uri)
   if (!workspace) throw new Error('The file is not inside the workspace folder.')
   const relative = path.relative(workspace.uri.fsPath, editor.document.uri.fsPath)
+  assertSafeArgSegment(relative, 'The file path')
   const line = editor.selection.active.line + 1
   let scope: string
   try {
@@ -220,6 +193,7 @@ async function compressSymbolPayload(): Promise<string> {
   const first = scope.split('\n')[0]?.split('\t')
   if (!first || first.length < 3) return compressSurgicalPayload()
   const [name, kind, location] = first
+  assertSafeArgSegment(name, 'The symbol name')
   const startLine = /:(\d+)-\d+$/.exec(location)?.[1]
   const spec = startLine ? `${relative}::${name}@${startLine}` : `${relative}::${name}`
   const body = await runTokenGoat(['read', spec], workspace.uri.fsPath)
@@ -282,6 +256,7 @@ async function compressErrorsPayload(target?: vscode.Uri): Promise<string> {
 }
 
 async function zipListPayload(target?: vscode.Uri): Promise<string> {
+  requireTrustedWorkspace('Listing an archive')
   const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
   if (!file) throw new Error('Right-click a .zip/.vsix/.nupkg file in the Explorer first.')
   return `Contents of ${path.basename(file)} (listed without extracting):\n${await runTokenGoat(['zip-list', file])}`
@@ -290,6 +265,7 @@ async function zipListPayload(target?: vscode.Uri): Promise<string> {
 // Ticket attachments arrive as PDFs and Word documents; extract their text
 // with the CLI's document readers, then compress like any other payload.
 async function compressDocumentPayload(target?: vscode.Uri): Promise<string> {
+  requireTrustedWorkspace('Extracting a document')
   const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
   if (!file) throw new Error('Right-click a .pdf or .docx file in the Explorer first.')
   const ext = path.extname(file).toLowerCase()
@@ -351,15 +327,10 @@ async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<s
 }
 
 async function compressDiffPayload(): Promise<string> {
+  requireTrustedWorkspace('Sending a git diff')
   const workspace = vscode.workspace.workspaceFolders?.[0]
   if (!workspace) throw new Error('Open a workspace folder to send its git diff.')
-  const diff = await new Promise<string>((resolve, reject) => {
-    exec('git diff HEAD', { cwd: workspace.uri.fsPath, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true },
-      (error, stdout, stderr) => {
-        if (error) reject(new Error(stderr.trim() || 'git diff failed — is this a git repository?'))
-        else resolve(stdout)
-      })
-  })
+  const diff = await runGitDiff(workspace.uri.fsPath)
   if (!diff.trim()) throw new Error('The working tree has no changes against HEAD.')
   const payload = await compressText(diff, '.diff')
   return `Compressed git diff of ${workspace.name} against HEAD:\n${payload}`
