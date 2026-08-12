@@ -101,6 +101,11 @@ export interface ImageShrinkConfig {
 
 export interface ScreenshotConfig {
   chrome_path: string
+  // When true (default), takeScreenshot rejects non-http(s) schemes and literal
+  // loopback/link-local/RFC1918 hosts before navigating, so injected content can't aim the
+  // headless browser at cloud metadata (169.254.169.254) or a localhost-only service. Set
+  // false to opt out for users who legitimately screenshot internal/private targets.
+  block_private_targets: boolean
 }
 
 export interface RepomapConfig {
@@ -360,6 +365,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   },
   screenshot: {
     chrome_path: '',
+    block_private_targets: true,
   },
   repomap: {
     compact_file_threshold: 50,
@@ -1357,6 +1363,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const sc_raw = section(raw, 'screenshot')
   const sc_cfg = getDefaultConfig('screenshot') as ScreenshotConfig
   sc_cfg.chrome_path = validatedStr(sc_raw['chrome_path'], sc_cfg.chrome_path)
+  sc_cfg.block_private_targets = validatedBool(sc_raw['block_private_targets'], sc_cfg.block_private_targets)
+  sc_cfg.block_private_targets = envBool('TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS', sc_cfg.block_private_targets)
 
   const rm_raw = section(raw, 'repomap')
   const rm = getDefaultConfig('repomap') as RepomapConfig
@@ -1577,6 +1585,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
   'image_shrink.ocr_enabled': ['TOKEN_GOAT_OCR_ENABLED'],
+  'screenshot.block_private_targets': ['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
   'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
@@ -1704,6 +1713,7 @@ export function saveConfig(config: Config): void {
     },
     screenshot: {
       chrome_path: config.screenshot.chrome_path,
+      block_private_targets: config.screenshot.block_private_targets,
     },
     repomap: {
       compact_file_threshold: config.repomap.compact_file_threshold,
