@@ -3,9 +3,12 @@
  * tools, so any MCP-aware harness (VS Code, Copilot CLI, etc.) can call them in-process instead
  * of shelling out to `token-goat <cmd>`.
  *
- * Every tool handler here is a thin adapter over the same `run*`/`runSemantic` functions the CLI
- * commands in `cli.ts` call — no logic is duplicated, so a fix or format change to a surgical-read
- * command applies to both surfaces automatically.
+ * Every tool handler mirroring a CLI command is a thin adapter over the same `run*`/`runSemantic`
+ * functions the CLI commands in `cli.ts` call — no logic is duplicated, so a fix or format change
+ * to a surgical-read command applies to both surfaces automatically. The one exception is
+ * `index_status`, which has no CLI counterpart by design: it answers a question only an MCP client
+ * needs to ask (is an empty result "no match" or "index not ready?"), since CLI users have the
+ * hook layer and `doctor`/`stats` for the same signal.
  */
 
 import * as fs from 'fs'
