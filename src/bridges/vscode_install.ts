@@ -150,7 +150,7 @@ export interface VscodeInstallResult {
  * loudly, the moment someone actually installs into that scope), so this swallows
  * read/parse failures and reports "no managed entry found" rather than throwing.
  */
-function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
+export function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
   const otherPath = otherScopeMcpPath(opts)
   if (!fs.existsSync(otherPath)) return false
   try {

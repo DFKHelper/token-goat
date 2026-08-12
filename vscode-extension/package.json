@@ -301,6 +301,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "package": "npm run compile && vsce package"
   },

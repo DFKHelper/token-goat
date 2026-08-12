@@ -23,7 +23,10 @@
     "test:guards": "vitest run tests/guards",
     "test:matrix": "vitest run tests/command_matrix_e2e",
     "test:watch": "vitest",
-    "lint": "eslint src tests",
+    "test:vscode-extension": "npm --prefix vscode-extension test",
+    "lint": "eslint src tests vscode-extension/src vscode-extension/tests",
+    "typecheck:vscode-extension": "npm --prefix vscode-extension run compile",
+    "typecheck:vscode-extension:tests": "npm --prefix vscode-extension run typecheck:tests",
     "dev": "tsx src/main.ts",
     "prepare": "node scripts/install-git-hooks.mjs"
   },

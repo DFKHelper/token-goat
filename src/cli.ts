@@ -57,7 +57,7 @@ import { installOpencode, uninstallOpencode } from './bridges/opencode_install.j
 import { installOpenclaw, uninstallOpenclaw } from './bridges/openclaw_install.js'
 import { installCopilotCli, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, uninstallGrok } from './bridges/grok_install.js'
-import { installVscode, uninstallVscode } from './bridges/vscode_install.js'
+import { installVscode, otherScopeHasManagedServer, uninstallVscode } from './bridges/vscode_install.js'
 import {
   isWorkerRunning,
   runDetachedWorkerDaemon,
@@ -751,6 +751,19 @@ function cmdUninstall(opts: {
     if (!removal.flag) continue
     const removed = removal.run()
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
+  }
+
+  // Cross-scope warning, mirroring installVscode's cross-scope guard (see
+  // otherScopeHasManagedServer): uninstall only ever touches the requested scope's
+  // mcp.json, so a server registered in the OTHER scope survives silently -- e.g. a
+  // project-scope install from before the project->user default flip, uninstalled with
+  // a bare `token-goat uninstall --vscode` (which now defaults to user scope). Warn
+  // rather than refuse: uninstall is best-effort cleanup (it already reports-not-deletes
+  // stray CLAUDE.md blocks above), and refusing here would block a caller who legitimately
+  // only wants to strip the requested scope.
+  if (opts.vscode === true && otherScopeHasManagedServer({ project: opts.project === true })) {
+    const otherScope = opts.project === true ? 'user' : 'project'
+    out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'project' ? ' --project' : ''}" to remove it too.`)
   }
 
   // --hermes removes no files: Hermes shares the Claude Code hook entries uninstallHooks() above already stripped, so this only exists for CLI symmetry with the other harness flags (README's uninstall table lists --hermes alongside the rest).
@@ -2851,22 +2864,29 @@ export function buildProgram(): Command {
     // resolution still need a way to be told where that root is.
     .option('--cwd <path>', 'run as if invoked from this directory (overrides the real working directory)')
 
+  // Applied via a preAction hook (not inside `guard` below) so --cwd works for every
+  // command, not only the ones wrapped in `guard` -- the surgical-read commands (symbol,
+  // read, scope, ...) call runExit/runExitText directly and never go through guard, so a
+  // chdir living only inside guard silently no-ops for them. This hook fires before any
+  // command's action handler, guard-wrapped or not, and before anything resolves the
+  // project root or loads config.
+  program.hook('preAction', (thisCommand) => {
+    const cwdOverride = thisCommand.opts<{ cwd?: string }>().cwd
+    if (cwdOverride !== undefined) {
+      try {
+        process.chdir(cwdOverride)
+      } catch (e) {
+        throw new Error(`--cwd ${cwdOverride}: ${extractErrorMessage(e)}`, { cause: e })
+      }
+    }
+  })
+
   // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.
   // A handler that already set process.exitCode itself (a deliberate non-zero exit without throwing) is left alone -- only the still-undefined default gets the success fallback.
   const guard =
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
       process.exitCode = undefined
-      const cwdOverride = program.opts<{ cwd?: string }>().cwd
-      if (cwdOverride !== undefined) {
-        try {
-          process.chdir(cwdOverride)
-        } catch (e) {
-          err(`token-goat: --cwd ${cwdOverride}: ${extractErrorMessage(e)}`)
-          process.exitCode = 1
-          return
-        }
-      }
       // loadConfig() silently falls back to defaults on a config.toml parse failure, same as when the file is simply missing -- surface the distinction here, once per invocation, so a corrupt config doesn't look identical to "no config yet" for every command.
       loadConfig()
       const parseErr = getLastConfigParseError()

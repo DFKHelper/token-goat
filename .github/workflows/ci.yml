@@ -14,12 +14,17 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - run: npm ci --prefix vscode-extension
       - name: Lint
         run: npm run lint
       - name: Type check
         run: npm run typecheck
       - name: Type check (tests)
         run: npm run typecheck:tests
+      - name: Type check (VS Code extension)
+        run: npm run typecheck:vscode-extension
+      - name: Type check (VS Code extension tests)
+        run: npm run typecheck:vscode-extension:tests
 
   test:
     runs-on: ubuntu-latest
@@ -49,6 +54,12 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test
+      # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts)
+      # stays wired to a gate even if the root vitest config's default file discovery ever
+      # narrows its `include` -- `npm test` above already picks these tests up incidentally
+      # today, but that was never intentional and is not something to depend on silently.
+      - name: Test (VS Code extension)
+        run: npm run test:vscode-extension
 
   test-windows:
     runs-on: windows-latest
@@ -71,6 +82,8 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test
+      - name: Test (VS Code extension)
+        run: npm run test:vscode-extension
 
   test-macos:
     runs-on: macos-latest
@@ -93,3 +106,5 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test
+      - name: Test (VS Code extension)
+        run: npm run test:vscode-extension
