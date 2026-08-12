@@ -16,8 +16,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { globalDbPath } from '../src/constants.js'
+import { getDb } from '../src/db.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
+import { normalizePath } from '../src/paths.js'
 
 const querySymbolsMock = vi.fn()
 
@@ -212,5 +215,44 @@ describe('mcp confinement: gate base must equal execution base', () => {
     expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
     expect(textOf(result)).not.toContain(SECRET)
     expect(result.isError).toBe(true)
+  })
+
+  // ---- Symptom 4: `refs` had no confinement gate and no root-scoped query at all ----------
+  //
+  // Unlike the file-reading tools above, `refs` never resolves a path off disk -- it queries the
+  // shared global.db `refs` table by symbol name. Its exposure is therefore not "serve the wrong
+  // file's bytes" but "leak reference rows recorded against an unrelated project": with no
+  // `projectRoot` schema field, no confinement gate, and no `rootDir` passed into `queryRefs`,
+  // asking for a symbol name that happens to also exist in some OTHER indexed project returned
+  // that other project's call sites too. Seed the shared global.db with a same-named symbol
+  // referenced once inside `root` and once inside `serverCwd` (standing in for an unrelated
+  // project sharing the same index) to prove the fix scopes the query to `projectRoot`, not the
+  // server process's cwd.
+  it('refs: a bare symbol name is scoped to projectRoot, not the server cwd or the whole shared index', async () => {
+    const db = getDb(globalDbPath())
+    const insertRef = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+    insertRef.run(normalizePath(path.join(root, 'user.ts')), 'hotFn', 10, 1, `hotFn() // ${IN_ROOT}`)
+    insertRef.run(normalizePath(path.join(serverCwd, 'other-project.ts')), 'hotFn', 20, 1, `hotFn() // ${SECRET}`)
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'refs', arguments: { spec: 'hotFn', projectRoot: root } })
+    const text = textOf(result)
+    expect(text).toContain(IN_ROOT)
+    expect(text).not.toContain(SECRET)
+  })
+
+  it('refs: an absolute out-of-root spec is refused with cwd != projectRoot', async () => {
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({
+      name: 'refs',
+      arguments: { spec: `${path.join(serverCwd, 'secret.txt')}::Foo`, projectRoot: root },
+    })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain('is outside the project root. The MCP tools are confined to the workspace.')
+    expect(textOf(result)).not.toContain(SECRET)
   })
 })

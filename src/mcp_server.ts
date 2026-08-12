@@ -529,10 +529,14 @@ export function createMcpServer(): McpServer {
             'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
           ),
         json: z.boolean().optional().describe('output as JSON'),
+        projectRoot: projectRootField,
       },
     },
     (args) => {
-      const { spec, callers, limit, top, json } = args
+      const { spec, callers, limit, top, json, projectRoot } = args
+      const root = resolveToolRoot(projectRoot)
+      const refused = rejectOutsideRoot([spec], root)
+      if (refused) return refused
       return toCallToolResultFromExitCode(() =>
         runRefs({
           spec,
@@ -540,6 +544,7 @@ export function createMcpServer(): McpServer {
           ...(json === true ? { json: true } : {}),
           ...(limit !== undefined ? { limit } : {}),
           ...(top !== undefined ? { top } : {}),
+          projectRoot: root,
         }),
       )
     },
