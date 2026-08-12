@@ -33,6 +33,8 @@ import {
   runGrep,
   runImports,
   runExports,
+  findSpecSeparator,
+  parseLineRange,
 } from './read_commands.js'
 import { recordStat } from './stats.js'
 import {
@@ -216,11 +218,26 @@ function isWithinProjectRoot(target: string, resolvedRoot: string): boolean {
   return real === root || real.startsWith(root.endsWith('/') ? root : root + '/')
 }
 
-/** The file portion of one `read`/`section` spec: `file::symbol`, `file@N-M`, or a bare path. */
+/**
+ * The file portion of one `read`/`section` spec: `file::symbol`, `file@N-M`, or a bare path.
+ *
+ * Reuses read_commands.ts's own {@link parseLineRange} and {@link findSpecSeparator} instead of
+ * restating their grammar here, so this gate's notion of "the file part" agrees with the
+ * execution layer's by construction. Two hand-kept-in-sync regexes previously drifted apart on
+ * both syntaxes they cover: an `@` suffix that parseLineRange would decline (no trailing digits,
+ * a `::` in the prefix, or a literal file that happens to contain `@`) was still stripped here,
+ * validating a shorter in-root prefix while runRead resolved the untouched, longer, possibly
+ * out-of-root spec; and a spec with two `::` occurrences split on the FIRST one here but the
+ * LAST one in findSpecSeparator (used by both runRead and runSection), so `a::../../b::c` was
+ * validated as `a` while `a::../../b` was actually read. When in doubt, this returns the more
+ * inclusive (longer) string, never a shortened prefix -- see parseLineRange/findSpecSeparator
+ * for the precedence (`@`-range checked first, matching runRead's own check order).
+ */
 function specFilePart(spec: string): string {
-  const beforeSymbol = spec.includes('::') ? spec.slice(0, spec.indexOf('::')) : spec
-  const at = beforeSymbol.lastIndexOf('@')
-  return at > 0 ? beforeSymbol.slice(0, at) : beforeSymbol
+  const range = parseLineRange(spec)
+  if (range !== null) return range.file
+  const colonIdx = findSpecSeparator(spec)
+  return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
 }
 
 /**

@@ -851,8 +851,8 @@ export function extraFileArgsNote(command: string, first: string, extras: readon
   return `Note: ${extras.length} extra file argument(s) ignored (${extras.join(', ')}). ${command} reads one file, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
 }
 
-// A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read.
-function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
+// A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read. Exported so mcp_server.ts's confinement gate can recognize the exact same range syntax runRead does, instead of restating this regex in a second place (see specFilePart there).
+export function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
   const m = /^(.+)@(\d+)(?:-(\d+))?$/.exec(spec)
   if (m === null) return null
   // If the full spec is a real file (e.g., a file literally named "notes@2024"), treat it as a plain file, not a range.
