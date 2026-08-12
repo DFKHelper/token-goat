@@ -212,10 +212,10 @@ function specFilePart(spec: string): string {
  * Comma-separated multi-file specs are checked part by part: one out-of-root member must reject
  * the whole call, or the confinement is trivially bypassed by appending an in-root path.
  */
-function rejectOutsideRoot(targets: readonly string[], projectRoot: string | undefined): CallToolResult | null {
+function rejectOutsideRoot(targets: readonly string[], projectRoot: string | undefined, splitCommas = true): CallToolResult | null {
   if (!loadConfig().mcp.confine_reads_to_project_root) return null
   for (const raw of targets) {
-    for (const part of raw.split(',')) {
+    for (const part of splitCommas ? raw.split(',') : [raw]) {
       const file = specFilePart(part).trim()
       if (file === '') continue
       if (!isWithinProjectRoot(file, projectRoot)) {
@@ -534,10 +534,13 @@ export function createMcpServer(): McpServer {
         json: z.boolean().optional().describe('output as JSON'),
         context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of call-site source to show before and after each caller (default 0)'),
         excludeTests: z.boolean().optional().describe('hide callers whose call site lives in a test file (opt-in; default output is unchanged)'),
+        projectRoot: makeProjectRootField('orient'),
       },
     },
     (args) => {
-      const { spec, limit, json, context, excludeTests } = args
+      const { spec, limit, json, context, excludeTests, projectRoot } = args
+      const refused = rejectOutsideRoot([spec], projectRoot)
+      if (refused) return refused
       return toCallToolResultFromExitCode(() =>
         runBrief({
           spec,
@@ -617,8 +620,8 @@ export function createMcpServer(): McpServer {
     },
     (args) => {
       const { pattern, path: searchPath, maxLines, json, recursive, context, projectRoot } = args
-      // grep's `path` is a plain array of files/directories, never a `file::symbol` spec, so each element is checked whole rather than split on a comma that could legitimately appear in a filename.
-      const refused = searchPath === undefined ? null : rejectOutsideRoot(searchPath.map((p) => p.replace(/,/g, '')), projectRoot)
+      // grep's `path` elements are whole files/directories, never `file::symbol` specs, so each is checked verbatim -- no comma splitting, since a comma can be a legitimate filename character.
+      const refused = searchPath === undefined ? null : rejectOutsideRoot(searchPath, projectRoot, false)
       if (refused) return refused
       return toCallToolResultFromExitCode(() =>
         runGrep({
