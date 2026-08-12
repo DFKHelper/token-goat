@@ -11,6 +11,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/main.ts`](src/main.ts) | Package executable shim — calls `run()` from `cli.ts`; lets the event loop drain (no `process.exit`) so buffered stdout flushes cleanly on Windows pipes |
 | [`src/cli.ts`](src/cli.ts) | Commander CLI; `buildProgram()` registers every subcommand and wires it to a `cmd*` handler via `guard()`; `run()` is the exported entry point |
 | [`src/read_commands.ts`](src/read_commands.ts) | **Single source of truth for surgical-read logic** — `runSymbol`, `runRead`, `runSection`, `runRefs`, `runSkeleton`, `runOutline`, `runChanged`, `runConfigGet`, `runExports`, `runImports`, `runFind`, `runGrep`; all CLI read subcommands delegate here |
+| [`src/mcp_server.ts`](src/mcp_server.ts) | `createMcpServer()`: MCP stdio server for `token-goat mcp-serve`, registering all 18 tools by calling the same `read_commands.ts`/`content_store.ts` handlers the CLI uses; does not connect a transport |
 | [`src/types.ts`](src/types.ts) | Wire-shape leaf: `HookOutput` union, `HOOK_EVENTS`, `CANONICAL_TOOLS`, `GitResult` — no local imports, safe for any layer to depend on |
 
 **Indexer and worker (critical path)**
