@@ -45,6 +45,9 @@ describe('runSemantic --grep (embeddings branch)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test
+    // in this describe block that doesn't care about FTS needs a default non-undefined return.
+    searchSymbolsFtsMock.mockReturnValue([])
     root = mkdtempSync(join(tmpdir(), 'tg-sem-grep-emb-'))
   })
 
@@ -197,14 +200,20 @@ describe('runSemantic --grep (FTS fallback branch)', () => {
     expect(text).toContain('fnLow')
   })
 
-  it('leaves the searchSymbolsFts call byte-identical (same limit, no over-fetch) when --grep is unset', async () => {
+  // Regression note: this used to assert a byte-identical, non-over-fetched call when --grep was
+  // unset. Since runSemantic now ALWAYS fuses the BM25 list with the dense list (RRF), rather
+  // than gating BM25 on the dense branch returning zero hits, searchSymbolsFts must always be
+  // over-fetched -- the fusion rank needs a real candidate breadth, not just enough to fill
+  // --limit, regardless of whether a filter is present.
+  it('over-fetches the searchSymbolsFts call even when --grep is unset (fusion always needs breadth, not just enough to fill --limit)', async () => {
     searchSymbolsFtsMock.mockReturnValue([])
 
     await runSemantic('q', { projectRoot: root, limit: 7 })
 
     expect(searchSymbolsFtsMock).toHaveBeenCalledTimes(1)
     const call = searchSymbolsFtsMock.mock.calls[0]
-    expect(call?.[1]).toBe(7)
+    expect(call?.[1]).toBe(Math.min(MAX_OVER_FETCH, 7 * OVER_FETCH_FACTOR))
+    expect(call?.[1]).toBeGreaterThan(7)
   })
 
   it('renders a filtered-to-empty notice, distinguishable from a genuinely empty search, when --grep matches none of the real hits (text and --json)', async () => {
