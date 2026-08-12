@@ -34,6 +34,18 @@ describe('parseShareUrl', () => {
   it('throws when neither /sites/ nor /personal/ appears in the path', () => {
     expect(() => parseShareUrl('https://contoso.sharepoint.com/foo/bar')).toThrow(/could not find a \/sites\/ or \/personal\//)
   })
+
+  it('never echoes the query string (access material) in error messages (security regression)', () => {
+    const secretToken = 'd=SECRET_ACCESS_TOKEN_12345'
+    try {
+      parseShareUrl(`https://contoso.sharepoint.com/foo/bar?${secretToken}`)
+      expect.fail('expected parseShareUrl to throw')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      expect(message).not.toContain(secretToken)
+      expect(message).not.toContain('?')
+    }
+  })
 })
 
 describe('resolveLocalPath', () => {
@@ -91,6 +103,32 @@ describe('resolveLocalPath', () => {
     for (const tried of result.triedPaths) {
       expect(tried.startsWith(siteRoot)).toBe(true)
     }
+  })
+
+  it('rejects the backslash-encoded traversal payload (%5C survives decodeURIComponent, never splits on "/", never equals ".." -- security regression)', () => {
+    // https://x.sharepoint.com/sites/S/Docs/..%5C..%5C..%5CWindows%5Cwin.ini decodes to a
+    // single segment '..\..\..\Windows\win.ini' that a '/'-only split never breaks apart
+    // and that never literally equals '..', so the old '/'.split().filter(s => s !== '..')
+    // guard let it straight through; path.win32.join then collapsed it outside the root.
+    const siteRoot = path.join(root, 'backslash-traversal-root')
+    fs.mkdirSync(siteRoot, { recursive: true })
+    const parsed = parseShareUrl(
+      'https://contoso.sharepoint.com/sites/S/Docs/..%5C..%5C..%5CWindows%5Cwin.ini',
+    )
+    const result = resolveLocalPath(parsed, { OneDriveCommercial: siteRoot }, root)
+    expect(result.resolvedPath).toBeNull()
+    for (const tried of result.triedPaths) {
+      expect(tried.startsWith(siteRoot)).toBe(true)
+    }
+  })
+
+  it('resolves a normal nested path unaffected by the backslash guard', () => {
+    const siteRoot = path.join(root, 'backslash-normal-root')
+    fs.mkdirSync(path.join(siteRoot, 'Docs', 'Sub'), { recursive: true })
+    fs.writeFileSync(path.join(siteRoot, 'Docs', 'Sub', 'file.txt'), '')
+    const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/S/Docs/Sub/file.txt')
+    const result = resolveLocalPath(parsed, { OneDriveCommercial: siteRoot }, root)
+    expect(result.resolvedPath).toBe(path.join(siteRoot, 'Docs', 'Sub', 'file.txt'))
   })
 
   it('finds a candidate root via a home-directory scan when no env var is set', () => {

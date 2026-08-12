@@ -36,12 +36,19 @@ function ensureTransformerLoaded(): void {
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
+// Immutable commit SHA for Xenova/bge-small-en-v1.5 on huggingface.co, pinned so a cold-cache install fetches known-good ONNX weights instead of trusting the mutable 'main' ref. Fetched via https://huggingface.co/api/models/Xenova/bge-small-en-v1.5 ("sha" field) on 2026-08-12; last model update per that same response was 2025-07-22. Bump deliberately if the model is ever intentionally updated.
+export const PINNED_MODEL_REVISION = 'ea104dacec62c0de699686887e3f920caeb4f3e3'
+
 // BGE's retrieval-tuned checkpoints (bge-small/base/large-en) expect an asymmetric instruction prefix on the QUERY side only -- passages/documents are embedded plain. See https://huggingface.co/BAAI/bge-small-en-v1.5#model-list. Apply this to query text only (never to chunk/document text, which would just add noise) to improve retrieval quality for this model family.
 export const QUERY_INSTRUCTION_PREFIX = 'Represent this sentence for searching relevant passages: '
 
 // pipelineFn('feature-extraction', modelName) rebuilds the whole extractor (model weights + tokenizer) from scratch on every call -- @xenova/transformers' pipeline() has no built-in memoization of its own. Keyed by model name and cached as a Promise (not the resolved extractor) so concurrent embedTexts calls racing on a cold cache share the same in-flight construction instead of each kicking off a redundant load. Cleared via registerReset so tests that mock the pipeline factory start from a clean slate.
 type FeatureExtractor = (text: string, options: Record<string, unknown>) => Promise<unknown>
-type PipelineFn = (task: string, model: string) => Promise<FeatureExtractor>
+type PipelineFn = (
+  task: string,
+  model: string,
+  options?: Record<string, unknown>,
+) => Promise<FeatureExtractor>
 const _extractorCache = new Map<string, Promise<FeatureExtractor>>()
 
 // @xenova/transformers is loaded via createRequire (see ensureTransformerLoaded above), which resolves through Node's real CJS loader rather than vitest's mockable module graph, so vi.mock('@xenova/transformers', ...) can't intercept it and its `pipeline` export is a non-configurable, non-writable property that can't be monkey-patched from a test either. This override lets tests substitute a cheap fake factory (mirrors the setXForTesting pattern already used in skill_cache.ts) instead of constructing a real transformer pipeline.
@@ -81,7 +88,10 @@ async function buildExtractorWithRetry(
   let lastError: unknown
   for (let attempt = 1; attempt <= PIPELINE_RETRY_ATTEMPTS; attempt++) {
     try {
-      return await pipelineFn('feature-extraction', modelName)
+      // Pin the immutable revision only for the default model; a caller-supplied modelName isn't guaranteed to have this SHA.
+      const pipelineOptions =
+        modelName === DEFAULT_MODEL ? { revision: PINNED_MODEL_REVISION } : undefined
+      return await pipelineFn('feature-extraction', modelName, pipelineOptions)
     } catch (e) {
       lastError = e
       if (attempt < PIPELINE_RETRY_ATTEMPTS) await sleep(PIPELINE_RETRY_DELAY_MS * attempt)

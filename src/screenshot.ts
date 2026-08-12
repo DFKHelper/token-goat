@@ -115,7 +115,61 @@ export function resolveBrowserExecutablePath(explicit?: string): string | null {
   return null
 }
 
+// Loopback and link-local (incl. cloud metadata at 169.254.169.254) are always rejected when
+// literal IPs; RFC1918 private ranges are the other block class. This is a synchronous
+// literal-IP check ONLY -- a hostname that resolves to one of these ranges (DNS rebinding) is
+// NOT covered, since closing that requires an async DNS lookup this function deliberately
+// doesn't perform. Do not read this as full SSRF protection.
+function isBlockedLiteralIp(host: string): boolean {
+  if (host === 'localhost') return true
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    if (a === 127) return true // loopback
+    if (a === 169 && b === 254) return true // link-local, incl. cloud metadata 169.254.169.254
+    if (a === 10) return true // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true // RFC1918
+    if (a === 192 && b === 168) return true // RFC1918
+    if (a === 0) return true // "this network"
+    return false
+  }
+  const bare = host.replace(/^\[/, '').replace(/\]$/, '')
+  if (bare === '::1') return true // loopback
+  if (/^fe80:/i.test(bare)) return true // link-local
+  if (/^f[cd][0-9a-f]{2}:/i.test(bare)) return true // unique local (RFC1918-equivalent)
+  return false
+}
+
+/**
+ * Validates a screenshot navigation target before it reaches page.goto(). Rejects any scheme
+ * other than http:/https:, and (unless opted out via screenshot.block_private_targets=false)
+ * rejects literal loopback/link-local/RFC1918 hosts -- so injected content can't aim the
+ * headless browser at cloud metadata (169.254.169.254) or a localhost-only service, whose
+ * rendered output would otherwise be fed back into the model's context via OCR.
+ */
+export function validateScreenshotUrl(url: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(`Invalid screenshot URL: ${url}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `Rejected screenshot URL scheme "${parsed.protocol}" (only http:/https: are allowed): ${url}`,
+    )
+  }
+  if (loadConfig().screenshot.block_private_targets && isBlockedLiteralIp(parsed.hostname)) {
+    throw new Error(
+      `Rejected screenshot target "${parsed.hostname}" (loopback/link-local/private IP). ` +
+        'Set screenshot.block_private_targets = false in token-goat config to opt in for ' +
+        'legitimate internal-service screenshots.',
+    )
+  }
+}
+
 export async function takeScreenshot(url: string, destPath: string, opts?: ScreenshotOptions): Promise<ScreenshotResult> {
+  validateScreenshotUrl(url)
   const puppeteer = await loadPuppeteer()
   if (!puppeteer) {
     throw new Error('puppeteer-core is not installed; run `npm install puppeteer-core` to enable screenshot')
