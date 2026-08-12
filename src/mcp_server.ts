@@ -294,14 +294,20 @@ export function createMcpServer(): McpServer {
       inputSchema: {
         query: z.string().describe('natural-language search query'),
         limit: z.number().int().positive().optional().describe('max results (default: 20)'),
+        grep: z.string().optional().describe('filter to hits whose file path matches this regex (literal substring if it does not compile as regex); matched against the path as rendered, same convention as refs --grep'),
+        excludeTests: z.boolean().optional().describe('hide hits whose file is a test file (opt-in; default output is unchanged)'),
+        json: z.boolean().optional().describe('output as JSON'),
         projectRoot: makeProjectRootField('search'),
       },
     },
     async (args) => {
-      const { query, limit, projectRoot } = args
+      const { query, limit, grep, excludeTests, json, projectRoot } = args
       return toCallToolResult(
         await runSemantic(query, {
           ...(limit !== undefined ? { limit } : {}),
+          ...(grep !== undefined ? { grep } : {}),
+          ...(excludeTests === true ? { excludeTests: true } : {}),
+          ...(json === true ? { json: true } : {}),
           ...(projectRoot !== undefined ? { projectRoot } : {}),
         }),
       )
