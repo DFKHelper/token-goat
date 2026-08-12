@@ -1058,7 +1058,12 @@ export interface TypesOptions {
   limit?: number
   /** Only list type declarations whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
+  /** `--exclude-tests`: drop type declarations DEFINED in a test file (per isTestFile), matching dead's own opt-in semantics (definition site, not reference site). Opt-in; omitted or false leaves output byte-identical to today. */
+  excludeTests?: boolean
 }
+
+// Per-kind scan headroom used only when --exclude-tests is active, matching dead's own 5000-per-kind scan (runDead): filtered-out test declarations must not leave fewer than --limit real results ahead of the cutoff, which filtering after the SQL LIMIT would silently do.
+const TYPES_EXCLUDE_TESTS_SCAN_LIMIT = 5000
 
 export function runTypes(opts: TypesOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0` on every kind-scan, always
@@ -1070,6 +1075,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   const limit = opts.limit ?? 500
+  const excludeTests = opts.excludeTests === true
   const filePath = opts.file !== undefined ? resolveIndexPath(opts.file) : undefined
   const fpOpt = filePath !== undefined ? { filePath } : {}
   // global.db is a single machine-wide index shared across every project ever indexed
@@ -1078,16 +1084,37 @@ export function runTypes(opts: TypesOptions): number {
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
   const results: SymbolEntry[] = []
+  let suppressed = 0
+  const queryLimit = excludeTests ? TYPES_EXCLUDE_TESTS_SCAN_LIMIT : limit
 
   for (const k of TYPE_KINDS) {
-    const syms = querySymbols({ kind: k, ...fpOpt, limit, rootDir })
-    results.push(...syms)
+    const syms = querySymbols({ kind: k, ...fpOpt, limit: queryLimit, rootDir })
+    if (!excludeTests) {
+      results.push(...syms)
+      continue
+    }
+    const kept: SymbolEntry[] = []
+    for (const sym of syms) {
+      if (isTestFile(sym.filePath)) {
+        suppressed += 1
+        continue
+      }
+      kept.push(sym)
+    }
+    results.push(...kept.slice(0, limit))
   }
 
-  const classes = querySymbols({ kind: 'class', ...fpOpt, limit, rootDir })
+  const classes = querySymbols({ kind: 'class', ...fpOpt, limit: queryLimit, rootDir })
+  const typeClasses: SymbolEntry[] = []
   for (const cls of classes) {
-    if (looksLikeTypeClass(cls.body)) results.push(cls)
+    if (!looksLikeTypeClass(cls.body)) continue
+    if (excludeTests && isTestFile(cls.filePath)) {
+      suppressed += 1
+      continue
+    }
+    typeClasses.push(cls)
   }
+  results.push(...(excludeTests ? typeClasses.slice(0, limit) : typeClasses))
 
   results.sort(
     // Pin the locale: an unlocaled localeCompare() sorts differently across
@@ -1103,6 +1130,15 @@ export function runTypes(opts: TypesOptions): number {
       return 1
     }
     const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
+    // The store IS non-empty -- --exclude-tests hid every declaration -- so a bare "No type declarations found" would be a lie that stops the caller looking; name the filter instead, exiting 0 like symbol's own hiddenByExcludeTests branch.
+    if (excludeTests && suppressed > 0) {
+      if (opts.json === true) {
+        emit(JSON.stringify({ items: [], truncated: false, totalCount: 0 }, null, 2))
+        return 0
+      }
+      emit(`No non-test type declarations found${ctx} (${excludeTestsHiddenNote(suppressed)})`)
+      return 0
+    }
     emitErr(`No type declarations found${ctx}`)
     // Only paid after the query already came back empty, and only in text mode -- this branch
     // already emits plain prose regardless of --json, matching runRefsSingle's convention.
@@ -1141,6 +1177,11 @@ export function runTypes(opts: TypesOptions): number {
     const capped = guardJsonRows(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })))
     emit(JSON.stringify({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, null, 2))
     return 0
+  }
+
+  // Additive note only: printed solely when --exclude-tests actually hid something (matching dead's own convention), so default (flag-absent) output is untouched and a filtered view is never mistaken for the whole set.
+  if (excludeTests && suppressed > 0) {
+    emit(`${countNoun(filtered.length, 'type declaration')} (${excludeTestsHiddenNote(suppressed)})`)
   }
 
   for (const r of filtered) {

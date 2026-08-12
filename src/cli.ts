@@ -3488,13 +3488,15 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('-l, --limit <n>', 'max results per kind')
     .option('--grep <pattern>', 'only show type declarations whose name matches this regex (literal substring if it is not valid regex)')
-    .action((file: string | undefined, opts: { json?: boolean; limit?: string; grep?: string }) =>
+    .option('--exclude-tests', 'hide type declarations defined in a test file (opt-in; default output is unchanged)')
+    .action((file: string | undefined, opts: { json?: boolean; limit?: string; grep?: string; excludeTests?: boolean }) =>
       runExit(() =>
         runTypes({
           ...(file !== undefined ? { file } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
       ),
     )
