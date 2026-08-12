@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { buildProjectMap, formatProjectMap } from '../src/baseline.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { runOutline, runRead, runSection, runSkeleton, runRefs, runBrief, runChanged, runGrep, runImports, runExports, runSemantic } from '../src/read_commands.js'
+import { resolveProjectRoot } from '../src/project.js'
 import { runGit } from '../src/util.js'
 
 const TOOL_NAMES = [
@@ -360,7 +361,7 @@ describe('mcp_server', () => {
 
     const result = await client.callTool({
       name: 'symbol',
-      arguments: { name: 'target', file: fixture, kind: 'function' },
+      arguments: { name: 'target', file: fixture, kind: 'function', projectRoot: tempDir },
     })
     expect(result.isError).toBe(false)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -414,7 +415,7 @@ describe('mcp_server', () => {
 
     const spec = `${fixture}::helper`
     const result = await client.callTool({ name: 'brief', arguments: { spec, projectRoot: tempDir } })
-    const expected = captureStdout(() => runBrief({ spec }))
+    const expected = captureStdout(() => runBrief({ spec, projectRoot: resolveProjectRoot({ project: tempDir }) }))
 
     expect(result.isError).toBe(false)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -488,7 +489,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    const result = await client.callTool({ name: 'imports', arguments: { file: fixture } })
+    const result = await client.callTool({ name: 'imports', arguments: { file: fixture, projectRoot: tempDir } })
     const expected = captureStdout(() => runImports({ file: fixture }))
 
     expect(result.isError).toBe(false)
@@ -508,7 +509,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    const result = await client.callTool({ name: 'exports', arguments: { file: fixture } })
+    const result = await client.callTool({ name: 'exports', arguments: { file: fixture, projectRoot: tempDir } })
     const expected = captureStdout(() => runExports({ file: fixture }))
 
     expect(result.isError).toBe(false)

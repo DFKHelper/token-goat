@@ -22,6 +22,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type * as IndexReaderModule from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { resolveIndexPath } from '../src/paths.js'
+import { resolveProjectRoot } from '../src/project.js'
 import type * as SectionReaderModule from '../src/section_reader.js'
 
 const querySymbolsMock = vi.fn()
@@ -67,10 +68,14 @@ async function connectedClient(): Promise<{ client: Client; close: () => Promise
 
 describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', () => {
   let scratchRoot: string
+  let resolvedScratchRoot: string
 
   beforeEach(() => {
     vi.clearAllMocks()
     scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-scope-'))
+    // The MCP layer resolves the root once and hands the RESOLVED value to the run* handler, so
+    // that -- not the raw argument spelling -- is what the assertions below expect.
+    resolvedScratchRoot = resolveProjectRoot({ project: scratchRoot })
     querySymbolsMock.mockReturnValue([])
     readSectionMock.mockReturnValue(null)
     listSectionsMock.mockReturnValue([])
@@ -85,9 +90,9 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
       // (runSymbol, src/read_commands.ts); both calls must stay scoped to projectRoot.
       expect(querySymbolsMock).toHaveBeenCalledTimes(2)
       const call = querySymbolsMock.mock.calls[0]?.[0] as { rootDir?: string }
-      expect(call.rootDir).toBe(scratchRoot)
+      expect(call.rootDir).toBe(resolvedScratchRoot)
       const nearNameCall = querySymbolsMock.mock.calls[1]?.[0] as { rootDir?: string }
-      expect(nearNameCall.rootDir).toBe(scratchRoot)
+      expect(nearNameCall.rootDir).toBe(resolvedScratchRoot)
     } finally {
       await close()
     }

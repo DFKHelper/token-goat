@@ -890,13 +890,16 @@ function runLineRange(
   opts: ReadOptions,
 ): { text: string; code: number } {
   const { file, start, end } = range
+  // Same projectRoot-vs-cwd resolution as runRead's bare-file branch above; `file@N-M` reaches
+  // readFileText by a different path and would otherwise keep the identical escape.
+  const diskPath = resolveAgainstProjectRoot(file, opts.projectRoot)
   if (start < 1) {
     return { text: `Invalid line range: start must be >= 1 (got ${start})`, code: 1 }
   }
   if (end < start) {
     return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
   }
-  const text = readFileText(file)
+  const text = readFileText(diskPath)
   if (text === null) {
     return { text: `Could not read: ${file}`, code: 1 }
   }
@@ -1205,7 +1208,12 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   if (symbol === undefined || symbol === '') {
-    const text = readFileText(file)
+    // Only resolve against projectRoot when explicitly given and the path is relative -- same
+    // convention as runSection, so absent-projectRoot CLI behavior stays byte-identical
+    // (readFileText resolves a relative path against process.cwd() itself, as the CLI always
+    // has). Without this the MCP confinement gate validated `<projectRoot>/x` while this read
+    // fetched `<server cwd>/x`: two different files, so a relative spec escaped the workspace.
+    const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
     if (text === null) {
       // A bare name (no `::` at all, as opposed to a `file::` with an empty symbol) that isn't
       // a readable file is very likely a symbol name passed without its `file::` prefix --
@@ -1372,6 +1380,21 @@ export interface SectionOptions {
   suppressStat?: boolean
 }
 
+/**
+ * The base a relative file path resolves against on disk. Resolves against `projectRoot` only
+ * when one was explicitly given AND the path is relative: an absolute path, or the no-projectRoot
+ * default every CLI caller takes, is returned untouched so those paths stay byte-identical to the
+ * long-standing behavior of resolving against `process.cwd()` inside the read helpers themselves.
+ *
+ * This is the execution-side half of the MCP confinement invariant (see `resolveToolRoot` in
+ * mcp_server.ts): the gate admits a relative target by resolving it against the project root, so
+ * every disk read on that path must resolve it against the same root or the check guards a
+ * different file than the one served.
+ */
+function resolveAgainstProjectRoot(file: string, projectRoot: string | undefined): string {
+  return projectRoot !== undefined && !path.isAbsolute(file) ? path.resolve(projectRoot, file) : file
+}
+
 /** Handle ``token-goat section "file::Heading"``. */
 export function runSection(opts: SectionOptions): { text: string; code: number } {
   // Cross-file multi-spec `src/a.ts::Commands,src/b.ts::Component Map`. Checked before the single-file `::` handling below for the same reason runRead checks it first (see parseCrossFileMultiSpec) -- lastIndexOf('::') would otherwise fold the whole spec into one bogus file/heading pair, and parseCrossFileMultiSpec already declines (falling through here unchanged) for every spec the single-file path below already handles correctly, including the pre-existing same-file `file::A,B` multi-heading form.
@@ -1387,10 +1410,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   // relative -- an absolute path, or the no-projectRoot default, stays byte-identical to the
   // pre-existing behavior (readSection/listSections resolve a relative path against
   // process.cwd() themselves, same as the CLI always has).
-  const filePath =
-    opts.projectRoot !== undefined && !path.isAbsolute(specFilePath)
-      ? path.resolve(opts.projectRoot, specFilePath)
-      : specFilePath
+  const filePath = resolveAgainstProjectRoot(specFilePath, opts.projectRoot)
   const heading = opts.spec.slice(colonIdx + 2)
 
   // Multi-heading form: `file::A,B,C`. Mirrors runRead's `file::a,b,c` multi-symbol grammar
@@ -3177,6 +3197,14 @@ interface BriefOptions {
   spec: string
   limit?: number
   json?: boolean
+  /**
+   * Project root to scope symbol resolution and relative-path resolution to. Defaults to
+   * `process.cwd()`; same field name as {@link ReadOptions.projectRoot}. Callers whose cwd is not
+   * the workspace root (e.g. an MCP server launched from an opaque directory) should pass the
+   * actual workspace root explicitly -- otherwise a relative file spec resolves against the wrong
+   * project, and the display paths in the rendered output name a root the caller never asked for.
+   */
+  projectRoot?: string
   /** `-C, --context <n>`: lines of real call-site source around each entry of the caller block, in `grep -C`'s framing. Defaults to 0 (output unchanged). */
   context?: number
   /** `--exclude-tests`: drop callers whose call SITE is in a test file, matching `refs`/`callers` (which filter the call site) rather than `dead`/`symbol` (which filter the definition). Opt-in; output is byte-identical when omitted. */
@@ -3197,7 +3225,7 @@ interface BriefResult {
 
 /** Core of ``token-goat brief "file::symbol"``: bundles the symbol body, its resolved callers (enclosing-function-aware, via graph_commands.ts's real caller-resolution logic), and its containing doc section (if the file has heading structure) into one response -- cutting the common "understand this function" pattern from 2-3 round-trips to 1. Returns text+code instead of emitting directly so {@link runBrief} can both dispatch to {@link runBriefMulti} for a comma-separated spec and reuse this exact single-symbol path for each sub-call, mirroring runRead/runSection's core-vs-dispatcher split. Note that --limit validation deliberately lives in {@link runBrief}, not here: it is a whole-invocation flag, so validating per sub-call would repeat one usage error once per symbol and frame it as a per-symbol resolution failure. */
 function runBriefCore(opts: BriefOptions): { text: string; code: number } {
-  const resolution = resolveSymbolSpec(opts.spec)
+  const resolution = resolveSymbolSpec(opts.spec, undefined, opts.projectRoot)
   if (resolution.kind === 'ambiguous') {
     return {
       // Name the command explicitly: formatAmbiguity defaults to 'read', so brief's retry lines would otherwise tell the user to run `token-goat read`, which answers a different question than the one they asked.
@@ -3205,7 +3233,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
         resolution.symbol,
         resolution.file,
         resolution.candidates,
-        undefined,
+        opts.projectRoot,
         'brief',
       ),
       code: 1,
@@ -3216,14 +3244,14 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
     // missing -- see formatBareNameSpecError. A proper `file::symbol` spec that genuinely
     // resolves to nothing keeps the original wording below, untouched.
     if (findSpecSeparator(opts.spec) === -1) {
-      return { text: formatBareNameSpecError('brief', opts.spec), code: 1 }
+      return { text: formatBareNameSpecError('brief', opts.spec, opts.projectRoot), code: 1 }
     }
     // Only paid after the query already came back empty, and only in text mode -- this branch's
     // text is emitted verbatim via emitErr regardless of --json (no separate opts.json check
     // exists in runBrief's caller for this path), so there's no JSON envelope to protect either
     // way.
     if (opts.json !== true) {
-      const rootDir = resolveProjectRoot({ project: process.cwd() })
+      const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
       if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
         return { text: `Symbol not found: ${opts.spec}\n${emptyIndexMessage(rootDir)}`, code: 1 }
       }
@@ -3237,7 +3265,7 @@ function runBriefCore(opts: BriefOptions): { text: string; code: number } {
   // once more than 500 references exist, despite what an earlier version of this comment
   // claimed. Get the real uncapped total via a separate COUNT(*) query (queryRefCounts,
   // batched GROUP BY, no LIMIT) instead of trusting the capped list's length.
-  const rootDir = resolveProjectRoot({ project: process.cwd() })
+  const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
   const excludeTests = opts.excludeTests === true
   // Passing excludeTests through makes resolveCallers scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value.
   const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, excludeTests)
@@ -3332,7 +3360,7 @@ function runBriefMulti(file: string, symbols: string[], opts: BriefOptions): { t
   }
 
   // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
-  const fullSourceBytes = sumFileSizes([resolveIndexPath(file, process.cwd())])
+  const fullSourceBytes = sumFileSizes([resolveIndexPath(file, opts.projectRoot ?? process.cwd())])
   const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
@@ -3358,7 +3386,7 @@ function runBriefCrossFile(pairs: { file: string; symbol: string }[], opts: Brie
     textBlocks.push(`${key}:\n${sub.text}`)
   }
 
-  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, process.cwd())))
+  const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveIndexPath(f, opts.projectRoot ?? process.cwd())))
   const text = opts.json === true ? JSON.stringify(jsonOut, null, 2) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
@@ -4094,6 +4122,13 @@ export function runLog(opts: LogOptions): number {
 export interface GrepOptions {
   pattern: string
   path?: string | string[]
+  /**
+   * Root the search falls back to when `path` is omitted. Defaults to `process.cwd()` (the CLI's
+   * long-standing behavior, unchanged when this is absent). An MCP server must pass its resolved
+   * project root: without it, a client omitting `path` searched the server process's own cwd with
+   * no confinement check at all -- see the invariant on `resolveToolRoot` in mcp_server.ts.
+   */
+  projectRoot?: string
   maxLines?: number
   json?: boolean
   recursive?: boolean
@@ -4111,7 +4146,12 @@ interface GrepHit {
 
 /** Handle ``token-goat grep <pattern>``. */
 export function runGrep(opts: GrepOptions): number {
-  const searchPaths = opts.path === undefined ? [process.cwd()] : Array.isArray(opts.path) ? opts.path : [opts.path]
+  const searchPaths =
+    opts.path === undefined
+      ? [opts.projectRoot ?? process.cwd()]
+      : Array.isArray(opts.path)
+        ? opts.path
+        : [opts.path]
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
   const contextLines = opts.context ?? 0
 
@@ -4452,6 +4492,13 @@ export interface ImportsExportsOptions {
   file: string
   json?: boolean
   /**
+   * Project root a relative `file` resolves against. Defaults to `process.cwd()`; same field name
+   * as {@link ReadOptions.projectRoot}. Relevant for callers (e.g. an MCP server) whose cwd is not
+   * the workspace root -- a relative `file` would otherwise be read from, and indexed against, a
+   * directory the caller never named.
+   */
+  projectRoot?: string
+  /**
    * Only list rows whose primary string matches this pattern -- the exported symbol NAME for
    * `exports`, the imported MODULE SPECIFIER for `imports`. Regex, falling back to a literal
    * substring match when it does not compile -- see compileGrepMatcher.
@@ -4527,7 +4574,8 @@ export function runExports(opts: ImportsExportsOptions): number {
   const multiFiles = parseMultiFileSpec(opts.file)
   if (multiFiles !== null) return runPerFileEmitting(multiFiles, 'Exports', (file) => runExports({ ...opts, file }))
 
-  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
+  const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
+  const symbols = querySymbols({ filePath: resolveIndexPath(diskPath), limit: 500 })
   const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
   // Unlike kindOf's loose `?? 'export'` fallback, an unmatched name (one that only came from the
   // source-text scan, with no corresponding index row) must report no location at all -- never a
@@ -4546,7 +4594,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
   const ext = path.extname(opts.file).toLowerCase()
   // Source scan: catches tree-sitter languages whose body omits the modifier.
-  const text = readFileText(opts.file)
+  const text = readFileText(diskPath)
   // A file that is neither readable from disk nor present in the index is a bad path (typo,
   // wrong cwd), not a file that legitimately has zero exports -- report it the same way
   // imports/deps already do. A file indexed but since deleted from disk must NOT hit this
@@ -4574,7 +4622,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const filteredNames = matchesGrep !== undefined ? names.filter((n) => matchesGrep(n)) : names
 
-  const fullSourceBytes = sumFileSizes([opts.file])
+  const fullSourceBytes = sumFileSizes([diskPath])
 
   if (filteredNames.length === 0) {
     // Genuinely-empty ("No exported symbols found") already returned above; this is the file
@@ -5128,7 +5176,8 @@ export function runImports(opts: ImportsExportsOptions): number {
   const multiFiles = parseMultiFileSpec(opts.file)
   if (multiFiles !== null) return runPerFileEmitting(multiFiles, 'Imports', (file) => runImports({ ...opts, file }))
 
-  const text = readFileText(opts.file)
+  const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
+  const text = readFileText(diskPath)
   if (text === null) {
     emitErr(`Could not read: ${opts.file}`)
     return 1
@@ -5146,7 +5195,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const filteredImports = matchesGrep !== undefined ? imports.filter((i) => matchesGrep(i)) : imports
 
-  const fullSourceBytes = sumFileSizes([opts.file])
+  const fullSourceBytes = sumFileSizes([diskPath])
 
   if (filteredImports.length === 0) {
     if (opts.json === true) {
