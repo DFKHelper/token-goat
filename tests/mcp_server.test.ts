@@ -8,7 +8,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { buildProjectMap, formatProjectMap } from '../src/baseline.js'
 import { createMcpServer } from '../src/mcp_server.js'
-import { runOutline, runRead, runSection, runSkeleton, runRefs, runBrief, runChanged, runGrep, runImports, runExports } from '../src/read_commands.js'
+import { runOutline, runRead, runSection, runSkeleton, runRefs, runBrief, runChanged, runGrep, runImports, runExports, runSemantic } from '../src/read_commands.js'
 import { runGit } from '../src/util.js'
 
 const TOOL_NAMES = [
@@ -163,6 +163,59 @@ describe('mcp_server', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const block = (result.content as any[])[0]
     expect(block.text).toContain('validation error')
+  })
+
+  // Proves grep/excludeTests/json are actually threaded from the MCP schema into runSemantic, not just declared -- each filter must independently change the result, and the tool's output must equal runSemantic()'s own output for the identical filter set, so the MCP wrapper cannot silently drop a param.
+  it('threads grep/excludeTests/json from the semantic tool into runSemantic() and each filter independently changes the result', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-semantic-'))
+    const keepFixture = path.join(tempDir, 'keep.ts')
+    const grepDropFixture = path.join(tempDir, 'other.ts')
+    const testDropFixture = path.join(tempDir, 'other.spec.ts')
+    fs.writeFileSync(keepFixture, '// semanticmarker keyword for the mcp semantic filter test\nfunction keepFn() {\n  return 1\n}\n')
+    fs.writeFileSync(grepDropFixture, '// semanticmarker keyword for the mcp semantic filter test\nfunction grepDropFn() {\n  return 1\n}\n')
+    fs.writeFileSync(testDropFixture, '// semanticmarker keyword for the mcp semantic filter test\nfunction testDropFn() {\n  return 1\n}\n')
+    // forceRefresh: true so all three fresh fixtures are indexed synchronously before querying.
+    runSkeleton({ file: keepFixture, forceRefresh: true })
+    runSkeleton({ file: grepDropFixture, forceRefresh: true })
+    runSkeleton({ file: testDropFixture, forceRefresh: true })
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const unfiltered = await client.callTool({ name: 'semantic', arguments: { query: 'semanticmarker', projectRoot: tempDir, json: true } })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const unfilteredBlock = (unfiltered.content as any[])[0]
+    expect(unfiltered.isError).toBe(false)
+    expect(unfilteredBlock.text).toContain('other.ts')
+    expect(unfilteredBlock.text).toContain('other.spec.ts')
+
+    // grep alone must drop both other.ts and other.spec.ts, keeping only keep.ts -- proves grep is doing the work, since only excludeTests (not passed here) would exclude other.spec.ts on its own.
+    const grepOnly = await client.callTool({
+      name: 'semantic',
+      arguments: { query: 'semanticmarker', projectRoot: tempDir, json: true, grep: '^keep\\.ts$' },
+    })
+    const expectedGrepOnly = await runSemantic('semanticmarker', { projectRoot: tempDir, json: true, grep: '^keep\\.ts$' })
+    expect(grepOnly.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const grepOnlyBlock = (grepOnly.content as any[])[0]
+    expect(grepOnlyBlock.text).toBe(expectedGrepOnly.text)
+    expect(grepOnlyBlock.text).toContain('keep.ts')
+    expect(grepOnlyBlock.text).not.toContain('other.ts')
+    expect(grepOnlyBlock.text).not.toContain('other.spec.ts')
+
+    // excludeTests alone must drop only other.spec.ts, leaving both non-test fixtures -- isolates excludeTests from grep since no grep pattern is passed here.
+    const excludeTestsOnly = await client.callTool({
+      name: 'semantic',
+      arguments: { query: 'semanticmarker', projectRoot: tempDir, json: true, excludeTests: true },
+    })
+    const expectedExcludeTestsOnly = await runSemantic('semanticmarker', { projectRoot: tempDir, json: true, excludeTests: true })
+    expect(excludeTestsOnly.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const excludeTestsOnlyBlock = (excludeTestsOnly.content as any[])[0]
+    expect(excludeTestsOnlyBlock.text).toBe(expectedExcludeTestsOnly.text)
+    expect(excludeTestsOnlyBlock.text).toContain('keep.ts')
+    expect(excludeTestsOnlyBlock.text).toContain('other.ts')
+    expect(excludeTestsOnlyBlock.text).not.toContain('other.spec.ts')
   })
 
   // The section/skeleton/outline tools had zero successful-call coverage before this: only
