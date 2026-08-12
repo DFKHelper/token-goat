@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
+import { formatSavingsBar, parseStatsJson, type StatsJson } from './savings'
 
 // Only arguments containing shell metacharacters get quotes; cmd.exe's
 // /s /c quote-stripping mangles a command line where every argument is
@@ -134,50 +135,47 @@ async function ensureDecoderSetup(): Promise<void> {
   }
 }
 
-// Tokens-saved status bar: a running total makes the value visible to
-// non-technical users who would never read a compression header.
+// Tokens-saved status bar: rendered straight from the local ledger (`token-goat stats --json`), which already covers every source (reads, hints, bash, images, compression), not just the compress-text operations this extension itself triggers.
 let savingsBar: vscode.StatusBarItem | undefined
 let savingsContext: vscode.ExtensionContext | undefined
+let lastSavingsRefresh = 0
+const SAVINGS_REFRESH_MIN_INTERVAL_MS = 30000
+const SAVINGS_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+let savingsRefreshTimer: ReturnType<typeof setInterval> | undefined
 
-// ~4 characters per token is the standard rough estimate for English text;
-// the counter says "≈" because bytes are what compress-text measures.
-function approxTokens(bytes: number): number {
-  return Math.round(bytes / 4)
-}
-
-function updateSavingsBar(): void {
-  if (!savingsBar || !savingsContext) return
-  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0)
-  savingsBar.text = total > 0
-    ? `$(gist-secret) token-goat: ≈${approxTokens(total).toLocaleString()} tokens saved`
-    : '$(gist-secret) token-goat'
-  savingsBar.tooltip = total > 0
-    ? `About ${approxTokens(total).toLocaleString()} tokens kept out of chat so far (${total.toLocaleString()} bytes compressed away; ~4 characters per token).`
-    : 'token-goat is ready. Compress something into chat and this counter shows what you saved.'
-}
-
-function recordSavings(payload: string): void {
-  const saved = /^bytes_saved: (\d+)$/m.exec(payload)
-  if (!saved || !savingsContext) return
-  const total = savingsContext.globalState.get<number>('tokensSavedBytes', 0) + Number(saved[1])
-  void savingsContext.globalState.update('tokensSavedBytes', total)
-  updateSavingsBar()
+// Throttled: this can be triggered after every compress operation (a user action, not a hot path) plus a background timer, so a minimum interval keeps rapid-fire actions from shelling out repeatedly.
+async function refreshSavingsBar(force = false): Promise<void> {
+  if (!savingsBar) return
+  const now = Date.now()
+  if (!force && now - lastSavingsRefresh < SAVINGS_REFRESH_MIN_INTERVAL_MS) return
+  lastSavingsRefresh = now
+  let stats: StatsJson | null = null
+  try {
+    stats = parseStatsJson(await runTokenGoat(['stats', '--json']))
+  } catch {
+    stats = null
+  }
+  const rendered = formatSavingsBar(stats)
+  savingsBar.text = rendered.text
+  savingsBar.tooltip = rendered.tooltip
 }
 
 function contextRadius(): number {
   return vscode.workspace.getConfiguration('token-goat').get<number>('contextLines', 25)
 }
 
-// compress-text prints original_bytes/compact_bytes/bytes_saved headers;
-// surface the savings so the user sees what the compression bought.
+// compress-text prints original_bytes/compact_bytes/tokens_saved headers (tokens_saved can be negative when the encoding swap costs more than it saves); surface that real figure, not a bytes÷4 guess.
 function showStats(payload: string): void {
-  recordSavings(payload)
+  void refreshSavingsBar()
   if (!vscode.workspace.getConfiguration('token-goat').get<boolean>('showStats', true)) return
   const original = /^original_bytes: (\d+)$/m.exec(payload)
   const compact = /^compact_bytes: (\d+)$/m.exec(payload)
-  if (!original || !compact) return
+  const tokensSaved = /^tokens_saved: (-?\d+)$/m.exec(payload)
+  if (!original || !compact || !tokensSaved) return
+  const tokens = Number(tokensSaved[1])
+  const label = tokens < 0 ? `${Math.abs(tokens)} tokens lost` : `${tokens} tokens saved`
   void vscode.window.setStatusBarMessage(
-    `token-goat: ${original[1]} → ${compact[1]} bytes (≈${approxTokens(Number(original[1]) - Number(compact[1]))} tokens saved)`, 5000,
+    `token-goat: ${original[1]} → ${compact[1]} bytes (${label})`, 5000,
   )
 }
 
@@ -420,8 +418,11 @@ function reportError(error: unknown): void {
 export function activate(context: vscode.ExtensionContext): void {
   savingsContext = context
   savingsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
-  updateSavingsBar()
+  savingsBar.text = formatSavingsBar(null).text
+  savingsBar.tooltip = formatSavingsBar(null).tooltip
   savingsBar.show()
+  void refreshSavingsBar(true)
+  savingsRefreshTimer = setInterval(() => void refreshSavingsBar(), SAVINGS_REFRESH_INTERVAL_MS)
 
   context.subscriptions.push(
     savingsBar,
@@ -492,4 +493,6 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(participant)
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  if (savingsRefreshTimer) clearInterval(savingsRefreshTimer)
+}
