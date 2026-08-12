@@ -413,7 +413,7 @@ describe('mcp_server', () => {
     cleanup = close
 
     const spec = `${fixture}::helper`
-    const result = await client.callTool({ name: 'brief', arguments: { spec } })
+    const result = await client.callTool({ name: 'brief', arguments: { spec, projectRoot: tempDir } })
     const expected = captureStdout(() => runBrief({ spec }))
 
     expect(result.isError).toBe(false)

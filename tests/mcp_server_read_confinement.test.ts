@@ -116,6 +116,49 @@ describe('mcp read confinement', () => {
     }
   })
 
+  it('refuses an out-of-root absolute spec for brief', async () => {
+    const { outsideFile } = makeDirs()
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'brief', arguments: { spec: `${outsideFile}::x`, projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
+  it('refuses brief when the second component of a comma-joined cross-file spec is out of root', async () => {
+    const { inRoot, outsideFile } = makeDirs()
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'brief', arguments: { spec: `${inRoot}::a,${outsideFile}::b`, projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
+  it('refuses a grep path containing a literal comma that resolves outside the root', async () => {
+    // The comma-stripped form of this directory's own name equals `root`'s basename exactly, so a
+    // validator that strips commas before checking (but greps the un-stripped path) would wrongly
+    // treat this outside directory as in-root -- the validate-one-string/use-another bug under test.
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const commaName = root.replace(/tg-mcp-root-/, 'tg-mcp-r,oot-')
+    fs.mkdirSync(commaName)
+    outside = commaName
+    const outsideFile = path.join(commaName, 'secret.txt')
+    fs.writeFileSync(outsideFile, 'SECRET-MARKER-DO-NOT-LEAK\n')
+    expect(commaName.replace(/,/g, '')).toBe(root)
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'SECRET', path: [outsideFile], projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+  })
+
   it.runIf(process.platform === 'win32')('refuses a Windows extended-length device path outside the root', async () => {
     const { outsideFile } = makeDirs()
     const { client, close } = await connectedClient()
