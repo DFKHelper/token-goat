@@ -14,6 +14,11 @@ vi.mock('puppeteer-core', () => ({
   launch: vi.fn(async () => ({
     newPage: vi.fn(async () => ({
       setViewport: vi.fn(async () => {}),
+      // takeScreenshot now re-validates every navigation/sub-resource via request
+      // interception (the redirect-SSRF fix); these fakes just have to exist. The real
+      // interception behaviour is covered end-to-end in screenshot_redirect_ssrf.test.ts.
+      setRequestInterception: vi.fn(async () => {}),
+      on: vi.fn(() => {}),
       goto: vi.fn(async () => {}),
       screenshot: vi.fn(async () => Buffer.from('fake-png-bytes')),
     })),

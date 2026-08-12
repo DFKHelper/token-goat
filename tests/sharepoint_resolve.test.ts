@@ -31,6 +31,22 @@ describe('parseShareUrl', () => {
     expect(() => parseShareUrl('not a url')).toThrow(/not a valid URL/)
   })
 
+  // Regression: the unparseable-URL branch interpolated the RAW input, so a malformed share
+  // link carrying ?token=... leaked it -- contradicting the no-query-string contract the
+  // origin+pathname redaction on the parsed branch already established.
+  it('never echoes the query string when the URL is unparseable (security regression)', () => {
+    const secretToken = 'token=SECRET_SHARE_TOKEN_54321'
+    try {
+      parseShareUrl(`ht!tp://contoso.sharepoint.com/[bad?${secretToken}`)
+      expect.fail('expected parseShareUrl to throw')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      expect(message).toMatch(/not a valid URL/)
+      expect(message).not.toContain(secretToken)
+      expect(message).not.toContain('?')
+    }
+  })
+
   it('throws when neither /sites/ nor /personal/ appears in the path', () => {
     expect(() => parseShareUrl('https://contoso.sharepoint.com/foo/bar')).toThrow(/could not find a \/sites\/ or \/personal\//)
   })
