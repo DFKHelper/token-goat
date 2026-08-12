@@ -193,6 +193,99 @@ describe('mcp read confinement', () => {
     const result = await client.callTool({ name: 'read', arguments: { spec: outsideFile, projectRoot: root } })
     expect(textOf(result)).toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
+
+  // Regression for the trimmed-vs-untrimmed confinement bypass: the gate used to validate
+  // `specFilePart(part).trim()` but the handler forwarded the untrimmed `part` (or the untrimmed
+  // `spec`/`file` argument entirely) to its `run*` call, so a spec whose trailing whitespace made
+  // an out-of-root symlink/junction *look* like a harmless nonexistent in-root path at validation
+  // time still resolved through that symlink at read time. Platform-gated the same way and for the
+  // same reason (symlink creation needs elevated privilege on Windows CI) as the existing
+  // "normalises inside the root but symlinks out of it" test above.
+  it.runIf(process.platform !== 'win32')(
+    'refuses a file whose trailing-whitespace name resolves through a symlink to outside the root',
+    async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-outside-'))
+      const secret = path.join(outside, 'secret.txt')
+      fs.writeFileSync(secret, 'SECRET-MARKER-DO-NOT-LEAK\n')
+      // The trailing space is part of the *link's own name*, not appended to the spec string, so
+      // this is the exact scenario the ticket describes: a workspace containing both a clean name
+      // and a distinct, whitespace-suffixed name that happens to symlink outside the root.
+      const link = path.join(root, 'inside.txt ')
+      fs.symlinkSync(secret, link, 'file')
+
+      const { client, close } = await connectedClient()
+      cleanup = close
+
+      const result = await client.callTool({ name: 'read', arguments: { spec: link, projectRoot: root } })
+      expect(result.isError).toBe(true)
+      expect(textOf(result)).toContain('outside the project root')
+      expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
+    },
+  )
+
+  // Deterministic, platform-independent companion to the symlink test above: proves the checked
+  // value and the forwarded value are byte-identical without needing a real filesystem escape.
+  // A spec with trailing whitespace appended is still outside the root whether or not it is
+  // trimmed, so this can't tell apart "refused" from "refused" -- what it tells apart is WHICH
+  // string got refused. Pre-fix, the gate trimmed before both validating and reporting, so the
+  // refusal named the trimmed path; post-fix it reports (and, in the handlers, forwards) the exact
+  // untrimmed spec, matching what `specFilePart`/`parseReadSpec` in the execution layer see.
+  it('confinement refusal names the exact untrimmed spec forwarded to the read, not a trimmed variant', async () => {
+    const { outsideFile } = makeDirs()
+    const spec = `${outsideFile} `
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec, projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain(`"${spec}" is outside the project root`)
+  })
+
+  it('still resolves a legitimate file::symbol spec', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'lib.ts')
+    fs.writeFileSync(file, 'export function greet(): string {\n  return "hi"\n}\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: `${file}::greet`, projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('return "hi"')
+  })
+
+  it('still resolves a legitimate file@N-M range spec', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const file = path.join(root, 'lib.ts')
+    fs.writeFileSync(file, 'line one\nline two\nline three\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: `${file}@1-2`, projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('line one')
+    expect(textOf(result)).toContain('line two')
+    expect(textOf(result)).not.toContain('line three')
+  })
+
+  it('still resolves a legitimate comma-separated cross-file multi-spec', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-'))
+    const a = path.join(root, 'a.ts')
+    const b = path.join(root, 'b.ts')
+    fs.writeFileSync(a, 'export function alphaFn(): string {\n  return "alpha"\n}\n')
+    fs.writeFileSync(b, 'export function betaFn(): string {\n  return "beta"\n}\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'read', arguments: { spec: `${a}::alphaFn,${b}::betaFn`, projectRoot: root } })
+    expect(result.isError).toBe(false)
+    expect(textOf(result)).toContain('return "alpha"')
+    expect(textOf(result)).toContain('return "beta"')
+  })
 })
 
 describe('mcp numeric param bounds', () => {
