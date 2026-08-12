@@ -37,6 +37,7 @@ import {
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
+import { fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
@@ -666,7 +667,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
-          compactBody +
+          fenceUntrustedFileContent(compactBody) +
           '\n\nUse `token-goat compact-doc "' + normalized + '" --force` to rebuild it, ' +
           'or `token-goat compact-doc "' + normalized + '" --show` to view it directly. ' +
           editAnywayHint(normalized),
@@ -699,7 +700,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(
           'Serving the output-stripped notebook in place of the full file ' +
           '(code-cell outputs and execution counts removed; source and metadata preserved):\n\n' +
-          sidecarContent +
+          fenceUntrustedFileContent(sidecarContent) +
           '\n\n' + editAnywayHint(normalized),
         )
       }
@@ -747,7 +748,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        let message = hintText + wellKnownText + changelogExtra
+        // hintText (the heading tree) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing.
+        let message = fenceUntrustedFileContent(hintText + changelogExtra) + wellKnownText
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
@@ -840,7 +842,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
         return denyOutput(
           'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-          '```diff\n' + snapDiff.diff + '\n```\n\n' + sessionArtifactRecall(normalized),
+          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' + sessionArtifactRecall(normalized),
         )
       }
       // No snapshot or file too large — generic re-read denial
@@ -905,7 +907,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('diff_hint', snapDiff.savedBytes, Math.round(snapDiff.savedBytes / 4))
         return denyOutput(
           ('Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-          '```diff\n' + snapDiff.diff + '\n```\n\n' +
+          fenceUntrustedFileContent('```diff\n' + snapDiff.diff + '\n```') + '\n\n' +
           surgicalHint(normalized, basename, countTextLines(snapDiff.currentContent))).trimEnd(),
         )
       }

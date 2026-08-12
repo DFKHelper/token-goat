@@ -219,6 +219,11 @@ export interface InjectionConfig {
   enabled: boolean
 }
 
+/** Config for the MCP server's filesystem admission gate (mcp_server.ts). */
+export interface McpConfig {
+  confine_reads_to_project_root: boolean
+}
+
 /**
  * Config for `token-goat hint-stats` (hint_stats.ts): the suppression gate that stops emitting
  * a hint category for the rest of a session once its measured efficacy (acted-on / emitted)
@@ -274,6 +279,7 @@ export interface Config {
   compression: CompressionConfig
   context: ContextConfig
   injection: InjectionConfig
+  mcp: McpConfig
   hint_stats: HintStatsConfig
   semantic: SemanticConfig
 }
@@ -454,6 +460,9 @@ const CONFIG_DEFAULTS: Record<string, object> = {
   injection: {
     enabled: true,
   },
+  mcp: {
+    confine_reads_to_project_root: true,
+  },
   hint_stats: {
     suppress_threshold_pct: 15,
     min_sample_size: 5,
@@ -491,6 +500,7 @@ export function defaultConfig(): Config {
     compression: getDefaultConfig('compression') as CompressionConfig,
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
+    mcp: getDefaultConfig('mcp') as McpConfig,
     hint_stats: getDefaultConfig('hint_stats') as HintStatsConfig,
     semantic: getDefaultConfig('semantic') as SemanticConfig,
   }
@@ -706,6 +716,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_COMPRESS_PROFILE',
   'TOKEN_GOAT_MODEL_WINDOW_TOKENS',
   'TOKEN_GOAT_INJECTION_ENABLED',
+  'TOKEN_GOAT_MCP_CONFINE_READS',
   'TOKEN_GOAT_SERVE_DIFF_ON_REREAD',
   'TOKEN_GOAT_BASH_CACHE_MIN_BYTES',
   'TOKEN_GOAT_BASH_CACHE_MAX_FILES',
@@ -1523,6 +1534,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   inj.enabled = validatedBool(inj_raw['enabled'], inj.enabled)
   inj.enabled = envBool('TOKEN_GOAT_INJECTION_ENABLED', inj.enabled)
 
+  const mcp_raw = section(raw, 'mcp')
+  const mcp = getDefaultConfig('mcp') as McpConfig
+  mcp.confine_reads_to_project_root = validatedBool(mcp_raw['confine_reads_to_project_root'], mcp.confine_reads_to_project_root)
+  mcp.confine_reads_to_project_root = envBool('TOKEN_GOAT_MCP_CONFINE_READS', mcp.confine_reads_to_project_root)
+
   const hs_raw = section(raw, 'hint_stats')
   const hs = getDefaultConfig('hint_stats') as HintStatsConfig
   hs.suppress_threshold_pct = validatedInt(hs_raw['suppress_threshold_pct'], hs.suppress_threshold_pct, ...boundsOf('hint_stats.suppress_threshold_pct'))
@@ -1555,6 +1571,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     compression: cpr,
     context: ctx,
     injection: inj,
+    mcp,
     hint_stats: hs,
     semantic: sem,
   }
@@ -1625,6 +1642,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
+  'mcp.confine_reads_to_project_root': ['TOKEN_GOAT_MCP_CONFINE_READS'],
   'indexing.embeddings_enabled': ['TOKEN_GOAT_EMBEDDINGS_ENABLED'],
 }
 
@@ -1787,6 +1805,9 @@ export function saveConfig(config: Config): void {
     },
     injection: {
       enabled: config.injection.enabled,
+    },
+    mcp: {
+      confine_reads_to_project_root: config.mcp.confine_reads_to_project_root,
     },
     hint_stats: {
       suppress_threshold_pct: config.hint_stats.suppress_threshold_pct,
