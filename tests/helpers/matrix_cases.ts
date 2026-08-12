@@ -191,6 +191,15 @@ export function setupMatrixFixture(): void {
     path.join(repo, 'typesgrep.ts'),
     'export interface TypesGrepAlphaFixture { x: number }\nexport interface TypesGrepBetaFixture { y: number }\n',
   )
+  // Fixture for `types --exclude-tests`: one type declared in src and another declared ONLY in a test file (definition-site filtering, matching `dead --exclude-tests`).
+  fs.writeFileSync(
+    path.join(repo, 'typesxtests.ts'),
+    'export interface TypesXTestsProdFixture { z: number }\n',
+  )
+  fs.writeFileSync(
+    path.join(repo, 'typesxtests.test.ts'),
+    'export interface TypesXTestsOnlyInTestFixture { w: number }\n',
+  )
 
   // Second commit touching src/mod.ts so `changed --since HEAD~1` has a diff.
   fs.appendFileSync(
@@ -2050,6 +2059,23 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // Invalid regex falls back to a literal substring match instead of erroring.
     const grepInvalid = run(['types', 'typesgrep.ts', '--grep', '[unclosed'])
     expect(grepInvalid.status, grepInvalid.stderr).toBe(0)
+
+    // --exclude-tests: opt-in, additive, filtering on the DEFINITION site like `dead`/`symbol` (not a reference site). Absent the flag, both the src and test-file declarations show up.
+    const withoutFlag = run(['types', '--json', '--grep', 'TypesXTests'])
+    expect(withoutFlag.status, withoutFlag.stderr).toBe(0)
+    const withoutParsed = envelopeItems<{ name: string }>(withoutFlag.stdout)
+    expect(withoutParsed.map((t) => t.name).sort()).toEqual(['TypesXTestsOnlyInTestFixture', 'TypesXTestsProdFixture'])
+
+    const withFlag = run(['types', '--json', '--grep', 'TypesXTests', '--exclude-tests'])
+    expect(withFlag.status, withFlag.stderr).toBe(0)
+    const withParsed = envelopeItems<{ name: string }>(withFlag.stdout)
+    expect(withParsed.map((t) => t.name)).toEqual(['TypesXTestsProdFixture'])
+
+    // Filtered-to-empty must name the filter, not read like a genuinely empty scope.
+    const allHidden = run(['types', 'typesxtests.test.ts', '--exclude-tests'])
+    expect(allHidden.status, allHidden.stderr).toBe(0)
+    expect(allHidden.stdout).toContain('--exclude-tests')
+    expect(allHidden.stdout).not.toContain('No type declarations found')
   },
   scope: () => {
     // Line 2 of caller.ts is inside refHelper (which spans lines 1-3); scope must find it.
