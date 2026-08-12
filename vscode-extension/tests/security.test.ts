@@ -1,6 +1,16 @@
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { assertSafeArgSegment, parseShimScriptPath, runGitDiff, runTokenGoat, type ExecFileLike } from '../src/launcher'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  assertSafeArgSegment,
+  parseShimScriptPath,
+  resetEntrypointCacheForTests,
+  resolveTokenGoatEntrypoint,
+  runGitDiff,
+  runTokenGoat,
+  type ExecFileLike,
+} from '../src/launcher'
 
 // Pre-fix behavior, copied verbatim from `git show HEAD~0:vscode-extension/src/extension.ts` before this
 // commit's fix landed (the vulnerable quoteWindowsArgument + string-built commandLine). Kept here only so
@@ -58,7 +68,90 @@ describe('pre-fix git-diff vulnerability (regression baseline)', () => {
   })
 })
 
+// The two `runTokenGoat` cases above inject `fakeExecFile` but let `resolveTokenGoatEntrypoint`
+// run for real -- that call still does its own unmocked PATH scan (`findOnPath`), an injected-
+// seam gap: every test above supplies the execFile boundary, but nothing drives the entrypoint-
+// resolution boundary itself. On a machine (or CI runner) without token-goat installed globally,
+// `resolveTokenGoatEntrypoint` throws "Could not find token-goat.cmd on PATH" / "...executable on
+// PATH" and both cases above fail for a reason unrelated to what they're actually testing. These
+// tests drive that exact shipping-default code path end to end -- a real PATH scan and (on
+// win32) real shim-text parsing against a file this test writes to disk -- rather than relying on
+// the runner happening to have token-goat globally installed.
+const savedPath = process.env['PATH']
+const savedPathCap = process.env['Path'] // Windows env lookups are case-insensitive; node also exposes the 'Path' spelling.
+
+function restorePath(): void {
+  if (savedPath === undefined) delete process.env['PATH']
+  else process.env['PATH'] = savedPath
+  if (savedPathCap === undefined) delete process.env['Path']
+  else process.env['Path'] = savedPathCap
+}
+
+/** Writes a real, resolvable fake token-goat entrypoint into a fresh temp dir and prepends it to PATH, so a test can drive `resolveTokenGoatEntrypoint`'s real PATH-scan/shim-parsing logic instead of relying on token-goat being globally installed on the machine running the test. Returns the dir for cleanup. */
+async function setUpFakeTokenGoatOnPath(): Promise<string> {
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-bin-'))
+  if (process.platform === 'win32') {
+    await fs.writeFile(path.join(binDir, 'token-goat.mjs'), '// fake entrypoint\n')
+    await fs.writeFile(
+      path.join(binDir, 'token-goat.cmd'),
+      ['@ECHO off', 'SET dp0=%~dp0', `"%dp0%node.exe"  "%dp0%token-goat.mjs" %*`].join('\r\n'),
+    )
+  } else {
+    const binPath = path.join(binDir, 'token-goat')
+    await fs.writeFile(binPath, '#!/usr/bin/env node\n')
+    await fs.chmod(binPath, 0o755)
+  }
+  process.env['PATH'] = `${binDir}${path.delimiter}${savedPath ?? ''}`
+  process.env['Path'] = process.env['PATH']
+  resetEntrypointCacheForTests()
+  return binDir
+}
+
+afterEach(async () => {
+  restorePath()
+  resetEntrypointCacheForTests()
+})
+
+describe('resolveTokenGoatEntrypoint (shipping default, no injected seam)', () => {
+  it('scans real PATH and resolves the real entrypoint script, without an injected execFile or PATH stub', async () => {
+    const binDir = await setUpFakeTokenGoatOnPath()
+    try {
+      const expected =
+        process.platform === 'win32' ? path.join(binDir, 'token-goat.mjs') : path.join(binDir, 'token-goat')
+      const resolved = await resolveTokenGoatEntrypoint()
+      expect(resolved).toBe(expected)
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true })
+    }
+  })
+
+  it('throws a clear error, rather than silently resolving nothing, when token-goat is not on PATH at all', async () => {
+    resetEntrypointCacheForTests()
+    const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-launcher-empty-'))
+    try {
+      process.env['PATH'] = emptyDir
+      process.env['Path'] = emptyDir
+      await expect(resolveTokenGoatEntrypoint()).rejects.toThrow(/Could not find token-goat/)
+    } finally {
+      await fs.rm(emptyDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('runTokenGoat (post-fix)', () => {
+  // These cases inject `fakeExecFile` to assert on the constructed spawn call, but
+  // `runTokenGoat` still resolves its own entrypoint internally (see `resolveTokenGoatEntrypoint`
+  // above) -- so without this, they'd depend on token-goat actually being installed globally on
+  // whatever machine runs the suite, exactly the injected-seam gap the tests above this describe
+  // block exist to close.
+  let fakeBinDir: string
+  beforeEach(async () => {
+    fakeBinDir = await setUpFakeTokenGoatOnPath()
+  })
+  afterEach(async () => {
+    await fs.rm(fakeBinDir, { recursive: true, force: true })
+  })
+
   it('never builds a shell command string: argv is an array, shell is false, and a hostile symbol name is one untouched element', async () => {
     const hostileSymbolName = 'a"&calc&"b'
     const spec = `src/evil.ts::${hostileSymbolName}@1`

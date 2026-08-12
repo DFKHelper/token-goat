@@ -124,7 +124,7 @@ async function refreshSavingsBar(force = false): Promise<void> {
   try {
     stats = parseStatsJson(await runTokenGoat(['stats', '--json']))
   } catch {
-    stats = null
+    // stats already null from its initializer above; nothing to reset.
   }
   const rendered = formatSavingsBar(stats)
   savingsBar.text = rendered.text
