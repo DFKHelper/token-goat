@@ -13,6 +13,11 @@
   "engines": {
     "vscode": "^1.90.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
   "categories": [
     "Other"
   ],
@@ -296,6 +301,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "test": "vitest run",
     "package": "npm run compile && vsce package"
   },
   "devDependencies": {
