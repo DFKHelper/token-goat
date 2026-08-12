@@ -12,6 +12,27 @@ import { projectScopeClause } from './sql_path.js'
 import { detectWalkMode } from './text_commands.js'
 
 /**
+ * Raw indexed file/symbol counts for `dbPath`, scoped to `rootDir` when given. Extracted from
+ * cli_doctor.ts's checkSymbolCount (which still owns the human-readable message) so index_status
+ * (mcp_server.ts) can report the same numbers as structured JSON instead of duplicating the SQL.
+ * Throws on a DB error -- callers that want the doctor-style "could not query" fallback must
+ * catch it themselves, matching checkSymbolCount's own try/catch.
+ */
+export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileCount: number; symbolCount: number } {
+  const db = getDb(dbPath)
+  const countScoped = (table: string, column: string): number => {
+    if (rootDir === undefined) {
+      return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
+    }
+    const scope = projectScopeClause(column)
+    return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(scope.param(rootDir)) as {
+      c: number
+    }).c
+  }
+  return { fileCount: countScoped('files', 'path'), symbolCount: countScoped('symbols', 'file_path') }
+}
+
+/**
  * True when `dbPath` (scoped to `rootDir` when given, matching checkSymbolCount's own scoping)
  * has zero indexed files and zero symbols -- the exact condition doctor's Symbols check warns
  * on. Only meant to be called AFTER a query already returned empty: it always pays a DB read, so
@@ -20,17 +41,8 @@ import { detectWalkMode } from './text_commands.js'
 export function isIndexEmptyForProject(dbPath: string, rootDir?: string): boolean {
   if (!fs.existsSync(dbPath)) return true
   try {
-    const db = getDb(dbPath)
-    const countScoped = (table: string, column: string): number => {
-      if (rootDir === undefined) {
-        return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
-      }
-      const scope = projectScopeClause(column)
-      return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${scope.clause}`).get(scope.param(rootDir)) as {
-        c: number
-      }).c
-    }
-    return countScoped('files', 'path') === 0 && countScoped('symbols', 'file_path') === 0
+    const { fileCount, symbolCount } = getProjectIndexCounts(dbPath, rootDir)
+    return fileCount === 0 && symbolCount === 0
   } catch {
     // Can't tell -- don't claim the index is empty on a query failure the caller didn't ask about.
     return false

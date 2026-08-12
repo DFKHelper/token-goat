@@ -1867,6 +1867,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
         'handoff_create',
         'handoff_resolve',
         'imports',
+        'index_status',
         'map',
         'outline',
         'read',
