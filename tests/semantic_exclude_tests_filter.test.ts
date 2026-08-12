@@ -53,8 +53,7 @@ describe('runSemantic --exclude-tests (embeddings branch)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test
-    // in this describe block that doesn't care about FTS needs a default non-undefined return.
+    // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test in this describe block that doesn't care about FTS needs a default non-undefined return.
     searchSymbolsFtsMock.mockReturnValue([])
     root = mkdtempSync(join(tmpdir(), 'tg-sem-xt-emb-'))
   })
@@ -262,10 +261,7 @@ describe('runSemantic --exclude-tests (FTS fallback branch)', () => {
     expect(text).not.toContain('hidden by --exclude-tests')
   })
 
-  // Regression note: this used to assert a byte-identical, non-over-fetched call when neither
-  // filter was set. Since runSemantic now ALWAYS fuses the BM25 list with the dense list (RRF),
-  // rather than gating BM25 on the dense branch returning zero hits, searchSymbolsFts must always
-  // be over-fetched -- the fusion rank needs real candidate breadth regardless of filters.
+  // Regression note: this used to assert a byte-identical, non-over-fetched call when neither filter was set -- since runSemantic now ALWAYS fuses the BM25 list with the dense list (RRF), rather than gating BM25 on the dense branch returning zero hits, searchSymbolsFts must always be over-fetched, because the fusion rank needs real candidate breadth regardless of filters.
   it('over-fetches the searchSymbolsFts call even when neither filter is set (fusion always needs breadth, not just enough to fill --limit)', async () => {
     searchSymbolsFtsMock.mockReturnValue([])
 
