@@ -148,7 +148,7 @@ function toCallToolResultFromExitCode(fn: () => number): CallToolResult {
   return toCallToolResult({ text, code })
 }
 
-/** Builds the MCP server and registers all 12 surgical-read tools. Does not connect a transport. */
+/** Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES, which is asserted against a live listTools() call. Does not connect a transport. */
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'token-goat', version: VERSION })
 
