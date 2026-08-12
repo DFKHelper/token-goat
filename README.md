@@ -462,6 +462,8 @@ To upgrade cleanly:
 
 ## CLI
 
+Every command accepts a global `--cwd <path>`, which runs it as if invoked from that directory. It exists so a caller can name a project root without making that root its own working directory — a launcher should never resolve a binary name against a directory the workspace controls. It is applied before anything resolves the project root or loads config, so `--cwd` selects which `.token-goat.toml` applies.
+
 ### Archive/document comparison workflow
 
 The existing bounded readers cover the text and tabular parts of an archive comparison without loading whole files:
@@ -1146,10 +1148,12 @@ node -e "for(let r=0;r<256;r+=32)process.stdout.write('\x1b[48;2;0;'+r+';0m  ');
 
 **No telemetry. No analytics. No background reporting or silent outbound connections.**
 
-Outbound network is reserved to two explicit cases:
+Outbound network is reserved to these explicit cases:
 
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
 - Image fetches from URLs: either explicit via `token-goat fetch-image <url>`, or when the AI agent issues a WebFetch call that returns image content — the hook intercepts and shrinks the image. The URL always originates from the agent's work, not from token-goat itself.
+- `token-goat screenshot <url>` navigates a headless browser to the URL you give it, subject to the target restrictions described below.
+- The first `token-goat semantic` run on a machine downloads the embedding model from `huggingface.co`, pinned to an immutable commit rather than a mutable branch. Subsequent runs use the local cache and make no network call. Skip the download entirely by setting `indexing.embeddings_enabled = false` (it is on by default), in which case `semantic` falls back to full-text search.
 
 **Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
 
