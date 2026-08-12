@@ -45,8 +45,7 @@ describe('runSemantic --grep (embeddings branch)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test
-    // in this describe block that doesn't care about FTS needs a default non-undefined return.
+    // runSemantic now always fuses in the BM25 list alongside the dense one (RRF), so every test in this describe block that doesn't care about FTS needs a default non-undefined return.
     searchSymbolsFtsMock.mockReturnValue([])
     root = mkdtempSync(join(tmpdir(), 'tg-sem-grep-emb-'))
   })
@@ -200,11 +199,7 @@ describe('runSemantic --grep (FTS fallback branch)', () => {
     expect(text).toContain('fnLow')
   })
 
-  // Regression note: this used to assert a byte-identical, non-over-fetched call when --grep was
-  // unset. Since runSemantic now ALWAYS fuses the BM25 list with the dense list (RRF), rather
-  // than gating BM25 on the dense branch returning zero hits, searchSymbolsFts must always be
-  // over-fetched -- the fusion rank needs a real candidate breadth, not just enough to fill
-  // --limit, regardless of whether a filter is present.
+  // Regression note: this used to assert a byte-identical, non-over-fetched call when --grep was unset -- since runSemantic now ALWAYS fuses the BM25 list with the dense list (RRF), rather than gating BM25 on the dense branch returning zero hits, searchSymbolsFts must always be over-fetched, because the fusion rank needs real candidate breadth and not just enough to fill --limit, regardless of whether a filter is present.
   it('over-fetches the searchSymbolsFts call even when --grep is unset (fusion always needs breadth, not just enough to fill --limit)', async () => {
     searchSymbolsFtsMock.mockReturnValue([])
 
