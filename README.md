@@ -797,11 +797,17 @@ token-goat handoff-resolve review-notes --full
 }
 ```
 
-`token-goat install --vscode` creates or idempotently updates that project-local
-configuration and adds a delimited block to
-`.github/copilot-instructions.md`, preserving unrelated JSON and user text. It
-fails clearly on malformed JSON. `token-goat uninstall --vscode` removes only
-token-goat's server entry and guidance block.
+`token-goat install --vscode` creates or idempotently updates VS Code's
+user-profile `mcp.json` by default (`%APPDATA%\Code\User\mcp.json` on
+Windows, `~/Library/Application Support/Code/User/mcp.json` on macOS,
+`~/.config/Code/User/mcp.json` on Linux) — add `-p`/`--project` for the
+project-local `.vscode/mcp.json` shown above instead. Either way it also adds
+a delimited block to `.github/copilot-instructions.md`, preserving unrelated
+JSON and user text. It fails clearly on malformed JSON, and refuses to
+install into one scope if the other scope already has a token-goat-managed
+entry (registering it twice would duplicate its tool schemas in that
+workspace). `token-goat uninstall --vscode` (add `-p`/`--project` for the
+project scope) removes only token-goat's server entry and guidance block.
 
 The optional source-controlled extension lives in `vscode-extension/`. Build
 and install its VSIX manually; `--vscode` intentionally does not copy or
@@ -907,11 +913,11 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 | `~/.grok/hooks/token-goat.json` | Hook config (`{ hooks }`) registering `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` with an empty (match-everything) matcher, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched; global scope only (Grok's project-scoped `.grok/hooks/` requires a separate manual `/hooks-trust` grant). |
 | `~/.grok/hooks/token-goat-shim.js` | The shim `token-goat.json`'s hook commands invoke. Translates `PreToolUse`'s deny shape only (`{"decision":"block",...}` → Grok's documented `{"decision":"deny",...}`, plus exit code 2); every other event's response is forwarded unmodified. Regenerated on every `install --grok` run. |
 
-**With `--vscode`** (project-local VS Code MCP configuration)
+**With `--vscode`** (VS Code MCP configuration; user scope by default, `-p`/`--project` for the workspace)
 
 | Path | What |
 |------|------|
-| `<project>/.vscode/mcp.json` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. |
+| `%APPDATA%\Code\User\mcp.json` (Windows) / `~/Library/Application Support/Code/User/mcp.json` (macOS) / `~/.config/Code/User/mcp.json` (Linux) — or `<project>/.vscode/mcp.json` with `-p`/`--project` | Merges the `token-goat` stdio entry under VS Code's `servers` root key, preserving unrelated servers and settings. Refuses to write if the other scope already has a token-goat-managed entry, to avoid a duplicate registration. |
 | `<project>/.github/copilot-instructions.md` | Adds a delimited VS Code routing block that documents supported MCP selection and explicitly says MCP does not intercept built-in file reads. |
 
 **With `--hermes`** (Hermes Agent integration)

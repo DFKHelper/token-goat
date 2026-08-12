@@ -47,5 +47,7 @@ export {
   uninstallVscode,
   vscodeInstructionsPath,
   vscodeMcpPath,
+  vscodeProjectMcpPath,
+  vscodeUserMcpPath,
 } from './vscode_install.js'
-export type { VscodeInstallResult } from './vscode_install.js'
+export type { VscodeInstallResult, VscodeScopeOptions } from './vscode_install.js'

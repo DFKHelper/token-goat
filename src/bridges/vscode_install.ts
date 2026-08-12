@@ -6,6 +6,7 @@
  * packaged and installed as a VSIX when desired.
  */
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -52,8 +53,53 @@ function isManagedServer(value: unknown): boolean {
   )
 }
 
-export function vscodeMcpPath(projectRoot = process.cwd()): string {
+/** Scope selector shared by every VS Code path helper below, mirroring CopilotCliScopeOptions. */
+export interface VscodeScopeOptions {
+  /** When true, target the project-scoped `<project>/.vscode/mcp.json` instead of the user-scoped profile one. */
+  project?: boolean
+  /** Only meaningful with `project: true`; defaults to `process.cwd()`. */
+  projectRoot?: string
+}
+
+/**
+ * VS Code's user-profile config directory, mirroring how VS Code itself resolves it
+ * (confirmed against VS Code's own docs, not assumed by analogy with another bridge):
+ * `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on
+ * macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using
+ * the same `servers` root key as the project-local file. Like
+ * `opencodeGlobalConfigDir` in `./opencode_install.js`, the Windows branch reads
+ * `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or
+ * blank) rather than hardcoding a path, so tests and dogfooding can isolate it the
+ * same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`.
+ */
+function vscodeUserConfigDir(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env['APPDATA']
+    const base = appData !== undefined && appData.trim() !== '' ? appData : path.join(os.homedir(), 'AppData', 'Roaming')
+    return path.join(base, 'Code', 'User')
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User')
+  }
+  return path.join(os.homedir(), '.config', 'Code', 'User')
+}
+
+export function vscodeUserMcpPath(): string {
+  return path.join(vscodeUserConfigDir(), 'mcp.json')
+}
+
+export function vscodeProjectMcpPath(projectRoot = process.cwd()): string {
   return path.join(path.resolve(projectRoot), '.vscode', 'mcp.json')
+}
+
+/** Resolves the mcp.json path for the requested scope; defaults to user scope, matching every other harness's `-p/--project` convention. */
+export function vscodeMcpPath(opts: VscodeScopeOptions = {}): string {
+  return opts.project === true ? vscodeProjectMcpPath(opts.projectRoot) : vscodeUserMcpPath()
+}
+
+/** The other scope's mcp.json path -- used only to detect a cross-scope duplicate registration. */
+function otherScopeMcpPath(opts: VscodeScopeOptions): string {
+  return opts.project === true ? vscodeUserMcpPath() : vscodeProjectMcpPath(opts.projectRoot)
 }
 
 export function vscodeInstructionsPath(projectRoot = process.cwd()): string {
@@ -91,6 +137,30 @@ export interface VscodeInstallResult {
   mcpPath: string
   instructionsPath: string
   alreadyInstalled: boolean
+  /** Which scope was actually written: 'project' (`--project`) or 'user' (default). */
+  scope: 'project' | 'user'
+}
+
+/**
+ * Best-effort check for a token-goat-managed entry already sitting in the *other*
+ * scope. Writing this scope on top of that would register token-goat twice --
+ * VS Code merges user- and workspace-scope `mcp.json` when both name the same
+ * server, duplicating all of its tool schemas into the workspace. A malformed or
+ * unreadable other-scope file is not this call's problem to raise (that surfaces,
+ * loudly, the moment someone actually installs into that scope), so this swallows
+ * read/parse failures and reports "no managed entry found" rather than throwing.
+ */
+function otherScopeHasManagedServer(opts: VscodeScopeOptions): boolean {
+  const otherPath = otherScopeMcpPath(opts)
+  if (!fs.existsSync(otherPath)) return false
+  try {
+    const config = readConfig(otherPath)
+    const servers = config.value['servers']
+    if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) return false
+    return isManagedServer((servers as Record<string, unknown>)['token-goat'])
+  } catch {
+    return false
+  }
 }
 
 function writeGuidance(filePath: string): boolean {
@@ -100,15 +170,23 @@ function writeGuidance(filePath: string): boolean {
     '',
     '**Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.',
     '',
-    'VS Code support: token-goat install --vscode configures a project-local stdio MCP server in .vscode/mcp.json under the servers root key. VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.',
+    'VS Code support: token-goat install --vscode configures a stdio MCP server under the servers root key in your user-profile mcp.json by default (add --project for the workspace .vscode/mcp.json instead). VS Code may call these MCP tools when selected; MCP does not intercept VS Code’s built-in file reads.',
     END,
   ].join('\n')
   return upsertDelimitedBlock(filePath, BEGIN, END, body)
 }
 
-export function installVscode(projectRoot = process.cwd()): VscodeInstallResult {
-  const mcpPath = vscodeMcpPath(projectRoot)
-  const instructionsPath = vscodeInstructionsPath(projectRoot)
+export function installVscode(opts: VscodeScopeOptions = {}): VscodeInstallResult {
+  const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
+  const mcpPath = vscodeMcpPath(opts)
+  const instructionsPath = vscodeInstructionsPath(opts.projectRoot)
+  if (otherScopeHasManagedServer(opts)) {
+    const otherScope = scope === 'project' ? 'user' : 'project'
+    const otherPath = otherScopeMcpPath(opts)
+    throw new Error(
+      `token-goat is already registered in VS Code ${otherScope} scope (${otherPath}). Installing into ${scope} scope too would register it twice and duplicate its tool schemas in this workspace. Run "token-goat uninstall --vscode${otherScope === 'project' ? ' --project' : ''}" first if you want to move it, or drop --vscode from this run.`,
+    )
+  }
   const config = readConfig(mcpPath)
   const existingServers = config.value['servers']
   if (existingServers !== undefined && (existingServers === null || typeof existingServers !== 'object' || Array.isArray(existingServers))) {
@@ -123,11 +201,11 @@ export function installVscode(projectRoot = process.cwd()): VscodeInstallResult 
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
   if (config.text !== next) atomicWriteText(mcpPath, next)
   const guidanceChanged = writeGuidance(instructionsPath)
-  return { mcpPath, instructionsPath, alreadyInstalled: config.text === next && !guidanceChanged }
+  return { mcpPath, instructionsPath, alreadyInstalled: config.text === next && !guidanceChanged, scope }
 }
 
-export function uninstallVscode(projectRoot = process.cwd()): boolean {
-  const mcpPath = vscodeMcpPath(projectRoot)
+export function uninstallVscode(opts: VscodeScopeOptions = {}): boolean {
+  const mcpPath = vscodeMcpPath(opts)
   let removed = false
   if (fs.existsSync(mcpPath)) {
     const config = readConfig(mcpPath)
@@ -140,6 +218,6 @@ export function uninstallVscode(projectRoot = process.cwd()): boolean {
       removed = true
     }
   }
-  if (stripDelimitedBlock(vscodeInstructionsPath(projectRoot), BEGIN, END)) removed = true
+  if (stripDelimitedBlock(vscodeInstructionsPath(opts.projectRoot), BEGIN, END)) removed = true
   return removed
 }

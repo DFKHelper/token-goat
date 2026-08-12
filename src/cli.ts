@@ -645,11 +645,11 @@ async function cmdInstall(opts: {
   }
 
   if (opts.vscode === true) {
-    const vscodeResult = installVscode()
+    const vscodeResult = installVscode({ project: opts.project === true })
     out(
       vscodeResult.alreadyInstalled
-        ? `VS Code MCP integration already installed → ${vscodeResult.mcpPath}`
-        : `Installed token-goat VS Code MCP integration → ${vscodeResult.mcpPath}, ${vscodeResult.instructionsPath}`,
+        ? `VS Code MCP integration (${vscodeResult.scope} scope) already installed → ${vscodeResult.mcpPath}`
+        : `Installed token-goat VS Code MCP integration (${vscodeResult.scope} scope) → ${vscodeResult.mcpPath}, ${vscodeResult.instructionsPath}`,
     )
   }
 
@@ -745,7 +745,7 @@ function cmdUninstall(opts: {
     { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
-    { flag: opts.vscode === true, run: uninstallVscode, label: 'VS Code MCP integration' },
+    { flag: opts.vscode === true, run: () => uninstallVscode({ project: opts.project === true }), label: 'VS Code MCP integration' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -3129,7 +3129,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--copilot', 'also register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.js, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.js, <project>/.github/copilot-instructions.md)')
     .option('--grok', 'also register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.js)')
-    .option('--vscode', 'also configure the project-local VS Code MCP server and Copilot routing guidance')
+    .option('--vscode', 'also configure a VS Code MCP server (user-profile mcp.json by default; -p/--project for the workspace .vscode/mcp.json) and Copilot routing guidance')
     .option('--local', 'with --pi, install the project-local extension (<project>/.pi/extensions/token-goat.ts) instead of the global one')
     .action(guard(cmdInstall))
 
@@ -3146,7 +3146,7 @@ export function buildProgram(): Command {
     .option('--openclaw', 'also remove the OpenClaw plugin and config entry')
     .option('--copilot', 'also remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local)')
     .option('--grok', 'also remove the Grok CLI hook config and shim script')
-    .option('--vscode', 'also remove the project-local VS Code MCP server and routing guidance')
+    .option('--vscode', 'also remove the VS Code MCP server (user scope by default; -p/--project for the workspace one) and routing guidance')
     .option('--local', 'with --pi, remove the project-local extension instead of the global one')
     .action(guard(cmdUninstall))
 
