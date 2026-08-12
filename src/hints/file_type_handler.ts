@@ -8,6 +8,7 @@
 
 import { parse } from 'csv-parse/sync'
 import { findHtmlHeadingMatches } from '../languages/common.js'
+import { fenceUntrustedFileContent } from '../injection_scan.js'
 
 export interface FileTypeResult {
   shouldBlock: boolean
@@ -101,8 +102,15 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   return {
     shouldBlock: true,
     message: [
-      `Large HTML file (${formatBytes(length)})${title ? `: "${title}"` : ''}.`,
-      headings.length > 0 ? `Headings:\n${headings.join('\n')}` : '',
+      // Title and headings are verbatim file bytes spliced into a message the harness attributes to token-goat, so they are fenced as untrusted data.
+      `Large HTML file (${formatBytes(length)}).`,
+      title || headings.length > 0
+        ? fenceUntrustedFileContent(
+            [title ? `Title: ${title}` : '', headings.length > 0 ? `Headings:\n${headings.join('\n')}` : '']
+              .filter(Boolean)
+              .join('\n'),
+          )
+        : '',
       `Use token-goat section to extract a section by heading, or convert to text: pandoc "${filePath}" -t plain`,
     ].filter(Boolean).join('\n'),
   }
@@ -151,7 +159,8 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
 
   return {
     shouldBlock: true,
-    message: `Large text file (${formatBytes(length)}, ${lines.length.toLocaleString()} lines).\n${preview}\n\n${recall}`,
+    // The preview is verbatim file bytes, so it is fenced as untrusted data.
+    message: `Large text file (${formatBytes(length)}, ${lines.length.toLocaleString()} lines).\n${fenceUntrustedFileContent(preview)}\n\n${recall}`,
   }
 }
 
@@ -247,8 +256,8 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
     shouldBlock: true,
     message: [
       `Large CSV file (${formatBytes(length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
-      `Columns: ${headers}`,
-      `Sample rows:\n${sampleRows.join('\n')}`,
+      // Header row and sample rows are verbatim file bytes, so they are fenced as untrusted data.
+      fenceUntrustedFileContent(`Columns: ${headers}\nSample rows:\n${sampleRows.join('\n')}`),
       `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
     ].join('\n'),
   }
@@ -277,10 +286,12 @@ export function handleTranscript(filePath: string, content: string, contentLengt
   return {
     shouldBlock: true,
     message: [
-      `Transcript file (${formatBytes(length)}, ~${cueCount} cues)${speakers.length > 0 ? `. Speakers: ${speakers.join(', ')}` : ''}.`,
+      // Speaker names are verbatim file bytes, so they are fenced as untrusted data.
+      `Transcript file (${formatBytes(length)}, ~${cueCount} cues).`,
+      speakers.length > 0 ? fenceUntrustedFileContent(`Speakers: ${speakers.join(', ')}`) : '',
       `See structure: token-goat transcript-outline "${filePath}"`,
       `Slice by speaker/time/pattern: token-goat transcript "${filePath}" --speaker "Name" --from 00:05:00 --to 00:10:00 --grep pattern`,
-    ].join('\n'),
+    ].filter(Boolean).join('\n'),
   }
 }
 

@@ -112,7 +112,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    const result = await client.callTool({ name: 'read', arguments: { spec: fixture } })
+    const result = await client.callTool({ name: 'read', arguments: { spec: fixture, projectRoot: tempDir } })
     const expected = runRead({ spec: fixture })
 
     expect(result.isError).toBe(false)
@@ -129,7 +129,7 @@ describe('mcp_server', () => {
     cleanup = close
 
     const missingPath = path.join(os.tmpdir(), 'tg-mcp-server-nonexistent-file.txt')
-    const result = await client.callTool({ name: 'read', arguments: { spec: missingPath } })
+    const result = await client.callTool({ name: 'read', arguments: { spec: missingPath, projectRoot: os.tmpdir() } })
     const expected = runRead({ spec: missingPath })
 
     expect(result.isError).toBe(true)
@@ -283,7 +283,7 @@ describe('mcp_server', () => {
     cleanup = close
 
     const spec = `${fixture}::Intro`
-    const result = await client.callTool({ name: 'section', arguments: { spec } })
+    const result = await client.callTool({ name: 'section', arguments: { spec, projectRoot: tempDir } })
     const expected = runSection({ spec })
 
     expect(result.isError).toBe(false)
@@ -307,7 +307,7 @@ describe('mcp_server', () => {
 
     // forceRefresh: true so the fresh fixture is indexed synchronously before querying --
     // otherwise a file never touched by the worker daemon has no indexed symbols at all.
-    const result = await client.callTool({ name: 'skeleton', arguments: { file: fixture, forceRefresh: true } })
+    const result = await client.callTool({ name: 'skeleton', arguments: { file: fixture, forceRefresh: true, projectRoot: tempDir } })
     const expected = runSkeleton({ file: fixture })
     expect(result.isError).toBe(false)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -318,7 +318,7 @@ describe('mcp_server', () => {
 
     // minLines must reach runSkeleton and actually filter -- confirms the param is wired, not
     // just accepted and silently dropped. Index is already warm from the call above.
-    const filtered = await client.callTool({ name: 'skeleton', arguments: { file: fixture, minLines: 4 } })
+    const filtered = await client.callTool({ name: 'skeleton', arguments: { file: fixture, minLines: 4, projectRoot: tempDir } })
     const expectedFiltered = runSkeleton({ file: fixture, minLines: 4 })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     block = (filtered.content as any[])[0]
@@ -336,7 +336,7 @@ describe('mcp_server', () => {
     cleanup = close
 
     // forceRefresh: true so the fresh fixture is indexed synchronously before querying.
-    const result = await client.callTool({ name: 'outline', arguments: { file: fixture, forceRefresh: true } })
+    const result = await client.callTool({ name: 'outline', arguments: { file: fixture, forceRefresh: true, projectRoot: tempDir } })
     const expected = runOutline({ file: fixture })
 
     expect(result.isError).toBe(false)
@@ -470,7 +470,7 @@ describe('mcp_server', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'needle', path: [tempDir] } })
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'needle', path: [tempDir], projectRoot: tempDir } })
     const expected = captureStdout(() => runGrep({ pattern: 'needle', path: [tempDir] }))
 
     expect(result.isError).toBe(false)

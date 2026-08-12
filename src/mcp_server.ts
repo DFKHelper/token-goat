@@ -12,6 +12,7 @@
  */
 
 import * as fs from 'fs'
+import * as path from 'path'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
@@ -49,6 +50,7 @@ import { getDb } from './db.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { loadConfig } from './config.js'
 import { extractErrorMessage } from './util.js'
+import { normalizePath } from './paths.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level
 // doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal
@@ -59,6 +61,15 @@ import { extractErrorMessage } from './util.js'
 // before wrapping the text into a CallToolResult, without touching read_commands.ts/
 // overflow_guard.ts's CLI-facing text at all -- the CLI's own output stays unchanged.
 const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) "([^"]+)"/g
+
+// Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)`
+// convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own
+// (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value
+// there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely
+// amplifies, since every extra line is emitted per match.
+const MCP_MAX_LIMIT = 1000
+const MCP_MAX_CONTEXT_LINES = 50
+const MCP_MAX_OUTPUT_LINES = 10_000
 
 /** cmd -> the MCP tool param name that literal retry command's quoted argument maps to. */
 const RETRY_PARAM_BY_COMMAND: Record<string, string> = {
@@ -148,6 +159,78 @@ function toCallToolResultFromExitCode(fn: () => number): CallToolResult {
   return toCallToolResult({ text, code })
 }
 
+/**
+ * Filesystem admission gate for the MCP read tools.
+ *
+ * The CLI is deliberately unconfined -- `token-goat read /etc/passwd` is a legitimate thing for a
+ * human at a shell to do -- but the MCP tools are thin adapters over the same `run*` functions, so
+ * without this an MCP client inherits unrestricted filesystem read through them. Enforced here, in
+ * the MCP layer only; `read_commands.ts` is shared with the CLI and is left alone.
+ *
+ * Defense in depth, not a closed hole: a caller that can reach these tools can usually also call
+ * its harness's own read tool. This narrows one specific sink, it does not sandbox the agent.
+ */
+function realPathOrSelf(p: string): string {
+  try {
+    return fs.realpathSync.native(p)
+  } catch {
+    return p
+  }
+}
+
+/** Case-folded on Windows, where the same directory has many valid spellings and a case-sensitive compare would reject legitimate in-root reads. */
+function forCompare(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p
+}
+
+/**
+ * True when `target` resolves inside the project root.
+ *
+ * Both sides go through `fs.realpathSync` first: a path that normalises inside the root but
+ * resolves through a symlink to somewhere outside it is the classic bypass, so the REAL path is
+ * compared against the REAL root, not the nominal one.
+ */
+function isWithinProjectRoot(target: string, projectRoot: string | undefined): boolean {
+  const resolvedRoot = resolveProjectRoot(projectRoot !== undefined ? { project: projectRoot } : {})
+  const root = forCompare(normalizePath(realPathOrSelf(resolvedRoot)))
+  // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with a projectRoot, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded.
+  const abs = path.resolve(resolvedRoot, normalizePath(target))
+  const real = forCompare(normalizePath(realPathOrSelf(abs)))
+  return real === root || real.startsWith(root.endsWith('/') ? root : root + '/')
+}
+
+/** The file portion of one `read`/`section` spec: `file::symbol`, `file@N-M`, or a bare path. */
+function specFilePart(spec: string): string {
+  const beforeSymbol = spec.includes('::') ? spec.slice(0, spec.indexOf('::')) : spec
+  const at = beforeSymbol.lastIndexOf('@')
+  return at > 0 ? beforeSymbol.slice(0, at) : beforeSymbol
+}
+
+/**
+ * Returns a refusal result when any of `targets` lies outside the project root, else null.
+ *
+ * Comma-separated multi-file specs are checked part by part: one out-of-root member must reject
+ * the whole call, or the confinement is trivially bypassed by appending an in-root path.
+ */
+function rejectOutsideRoot(targets: readonly string[], projectRoot: string | undefined): CallToolResult | null {
+  if (!loadConfig().mcp.confine_reads_to_project_root) return null
+  for (const raw of targets) {
+    for (const part of raw.split(',')) {
+      const file = specFilePart(part).trim()
+      if (file === '') continue
+      if (!isWithinProjectRoot(file, projectRoot)) {
+        return toCallToolResult({
+          text:
+            `refused: "${file}" is outside the project root. The MCP tools are confined to the workspace. ` +
+            'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.',
+          code: 1,
+        })
+      }
+    }
+  }
+  return null
+}
+
 /** Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES, which is asserted against a live listTools() call. Does not connect a transport. */
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'token-goat', version: VERSION })
@@ -168,7 +251,7 @@ export function createMcpServer(): McpServer {
       description: 'Search for a symbol by name across the indexed project.',
       inputSchema: {
         name: z.string().describe('symbol name to search for'),
-        limit: z.number().int().positive().optional().describe('max results (default: 20)'),
+        limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results (default: 20)'),
         file: z.string().optional().describe('restrict to one file'),
         kind: z.string().optional().describe('restrict to one kind (function, class, ...)'),
         json: z.boolean().optional().describe('output as JSON'),
@@ -206,6 +289,8 @@ export function createMcpServer(): McpServer {
     },
     (args) => {
       const { spec, json, forceRefresh, stats, projectRoot } = args
+      const refused = rejectOutsideRoot([spec], projectRoot)
+      if (refused) return refused
       return toCallToolResult(
         runRead({
           spec,
@@ -230,6 +315,8 @@ export function createMcpServer(): McpServer {
     },
     (args) => {
       const { spec, json, projectRoot } = args
+      const refused = rejectOutsideRoot([spec], projectRoot)
+      if (refused) return refused
       return toCallToolResult(
         runSection({
           spec,
@@ -255,6 +342,8 @@ export function createMcpServer(): McpServer {
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
+      const refused = rejectOutsideRoot([file], projectRoot)
+      if (refused) return refused
       return toCallToolResult(
         runSkeleton({
           file,
@@ -283,6 +372,8 @@ export function createMcpServer(): McpServer {
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
+      const refused = rejectOutsideRoot([file], projectRoot)
+      if (refused) return refused
       return toCallToolResult(
         runOutline({
           file,
@@ -305,7 +396,7 @@ export function createMcpServer(): McpServer {
         'root for a client that launched the server from elsewhere, so pass projectRoot explicitly when in doubt.',
       inputSchema: {
         query: z.string().describe('natural-language search query'),
-        limit: z.number().int().positive().optional().describe('max results (default: 20)'),
+        limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results (default: 20)'),
         grep: z.string().optional().describe('filter to hits whose file path matches this regex (literal substring if it does not compile as regex); matched against the path as rendered, same convention as refs --grep'),
         excludeTests: z.boolean().optional().describe('hide hits whose file is a test file (opt-in; default output is unchanged)'),
         json: z.boolean().optional().describe('output as JSON'),
@@ -399,11 +490,12 @@ export function createMcpServer(): McpServer {
       inputSchema: {
         spec: z.string().describe('file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view'),
         callers: z.boolean().optional().describe('group references by their enclosing caller symbol'),
-        limit: z.number().int().positive().optional().describe('max results'),
+        limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max results'),
         top: z
           .number()
           .int()
           .positive()
+          .max(MCP_MAX_LIMIT)
           .optional()
           .describe(
             'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
@@ -438,9 +530,9 @@ export function createMcpServer(): McpServer {
         spec: z
           .string()
           .describe('file::symbol; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported'),
-        limit: z.number().int().positive().optional().describe('max callers to show (default: 20)'),
+        limit: z.number().int().positive().max(MCP_MAX_LIMIT).optional().describe('max callers to show (default: 20)'),
         json: z.boolean().optional().describe('output as JSON'),
-        context: z.number().int().nonnegative().optional().describe('lines of call-site source to show before and after each caller (default 0)'),
+        context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of call-site source to show before and after each caller (default 0)'),
         excludeTests: z.boolean().optional().describe('hide callers whose call site lives in a test file (opt-in; default output is unchanged)'),
       },
     },
@@ -515,14 +607,19 @@ export function createMcpServer(): McpServer {
       inputSchema: {
         pattern: z.string().describe('regex pattern to search for'),
         path: z.array(z.string()).optional().describe('files or directories to search; defaults to this server process\'s cwd'),
-        maxLines: z.number().int().positive().optional().describe('max matching lines to print'),
+        maxLines: z.number().int().positive().max(MCP_MAX_OUTPUT_LINES).optional().describe('max matching lines to print'),
         json: z.boolean().optional().describe('output as JSON'),
         recursive: z.boolean().optional().describe('descend into subdirectories (default: true)'),
-        context: z.number().int().nonnegative().optional().describe('lines of context to show before and after each match'),
+        context: z.number().int().nonnegative().max(MCP_MAX_CONTEXT_LINES).optional().describe('lines of context to show before and after each match'),
+        // runGrep takes no projectRoot of its own (its `path` array is its scope), so this field only names the root the confinement check is made against -- without it, a search rooted anywhere but the server process's cwd is refused.
+        projectRoot: makeProjectRootField('search'),
       },
     },
     (args) => {
-      const { pattern, path: searchPath, maxLines, json, recursive, context } = args
+      const { pattern, path: searchPath, maxLines, json, recursive, context, projectRoot } = args
+      // grep's `path` is a plain array of files/directories, never a `file::symbol` spec, so each element is checked whole rather than split on a comma that could legitimately appear in a filename.
+      const refused = searchPath === undefined ? null : rejectOutsideRoot(searchPath.map((p) => p.replace(/,/g, '')), projectRoot)
+      if (refused) return refused
       return toCallToolResultFromExitCode(() =>
         runGrep({
           pattern,
